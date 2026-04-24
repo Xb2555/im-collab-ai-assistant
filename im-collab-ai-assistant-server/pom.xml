@@ -23,6 +23,7 @@
     </developers>
     <modules>
         <module>im-collab-ai-assistant-common</module>
+        <module>im-collab-ai-assistant-planner</module>
     </modules>
     <scm>
         <connection/>
