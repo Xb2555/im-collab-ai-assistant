@@ -24,6 +24,7 @@
     <modules>
         <module>im-collab-ai-assistant-common</module>
         <module>im-collab-ai-assistant-planner</module>
+        <module>im-collab-ai-assistant-skills</module>
     </modules>
     <scm>
         <connection/>
@@ -43,12 +44,6 @@
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>
             <artifactId>spring-ai-alibaba-agent-framework</artifactId>
-            <version>1.1.2.0</version>
-        </dependency>
-        <!-- DashScope ChatModel 支持（如果使用其他模型，请跳转 Spring AI 文档选择对应的 starter） -->
-        <dependency>
-            <groupId>com.alibaba.cloud.ai</groupId>
-            <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
             <version>1.1.2.0</version>
         </dependency>
         <dependency>
