@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/im-collab-ai-assistant.iml" filepath="$PROJECT_DIR$/.idea/im-collab-ai-assistant.iml" />
+      <module fileurl="file://$PROJECT_DIR$/im-collab-ai-assistant-server/im-collab-ai-assistant-server.iml" filepath="$PROJECT_DIR$/im-collab-ai-assistant-server/im-collab-ai-assistant-server.iml" />
     </modules>
   </component>
 </project>

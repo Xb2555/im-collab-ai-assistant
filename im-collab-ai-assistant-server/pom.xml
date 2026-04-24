@@ -11,6 +11,7 @@
     <groupId>com.lark</groupId>
     <artifactId>im-collab-ai-assistant-server</artifactId>
     <version>0.0.1-SNAPSHOT</version>
+    <packaging>pom</packaging>
     <name>im-collab-ai-assistant-server</name>
     <description>im-collab-ai-assistant-server</description>
     <url/>
@@ -20,6 +21,9 @@
     <developers>
         <developer/>
     </developers>
+    <modules>
+        <module>im-collab-ai-assistant-common</module>
+    </modules>
     <scm>
         <connection/>
         <developerConnection/>
