@@ -31,3 +31,8 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### 暂存区文件
+.DS_Store
+**/.DS_Store
+.DS_Store?
