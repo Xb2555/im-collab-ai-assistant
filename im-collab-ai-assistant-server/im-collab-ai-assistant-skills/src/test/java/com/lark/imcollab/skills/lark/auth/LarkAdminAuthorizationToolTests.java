@@ -90,6 +90,24 @@ class LarkAdminAuthorizationToolTests {
     }
 
     @Test
+    void shouldIgnoreCliNoticeAroundAuthorizationCompletionJson() {
+        StubCliCommandExecutor executor = new StubCliCommandExecutor();
+        executor.enqueue(new CliCommandResult(0, """
+                lark-cli 1.0.19 available, current 1.0.9
+                {"status":"authorized","profile":"default"}
+                lark-cli auth login completed
+                """));
+
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
+        LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
+
+        String result = tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest("device-123"));
+
+        assertThat(result).isEqualTo("{\"status\":\"authorized\",\"profile\":\"default\"}");
+    }
+
+    @Test
     void shouldPassRepeatableDomainsToCli() {
         StubCliCommandExecutor executor = new StubCliCommandExecutor();
         executor.enqueue(new CliCommandResult(0, """
