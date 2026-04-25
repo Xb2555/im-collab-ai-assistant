@@ -80,19 +80,16 @@ public class LarkCliClient {
         try {
             return objectMapper.readTree(output);
         } catch (IOException exception) {
-            String jsonPayload = extractFirstJsonPayload(output);
-            if (jsonPayload == null) {
-                throw exception;
-            }
-            return objectMapper.readTree(jsonPayload);
+            return readFirstJsonPayload(output, exception);
         }
     }
 
-    private String extractFirstJsonPayload(String output) {
+    private JsonNode readFirstJsonPayload(String output, IOException originalException) throws IOException {
         if (output == null || output.isBlank()) {
-            return null;
+            throw originalException;
         }
 
+        IOException lastException = originalException;
         for (int index = 0; index < output.length(); index++) {
             char start = output.charAt(index);
             if (start != '{' && start != '[') {
@@ -101,10 +98,14 @@ public class LarkCliClient {
 
             int end = findJsonPayloadEnd(output, index, start == '{' ? '}' : ']');
             if (end != -1) {
-                return output.substring(index, end + 1);
+                try {
+                    return objectMapper.readTree(output.substring(index, end + 1));
+                } catch (IOException exception) {
+                    lastException = exception;
+                }
             }
         }
-        return null;
+        throw lastException;
     }
 
     private int findJsonPayloadEnd(String output, int startIndex, char expectedEnd) {

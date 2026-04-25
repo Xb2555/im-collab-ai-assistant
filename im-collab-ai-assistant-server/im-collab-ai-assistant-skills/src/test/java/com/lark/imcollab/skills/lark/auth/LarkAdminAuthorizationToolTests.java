@@ -93,8 +93,8 @@ class LarkAdminAuthorizationToolTests {
     void shouldIgnoreCliNoticeAroundAuthorizationCompletionJson() {
         StubCliCommandExecutor executor = new StubCliCommandExecutor();
         executor.enqueue(new CliCommandResult(0, """
-                lark-cli 1.0.19 available, current 1.0.9
-                {"status":"authorized","profile":"default"}
+                [lark-cli] device-flow: token obtained successfully
+                {"event":"authorization_complete","requested":["calendar:calendar:readonly"],"user_open_id":"ou_123"}
                 lark-cli auth login completed
                 """));
 
@@ -104,7 +104,9 @@ class LarkAdminAuthorizationToolTests {
 
         String result = tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest("device-123"));
 
-        assertThat(result).isEqualTo("{\"status\":\"authorized\",\"profile\":\"default\"}");
+        assertThat(result).isEqualTo(
+                "{\"event\":\"authorization_complete\",\"requested\":[\"calendar:calendar:readonly\"],\"user_open_id\":\"ou_123\"}"
+        );
     }
 
     @Test
