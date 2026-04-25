@@ -8,6 +8,7 @@ import com.lark.imcollab.gateway.auth.dto.LarkAdminAuthorizationStartResponse;
 import com.lark.imcollab.skills.lark.auth.LarkAdminAuthorizationTool;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationCompletionRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationSession;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStatus;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -47,6 +48,11 @@ public class LarkIMAuthService implements IMAuthService {
                 new AdminAuthorizationCompletionRequest(deviceCode)
         );
         return mapAuthorizationCompletion(rawResult);
+    }
+
+    @Override
+    public AdminAuthorizationStatus getAdminAuthorizationStatus() {
+        return larkAdminAuthorizationTool.getCurrentAdminAuthorizationStatus();
     }
 
     private LarkAdminAuthorizationInfoResponse mapAuthorizationCompletion(String rawResult) {

@@ -5,10 +5,8 @@ import com.lark.imcollab.gateway.auth.dto.LarkAdminAuthorizationCompleteRequest;
 import com.lark.imcollab.gateway.auth.dto.LarkAdminAuthorizationInfoResponse;
 import com.lark.imcollab.gateway.auth.dto.LarkAdminAuthorizationStartResponse;
 import com.lark.imcollab.gateway.auth.service.IMAuthService;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStatus;
+import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -30,5 +28,10 @@ public class LarkAdminAuthorizationController {
             @RequestBody LarkAdminAuthorizationCompleteRequest request
     ) {
         return imAuthService.waitForLarkAdminAuthorization(request.deviceCode());
+    }
+
+    @GetMapping("/getStatus")
+    public AdminAuthorizationStatus getAdminAuthorizationStatus(){
+        return imAuthService.getAdminAuthorizationStatus();
     }
 }

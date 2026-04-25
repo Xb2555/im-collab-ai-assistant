@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.cli.auth.dto.AdminAuthorizationRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationCompletionRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationSession;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStatus;
 import com.lark.imcollab.skills.framework.cli.CliCommand;
 import com.lark.imcollab.skills.framework.cli.CliCommandExecutor;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
@@ -107,6 +108,50 @@ class LarkAdminAuthorizationToolTests {
         assertThat(result).isEqualTo(
                 "{\"event\":\"authorization_complete\",\"requested\":[\"calendar:calendar:readonly\"],\"user_open_id\":\"ou_123\"}"
         );
+    }
+
+    @Test
+    void shouldReturnCurrentAuthorizationStatus() {
+        StubCliCommandExecutor executor = new StubCliCommandExecutor();
+        executor.enqueue(new CliCommandResult(0, """
+                {
+                  "appId": "cli_a9564b61cdf8dcd3",
+                  "brand": "feishu",
+                  "defaultAs": "auto",
+                  "expiresAt": "2026-04-25T17:39:16+08:00",
+                  "grantedAt": "2026-04-25T15:39:16+08:00",
+                  "identity": "user",
+                  "refreshExpiresAt": "2026-05-02T15:39:16+08:00",
+                  "scope": "auth:user.id:read calendar:calendar:readonly offline_access",
+                  "tokenStatus": "valid",
+                  "userName": "用户992704",
+                  "userOpenId": "ou_23940d55731702db489089d071353548"
+                }
+                """));
+
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
+        LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
+
+        AdminAuthorizationStatus status = tool.getCurrentAdminAuthorizationStatus();
+
+        assertThat(status.appId()).isEqualTo("cli_a9564b61cdf8dcd3");
+        assertThat(status.brand()).isEqualTo("feishu");
+        assertThat(status.defaultAs()).isEqualTo("auto");
+        assertThat(status.identity()).isEqualTo("user");
+        assertThat(status.tokenStatus()).isEqualTo("valid");
+        assertThat(status.userName()).isEqualTo("用户992704");
+        assertThat(status.userOpenId()).isEqualTo("ou_23940d55731702db489089d071353548");
+        assertThat(status.grantedAt()).isEqualTo("2026-04-25T15:39:16+08:00");
+        assertThat(status.expiresAt()).isEqualTo("2026-04-25T17:39:16+08:00");
+        assertThat(status.refreshExpiresAt()).isEqualTo("2026-05-02T15:39:16+08:00");
+        assertThat(status.scopes()).containsExactly(
+                "auth:user.id:read",
+                "calendar:calendar:readonly",
+                "offline_access"
+        );
+        assertThat(executor.recordedCommands().get(0).arguments())
+                .containsExactly("auth", "status");
     }
 
     @Test

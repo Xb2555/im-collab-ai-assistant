@@ -8,6 +8,7 @@ import com.google.zxing.common.BitMatrix;
 import com.lark.imcollab.common.cli.auth.dto.AdminAuthorizationRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationCompletionRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationSession;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStatus;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.springframework.ai.tool.annotation.Tool;
@@ -60,6 +61,24 @@ public class LarkAdminAuthorizationTool {
         return authResult.toString();
     }
 
+    @Tool(description = "Scenario A/B: view current Lark administrator authorization status, including user identity, token status, expiration times, and granted scopes.")
+    public AdminAuthorizationStatus getCurrentAdminAuthorizationStatus() {
+        JsonNode authStatus = larkCliClient.executeJson(List.of("auth", "status"));
+        return new AdminAuthorizationStatus(
+                optionalText(authStatus, "appId"),
+                optionalText(authStatus, "brand"),
+                optionalText(authStatus, "defaultAs"),
+                optionalText(authStatus, "identity"),
+                optionalText(authStatus, "tokenStatus"),
+                optionalText(authStatus, "userName"),
+                optionalText(authStatus, "userOpenId"),
+                optionalText(authStatus, "grantedAt"),
+                optionalText(authStatus, "expiresAt"),
+                optionalText(authStatus, "refreshExpiresAt"),
+                splitScopes(optionalText(authStatus, "scope"))
+        );
+    }
+
     private List<String> buildStartArgs(
             List<String> scopes,
             List<String> domains,
@@ -97,6 +116,21 @@ public class LarkAdminAuthorizationTool {
             throw new IllegalStateException("lark-cli response missing field: " + fieldName);
         }
         return field.asText();
+    }
+
+    private String optionalText(JsonNode root, String fieldName) {
+        JsonNode field = root.path(fieldName);
+        if (field.isMissingNode() || field.isNull() || field.asText().isBlank()) {
+            return null;
+        }
+        return field.asText();
+    }
+
+    private List<String> splitScopes(String scope) {
+        if (scope == null || scope.isBlank()) {
+            return List.of();
+        }
+        return List.of(scope.trim().split("\\s+"));
     }
 
     private String normalizeDeviceCode(String deviceCode) {
