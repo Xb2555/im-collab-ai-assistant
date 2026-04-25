@@ -1,0 +1,9 @@
+spring:
+  application:
+    name: im-collab-ai-assistant-skills
+
+imcollab:
+  skills:
+    lark-cli:
+      executable: lark-cli
+      working-directory: ""
