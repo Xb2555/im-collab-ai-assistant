@@ -110,6 +110,11 @@ public class LarkMessageEventSubscriptionTool {
         return state.toStatus();
     }
 
+    public void stopAllMessageSubscriptions() {
+        subscriptions.values().forEach(SubscriptionState::stop);
+        subscriptions.clear();
+    }
+
     private List<String> buildSubscribeArgs(String profileName) {
         if (DEFAULT_PROFILE_NAME.equals(profileName)) {
             return List.of(

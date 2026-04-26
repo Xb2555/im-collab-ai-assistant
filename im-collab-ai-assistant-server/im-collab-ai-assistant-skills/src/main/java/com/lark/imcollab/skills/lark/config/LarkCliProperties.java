@@ -9,6 +9,15 @@ public class LarkCliProperties {
     private String workingDirectory = "";
     private int qrCodeSize = 280;
     private long authorizationCompletionTimeoutMillis = 10000;
+    private String profileName;
+
+    public String getProfileName() {
+        return profileName;
+    }
+
+    public void setProfileName(String profileName) {
+        this.profileName = profileName;
+    }
 
     public String getExecutable() {
         return executable;

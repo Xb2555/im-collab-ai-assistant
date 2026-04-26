@@ -117,14 +117,37 @@ class LarkMessageEventSubscriptionToolTests {
         assertThat(status.running()).isFalse();
     }
 
+    @Test
+    void shouldStopAllSubscriptions() {
+        StubStreamingExecutor executor = new StubStreamingExecutor();
+        LarkMessageEventSubscriptionTool tool = new LarkMessageEventSubscriptionTool(
+                executor,
+                new LarkCliProperties(),
+                new ObjectMapper()
+        );
+        tool.startMessageSubscription("profile-123", event -> {
+        });
+        tool.startMessageSubscription("profile-456", event -> {
+        });
+
+        tool.stopAllMessageSubscriptions();
+
+        assertThat(executor.handles).allSatisfy(handle -> assertThat(handle.stopped).isTrue());
+        assertThat(tool.getMessageSubscriptionStatus("profile-123").running()).isFalse();
+        assertThat(tool.getMessageSubscriptionStatus("profile-456").running()).isFalse();
+    }
+
     private static final class StubStreamingExecutor implements CliStreamingCommandExecutor {
 
-        private final StubStreamHandle handle = new StubStreamHandle();
+        private final List<StubStreamHandle> handles = new ArrayList<>();
+        private StubStreamHandle handle;
         private CliCommand command;
         private CliStreamListener listener;
 
         @Override
         public CliStreamHandle start(CliCommand command, CliStreamListener listener) throws IOException {
+            this.handle = new StubStreamHandle();
+            this.handles.add(handle);
             this.command = command;
             this.listener = listener;
             return handle;
