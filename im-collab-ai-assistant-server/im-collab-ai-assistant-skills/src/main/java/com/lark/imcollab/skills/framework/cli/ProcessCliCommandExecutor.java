@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class ProcessCliCommandExecutor implements CliCommandExecutor {
@@ -24,8 +25,23 @@ public class ProcessCliCommandExecutor implements CliCommandExecutor {
         }
 
         Process process = processBuilder.start();
+        if (command.stdin() != null) {
+            process.getOutputStream().write(command.stdin().getBytes(StandardCharsets.UTF_8));
+        }
+        process.getOutputStream().close();
+        boolean completed;
+        if (command.timeoutMillis() > 0) {
+            completed = process.waitFor(command.timeoutMillis(), TimeUnit.MILLISECONDS);
+        } else {
+            process.waitFor();
+            completed = true;
+        }
+        if (!completed) {
+            process.destroyForcibly();
+            return new CliCommandResult(124, "lark-cli command timed out");
+        }
         byte[] outputBytes = process.getInputStream().readAllBytes();
-        int exitCode = process.waitFor();
+        int exitCode = process.exitValue();
         String output = new String(outputBytes, StandardCharsets.UTF_8).trim();
         return new CliCommandResult(exitCode, output);
     }

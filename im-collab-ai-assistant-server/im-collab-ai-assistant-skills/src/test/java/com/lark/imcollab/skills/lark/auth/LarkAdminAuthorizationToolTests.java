@@ -1,8 +1,10 @@
 package com.lark.imcollab.skills.lark.auth;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.lark.imcollab.common.cli.auth.dto.AdminAuthorizationRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationCompletionRequest;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationProfile;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationProfileCreateRequest;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStartRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationSession;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStatus;
 import com.lark.imcollab.skills.framework.cli.CliCommand;
@@ -24,30 +26,62 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class LarkAdminAuthorizationToolTests {
 
     @Test
-    void shouldReturnAuthorizationQrCodeBinary() {
+    void shouldListAuthorizationProfiles() {
         StubCliCommandExecutor executor = new StubCliCommandExecutor();
         executor.enqueue(new CliCommandResult(0, """
-                {"device_code":"device-123","expires_in":600,"verification_url":"https://example.com/verify?code=abc"}
+                [
+                  {"name":"default","appId":"cli_default","brand":"feishu","active":true,"user":"用户992704"},
+                  {"name":"demo","appId":"cli_demo","brand":"feishu","active":false}
+                ]
                 """));
 
         LarkCliProperties properties = new LarkCliProperties();
         LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
         LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
 
-        byte[] qrCode = tool.getAuthQrCodePng(new AdminAuthorizationRequest(
-                List.of("calendar:calendar:readonly"),
-                List.of(),
-                false
-        ));
+        List<AdminAuthorizationProfile> profiles = tool.listAuthorizationProfiles();
 
-        assertThat(qrCode).isNotEmpty();
+        assertThat(profiles).hasSize(2);
+        assertThat(profiles.get(0).name()).isEqualTo("default");
+        assertThat(profiles.get(0).active()).isTrue();
+        assertThat(profiles.get(0).user()).isEqualTo("用户992704");
+        assertThat(profiles.get(1).appId()).isEqualTo("cli_demo");
         assertThat(executor.recordedCommands().get(0).arguments())
-                .containsExactly("auth", "login", "--json", "--no-wait", "--scope",
-                        "calendar:calendar:readonly");
+                .containsExactly("profile", "list");
     }
 
     @Test
-    void shouldStartAuthorizationSessionForAgentToolUse() {
+    void shouldCreateBotProfile() {
+        StubCliCommandExecutor executor = new StubCliCommandExecutor();
+        executor.enqueue(new CliCommandResult(0, "profile added"));
+        executor.enqueue(new CliCommandResult(0, "bot"));
+
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
+        LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
+
+        AdminAuthorizationProfile profile = tool.createAuthorizationProfile(
+                new AdminAuthorizationProfileCreateRequest(
+                        "cli_test",
+                        "secret-value",
+                        "profile-123",
+                        "feishu"
+                )
+        );
+
+        assertThat(profile.name()).isEqualTo("profile-123");
+        assertThat(profile.appId()).isEqualTo("cli_test");
+        assertThat(profile.brand()).isEqualTo("feishu");
+        assertThat(executor.recordedCommands().get(0).arguments())
+                .containsExactly("--profile", "profile-123", "profile", "add", "--name", "profile-123",
+                        "--app-id", "cli_test", "--app-secret-stdin", "--brand", "feishu");
+        assertThat(executor.recordedCommands().get(0).stdin()).isEqualTo("secret-value");
+        assertThat(executor.recordedCommands().get(1).arguments())
+                .containsExactly("--profile", "profile-123", "config", "default-as", "bot");
+    }
+
+    @Test
+    void shouldStartAuthorizationSessionForSelectedProfile() {
         StubCliCommandExecutor executor = new StubCliCommandExecutor();
         executor.enqueue(new CliCommandResult(0, """
                 {"device_code":"device-123","expires_in":600,"verification_url":"https://example.com/verify?code=abc"}
@@ -57,37 +91,126 @@ class LarkAdminAuthorizationToolTests {
         LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
         LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
 
-        AdminAuthorizationSession session = tool.startAdminAuthorization(new AdminAuthorizationRequest(
-                List.of("calendar:calendar:readonly"),
-                List.of(),
-                false
-        ));
+        AdminAuthorizationSession session = tool.startAdminAuthorization(
+                new AdminAuthorizationStartRequest("profile-123")
+        );
 
+        assertThat(session.profileName()).isEqualTo("profile-123");
         assertThat(session.deviceCode()).isEqualTo("device-123");
-        assertThat(session.expiresIn()).isEqualTo(600);
-        assertThat(session.verificationUrl()).isEqualTo("https://example.com/verify?code=abc");
         assertThat(session.qrCodePng()).isNotEmpty();
-        assertThat(executor.recordedCommands().get(0).arguments())
-                .containsExactly("auth", "login", "--json", "--no-wait", "--scope",
-                        "calendar:calendar:readonly");
+        assertThat(executor.recordedCommands()).hasSize(1);
+        List<String> arguments = executor.recordedCommands().get(0).arguments();
+        assertThat(arguments)
+                .containsExactly("--profile", "profile-123", "auth", "login", "--json", "--no-wait", "--scope",
+                        arguments.get(arguments.indexOf("--scope") + 1));
+        assertThat(arguments.get(arguments.indexOf("--scope") + 1))
+                .contains("bitable:app")
+                .contains("docs:document.content:read")
+                .contains("im:message")
+                .contains("docx:document:create")
+                .contains("slides:presentation:create")
+                .doesNotContain("offline_access");
     }
 
     @Test
-    void shouldWaitForAuthorizationCompletionByDeviceCode() {
+    void shouldRejectAuthorizationCompletionWithoutProfile() {
+        StubCliCommandExecutor executor = new StubCliCommandExecutor();
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
+        LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
+
+        assertThatThrownBy(() -> tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest(
+                "device-123",
+                null
+        )))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("profileName must be provided");
+    }
+
+    @Test
+    void shouldWaitForAuthorizationCompletionByDeviceCodeAndProfile() {
         StubCliCommandExecutor executor = new StubCliCommandExecutor();
         executor.enqueue(new CliCommandResult(0, """
-                {"status":"authorized","profile":"default"}
+                {"status":"authorized","profile":"profile-123"}
                 """));
 
         LarkCliProperties properties = new LarkCliProperties();
         LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
         LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
 
-        String result = tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest("device-123"));
+        String result = tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest(
+                "device-123",
+                "profile-123"
+        ));
 
-        assertThat(result).isEqualTo("{\"status\":\"authorized\",\"profile\":\"default\"}");
+        assertThat(result).isEqualTo("{\"status\":\"authorized\",\"profile\":\"profile-123\"}");
         assertThat(executor.recordedCommands().get(0).arguments())
-                .containsExactly("auth", "login", "--json", "--device-code", "device-123");
+                .containsExactly("--profile", "profile-123", "auth", "login", "--json", "--device-code",
+                        "device-123");
+        assertThat(executor.recordedCommands().get(0).timeoutMillis()).isEqualTo(10000);
+    }
+
+    @Test
+    void shouldReturnPendingWhenAuthorizationCompletionTimesOut() {
+        StubCliCommandExecutor executor = new StubCliCommandExecutor();
+        executor.enqueue(new CliCommandResult(124, "lark-cli command timed out"));
+
+        LarkCliProperties properties = new LarkCliProperties();
+        properties.setAuthorizationCompletionTimeoutMillis(1000);
+        LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
+        LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
+
+        assertThatThrownBy(() -> tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest(
+                "device-123",
+                "profile-123"
+        )))
+                .isInstanceOf(AuthorizationPendingException.class)
+                .hasMessage("Authorization is not completed yet. Retry later.");
+        assertThat(executor.recordedCommands().get(0).timeoutMillis()).isEqualTo(1000);
+    }
+
+    @Test
+    void shouldReturnPendingWhenCliReportsAuthorizationPending() {
+        StubCliCommandExecutor executor = new StubCliCommandExecutor();
+        executor.enqueue(new CliCommandResult(1, """
+                {"error":{"type":"authorization_pending","message":"authorization pending"}}
+                """));
+
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
+        LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
+
+        assertThatThrownBy(() -> tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest(
+                "device-123",
+                "profile-123"
+        )))
+                .isInstanceOf(AuthorizationPendingException.class)
+                .hasMessage("Authorization is not completed yet. Retry later.");
+        assertThat(executor.recordedCommands().get(0).arguments())
+                .containsExactly("--profile", "profile-123", "auth", "login", "--json", "--device-code",
+                        "device-123");
+    }
+
+    @Test
+    void shouldReturnFailedWhenAuthorizationCompletionFails() {
+        StubCliCommandExecutor executor = new StubCliCommandExecutor();
+        executor.enqueue(new CliCommandResult(1, """
+                {"error":{"message":"device code expired"}}
+                """));
+
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
+        LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
+
+        assertThatThrownBy(() -> tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest(
+                "device-123",
+                "profile-123"
+        )))
+                .isInstanceOf(AuthorizationFailedException.class)
+                .hasMessage("device code expired");
+        assertThat(executor.recordedCommands().get(0).arguments())
+                .containsExactly("--profile", "profile-123", "auth", "login", "--json", "--device-code",
+                        "device-123");
     }
 
     @Test
@@ -103,7 +226,10 @@ class LarkAdminAuthorizationToolTests {
         LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
         LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
 
-        String result = tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest("device-123"));
+        String result = tool.waitForAdminAuthorization(new AdminAuthorizationCompletionRequest(
+                "device-123",
+                "profile-123"
+        ));
 
         assertThat(result).isEqualTo(
                 "{\"event\":\"authorization_complete\",\"requested\":[\"calendar:calendar:readonly\"],\"user_open_id\":\"ou_123\"}"
@@ -133,7 +259,7 @@ class LarkAdminAuthorizationToolTests {
         LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
         LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
 
-        AdminAuthorizationStatus status = tool.getCurrentAdminAuthorizationStatus();
+        AdminAuthorizationStatus status = tool.getCurrentAdminAuthorizationStatus("profile-123");
 
         assertThat(status.appId()).isEqualTo("cli_a9564b61cdf8dcd3");
         assertThat(status.brand()).isEqualTo("feishu");
@@ -151,11 +277,11 @@ class LarkAdminAuthorizationToolTests {
                 "offline_access"
         );
         assertThat(executor.recordedCommands().get(0).arguments())
-                .containsExactly("auth", "status");
+                .containsExactly("--profile", "profile-123", "auth", "status");
     }
 
     @Test
-    void shouldPassRepeatableDomainsToCli() {
+    void shouldUseHardcodedAuthorizationScopes() {
         StubCliCommandExecutor executor = new StubCliCommandExecutor();
         executor.enqueue(new CliCommandResult(0, """
                 {"device_code":"device-456","expires_in":600,"verification_url":"https://example.com/verify?code=xyz"}
@@ -165,32 +291,25 @@ class LarkAdminAuthorizationToolTests {
         LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
         LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
 
-        byte[] qrCode = tool.getAuthQrCodePng(new AdminAuthorizationRequest(
-                List.of(),
-                List.of("calendar", "docs"),
-                true
+        AdminAuthorizationSession session = tool.startAdminAuthorization(new AdminAuthorizationStartRequest(
+                "profile-123"
         ));
 
-        assertThat(qrCode).isNotEmpty();
-        assertThat(executor.recordedCommands().get(0).arguments())
-                .containsExactly("auth", "login", "--json", "--no-wait", "--recommend", "--domain", "calendar",
-                        "--domain", "docs");
-    }
-
-    @Test
-    void shouldRejectRequestWithoutScopeOrDomain() {
-        StubCliCommandExecutor executor = new StubCliCommandExecutor();
-        LarkCliProperties properties = new LarkCliProperties();
-        LarkCliClient client = new LarkCliClient(executor, properties, new ObjectMapper());
-        LarkAdminAuthorizationTool tool = new LarkAdminAuthorizationTool(client, properties);
-
-        assertThatThrownBy(() -> tool.getAuthQrCodePng(new AdminAuthorizationRequest(
-                List.of(),
-                List.of(),
-                false
-        )))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Either scopes or domains must be provided");
+        assertThat(session.qrCodePng()).isNotEmpty();
+        List<String> arguments = executor.recordedCommands().get(0).arguments();
+        assertThat(arguments).contains("--scope");
+        assertThat(arguments).doesNotContain("--recommend", "--domain");
+        assertThat(arguments.get(arguments.indexOf("--scope") + 1))
+                .contains("bitable:app:readonly")
+                .contains("board:whiteboard:node:create")
+                .contains("board:whiteboard:node:update")
+                .contains("docs:document:copy")
+                .contains("drive:file:upload")
+                .contains("im:message:send_as_bot")
+                .contains("sheets:spreadsheet:create")
+                .contains("slides:presentation:update")
+                .contains("wiki:node:create")
+                .doesNotContain("calendar:calendar:readonly");
     }
 
     private static final class StubCliCommandExecutor implements CliCommandExecutor {

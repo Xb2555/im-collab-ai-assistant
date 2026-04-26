@@ -8,6 +8,7 @@ public class LarkCliProperties {
     private String executable = "lark-cli";
     private String workingDirectory = "";
     private int qrCodeSize = 280;
+    private long authorizationCompletionTimeoutMillis = 10000;
 
     public String getExecutable() {
         return executable;
@@ -31,5 +32,13 @@ public class LarkCliProperties {
 
     public void setQrCodeSize(int qrCodeSize) {
         this.qrCodeSize = qrCodeSize;
+    }
+
+    public long getAuthorizationCompletionTimeoutMillis() {
+        return authorizationCompletionTimeoutMillis;
+    }
+
+    public void setAuthorizationCompletionTimeoutMillis(long authorizationCompletionTimeoutMillis) {
+        this.authorizationCompletionTimeoutMillis = authorizationCompletionTimeoutMillis;
     }
 }

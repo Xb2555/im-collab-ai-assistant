@@ -30,11 +30,21 @@ public class LarkCliClient {
     }
 
     public CliCommandResult execute(List<String> args) {
+        return execute(args, null);
+    }
+
+    public CliCommandResult execute(List<String> args, String stdin) {
+        return execute(args, stdin, 0);
+    }
+
+    public CliCommandResult execute(List<String> args, String stdin, long timeoutMillis) {
         try {
             return cliCommandExecutor.execute(new CliCommand(
                     properties.getExecutable(),
                     args,
-                    normalizeWorkingDirectory(properties.getWorkingDirectory())
+                    normalizeWorkingDirectory(properties.getWorkingDirectory()),
+                    stdin,
+                    timeoutMillis
             ));
         } catch (IOException exception) {
             throw new UncheckedIOException(exception);
@@ -45,7 +55,15 @@ public class LarkCliClient {
     }
 
     public JsonNode executeJson(List<String> args) {
-        CliCommandResult result = execute(args);
+        return executeJson(args, null);
+    }
+
+    public JsonNode executeJson(List<String> args, String stdin) {
+        return executeJson(args, stdin, 0);
+    }
+
+    public JsonNode executeJson(List<String> args, String stdin, long timeoutMillis) {
+        CliCommandResult result = execute(args, stdin, timeoutMillis);
         if (!result.isSuccess()) {
             throw new IllegalStateException(extractErrorMessage(result.output()));
         }
@@ -76,7 +94,7 @@ public class LarkCliClient {
         return workingDirectory.trim();
     }
 
-    private JsonNode readJsonOutput(String output) throws IOException {
+    public JsonNode readJsonOutput(String output) throws IOException {
         try {
             return objectMapper.readTree(output);
         } catch (IOException exception) {

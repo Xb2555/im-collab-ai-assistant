@@ -1,7 +1,8 @@
 package com.lark.imcollab.skills.lark.auth;
 
-import com.lark.imcollab.common.cli.auth.dto.AdminAuthorizationRequest;
 import com.lark.imcollab.skills.ImCollabAiAssistantSkillsApplication;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStartRequest;
+import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationSession;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,7 +10,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,13 +24,12 @@ class LarkAdminAuthorizationRealTests {
 
     @Test
     void shouldGenerateRealAuthorizationQrCode() throws Exception {
-        AdminAuthorizationRequest request = new AdminAuthorizationRequest(
-                List.of("calendar:calendar:readonly"),
-                List.of(),
-                false
+        AdminAuthorizationStartRequest request = new AdminAuthorizationStartRequest(
+                System.getProperty("larkAuthProfileName")
         );
 
-        byte[] png = larkAdminAuthorizationTool.getAuthQrCodePng(request);
+        AdminAuthorizationSession session = larkAdminAuthorizationTool.startAdminAuthorization(request);
+        byte[] png = session.qrCodePng();
         assertThat(png).isNotEmpty();
 
         Path output = resolveOutputPath();
