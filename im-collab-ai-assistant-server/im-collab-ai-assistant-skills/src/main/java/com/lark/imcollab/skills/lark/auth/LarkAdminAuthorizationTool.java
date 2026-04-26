@@ -6,15 +6,10 @@ import com.google.zxing.MultiFormatWriter;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
-import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationCompletionRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationProfile;
-import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationProfileCreateRequest;
-import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStartRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationSession;
-import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStatus;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
-import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
@@ -22,7 +17,6 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 @Component
@@ -189,7 +183,6 @@ public class LarkAdminAuthorizationTool {
         this.properties = properties;
     }
 
-    @Tool(description = "Scenario A/B: list Lark CLI profiles available for app selection.")
     public List<AdminAuthorizationProfile> listAuthorizationProfiles() {
         JsonNode profiles = larkCliClient.executeJson(List.of("profile", "list"));
         if (!profiles.isArray()) {
@@ -208,39 +201,13 @@ public class LarkAdminAuthorizationTool {
         return result;
     }
 
-    @Tool(description = "Scenario A/B: create a Lark CLI profile for a selected app and set default identity to bot.")
-    public AdminAuthorizationProfile createAuthorizationProfile(AdminAuthorizationProfileCreateRequest request) {
-        String appId = requireValue(request.appId(), "appId");
-        String appSecret = requireValue(request.appSecret(), "appSecret");
-        String profileName = normalizeProfileName(request.profileName());
-        String brand = normalizeBrand(request.brand());
-
-        executeCli(List.of(
-                "--profile", profileName,
-                "profile", "add",
-                "--name", profileName,
-                "--app-id", appId,
-                "--app-secret-stdin",
-                "--brand", brand
-        ), appSecret);
-        executeCli(List.of(
-                "--profile", profileName,
-                "config", "default-as", "bot"
-        ), null);
-        return new AdminAuthorizationProfile(profileName, appId, brand, false, null);
-    }
-
-    @Tool(description = "Scenario A/B: start user authorization for a selected Lark CLI profile.")
-    public AdminAuthorizationSession startAdminAuthorization(AdminAuthorizationStartRequest request) {
-        String profileName = requireValue(request.profileName(), "profileName");
-        JsonNode authStart = larkCliClient.executeJson(buildStartArgs(
-                profileName
-        ));
+    public AdminAuthorizationSession startAdminAuthorization(String profileName) {
+        JsonNode authStart = larkCliClient.executeJson(buildStartArgs(profileName));
         String deviceCode = requireText(authStart, "device_code");
         String verificationUrl = requireText(authStart, "verification_url");
         int expiresIn = authStart.path("expires_in").asInt();
         return new AdminAuthorizationSession(
-                profileName,
+                normalizeOptionalProfileName(profileName),
                 deviceCode,
                 verificationUrl,
                 expiresIn,
@@ -248,12 +215,10 @@ public class LarkAdminAuthorizationTool {
         );
     }
 
-    @Tool(description = "Scenario A/B: wait until the Lark administrator completes scanning and authorization for a previous deviceCode. Returns the lark-cli JSON result.")
-    public String waitForAdminAuthorization(AdminAuthorizationCompletionRequest request) {
-        String deviceCode = normalizeDeviceCode(request.deviceCode());
-        String profileName = requireValue(request.profileName(), "profileName");
+    public String waitForAdminAuthorization(String deviceCode, String profileName) {
+        String normalizedDeviceCode = normalizeDeviceCode(deviceCode);
         CliCommandResult result = larkCliClient.execute(
-                buildCompleteArgs(profileName, deviceCode),
+                buildCompleteArgs(profileName, normalizedDeviceCode),
                 null,
                 properties.getAuthorizationCompletionTimeoutMillis()
         );
@@ -270,27 +235,9 @@ public class LarkAdminAuthorizationTool {
         }
     }
 
-    @Tool(description = "Scenario A/B: view current Lark administrator authorization status under a specific profile.")
-    public AdminAuthorizationStatus getCurrentAdminAuthorizationStatus(String profileName) {
-        JsonNode authStatus = larkCliClient.executeJson(buildProfileArgs(requireValue(profileName, "profileName"),
-                "auth", "status"));
-        return new AdminAuthorizationStatus(
-                optionalText(authStatus, "appId"),
-                optionalText(authStatus, "brand"),
-                optionalText(authStatus, "defaultAs"),
-                optionalText(authStatus, "identity"),
-                optionalText(authStatus, "tokenStatus"),
-                optionalText(authStatus, "userName"),
-                optionalText(authStatus, "userOpenId"),
-                optionalText(authStatus, "grantedAt"),
-                optionalText(authStatus, "expiresAt"),
-                optionalText(authStatus, "refreshExpiresAt"),
-                splitScopes(optionalText(authStatus, "scope"))
-        );
-    }
-
     private List<String> buildStartArgs(String profileName) {
-        List<String> args = new ArrayList<>(buildProfileArgs(profileName, "auth", "login", "--json", "--no-wait"));
+        List<String> args = new ArrayList<>(buildProfileArgs(normalizeOptionalProfileName(profileName),
+                "auth", "login", "--json", "--no-wait"));
         if (!AUTHORIZATION_SCOPES.isEmpty()) {
             args.add("--scope");
             args.add(String.join(" ", AUTHORIZATION_SCOPES));
@@ -303,7 +250,8 @@ public class LarkAdminAuthorizationTool {
     }
 
     private List<String> buildCompleteArgs(String profileName, String deviceCode) {
-        List<String> args = new ArrayList<>(buildProfileArgs(profileName, "auth", "login", "--json"));
+        List<String> args = new ArrayList<>(buildProfileArgs(normalizeOptionalProfileName(profileName),
+                "auth", "login", "--json"));
         args.add("--device-code");
         args.add(deviceCode);
         return args;
@@ -335,13 +283,6 @@ public class LarkAdminAuthorizationTool {
         return field.asText();
     }
 
-    private List<String> splitScopes(String scope) {
-        if (scope == null || scope.isBlank()) {
-            return List.of();
-        }
-        return List.of(scope.trim().split("\\s+"));
-    }
-
     private String normalizeDeviceCode(String deviceCode) {
         if (deviceCode == null || deviceCode.isBlank()) {
             throw new IllegalArgumentException("deviceCode must be provided");
@@ -349,32 +290,11 @@ public class LarkAdminAuthorizationTool {
         return deviceCode.trim();
     }
 
-    private String normalizeProfileName(String profileName) {
-        if (profileName != null && !profileName.isBlank()) {
-            return profileName.trim();
+    private String normalizeOptionalProfileName(String profileName) {
+        if (profileName == null || profileName.isBlank()) {
+            return null;
         }
-        return "imcollab-auth-" + UUID.randomUUID();
-    }
-
-    private String normalizeBrand(String brand) {
-        if (brand == null || brand.isBlank()) {
-            return "feishu";
-        }
-        return brand.trim();
-    }
-
-    private String requireValue(String value, String fieldName) {
-        if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must be provided");
-        }
-        return value.trim();
-    }
-
-    private void executeCli(List<String> args, String stdin) {
-        var result = larkCliClient.execute(args, stdin);
-        if (!result.isSuccess()) {
-            throw new IllegalStateException(larkCliClient.extractErrorMessage(result.output()));
-        }
+        return profileName.trim();
     }
 
     private boolean isCompletionTimeout(String output) {

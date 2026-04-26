@@ -1,8 +1,5 @@
 package com.lark.imcollab.gateway.im.service;
 
-import com.lark.imcollab.skills.lark.auth.LarkAdminAuthorizationTool;
-import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationProfile;
-import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -16,19 +13,16 @@ public class LarkIMListenerStartupRunner implements ApplicationRunner {
 
     private final LarkIMListenerProperties properties;
     private final LarkIMListenerService listenerService;
-    private final LarkCliProperties larkCliProperties;
-    private final LarkAdminAuthorizationTool authorizationTool;
+    private final LarkCliProfileResolver profileResolver;
 
     public LarkIMListenerStartupRunner(
             LarkIMListenerProperties properties,
             LarkIMListenerService listenerService,
-            LarkCliProperties larkCliProperties,
-            LarkAdminAuthorizationTool authorizationTool
+            LarkCliProfileResolver profileResolver
     ) {
         this.properties = properties;
         this.listenerService = listenerService;
-        this.larkCliProperties = larkCliProperties;
-        this.authorizationTool = authorizationTool;
+        this.profileResolver = profileResolver;
     }
 
     @Override
@@ -38,36 +32,11 @@ public class LarkIMListenerStartupRunner implements ApplicationRunner {
             return;
         }
         try {
-            LarkIMListenerStatusResponse status = listenerService.startDefault(defaultProfileName());
+            LarkIMListenerStatusResponse status = listenerService.startDefault(profileResolver.resolveConfiguredAppProfileName());
             log.info("Scenario A Lark IM listener auto-started: profileName={}, state={}",
                     status.profileName(), status.state());
         } catch (RuntimeException exception) {
             log.warn("Failed to auto-start Scenario A Lark IM listener.", exception);
-        }
-    }
-
-    private String defaultProfileName() {
-        String profileName = larkCliProperties.getProfileName();
-        if (profileName == null || profileName.isBlank()) {
-            return null;
-        }
-        String normalizedProfileName = profileName.trim();
-        if (profileExists(normalizedProfileName)) {
-            return normalizedProfileName;
-        }
-        log.warn("Configured Lark CLI profile does not exist, falling back to active/default profile: profileName={}",
-                normalizedProfileName);
-        return null;
-    }
-
-    private boolean profileExists(String profileName) {
-        try {
-            return authorizationTool.listAuthorizationProfiles().stream()
-                    .map(AdminAuthorizationProfile::name)
-                    .anyMatch(profileName::equals);
-        } catch (RuntimeException exception) {
-            log.warn("Failed to list Lark CLI profiles, falling back to active/default profile.", exception);
-            return false;
         }
     }
 }

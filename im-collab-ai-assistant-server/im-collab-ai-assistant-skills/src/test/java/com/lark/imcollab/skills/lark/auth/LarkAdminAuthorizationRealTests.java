@@ -1,7 +1,6 @@
 package com.lark.imcollab.skills.lark.auth;
 
 import com.lark.imcollab.skills.ImCollabAiAssistantSkillsApplication;
-import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStartRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationSession;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -24,11 +23,9 @@ class LarkAdminAuthorizationRealTests {
 
     @Test
     void shouldGenerateRealAuthorizationQrCode() throws Exception {
-        AdminAuthorizationStartRequest request = new AdminAuthorizationStartRequest(
+        AdminAuthorizationSession session = larkAdminAuthorizationTool.startAdminAuthorization(
                 System.getProperty("larkAuthProfileName")
         );
-
-        AdminAuthorizationSession session = larkAdminAuthorizationTool.startAdminAuthorization(request);
         byte[] png = session.qrCodePng();
         assertThat(png).isNotEmpty();
 
