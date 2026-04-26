@@ -1,0 +1,7 @@
+server:
+  port: 8078
+imcollab:
+  gateway:
+    im:
+      listener:
+        auto-start-enabled: true
