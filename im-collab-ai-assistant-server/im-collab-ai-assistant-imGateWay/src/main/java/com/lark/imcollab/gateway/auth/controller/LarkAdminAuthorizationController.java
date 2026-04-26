@@ -4,6 +4,8 @@ import com.lark.imcollab.gateway.auth.dto.LarkAdminAuthorizationCompleteRequest;
 import com.lark.imcollab.gateway.auth.dto.LarkAdminAuthorizationInfoResponse;
 import com.lark.imcollab.gateway.auth.dto.LarkAdminAuthorizationStartResponse;
 import com.lark.imcollab.gateway.auth.service.IMAuthService;
+import com.lark.imcollab.gateway.im.service.LarkIMListenerService;
+import com.lark.imcollab.gateway.im.service.LarkIMListenerStartRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationProfile;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationProfileCreateRequest;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationStartRequest;
@@ -17,9 +19,14 @@ import java.util.List;
 public class LarkAdminAuthorizationController {
 
     private final IMAuthService imAuthService;
+    private final LarkIMListenerService larkIMListenerService;
 
-    public LarkAdminAuthorizationController(IMAuthService imAuthService) {
+    public LarkAdminAuthorizationController(
+            IMAuthService imAuthService,
+            LarkIMListenerService larkIMListenerService
+    ) {
         this.imAuthService = imAuthService;
+        this.larkIMListenerService = larkIMListenerService;
     }
 
     @GetMapping("/profiles")
@@ -45,7 +52,12 @@ public class LarkAdminAuthorizationController {
     public LarkAdminAuthorizationInfoResponse completeAuthorization(
             @RequestBody LarkAdminAuthorizationCompleteRequest request
     ) {
-        return imAuthService.waitForLarkAdminAuthorization(request.deviceCode(), request.profileName());
+        LarkAdminAuthorizationInfoResponse response = imAuthService.waitForLarkAdminAuthorization(
+                request.deviceCode(),
+                request.profileName()
+        );
+        larkIMListenerService.start(new LarkIMListenerStartRequest(request.profileName()));
+        return response;
     }
 
     @GetMapping("/status")
