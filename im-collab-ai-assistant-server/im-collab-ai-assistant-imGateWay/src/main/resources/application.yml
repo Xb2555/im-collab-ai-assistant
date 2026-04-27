@@ -5,3 +5,16 @@ imcollab:
     im:
       listener:
         auto-start-enabled: true
+    auth:
+      app-id: ${LARK_APP_ID:}
+      app-secret: ${LARK_APP_SECRET:}
+      redirect-uri: ${LARK_OAUTH_REDIRECT_URI:http://localhost:8078/api/auth/lark/callback}
+      session-ttl: 12h
+      jwt-ttl: 2h
+      jwt-secret: ${IMCOLLAB_JWT_SECRET:changemechangeme}
+      state-ttl: 10m
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
