@@ -49,5 +49,36 @@ class LarkMessageEventMapperTests {
         assertThat(event.get().messageId()).isEqualTo("om_4");
         assertThat(event.get().content()).isEqualTo("生成复盘");
         assertThat(event.get().senderOpenId()).isEqualTo("ou_4");
+        assertThat(event.get().mentionDetected()).isTrue();
+    }
+
+    @Test
+    void shouldMapGroupMessageWithoutMentionForFrontendStream() {
+        P2MessageReceiveV1 root = new P2MessageReceiveV1();
+        Header header = new Header();
+        header.setEventId("evt-5");
+        header.setEventType("im.message.receive_v1");
+        root.setHeader(header);
+        P2MessageReceiveV1Data data = new P2MessageReceiveV1Data();
+        data.setMessage(EventMessage.newBuilder()
+                .messageId("om_5")
+                .chatId("oc_group")
+                .chatType("group")
+                .messageType("text")
+                .content("{\"text\":\"普通群消息\"}")
+                .createTime("1773491924414")
+                .build());
+        data.setSender(EventSender.newBuilder()
+                .senderId(UserId.newBuilder().openId("ou_5").build())
+                .senderType("user")
+                .build());
+        root.setEvent(data);
+
+        Optional<LarkMessageEvent> event = mapper.fromSdkEvent(root);
+
+        assertThat(event).isPresent();
+        assertThat(event.get().messageId()).isEqualTo("om_5");
+        assertThat(event.get().content()).isEqualTo("普通群消息");
+        assertThat(event.get().mentionDetected()).isFalse();
     }
 }

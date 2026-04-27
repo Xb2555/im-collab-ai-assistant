@@ -52,9 +52,6 @@ public class LarkMessageEventMapper {
         if (!hasText(message.getMessageId())) {
             return Optional.empty();
         }
-        if (!isPrivateChat(message.getChatType()) && !mentionDetected) {
-            return Optional.empty();
-        }
 
         return Optional.of(new LarkMessageEvent(
                 header == null ? null : header.getEventId(),
@@ -67,10 +64,6 @@ public class LarkMessageEventMapper {
                 firstText(message.getCreateTime(), header == null ? null : header.getCreateTime()),
                 mentionDetected
         ));
-    }
-
-    private boolean isPrivateChat(String chatType) {
-        return "p2p".equalsIgnoreCase(chatType);
     }
 
     private boolean hasMentions(MentionEvent[] mentions) {

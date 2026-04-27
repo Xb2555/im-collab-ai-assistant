@@ -10,7 +10,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@RestControllerAdvice(assignableTypes = LarkIMChatController.class)
+@RestControllerAdvice(assignableTypes = {
+        LarkIMChatController.class,
+        LarkIMMessageStreamController.class
+})
 public class LarkIMChatExceptionHandler {
 
     @ExceptionHandler(LarkIMUnauthorizedException.class)

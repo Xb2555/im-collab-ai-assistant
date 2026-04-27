@@ -76,6 +76,61 @@ class LarkMessageEventSubscriptionServiceTests {
     }
 
     @Test
+    void shouldFanOutSdkEventsToConsumersForSameProfile() {
+        StubConnectionFactory factory = new StubConnectionFactory();
+        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
+        List<LarkMessageEvent> listenerEvents = new ArrayList<>();
+        List<LarkMessageEvent> streamEvents = new ArrayList<>();
+        service.startMessageSubscription("profile-123", "listener", listenerEvents::add);
+        service.startMessageSubscription("profile-123", "stream", streamEvents::add);
+
+        factory.connection.emit(new LarkMessageEvent(
+                "evt-2",
+                "om_2",
+                "oc_group",
+                "group",
+                "text",
+                "群消息",
+                "ou_2",
+                "1773491924410",
+                false
+        ));
+
+        assertThat(factory.startCount).isEqualTo(1);
+        assertThat(listenerEvents).hasSize(1);
+        assertThat(streamEvents).hasSize(1);
+    }
+
+    @Test
+    void shouldDispatchFrontendStreamBeforeAgentListener() {
+        StubConnectionFactory factory = new StubConnectionFactory();
+        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
+        List<String> dispatchOrder = new ArrayList<>();
+        service.startMessageSubscription("profile-123", "agent-listener",
+                event -> dispatchOrder.add("agent-listener"));
+        service.startMessageSubscription(
+                "profile-123",
+                "frontend-stream",
+                LarkMessageEventSubscriptionService.FRONTEND_STREAM_CONSUMER_PRIORITY,
+                event -> dispatchOrder.add("frontend-stream")
+        );
+
+        factory.connection.emit(new LarkMessageEvent(
+                "evt-3",
+                "om_3",
+                "oc_group",
+                "group",
+                "text",
+                "群消息",
+                "ou_3",
+                "1773491924411",
+                true
+        ));
+
+        assertThat(dispatchOrder).containsExactly("frontend-stream", "agent-listener");
+    }
+
+    @Test
     void shouldStopExistingSubscription() {
         StubConnectionFactory factory = new StubConnectionFactory();
         LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);

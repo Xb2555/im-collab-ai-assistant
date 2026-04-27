@@ -48,8 +48,15 @@ class LarkIMListenerServiceTests {
     @Test
     void shouldMapGroupMessageToGroupInputSource() {
         StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
+        StubReplyTool replyTool = new StubReplyTool();
         RecordingDispatcher dispatcher = new RecordingDispatcher();
-        LarkIMListenerService service = new LarkIMListenerService(subscriptionTool, new StubReplyTool(), dispatcher);
+        RecordingStreamService streamService = new RecordingStreamService();
+        LarkIMListenerService service = new LarkIMListenerService(
+                subscriptionTool,
+                replyTool,
+                dispatcher,
+                streamService
+        );
         service.start(new LarkIMListenerStartRequest("profile-123"));
 
         subscriptionTool.emit(new LarkMessageEvent(
@@ -66,6 +73,33 @@ class LarkIMListenerServiceTests {
 
         assertThat(dispatcher.messages).hasSize(1);
         assertThat(dispatcher.messages.get(0).inputSource()).isEqualTo(InputSourceEnum.LARK_GROUP);
+        assertThat(replyTool.replyCount).isEqualTo(1);
+        assertThat(streamService.sourceEvent.messageId()).isEqualTo("om_2");
+        assertThat(streamService.text).isEqualTo("任务已收到，正在处理");
+    }
+
+    @Test
+    void shouldIgnoreGroupMessageWithoutMentionForAgentListener() {
+        StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
+        StubReplyTool replyTool = new StubReplyTool();
+        RecordingDispatcher dispatcher = new RecordingDispatcher();
+        LarkIMListenerService service = new LarkIMListenerService(subscriptionTool, replyTool, dispatcher);
+        service.start(new LarkIMListenerStartRequest("profile-123"));
+
+        subscriptionTool.emit(new LarkMessageEvent(
+                "evt-4",
+                "om_4",
+                "oc_group",
+                "group",
+                "text",
+                "普通群消息",
+                "ou_4",
+                "1773491924412",
+                false
+        ));
+
+        assertThat(dispatcher.messages).isEmpty();
+        assertThat(replyTool.replyCount).isZero();
     }
 
     @Test
@@ -124,6 +158,7 @@ class LarkIMListenerServiceTests {
         @Override
         public LarkEventSubscriptionStatus startMessageSubscription(
                 String profileName,
+                String consumerId,
                 Consumer<LarkMessageEvent> messageConsumer
         ) {
             this.profileName = profileName;
@@ -142,6 +177,7 @@ class LarkIMListenerServiceTests {
         private String profileName;
         private String messageId;
         private String text;
+        private int replyCount;
 
         StubReplyTool() {
             super(null);
@@ -151,6 +187,23 @@ class LarkIMListenerServiceTests {
         public void replyText(String profileName, String messageId, String text) {
             this.profileName = profileName;
             this.messageId = messageId;
+            this.text = text;
+            this.replyCount++;
+        }
+    }
+
+    private static final class RecordingStreamService extends LarkIMMessageStreamService {
+
+        private LarkMessageEvent sourceEvent;
+        private String text;
+
+        RecordingStreamService() {
+            super(null, null);
+        }
+
+        @Override
+        void publishBotReply(LarkMessageEvent sourceEvent, String text) {
+            this.sourceEvent = sourceEvent;
             this.text = text;
         }
     }
