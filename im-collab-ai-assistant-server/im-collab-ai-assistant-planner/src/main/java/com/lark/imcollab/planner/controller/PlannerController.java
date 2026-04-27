@@ -94,7 +94,12 @@ public class PlannerController {
         return Flux.interval(Duration.ofSeconds(1))
                 .flatMap(tick -> {
                     List<String> events = sessionService.getEventJsonList(taskId);
-                    return Flux.fromIterable(events);
+                    int lastIndex = sessionService.getLastEventIndex(taskId);
+                    if (events.size() > lastIndex) {
+                        sessionService.setLastEventIndex(taskId, events.size());
+                        return Flux.fromIterable(events.subList(lastIndex, events.size()));
+                    }
+                    return Flux.empty();
                 })
                 .take(Duration.ofMinutes(10));
     }

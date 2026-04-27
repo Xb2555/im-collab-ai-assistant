@@ -1,5 +1,6 @@
 package com.lark.imcollab.planner.service;
 
+import cn.hutool.core.util.StrUtil;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
@@ -38,7 +39,7 @@ public class SupervisorPlannerService {
     }
 
     public PlanTaskSession plan(String rawInstruction, WorkspaceContext workspaceContext, String taskId, String userFeedback) {
-        String resolvedTaskId = taskId != null ? taskId : UUID.randomUUID().toString();
+        String resolvedTaskId = !StrUtil.isEmpty(taskId) ? taskId : UUID.randomUUID().toString();
         PlanTaskSession session = sessionService.getOrCreate(resolvedTaskId);
         session.setTurnCount(session.getTurnCount() + 1);
 

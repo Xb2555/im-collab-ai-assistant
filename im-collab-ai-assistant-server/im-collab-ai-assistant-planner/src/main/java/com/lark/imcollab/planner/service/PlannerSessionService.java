@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service
@@ -19,6 +20,15 @@ import java.util.UUID;
 public class PlannerSessionService {
 
     private final PlannerStateRepository stateRepository;
+    private final ConcurrentHashMap<String, Integer> eventIndexMap = new ConcurrentHashMap<>();
+
+    public int getLastEventIndex(String taskId) {
+        return eventIndexMap.getOrDefault(taskId, 0);
+    }
+
+    public void setLastEventIndex(String taskId, int index) {
+        eventIndexMap.put(taskId, index);
+    }
 
     public PlanTaskSession getOrCreate(String taskId) {
         return stateRepository.findSession(taskId).orElseGet(() -> {
