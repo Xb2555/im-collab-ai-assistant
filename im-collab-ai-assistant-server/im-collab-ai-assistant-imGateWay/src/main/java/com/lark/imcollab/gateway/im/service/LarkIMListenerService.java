@@ -2,10 +2,11 @@ package com.lark.imcollab.gateway.im.service;
 
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
-import com.lark.imcollab.skills.lark.event.LarkEventSubscriptionStatus;
-import com.lark.imcollab.skills.lark.event.LarkMessageEvent;
-import com.lark.imcollab.skills.lark.event.LarkMessageEventSubscriptionTool;
+import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
+import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
+import com.lark.imcollab.gateway.im.event.LarkMessageEventSubscriptionService;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -15,55 +16,71 @@ public class LarkIMListenerService {
 
     private static final Logger log = LoggerFactory.getLogger(LarkIMListenerService.class);
     private static final String RECEIPT_TEXT = "任务已收到，正在处理";
+    private static final String CONSUMER_ID = LarkIMListenerService.class.getName();
 
-    private final LarkMessageEventSubscriptionTool subscriptionTool;
+    private final LarkMessageEventSubscriptionService subscriptionService;
     private final LarkMessageReplyTool replyTool;
     private final LarkInboundMessageDispatcher dispatcher;
+    private final LarkIMMessageStreamService streamService;
 
     public LarkIMListenerService(
-            LarkMessageEventSubscriptionTool subscriptionTool,
+            LarkMessageEventSubscriptionService subscriptionService,
             LarkMessageReplyTool replyTool,
             LarkInboundMessageDispatcher dispatcher
     ) {
-        this.subscriptionTool = subscriptionTool;
+        this(subscriptionService, replyTool, dispatcher, null);
+    }
+
+    @Autowired
+    public LarkIMListenerService(
+            LarkMessageEventSubscriptionService subscriptionService,
+            LarkMessageReplyTool replyTool,
+            LarkInboundMessageDispatcher dispatcher,
+            LarkIMMessageStreamService streamService
+    ) {
+        this.subscriptionService = subscriptionService;
         this.replyTool = replyTool;
         this.dispatcher = dispatcher;
+        this.streamService = streamService;
     }
 
-    public LarkIMListenerStatusResponse start(LarkIMListenerStartRequest request) {
-        String profileName = requireValue(request.profileName(), "profileName");
-        return startWithProfile(profileName);
-    }
-
-    public LarkIMListenerStatusResponse startDefault(String profileName) {
-        return startWithProfile(normalizeOptionalProfileName(profileName));
-    }
-
-    private LarkIMListenerStatusResponse startWithProfile(String profileName) {
-        LarkEventSubscriptionStatus status = subscriptionTool.startMessageSubscription(
-                profileName,
-                event -> handleMessage(profileName, event)
+    public LarkIMListenerStatusResponse start() {
+        LarkEventSubscriptionStatus status = subscriptionService.startMessageSubscription(
+                CONSUMER_ID,
+                this::handleMessage
         );
         return mapStatus(status);
     }
 
-    public LarkIMListenerStatusResponse stop(LarkIMListenerStartRequest request) {
-        String profileName = requireValue(request.profileName(), "profileName");
-        return mapStatus(subscriptionTool.stopMessageSubscription(profileName));
+    public LarkIMListenerStatusResponse stop() {
+        return mapStatus(subscriptionService.stopMessageSubscription());
     }
 
-    public LarkIMListenerStatusResponse status(String profileName) {
-        return mapStatus(subscriptionTool.getMessageSubscriptionStatus(requireValue(profileName, "profileName")));
+    public LarkIMListenerStatusResponse status() {
+        return mapStatus(subscriptionService.getMessageSubscriptionStatus());
     }
 
-    private void handleMessage(String profileName, LarkMessageEvent event) {
+    private void handleMessage(LarkMessageEvent event) {
+        if (!shouldTriggerAgent(event)) {
+            return;
+        }
         try {
             dispatcher.dispatch(mapInboundMessage(event));
-            replyTool.replyText(profileName, event.messageId(), RECEIPT_TEXT);
+            replyTool.replyText(event.messageId(), RECEIPT_TEXT);
+            publishReceiptReply(event);
         } catch (RuntimeException exception) {
-            log.warn("Failed to handle inbound Lark message: messageId={}, profileName={}",
-                    event.messageId(), profileName, exception);
+            log.warn("Failed to handle inbound Lark message: messageId={}", event.messageId(), exception);
         }
+    }
+
+    private void publishReceiptReply(LarkMessageEvent sourceEvent) {
+        if (streamService != null) {
+            streamService.publishBotReply(sourceEvent, RECEIPT_TEXT);
+        }
+    }
+
+    private boolean shouldTriggerAgent(LarkMessageEvent event) {
+        return "p2p".equalsIgnoreCase(event.chatType()) || event.mentionDetected();
     }
 
     private LarkInboundMessage mapInboundMessage(LarkMessageEvent event) {
@@ -89,25 +106,10 @@ public class LarkIMListenerService {
 
     private LarkIMListenerStatusResponse mapStatus(LarkEventSubscriptionStatus status) {
         return new LarkIMListenerStatusResponse(
-                status.profileName(),
                 status.running(),
                 status.state(),
                 status.startedAt(),
                 status.lastError()
         );
-    }
-
-    private String requireValue(String value, String fieldName) {
-        if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must be provided");
-        }
-        return value.trim();
-    }
-
-    private String normalizeOptionalProfileName(String profileName) {
-        if (profileName == null || profileName.isBlank()) {
-            return null;
-        }
-        return profileName.trim();
     }
 }

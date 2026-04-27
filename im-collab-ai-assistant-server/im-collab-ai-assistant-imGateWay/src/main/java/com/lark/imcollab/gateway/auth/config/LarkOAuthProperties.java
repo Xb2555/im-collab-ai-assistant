@@ -3,19 +3,25 @@ package com.lark.imcollab.gateway.auth.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 @ConfigurationProperties(prefix = "imcollab.gateway.auth")
 public class LarkOAuthProperties {
-
-    private String appId;
-
-    private String appSecret;
 
     private String redirectUri;
 
     private String authorizeUrl = "https://open.feishu.cn/open-apis/authen/v1/authorize";
 
-    private String openApiBaseUrl = "https://open.feishu.cn";
+    private List<String> scopes = new ArrayList<>(List.of(
+            "auth:user.id:read",
+            "contact:user:search",
+            "contact:user.basic_profile:readonly",
+            "im:chat:read",
+            "im:chat.members:write_only",
+            "im:message.send_as_user",
+            "offline_access"
+    ));
 
     private Duration sessionTtl = Duration.ofHours(12);
 
@@ -26,22 +32,6 @@ public class LarkOAuthProperties {
     private String jwtSecret;
 
     private String jwtIssuer = "im-collab-ai-assistant";
-
-    public String getAppId() {
-        return appId;
-    }
-
-    public void setAppId(String appId) {
-        this.appId = appId;
-    }
-
-    public String getAppSecret() {
-        return appSecret;
-    }
-
-    public void setAppSecret(String appSecret) {
-        this.appSecret = appSecret;
-    }
 
     public String getRedirectUri() {
         return redirectUri;
@@ -59,12 +49,12 @@ public class LarkOAuthProperties {
         this.authorizeUrl = authorizeUrl;
     }
 
-    public String getOpenApiBaseUrl() {
-        return openApiBaseUrl;
+    public List<String> getScopes() {
+        return scopes;
     }
 
-    public void setOpenApiBaseUrl(String openApiBaseUrl) {
-        this.openApiBaseUrl = openApiBaseUrl;
+    public void setScopes(List<String> scopes) {
+        this.scopes = scopes == null ? new ArrayList<>() : scopes;
     }
 
     public Duration getSessionTtl() {

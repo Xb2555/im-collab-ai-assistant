@@ -2,12 +2,14 @@ package com.lark.imcollab.gateway.auth.service;
 
 import com.lark.imcollab.gateway.auth.client.LarkOAuthClient;
 import com.lark.imcollab.gateway.auth.config.LarkOAuthProperties;
+import com.lark.imcollab.gateway.auth.dto.LarkAuthenticatedSession;
 import com.lark.imcollab.gateway.auth.dto.LarkAuthTokenResponse;
 import com.lark.imcollab.gateway.auth.dto.LarkFrontendUserResponse;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthLoginResult;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthLoginSession;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
+import com.lark.imcollab.gateway.config.LarkAppProperties;
 import com.lark.imcollab.store.redis.RedisJsonStore;
 import com.lark.imcollab.store.redis.RedisStringStore;
 import org.springframework.stereotype.Service;
@@ -28,6 +30,7 @@ public class LarkOAuthService {
     private static final String SESSION_KEY_PREFIX = "imcollab:auth:lark:session:";
 
     private final LarkOAuthProperties properties;
+    private final LarkAppProperties appProperties;
     private final LarkOAuthClient oauthClient;
     private final RedisStringStore redisStringStore;
     private final RedisJsonStore redisJsonStore;
@@ -36,12 +39,14 @@ public class LarkOAuthService {
 
     public LarkOAuthService(
             LarkOAuthProperties properties,
+            LarkAppProperties appProperties,
             LarkOAuthClient oauthClient,
             RedisStringStore redisStringStore,
             RedisJsonStore redisJsonStore,
             LarkBusinessJwtService jwtService
     ) {
         this.properties = properties;
+        this.appProperties = appProperties;
         this.oauthClient = oauthClient;
         this.redisStringStore = redisStringStore;
         this.redisJsonStore = redisJsonStore;
@@ -49,15 +54,16 @@ public class LarkOAuthService {
     }
 
     public LarkOAuthLoginResult startLogin() {
-        validateRequired(properties.getAppId(), "appId");
+        validateRequired(appProperties.getAppId(), "appId");
         validateRequired(properties.getRedirectUri(), "redirectUri");
 
         String state = randomToken();
         redisStringStore.set(stateKey(state), "1", properties.getStateTtl());
         URI authorizationUri = UriComponentsBuilder.fromUriString(properties.getAuthorizeUrl())
-                .queryParam("app_id", properties.getAppId())
+                .queryParam("app_id", appProperties.getAppId())
                 .queryParam("redirect_uri", properties.getRedirectUri())
                 .queryParam("state", state)
+                .queryParamIfPresent("scope", authorizationScope())
                 .build()
                 .encode()
                 .toUri();
@@ -66,7 +72,7 @@ public class LarkOAuthService {
 
     public LarkAuthTokenResponse completeLogin(String code, String state) {
         validateRequired(code, "code");
-        validateRequired(properties.getAppSecret(), "appSecret");
+        validateRequired(appProperties.getAppSecret(), "appSecret");
 
         if (state != null && !state.isBlank() && !consumeState(state.trim())) {
             throw new IllegalArgumentException("Invalid or expired oauth state");
@@ -92,6 +98,11 @@ public class LarkOAuthService {
     public Optional<String> resolveUserAccessTokenByBusinessToken(String businessToken) {
         Optional<LarkOAuthLoginSession> session = findSessionByBusinessToken(businessToken);
         return session.map(LarkOAuthLoginSession::accessToken);
+    }
+
+    public Optional<LarkAuthenticatedSession> resolveAuthenticatedSessionByBusinessToken(String businessToken) {
+        return findSessionByBusinessToken(businessToken)
+                .map(session -> new LarkAuthenticatedSession(session.accessToken(), session.user()));
     }
 
     public void logoutByBusinessToken(String businessToken) {
@@ -198,6 +209,21 @@ public class LarkOAuthService {
 
     private String stateKey(String state) {
         return STATE_KEY_PREFIX + state;
+    }
+
+    private Optional<String> authorizationScope() {
+        if (properties.getScopes() == null || properties.getScopes().isEmpty()) {
+            return Optional.empty();
+        }
+        String scope = String.join(" ", properties.getScopes().stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList());
+        if (scope.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(scope);
     }
 
     private String sessionKey(String sessionId) {

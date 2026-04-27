@@ -6,6 +6,7 @@ import com.lark.imcollab.gateway.auth.config.LarkOAuthProperties;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthLoginSession;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
+import com.lark.imcollab.gateway.config.LarkAppProperties;
 import com.lark.imcollab.gateway.auth.service.LarkBusinessJwtService;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
 import com.lark.imcollab.store.redis.RedisJsonStore;
@@ -44,6 +45,9 @@ class LarkOAuthControllerTests {
                         "https://open.feishu.cn/open-apis/authen/v1/authorize")))
                 .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("app_id=app_123")))
                 .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("redirect_uri=")))
+                .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("scope=")))
+                .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("contact:user:search")))
+                .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("im:message.send_as_user")))
                 .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("state=")));
 
         assertThat(fixture.store.states).hasSize(1);
@@ -138,12 +142,13 @@ class LarkOAuthControllerTests {
 
         private TestFixture() {
             LarkOAuthProperties properties = new LarkOAuthProperties();
-            properties.setAppId("app_123");
-            properties.setAppSecret("secret_123");
+            LarkAppProperties appProperties = new LarkAppProperties();
+            appProperties.setAppId("app_123");
+            appProperties.setAppSecret("secret_123");
             properties.setRedirectUri("http://localhost:8078/api/auth/lark/callback");
             properties.setJwtSecret("test-secret-with-enough-length");
             this.jwtService = new LarkBusinessJwtService(properties, objectMapper);
-            LarkOAuthService service = new LarkOAuthService(properties, client, store, store, jwtService);
+            LarkOAuthService service = new LarkOAuthService(properties, appProperties, client, store, store, jwtService);
             this.mockMvc = MockMvcBuilders
                     .standaloneSetup(new LarkOAuthController(service))
                     .build();

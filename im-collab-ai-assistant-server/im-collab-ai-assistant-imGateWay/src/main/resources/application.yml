@@ -2,12 +2,17 @@ server:
   port: 8078
 imcollab:
   gateway:
+    lark:
+      app-id: ${LARK_APP_ID:}
+      app-secret: ${LARK_APP_SECRET:}
+      open-api-base-url: ${LARK_OPEN_API_BASE_URL:https://open.feishu.cn}
     im:
       listener:
         auto-start-enabled: true
+      event:
+        domain: ${LARK_OPEN_DOMAIN:}
+        auto-reconnect-enabled: true
     auth:
-      app-id: ${LARK_APP_ID:}
-      app-secret: ${LARK_APP_SECRET:}
       redirect-uri: ${LARK_OAUTH_REDIRECT_URI:http://localhost:8078/api/auth/lark/callback}
       session-ttl: 12h
       jwt-ttl: 2h

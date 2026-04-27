@@ -17,26 +17,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LarkMessageReplyToolTests {
 
     @Test
-    void shouldReplyToMessageAsBotUnderSelectedProfile() {
+    void shouldReplyToMessageAsBotWithDefaultCliConfiguration() {
         StubCliCommandExecutor executor = new StubCliCommandExecutor();
         LarkCliClient client = new LarkCliClient(executor, new LarkCliProperties(), new ObjectMapper());
         LarkMessageReplyTool tool = new LarkMessageReplyTool(client);
 
-        tool.replyText("profile-123", "om_1", "任务已收到，正在处理");
-
-        assertThat(executor.recordedCommands()).hasSize(1);
-        assertThat(executor.recordedCommands().get(0).arguments())
-                .containsExactly("--profile", "profile-123", "im", "+messages-reply",
-                        "--message-id", "om_1", "--text", "任务已收到，正在处理", "--as", "bot");
-    }
-
-    @Test
-    void shouldReplyToMessageAsBotUnderDefaultProfile() {
-        StubCliCommandExecutor executor = new StubCliCommandExecutor();
-        LarkCliClient client = new LarkCliClient(executor, new LarkCliProperties(), new ObjectMapper());
-        LarkMessageReplyTool tool = new LarkMessageReplyTool(client);
-
-        tool.replyText(null, "om_1", "任务已收到，正在处理");
+        tool.replyText("om_1", "任务已收到，正在处理");
 
         assertThat(executor.recordedCommands()).hasSize(1);
         assertThat(executor.recordedCommands().get(0).arguments())

@@ -16,28 +16,17 @@ public class LarkMessageReplyTool {
         this.larkCliClient = larkCliClient;
     }
 
-    @Tool(description = "Scenario A: reply to a Lark message as bot under the selected profile.")
-    public void replyText(String profileName, String messageId, String text) {
+    @Tool(description = "Scenario A: reply to a Lark message as bot using the default lark-cli configuration.")
+    public void replyText(String messageId, String text) {
         String normalizedMessageId = requireValue(messageId, "messageId");
         String normalizedText = requireValue(text, "text");
 
-        List<String> args;
-        if (profileName == null || profileName.isBlank()) {
-            args = List.of(
-                    "im", "+messages-reply",
-                    "--message-id", normalizedMessageId,
-                    "--text", normalizedText,
-                    "--as", "bot"
-            );
-        } else {
-            args = List.of(
-                    "--profile", profileName.trim(),
-                    "im", "+messages-reply",
-                    "--message-id", normalizedMessageId,
-                    "--text", normalizedText,
-                    "--as", "bot"
-            );
-        }
+        List<String> args = List.of(
+                "im", "+messages-reply",
+                "--message-id", normalizedMessageId,
+                "--text", normalizedText,
+                "--as", "bot"
+        );
         CliCommandResult result = larkCliClient.execute(args);
         if (!result.isSuccess()) {
             throw new IllegalStateException(larkCliClient.extractErrorMessage(result.output()));
