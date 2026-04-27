@@ -8,3 +8,5 @@ imcollab:
       executable: lark-cli
       working-directory: ""
       authorization-completion-timeout-millis: 10000
+      app-id: ${IMCOLLAB_CLI_APP_ID:}
+      app-secret: ${IMCOLLAB_CLI_APP_SECRET:}

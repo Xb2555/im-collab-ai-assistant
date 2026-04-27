@@ -1,7 +1,11 @@
 package com.lark.imcollab.skills.lark.config;
 
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+@Setter
+@Getter
 @ConfigurationProperties(prefix = "imcollab.skills.lark-cli")
 public class LarkCliProperties {
 
@@ -9,36 +13,7 @@ public class LarkCliProperties {
     private String workingDirectory = "";
     private int qrCodeSize = 280;
     private long authorizationCompletionTimeoutMillis = 10000;
+    private String appId = "";
+    private String appSecret = "";
 
-    public String getExecutable() {
-        return executable;
-    }
-
-    public void setExecutable(String executable) {
-        this.executable = executable;
-    }
-
-    public String getWorkingDirectory() {
-        return workingDirectory;
-    }
-
-    public void setWorkingDirectory(String workingDirectory) {
-        this.workingDirectory = workingDirectory;
-    }
-
-    public int getQrCodeSize() {
-        return qrCodeSize;
-    }
-
-    public void setQrCodeSize(int qrCodeSize) {
-        this.qrCodeSize = qrCodeSize;
-    }
-
-    public long getAuthorizationCompletionTimeoutMillis() {
-        return authorizationCompletionTimeoutMillis;
-    }
-
-    public void setAuthorizationCompletionTimeoutMillis(long authorizationCompletionTimeoutMillis) {
-        this.authorizationCompletionTimeoutMillis = authorizationCompletionTimeoutMillis;
-    }
 }
