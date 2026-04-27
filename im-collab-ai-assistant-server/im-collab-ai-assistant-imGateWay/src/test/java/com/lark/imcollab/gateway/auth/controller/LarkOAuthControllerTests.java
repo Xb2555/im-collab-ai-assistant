@@ -44,6 +44,9 @@ class LarkOAuthControllerTests {
                         "https://open.feishu.cn/open-apis/authen/v1/authorize")))
                 .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("app_id=app_123")))
                 .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("redirect_uri=")))
+                .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("scope=")))
+                .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("contact:user:search")))
+                .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("im:message.send_as_user")))
                 .andExpect(header().string(HttpHeaders.LOCATION, org.hamcrest.Matchers.containsString("state=")));
 
         assertThat(fixture.store.states).hasSize(1);

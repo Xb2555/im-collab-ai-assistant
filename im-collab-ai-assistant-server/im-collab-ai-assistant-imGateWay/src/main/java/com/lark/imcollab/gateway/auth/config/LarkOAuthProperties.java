@@ -3,6 +3,8 @@ package com.lark.imcollab.gateway.auth.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 @ConfigurationProperties(prefix = "imcollab.gateway.auth")
 public class LarkOAuthProperties {
@@ -16,6 +18,16 @@ public class LarkOAuthProperties {
     private String authorizeUrl = "https://open.feishu.cn/open-apis/authen/v1/authorize";
 
     private String openApiBaseUrl = "https://open.feishu.cn";
+
+    private List<String> scopes = new ArrayList<>(List.of(
+            "auth:user.id:read",
+            "contact:user:search",
+            "contact:user.basic_profile:readonly",
+            "im:chat:read",
+            "im:chat.members:write_only",
+            "im:message.send_as_user",
+            "offline_access"
+    ));
 
     private Duration sessionTtl = Duration.ofHours(12);
 
@@ -65,6 +77,14 @@ public class LarkOAuthProperties {
 
     public void setOpenApiBaseUrl(String openApiBaseUrl) {
         this.openApiBaseUrl = openApiBaseUrl;
+    }
+
+    public List<String> getScopes() {
+        return scopes;
+    }
+
+    public void setScopes(List<String> scopes) {
+        this.scopes = scopes == null ? new ArrayList<>() : scopes;
     }
 
     public Duration getSessionTtl() {
