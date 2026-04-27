@@ -1,7 +1,7 @@
 package com.lark.imcollab.gateway.im.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.lark.imcollab.gateway.auth.config.LarkOAuthProperties;
+import com.lark.imcollab.gateway.config.LarkAppProperties;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -12,13 +12,13 @@ import java.util.Map;
 @Component
 public class RestLarkOpenApiClient implements LarkOpenApiClient {
 
-    private final LarkOAuthProperties properties;
+    private final LarkAppProperties appProperties;
     private final RestClient restClient;
 
-    public RestLarkOpenApiClient(LarkOAuthProperties properties, RestClient.Builder restClientBuilder) {
-        this.properties = properties;
+    public RestLarkOpenApiClient(LarkAppProperties appProperties, RestClient.Builder restClientBuilder) {
+        this.appProperties = appProperties;
         this.restClient = restClientBuilder
-                .baseUrl(properties.getOpenApiBaseUrl())
+                .baseUrl(appProperties.getOpenApiBaseUrl())
                 .build();
     }
 
@@ -59,8 +59,8 @@ public class RestLarkOpenApiClient implements LarkOpenApiClient {
                 .uri("/open-apis/auth/v3/tenant_access_token/internal")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of(
-                        "app_id", requireValue(properties.getAppId(), "appId"),
-                        "app_secret", requireValue(properties.getAppSecret(), "appSecret")
+                        "app_id", requireValue(appProperties.getAppId(), "appId"),
+                        "app_secret", requireValue(appProperties.getAppSecret(), "appSecret")
                 ))
                 .retrieve()
                 .body(JsonNode.class);

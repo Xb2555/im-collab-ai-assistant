@@ -5,6 +5,7 @@ import com.lark.imcollab.gateway.im.dto.LarkRealtimeMessage;
 import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
 import com.lark.imcollab.gateway.im.event.LarkMessageEventSubscriptionService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -25,6 +26,7 @@ public class LarkIMMessageStreamService {
 
     private final LarkOAuthService oauthService;
     private final LarkMessageEventSubscriptionService subscriptionService;
+    private final LarkCliProfileResolver profileResolver;
     private final Map<String, Set<SseEmitter>> emittersByChatId = new ConcurrentHashMap<>();
     private final AtomicBoolean subscriptionRegistered = new AtomicBoolean(false);
 
@@ -32,8 +34,18 @@ public class LarkIMMessageStreamService {
             LarkOAuthService oauthService,
             LarkMessageEventSubscriptionService subscriptionService
     ) {
+        this(oauthService, subscriptionService, null);
+    }
+
+    @Autowired
+    public LarkIMMessageStreamService(
+            LarkOAuthService oauthService,
+            LarkMessageEventSubscriptionService subscriptionService,
+            LarkCliProfileResolver profileResolver
+    ) {
         this.oauthService = oauthService;
         this.subscriptionService = subscriptionService;
+        this.profileResolver = profileResolver;
     }
 
     public SseEmitter subscribe(String authorization, String chatId) {
@@ -103,7 +115,8 @@ public class LarkIMMessageStreamService {
     }
 
     private void ensureMessageSubscription() {
-        LarkEventSubscriptionStatus status = subscriptionService.getMessageSubscriptionStatus(null);
+        String profileName = resolveSubscriptionProfileName();
+        LarkEventSubscriptionStatus status = subscriptionService.getMessageSubscriptionStatus(profileName);
         if (!status.running()) {
             subscriptionRegistered.set(false);
         }
@@ -112,7 +125,7 @@ public class LarkIMMessageStreamService {
         }
         try {
             subscriptionService.startMessageSubscription(
-                    null,
+                    profileName,
                     CONSUMER_ID,
                     LarkMessageEventSubscriptionService.FRONTEND_STREAM_CONSUMER_PRIORITY,
                     this::publish
@@ -121,6 +134,13 @@ public class LarkIMMessageStreamService {
             subscriptionRegistered.set(false);
             throw exception;
         }
+    }
+
+    private String resolveSubscriptionProfileName() {
+        if (profileResolver == null) {
+            return null;
+        }
+        return profileResolver.resolveConfiguredAppProfileName();
     }
 
     private void requireAuthenticated(String authorization) {

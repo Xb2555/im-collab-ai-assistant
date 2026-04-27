@@ -213,7 +213,7 @@ class LarkIMChatServiceTests {
     private static final class FakeOAuthService extends LarkOAuthService {
 
         private FakeOAuthService() {
-            super(null, null, null, null, null);
+            super(null, null, null, null, null, null);
         }
 
         @Override

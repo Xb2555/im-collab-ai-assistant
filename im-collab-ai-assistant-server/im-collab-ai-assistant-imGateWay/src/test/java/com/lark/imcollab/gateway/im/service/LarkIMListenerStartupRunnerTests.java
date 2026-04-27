@@ -1,6 +1,6 @@
 package com.lark.imcollab.gateway.im.service;
 
-import com.lark.imcollab.skills.lark.config.LarkCliProperties;
+import com.lark.imcollab.gateway.config.LarkAppProperties;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,7 +78,7 @@ class LarkIMListenerStartupRunnerTests {
         private final String profileName;
 
         StubProfileResolver(String profileName) {
-            super(new LarkCliProperties(), null);
+            super(new LarkAppProperties(), null);
             this.profileName = profileName;
         }
 

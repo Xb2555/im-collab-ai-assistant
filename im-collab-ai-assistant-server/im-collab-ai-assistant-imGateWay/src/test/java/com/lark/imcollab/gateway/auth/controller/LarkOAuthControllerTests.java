@@ -6,6 +6,7 @@ import com.lark.imcollab.gateway.auth.config.LarkOAuthProperties;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthLoginSession;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
+import com.lark.imcollab.gateway.config.LarkAppProperties;
 import com.lark.imcollab.gateway.auth.service.LarkBusinessJwtService;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
 import com.lark.imcollab.store.redis.RedisJsonStore;
@@ -141,12 +142,13 @@ class LarkOAuthControllerTests {
 
         private TestFixture() {
             LarkOAuthProperties properties = new LarkOAuthProperties();
-            properties.setAppId("app_123");
-            properties.setAppSecret("secret_123");
+            LarkAppProperties appProperties = new LarkAppProperties();
+            appProperties.setAppId("app_123");
+            appProperties.setAppSecret("secret_123");
             properties.setRedirectUri("http://localhost:8078/api/auth/lark/callback");
             properties.setJwtSecret("test-secret-with-enough-length");
             this.jwtService = new LarkBusinessJwtService(properties, objectMapper);
-            LarkOAuthService service = new LarkOAuthService(properties, client, store, store, jwtService);
+            LarkOAuthService service = new LarkOAuthService(properties, appProperties, client, store, store, jwtService);
             this.mockMvc = MockMvcBuilders
                     .standaloneSetup(new LarkOAuthController(service))
                     .build();

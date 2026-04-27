@@ -1,8 +1,8 @@
 package com.lark.imcollab.gateway.im.service;
 
+import com.lark.imcollab.gateway.config.LarkAppProperties;
 import com.lark.imcollab.skills.lark.auth.LarkAdminAuthorizationTool;
 import com.lark.imcollab.skills.lark.auth.dto.AdminAuthorizationProfile;
-import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -12,19 +12,19 @@ public class LarkCliProfileResolver {
 
     private static final Logger log = LoggerFactory.getLogger(LarkCliProfileResolver.class);
 
-    private final LarkCliProperties larkCliProperties;
+    private final LarkAppProperties appProperties;
     private final LarkAdminAuthorizationTool authorizationTool;
 
     public LarkCliProfileResolver(
-            LarkCliProperties larkCliProperties,
+            LarkAppProperties appProperties,
             LarkAdminAuthorizationTool authorizationTool
     ) {
-        this.larkCliProperties = larkCliProperties;
+        this.appProperties = appProperties;
         this.authorizationTool = authorizationTool;
     }
 
     public String resolveConfiguredAppProfileName() {
-        String appId = normalize(larkCliProperties.getAppId());
+        String appId = normalize(appProperties.getAppId());
         if (appId == null) {
             log.warn("Configured Lark appId is empty, falling back to default profile.");
             log.info("Resolved Lark CLI profile from configured appId: appId=null, profileName=null");

@@ -9,15 +9,9 @@ import java.util.List;
 @ConfigurationProperties(prefix = "imcollab.gateway.auth")
 public class LarkOAuthProperties {
 
-    private String appId;
-
-    private String appSecret;
-
     private String redirectUri;
 
     private String authorizeUrl = "https://open.feishu.cn/open-apis/authen/v1/authorize";
-
-    private String openApiBaseUrl = "https://open.feishu.cn";
 
     private List<String> scopes = new ArrayList<>(List.of(
             "auth:user.id:read",
@@ -39,22 +33,6 @@ public class LarkOAuthProperties {
 
     private String jwtIssuer = "im-collab-ai-assistant";
 
-    public String getAppId() {
-        return appId;
-    }
-
-    public void setAppId(String appId) {
-        this.appId = appId;
-    }
-
-    public String getAppSecret() {
-        return appSecret;
-    }
-
-    public void setAppSecret(String appSecret) {
-        this.appSecret = appSecret;
-    }
-
     public String getRedirectUri() {
         return redirectUri;
     }
@@ -69,14 +47,6 @@ public class LarkOAuthProperties {
 
     public void setAuthorizeUrl(String authorizeUrl) {
         this.authorizeUrl = authorizeUrl;
-    }
-
-    public String getOpenApiBaseUrl() {
-        return openApiBaseUrl;
-    }
-
-    public void setOpenApiBaseUrl(String openApiBaseUrl) {
-        this.openApiBaseUrl = openApiBaseUrl;
     }
 
     public List<String> getScopes() {

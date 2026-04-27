@@ -6,6 +6,7 @@ import com.lark.imcollab.gateway.auth.config.LarkOAuthProperties;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthLoginSession;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
+import com.lark.imcollab.gateway.config.LarkAppProperties;
 import com.lark.imcollab.store.redis.RedisJsonStore;
 import com.lark.imcollab.store.redis.RedisStringStore;
 import org.junit.jupiter.api.Test;
@@ -28,7 +29,7 @@ class LarkOAuthServiceTests {
         FakeOAuthClient client = new FakeOAuthClient();
         LarkOAuthProperties properties = properties();
         LarkBusinessJwtService jwtService = new LarkBusinessJwtService(properties, new ObjectMapper());
-        LarkOAuthService service = new LarkOAuthService(properties, client, store, store, jwtService);
+        LarkOAuthService service = new LarkOAuthService(properties, appProperties(), client, store, store, jwtService);
         LarkOAuthLoginSession session = new LarkOAuthLoginSession(
                 "old-token",
                 Instant.now().minusSeconds(1),
@@ -53,7 +54,8 @@ class LarkOAuthServiceTests {
         InMemoryStore store = new InMemoryStore();
         LarkOAuthProperties properties = properties();
         LarkBusinessJwtService jwtService = new LarkBusinessJwtService(properties, new ObjectMapper());
-        LarkOAuthService service = new LarkOAuthService(properties, new FakeOAuthClient(), store, store, jwtService);
+        LarkOAuthService service = new LarkOAuthService(properties, appProperties(), new FakeOAuthClient(), store, store,
+                jwtService);
         LarkOAuthLoginSession session = new LarkOAuthLoginSession(
                 "old-token",
                 Instant.now().minusSeconds(1),
@@ -74,10 +76,15 @@ class LarkOAuthServiceTests {
 
     private static LarkOAuthProperties properties() {
         LarkOAuthProperties properties = new LarkOAuthProperties();
-        properties.setAppId("app_123");
-        properties.setAppSecret("secret_123");
         properties.setRedirectUri("http://localhost:8078/api/auth/lark/callback");
         properties.setJwtSecret("test-secret-with-enough-length");
+        return properties;
+    }
+
+    private static LarkAppProperties appProperties() {
+        LarkAppProperties properties = new LarkAppProperties();
+        properties.setAppId("app_123");
+        properties.setAppSecret("secret_123");
         return properties;
     }
 
