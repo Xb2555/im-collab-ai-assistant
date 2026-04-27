@@ -31,4 +31,12 @@ public class AgentTaskPlanCard implements Serializable {
     private List<String> tools;
 
     private String context;
+
+    @Builder.Default
+    private int lastResultScore = 0;
+
+    private String lastVerdict;
+
+    @Builder.Default
+    private int retryCount = 0;
 }

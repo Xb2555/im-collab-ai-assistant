@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.planner.repository.PlannerStateRepository;
@@ -34,8 +35,16 @@ public class PlannerSessionService {
     }
 
     public PlanTaskSession save(PlanTaskSession session) {
+        session.setVersion(session.getVersion() + 1);
         stateRepository.saveSession(session);
         return session;
+    }
+
+    public void checkVersion(PlanTaskSession session, int clientVersion) {
+        if (session.getVersion() != clientVersion) {
+            throw new com.lark.imcollab.planner.exception.VersionConflictException(
+                    "Version conflict: expected " + session.getVersion() + ", got " + clientVersion);
+        }
     }
 
     public PlanTaskSession get(String taskId) {
@@ -49,19 +58,34 @@ public class PlannerSessionService {
         session.setPlanningPhase(PlanningPhaseEnum.ABORTED);
         session.setTransitionReason(reason);
         stateRepository.saveSession(session);
-        publishEvent(taskId, "ABORTED", reason);
+        publishEvent(taskId, "ABORTED");
     }
 
-    public void publishEvent(String taskId, String eventType, String payload) {
+    public void publishEvent(String taskId, String status, RequireInput requireInput) {
+        PlanTaskSession session = stateRepository.findSession(taskId).orElse(null);
+        int version = session != null ? session.getVersion() : 0;
+        java.util.List<com.lark.imcollab.common.model.entity.AgentTaskPlanCard> subtasks =
+                session != null && session.getPlanCards() != null
+                        ? session.getPlanCards().stream()
+                            .flatMap(c -> c.getAgentTaskPlanCards() != null ? c.getAgentTaskPlanCards().stream() : java.util.stream.Stream.empty())
+                            .toList()
+                        : java.util.List.of();
+
         TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
-                .eventType(eventType)
-                .payload(payload)
+                .status(status)
+                .version(version)
+                .subtasks(subtasks)
+                .requireInput(requireInput)
                 .timestamp(Instant.now())
                 .build();
         stateRepository.appendEvent(event);
-        log.info("[{}] Event: {} - {}", taskId, eventType, payload);
+        log.info("[{}] Event: {} v{}", taskId, status, version);
+    }
+
+    public void publishEvent(String taskId, String status) {
+        publishEvent(taskId, status, null);
     }
 
     public List<String> getEventJsonList(String taskId) {

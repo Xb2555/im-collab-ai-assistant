@@ -19,6 +19,9 @@ public class UserPlanCard implements Serializable {
 
     private String taskId;
 
+    @Builder.Default
+    private int version = 0;
+
     private String title;
 
     private String description;

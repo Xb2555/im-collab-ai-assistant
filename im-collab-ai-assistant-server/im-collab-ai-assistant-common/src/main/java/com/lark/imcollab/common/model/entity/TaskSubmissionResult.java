@@ -13,20 +13,23 @@ import java.util.List;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class TaskEvent implements Serializable {
-
-    private String eventId;
+public class TaskSubmissionResult implements Serializable {
 
     private String taskId;
 
-    private String status;
+    private String parentCardId;
 
-    private int version;
-
-    private List<AgentTaskPlanCard> subtasks;
-
-    private RequireInput requireInput;
+    private String agentTaskId;
 
     @Builder.Default
-    private Instant timestamp = Instant.now();
+    private String status = "COMPLETED";
+
+    private List<String> artifactRefs;
+
+    private String rawOutput;
+
+    private String errorMessage;
+
+    @Builder.Default
+    private Instant submittedAt = Instant.now();
 }

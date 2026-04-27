@@ -138,11 +138,10 @@ public class PlanQualityService {
                 .build();
     }
 
-    public PlanTaskSession applyPlanReady(PlanTaskSession session, List<UserPlanCard> cards, int score) {
+    public PlanTaskSession applyPlanReady(PlanTaskSession session, List<UserPlanCard> cards) {
         session.setPlanCards(cards);
-        session.setPlanScore(score);
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
-        session.setTransitionReason("Score " + score + " >= threshold");
+        session.setTransitionReason("Plan generated");
         return session;
     }
 }

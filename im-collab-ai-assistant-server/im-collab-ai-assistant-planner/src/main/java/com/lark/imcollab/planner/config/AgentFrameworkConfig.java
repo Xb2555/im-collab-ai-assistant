@@ -50,30 +50,39 @@ public class AgentFrameworkConfig {
                 .build();
     }
 
-    @Bean(name = "criticAgent")
-    public ReactAgent criticAgent(ChatModel chatModel) {
+    @Bean(name = "resultJudgeAgent")
+    public ReactAgent resultJudgeAgent(ChatModel chatModel) {
         return ReactAgent.builder()
-                .name("critic-agent")
-                .description("对任务计划进行多维度质量评分")
-                .systemPrompt(PlannerPrompts.CRITIC_SYSTEM)
+                .name("result-judge-agent")
+                .description("对子任务执行结果进行评分")
+                .systemPrompt(PlannerPrompts.RESULT_JUDGE_SYSTEM)
+                .model(chatModel)
+                .build();
+    }
+
+    @Bean(name = "resultAdviceAgent")
+    public ReactAgent resultAdviceAgent(ChatModel chatModel) {
+        return ReactAgent.builder()
+                .name("result-advice-agent")
+                .description("基于评分结果生成改进建议并输出最终裁决")
+                .systemPrompt(PlannerPrompts.RESULT_ADVICE_SYSTEM)
                 .model(chatModel)
                 .build();
     }
 
     /**
-     * SequentialAgent: planner -> critic.
-     * Called directly by SupervisorPlannerService for the quality scoring chain.
-     * Not wired into SubAgentInterceptor because that only accepts ReactAgent.
+     * 结果评分链路：resultJudgeAgent -> resultAdviceAgent
+     * 用于子任务执行结果提交后的质量裁决（PASS/RETRY/HUMAN_REVIEW）
      */
-    @Bean(name = "planningSequence")
-    public SequentialAgent planningSequence(
-            @Qualifier("planningAgent") ReactAgent planningAgent,
-            @Qualifier("criticAgent") ReactAgent criticAgent,
+    @Bean(name = "resultEvaluationSequence")
+    public SequentialAgent resultEvaluationSequence(
+            @Qualifier("resultJudgeAgent") ReactAgent resultJudgeAgent,
+            @Qualifier("resultAdviceAgent") ReactAgent resultAdviceAgent,
             @Qualifier("memorySaver") BaseCheckpointSaver checkpointSaver) {
         return SequentialAgent.builder()
-                .name("planning-sequence")
-                .description("顺序执行：规划 -> 评分")
-                .subAgents(List.of(planningAgent, criticAgent))
+                .name("result-evaluation-sequence")
+                .description("顺序执行：结果评分 -> 裁决建议")
+                .subAgents(List.of(resultJudgeAgent, resultAdviceAgent))
                 .saver(checkpointSaver)
                 .build();
     }

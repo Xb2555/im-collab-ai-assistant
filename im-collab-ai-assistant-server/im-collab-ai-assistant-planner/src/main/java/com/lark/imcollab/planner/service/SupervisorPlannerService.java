@@ -1,23 +1,20 @@
 package com.lark.imcollab.planner.service;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
-import com.alibaba.cloud.ai.graph.agent.flow.agent.SequentialAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
-import com.lark.imcollab.planner.config.PlannerProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -25,30 +22,27 @@ import java.util.UUID;
 public class SupervisorPlannerService {
 
     private final ReactAgent supervisorAgent;
-    private final SequentialAgent planningSequence;
+    private final ReactAgent planningAgent;
     private final PlannerSessionService sessionService;
     private final PlanQualityService qualityService;
-    private final PlannerProperties plannerProperties;
 
     public SupervisorPlannerService(
             @Qualifier("supervisorAgent") ReactAgent supervisorAgent,
-            @Qualifier("planningSequence") SequentialAgent planningSequence,
+            @Qualifier("planningAgent") ReactAgent planningAgent,
             PlannerSessionService sessionService,
-            PlanQualityService qualityService,
-            PlannerProperties plannerProperties) {
+            PlanQualityService qualityService) {
         this.supervisorAgent = supervisorAgent;
-        this.planningSequence = planningSequence;
+        this.planningAgent = planningAgent;
         this.sessionService = sessionService;
         this.qualityService = qualityService;
-        this.plannerProperties = plannerProperties;
     }
 
-    public PlanTaskSession plan(String rawInstruction, String context, String taskId, String userFeedback) {
+    public PlanTaskSession plan(String rawInstruction, WorkspaceContext workspaceContext, String taskId, String userFeedback) {
         String resolvedTaskId = taskId != null ? taskId : UUID.randomUUID().toString();
         PlanTaskSession session = sessionService.getOrCreate(resolvedTaskId);
         session.setTurnCount(session.getTurnCount() + 1);
 
-        String prompt = buildPrompt(rawInstruction, context, userFeedback, session);
+        String prompt = buildPrompt(rawInstruction, workspaceContext, userFeedback, session);
         RunnableConfig config = RunnableConfig.builder().threadId(resolvedTaskId).build();
 
         try {
@@ -59,7 +53,7 @@ public class SupervisorPlannerService {
                 return handleAskUser(session, responseText);
             }
 
-            return runPlanningSequence(session, prompt, config);
+            return runPlanning(session, prompt, resolvedTaskId);
         } catch (GraphRunnerException e) {
             log.error("Supervisor error for task {}: {}", resolvedTaskId, e.getMessage(), e);
             return failSession(session, e.getMessage());
@@ -73,7 +67,7 @@ public class SupervisorPlannerService {
         session.setTransitionReason("User interrupt");
         sessionService.save(session);
         supervisorAgent.interrupt(RunnableConfig.builder().threadId(taskId).build());
-        sessionService.publishEvent(taskId, "INTERRUPTED", "User interrupt");
+        sessionService.publishEvent(taskId, "ABORTED");
         return session;
     }
 
@@ -83,13 +77,12 @@ public class SupervisorPlannerService {
         if (replanFromRoot) {
             session.setClarificationAnswers(null);
             session.setClarificationQuestions(null);
-            session.setPlanScore(0);
         } else {
             session.setClarificationAnswers(List.of(feedback));
         }
         session.setTransitionReason("Resume: " + feedback);
         sessionService.save(session);
-        sessionService.publishEvent(taskId, "RESUMED", feedback);
+        sessionService.publishEvent(taskId, "RESUMED");
 
         RunnableConfig config = RunnableConfig.builder().threadId(taskId).build();
 
@@ -98,60 +91,26 @@ public class SupervisorPlannerService {
             if (needsClarification(supervisorResponse.getText(), session)) {
                 return handleAskUser(session, supervisorResponse.getText());
             }
-            return runPlanningSequence(session, feedback, config);
+            return runPlanning(session, feedback, taskId);
         } catch (Exception e) {
             return failSession(session, e.getMessage());
         }
     }
 
-    private PlanTaskSession runPlanningSequence(PlanTaskSession session, String prompt, RunnableConfig config) {
-        String taskId = session.getTaskId();
-        int threshold = plannerProperties.getQuality().getPassThreshold();
-        int maxReplan = plannerProperties.getQuality().getMaxReplanAttempts();
-
+    private PlanTaskSession runPlanning(PlanTaskSession session, String prompt, String taskId) {
         try {
-            String firstOutput = invokeSequence(prompt, config);
-            System.out.println("=== Planning Output ===");
-            System.out.println(firstOutput);
-            System.out.println("=====================");
-            List<UserPlanCard> planCards = qualityService.extractPlanCards(firstOutput, taskId);
-            int score = qualityService.extractScore(firstOutput);
+            RunnableConfig config = RunnableConfig.builder().threadId(taskId + "-planning").build();
+            AssistantMessage plannerResponse = planningAgent.call(prompt, config);
+            String plannerOutput = plannerResponse.getText();
 
-            if (score >= threshold || session.getTurnCount() > maxReplan + 1) {
-                qualityService.applyPlanReady(session, planCards, Math.max(score, 0));
-                sessionService.save(session);
-                sessionService.publishEvent(taskId, "PLAN_READY", "Score: " + score);
-                return session;
-            }
-
-            session.setPlanScore(score);
-            sessionService.publishEvent(taskId, "REPLAN", "Score: " + score);
-
-            List<String> suggestions = qualityService.extractSuggestions(firstOutput);
-            String replanPrompt = prompt + "\n\n改进建议：" + String.join("；", suggestions);
-
-            String improvedOutput = invokeSequence(replanPrompt, config);
-            List<UserPlanCard> improvedCards = qualityService.extractPlanCards(improvedOutput, taskId);
-            int improvedScore = qualityService.extractScore(improvedOutput);
-
-            qualityService.applyPlanReady(session, improvedCards, improvedScore);
+            List<UserPlanCard> planCards = qualityService.extractPlanCards(plannerOutput, taskId);
+            qualityService.applyPlanReady(session, planCards);
             sessionService.save(session);
-            sessionService.publishEvent(taskId, "PLAN_READY", "Improved score: " + improvedScore);
+            sessionService.publishEvent(taskId, "PLAN_READY");
             return session;
-
         } catch (Exception e) {
             return failSession(session, e.getMessage());
         }
-    }
-
-    private String invokeSequence(String prompt, RunnableConfig config) throws GraphRunnerException {
-        Optional<OverAllState> result = planningSequence.invoke(prompt, config);
-        return result.flatMap(state -> state.<List<?>>value("messages"))
-                .map(msgs -> msgs.stream()
-                        .filter(m -> m instanceof AssistantMessage)
-                        .map(m -> ((AssistantMessage) m).getText())
-                        .reduce("", (a, b) -> b))
-                .orElse("");
     }
 
     private PlanTaskSession handleAskUser(PlanTaskSession session, String responseText) {
@@ -160,7 +119,9 @@ public class SupervisorPlannerService {
         session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
         session.setTransitionReason("Information insufficient");
         sessionService.save(session);
-        sessionService.publishEvent(session.getTaskId(), "ASK_USER", String.join("|", questions));
+
+        RequireInput requireInput = buildRequireInput(questions);
+        sessionService.publishEvent(session.getTaskId(), "ASK_USER", requireInput);
         return session;
     }
 
@@ -168,8 +129,16 @@ public class SupervisorPlannerService {
         session.setPlanningPhase(PlanningPhaseEnum.FAILED);
         session.setTransitionReason(reason);
         sessionService.save(session);
-        sessionService.publishEvent(session.getTaskId(), "FAILED", reason);
+        sessionService.publishEvent(session.getTaskId(), "FAILED");
         return session;
+    }
+
+    private RequireInput buildRequireInput(List<String> questions) {
+        String combinedPrompt = String.join("\n", questions);
+        return RequireInput.builder()
+                .type("TEXT")
+                .prompt(combinedPrompt)
+                .build();
     }
 
     private boolean needsClarification(String text, PlanTaskSession session) {
@@ -181,19 +150,20 @@ public class SupervisorPlannerService {
                 || lower.contains("请问") || lower.contains("需要明确") || lower.contains("clarif");
     }
 
-    private String buildPrompt(String rawInstruction, String context, String userFeedback, PlanTaskSession session) {
+    private String buildPrompt(String rawInstruction, WorkspaceContext workspaceContext, String userFeedback, PlanTaskSession session) {
         StringBuilder sb = new StringBuilder("用户指令：").append(rawInstruction);
-        if (context != null && !context.isBlank()) {
-            sb.append("\n\n上下文信息：").append(context);
+        if (workspaceContext != null) {
+            if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
+                sb.append("\n\n精选消息（优先参考）：\n").append(String.join("\n", workspaceContext.getSelectedMessages()));
+            } else if (workspaceContext.getTimeRange() != null && !workspaceContext.getTimeRange().isBlank()) {
+                sb.append("\n\n时间范围：").append(workspaceContext.getTimeRange());
+            }
         }
         if (userFeedback != null && !userFeedback.isBlank()) {
             sb.append("\n\n用户补充回答：").append(userFeedback);
         }
         if (session.getClarificationQuestions() != null && !session.getClarificationQuestions().isEmpty()) {
             sb.append("\n\n之前的澄清问题：").append(String.join("；", session.getClarificationQuestions()));
-        }
-        if (session.getPlanScore() > 0) {
-            sb.append("\n\n上次规划评分：").append(session.getPlanScore()).append("，请改进。");
         }
         return sb.toString();
     }

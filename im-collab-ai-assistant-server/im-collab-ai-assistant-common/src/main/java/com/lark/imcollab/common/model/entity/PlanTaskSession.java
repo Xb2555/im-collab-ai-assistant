@@ -20,6 +20,9 @@ public class PlanTaskSession implements Serializable {
     private PlanningPhaseEnum planningPhase;
 
     @Builder.Default
+    private int version = 0;
+
+    @Builder.Default
     private int planScore = 0;
 
     @Builder.Default
