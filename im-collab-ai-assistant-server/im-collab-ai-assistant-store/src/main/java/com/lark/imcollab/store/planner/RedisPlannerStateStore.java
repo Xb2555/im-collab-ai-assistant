@@ -1,4 +1,4 @@
-package com.lark.imcollab.planner.repository;
+package com.lark.imcollab.store.planner;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
@@ -15,7 +15,7 @@ import java.util.Optional;
 
 @Repository
 @RequiredArgsConstructor
-public class PlannerStateRepository {
+public class RedisPlannerStateStore implements PlannerStateStore {
 
     private static final String SESSION_KEY_PREFIX = "planner:session:";
     private static final String EVENT_KEY_PREFIX = "planner:events:";
@@ -26,6 +26,7 @@ public class PlannerStateRepository {
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
+    @Override
     public void saveSession(PlanTaskSession session) {
         try {
             String key = SESSION_KEY_PREFIX + session.getTaskId();
@@ -36,17 +37,21 @@ public class PlannerStateRepository {
         }
     }
 
+    @Override
     public Optional<PlanTaskSession> findSession(String taskId) {
         try {
             String key = SESSION_KEY_PREFIX + taskId;
             String json = redisTemplate.opsForValue().get(key);
-            if (json == null) return Optional.empty();
+            if (json == null) {
+                return Optional.empty();
+            }
             return Optional.of(objectMapper.readValue(json, PlanTaskSession.class));
         } catch (Exception e) {
             throw new RuntimeException("Failed to load session: " + taskId, e);
         }
     }
 
+    @Override
     public void appendEvent(TaskEvent event) {
         try {
             String key = EVENT_KEY_PREFIX + event.getTaskId();
@@ -58,12 +63,14 @@ public class PlannerStateRepository {
         }
     }
 
+    @Override
     public List<String> getEventJsonList(String taskId) {
         String key = EVENT_KEY_PREFIX + taskId;
         List<String> result = redisTemplate.opsForList().range(key, 0, -1);
         return result == null ? List.of() : result;
     }
 
+    @Override
     public void saveSubmission(TaskSubmissionResult submission) {
         try {
             String key = SUBMISSION_KEY_PREFIX + submission.getTaskId() + ":" + submission.getAgentTaskId();
@@ -74,17 +81,21 @@ public class PlannerStateRepository {
         }
     }
 
+    @Override
     public Optional<TaskSubmissionResult> findSubmission(String taskId, String agentTaskId) {
         try {
             String key = SUBMISSION_KEY_PREFIX + taskId + ":" + agentTaskId;
             String json = redisTemplate.opsForValue().get(key);
-            if (json == null) return Optional.empty();
+            if (json == null) {
+                return Optional.empty();
+            }
             return Optional.of(objectMapper.readValue(json, TaskSubmissionResult.class));
         } catch (Exception e) {
             throw new RuntimeException("Failed to load submission: " + agentTaskId, e);
         }
     }
 
+    @Override
     public void saveEvaluation(TaskResultEvaluation evaluation) {
         try {
             String key = EVALUATION_KEY_PREFIX + evaluation.getTaskId() + ":" + evaluation.getAgentTaskId();
@@ -95,11 +106,14 @@ public class PlannerStateRepository {
         }
     }
 
+    @Override
     public Optional<TaskResultEvaluation> findEvaluation(String taskId, String agentTaskId) {
         try {
             String key = EVALUATION_KEY_PREFIX + taskId + ":" + agentTaskId;
             String json = redisTemplate.opsForValue().get(key);
-            if (json == null) return Optional.empty();
+            if (json == null) {
+                return Optional.empty();
+            }
             return Optional.of(objectMapper.readValue(json, TaskResultEvaluation.class));
         } catch (Exception e) {
             throw new RuntimeException("Failed to load evaluation: " + agentTaskId, e);

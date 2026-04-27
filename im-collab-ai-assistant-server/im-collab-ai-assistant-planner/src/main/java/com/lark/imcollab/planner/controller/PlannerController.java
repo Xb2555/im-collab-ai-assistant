@@ -11,10 +11,10 @@ import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
 import com.lark.imcollab.common.model.dto.ResumeRequest;
 import com.lark.imcollab.common.model.dto.SubmitResultRequest;
-import com.lark.imcollab.planner.repository.PlannerStateRepository;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.SupervisorPlannerService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
+import com.lark.imcollab.store.planner.PlannerStateStore;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -35,7 +35,7 @@ public class PlannerController {
     private final SupervisorPlannerService supervisorPlannerService;
     private final PlannerSessionService sessionService;
     private final TaskResultEvaluationService evaluationService;
-    private final PlannerStateRepository repository;
+    private final PlannerStateStore repository;
 
     @PostMapping("/plan")
     @Operation(summary = "创建任务规划", description = "根据用户原始指令理解意图并拆解为可执行的任务卡片")

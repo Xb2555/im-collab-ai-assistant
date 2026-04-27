@@ -4,14 +4,11 @@ import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.extension.interceptor.SubAgentInterceptor;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SequentialAgent;
 import com.alibaba.cloud.ai.graph.agent.hook.summarization.SummarizationHook;
-import com.alibaba.cloud.ai.graph.checkpoint.BaseCheckpointSaver;
-import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
-import com.alibaba.cloud.ai.graph.checkpoint.savers.redis.RedisSaver;
-import org.redisson.api.RedissonClient;
+import com.lark.imcollab.store.checkpoint.CheckpointSaverProvider;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
 
 import java.util.List;
 
@@ -78,12 +75,12 @@ public class AgentFrameworkConfig {
     public SequentialAgent resultEvaluationSequence(
             @Qualifier("resultJudgeAgent") ReactAgent resultJudgeAgent,
             @Qualifier("resultAdviceAgent") ReactAgent resultAdviceAgent,
-            @Qualifier("memorySaver") BaseCheckpointSaver checkpointSaver) {
+            CheckpointSaverProvider checkpointSaverProvider) {
         return SequentialAgent.builder()
                 .name("result-evaluation-sequence")
                 .description("顺序执行：结果评分 -> 裁决建议")
                 .subAgents(List.of(resultJudgeAgent, resultAdviceAgent))
-                .saver(checkpointSaver)
+                .saver(checkpointSaverProvider.getCheckpointSaver())
                 .build();
     }
 
@@ -106,7 +103,7 @@ public class AgentFrameworkConfig {
             ChatModel chatModel,
             SubAgentInterceptor subAgentInterceptor,
             SummarizationHook summarizationHook,
-            @Qualifier("memorySaver") BaseCheckpointSaver checkpointSaver) {
+            CheckpointSaverProvider checkpointSaverProvider) {
         return ReactAgent.builder()
                 .name("supervisor-agent")
                 .description("任务规划主控 Agent")
@@ -114,19 +111,7 @@ public class AgentFrameworkConfig {
                 .model(chatModel)
                 .interceptors(subAgentInterceptor)
                 .hooks(summarizationHook)
-                .saver(checkpointSaver)
+                .saver(checkpointSaverProvider.getCheckpointSaver())
                 .build();
-    }
-
-    @Bean
-    public BaseCheckpointSaver checkpointSaver(RedissonClient redissonClient) {
-        return RedisSaver.builder()
-                .redisson(redissonClient)
-                .build();
-    }
-
-    @Bean
-    public MemorySaver memorySaver() {
-        return new MemorySaver();
     }
 }

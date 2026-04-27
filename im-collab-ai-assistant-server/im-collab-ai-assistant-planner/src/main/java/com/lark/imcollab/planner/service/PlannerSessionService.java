@@ -4,7 +4,7 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
-import com.lark.imcollab.planner.repository.PlannerStateRepository;
+import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class PlannerSessionService {
 
-    private final PlannerStateRepository stateRepository;
+    private final PlannerStateStore stateRepository;
     private final ConcurrentHashMap<String, Integer> eventIndexMap = new ConcurrentHashMap<>();
 
     public int getLastEventIndex(String taskId) {

@@ -12,7 +12,7 @@ import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
-import com.lark.imcollab.planner.repository.PlannerStateRepository;
+import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -27,13 +27,13 @@ import java.util.Optional;
 public class TaskResultEvaluationService {
 
     private final SequentialAgent resultEvaluationSequence;
-    private final PlannerStateRepository repository;
+    private final PlannerStateStore repository;
     private final PlannerSessionService sessionService;
     private final ObjectMapper objectMapper;
 
     public TaskResultEvaluationService(
             @Qualifier("resultEvaluationSequence") SequentialAgent resultEvaluationSequence,
-            PlannerStateRepository repository,
+            PlannerStateStore repository,
             PlannerSessionService sessionService,
             ObjectMapper objectMapper) {
         this.resultEvaluationSequence = resultEvaluationSequence;

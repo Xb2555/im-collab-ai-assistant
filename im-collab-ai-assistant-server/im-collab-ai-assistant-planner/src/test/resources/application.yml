@@ -1,0 +1,8 @@
+imcollab:
+  store:
+    redisson:
+      enabled: false
+spring:
+  ai:
+    dashscope:
+      api-key: test-key
