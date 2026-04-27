@@ -8,7 +8,8 @@ import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
 import com.lark.imcollab.gateway.auth.service.LarkBusinessJwtService;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
-import com.lark.imcollab.gateway.auth.store.LarkUserSessionStore;
+import com.lark.imcollab.store.redis.RedisJsonStore;
+import com.lark.imcollab.store.redis.RedisStringStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -30,6 +31,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 class LarkOAuthControllerTests {
 
+    private static final String STATE_KEY_PREFIX = "imcollab:auth:lark:state:";
+    private static final String SESSION_KEY_PREFIX = "imcollab:auth:lark:session:";
+
     @Test
     void shouldRedirectToLarkAuthorizationPage() throws Exception {
         TestFixture fixture = new TestFixture();
@@ -48,7 +52,7 @@ class LarkOAuthControllerTests {
     @Test
     void shouldExchangeCodeCreateSessionAndReturnBusinessJwt() throws Exception {
         TestFixture fixture = new TestFixture();
-        fixture.store.saveState("state-1", Duration.ofMinutes(10));
+        fixture.store.set(STATE_KEY_PREFIX + "state-1", "1", Duration.ofMinutes(10));
 
         MvcResult callback = fixture.mockMvc.perform(post("/api/auth/callback")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -109,7 +113,7 @@ class LarkOAuthControllerTests {
                 "docs:doc",
                 new LarkOAuthUserResponse("ou_123", "on_123", "user_123", "tenant_123", "User One", null)
         );
-        fixture.store.saveSession("session-1", session, Duration.ofHours(1));
+        fixture.store.set(SESSION_KEY_PREFIX + "session-1", session, Duration.ofHours(1));
         String businessJwt = fixture.jwtService.issueToken("session-1", session.user(), Duration.ofHours(1));
 
         fixture.mockMvc.perform(get("/api/auth/me"))
@@ -121,7 +125,7 @@ class LarkOAuthControllerTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data").value(true));
 
-        assertThat(fixture.store.sessions).doesNotContainKey("session-1");
+        assertThat(fixture.store.sessions).doesNotContainKey(SESSION_KEY_PREFIX + "session-1");
     }
 
     private static final class TestFixture {
@@ -139,7 +143,7 @@ class LarkOAuthControllerTests {
             properties.setRedirectUri("http://localhost:8078/api/auth/lark/callback");
             properties.setJwtSecret("test-secret-with-enough-length");
             this.jwtService = new LarkBusinessJwtService(properties, objectMapper);
-            LarkOAuthService service = new LarkOAuthService(properties, client, store, jwtService);
+            LarkOAuthService service = new LarkOAuthService(properties, client, store, store, jwtService);
             this.mockMvc = MockMvcBuilders
                     .standaloneSetup(new LarkOAuthController(service))
                     .build();
@@ -184,34 +188,41 @@ class LarkOAuthControllerTests {
         }
     }
 
-    private static final class InMemoryStore implements LarkUserSessionStore {
+    private static final class InMemoryStore implements RedisStringStore, RedisJsonStore {
 
         private final Map<String, String> states = new HashMap<>();
         private final Map<String, LarkOAuthLoginSession> sessions = new HashMap<>();
 
         @Override
-        public void saveState(String state, Duration ttl) {
-            states.put(state, "1");
+        public void set(String key, String value, Duration ttl) {
+            states.put(key, value);
         }
 
         @Override
-        public boolean consumeState(String state) {
-            return states.remove(state) != null;
+        public Optional<String> get(String key) {
+            return Optional.ofNullable(states.get(key));
         }
 
         @Override
-        public void saveSession(String sessionId, LarkOAuthLoginSession session, Duration ttl) {
-            sessions.put(sessionId, session);
+        public boolean hasKey(String key) {
+            return states.containsKey(key);
         }
 
         @Override
-        public Optional<LarkOAuthLoginSession> findSession(String sessionId) {
-            return Optional.ofNullable(sessions.get(sessionId));
+        public void set(String key, Object value, Duration ttl) {
+            sessions.put(key, (LarkOAuthLoginSession) value);
         }
 
         @Override
-        public void deleteSession(String sessionId) {
-            sessions.remove(sessionId);
+        @SuppressWarnings("unchecked")
+        public <T> Optional<T> get(String key, Class<T> type) {
+            return Optional.ofNullable((T) sessions.get(key));
+        }
+
+        @Override
+        public void delete(String key) {
+            states.remove(key);
+            sessions.remove(key);
         }
     }
 }

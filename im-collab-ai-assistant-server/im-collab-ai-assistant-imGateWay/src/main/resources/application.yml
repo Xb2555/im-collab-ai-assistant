@@ -13,8 +13,7 @@ imcollab:
       jwt-ttl: 2h
       jwt-secret: ${IMCOLLAB_JWT_SECRET:changemechangeme}
       state-ttl: 10m
-spring:
-  data:
+  store:
     redis:
       host: localhost
       port: 6379

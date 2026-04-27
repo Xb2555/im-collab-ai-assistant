@@ -6,7 +6,8 @@ import com.lark.imcollab.gateway.auth.config.LarkOAuthProperties;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthLoginSession;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
-import com.lark.imcollab.gateway.auth.store.LarkUserSessionStore;
+import com.lark.imcollab.store.redis.RedisJsonStore;
+import com.lark.imcollab.store.redis.RedisStringStore;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -19,13 +20,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class LarkOAuthServiceTests {
 
+    private static final String SESSION_KEY_PREFIX = "imcollab:auth:lark:session:";
+
     @Test
     void shouldRefreshExpiredAccessTokenWhenSessionHasValidRefreshToken() {
         InMemoryStore store = new InMemoryStore();
         FakeOAuthClient client = new FakeOAuthClient();
         LarkOAuthProperties properties = properties();
         LarkBusinessJwtService jwtService = new LarkBusinessJwtService(properties, new ObjectMapper());
-        LarkOAuthService service = new LarkOAuthService(properties, client, store, jwtService);
+        LarkOAuthService service = new LarkOAuthService(properties, client, store, store, jwtService);
         LarkOAuthLoginSession session = new LarkOAuthLoginSession(
                 "old-token",
                 Instant.now().minusSeconds(1),
@@ -35,14 +38,14 @@ class LarkOAuthServiceTests {
                 "docs:doc",
                 new LarkOAuthUserResponse("ou_123", "on_123", "user_123", "tenant_123", "User One", null)
         );
-        store.saveSession("session-1", session, Duration.ofHours(1));
+        store.set(SESSION_KEY_PREFIX + "session-1", session, Duration.ofHours(1));
         String businessJwt = jwtService.issueToken("session-1", session.user(), Duration.ofHours(1));
 
         Optional<String> accessToken = service.resolveUserAccessTokenByBusinessToken(businessJwt);
 
         assertThat(accessToken).contains("refreshed-token");
         assertThat(client.refreshToken).isEqualTo("refresh-token");
-        assertThat(store.sessions.get("session-1").user().openId()).isEqualTo("ou_123");
+        assertThat(store.sessions.get(SESSION_KEY_PREFIX + "session-1").user().openId()).isEqualTo("ou_123");
     }
 
     @Test
@@ -50,7 +53,7 @@ class LarkOAuthServiceTests {
         InMemoryStore store = new InMemoryStore();
         LarkOAuthProperties properties = properties();
         LarkBusinessJwtService jwtService = new LarkBusinessJwtService(properties, new ObjectMapper());
-        LarkOAuthService service = new LarkOAuthService(properties, new FakeOAuthClient(), store, jwtService);
+        LarkOAuthService service = new LarkOAuthService(properties, new FakeOAuthClient(), store, store, jwtService);
         LarkOAuthLoginSession session = new LarkOAuthLoginSession(
                 "old-token",
                 Instant.now().minusSeconds(1),
@@ -60,13 +63,13 @@ class LarkOAuthServiceTests {
                 "docs:doc",
                 new LarkOAuthUserResponse("ou_123", "on_123", "user_123", "tenant_123", "User One", null)
         );
-        store.saveSession("session-1", session, Duration.ofHours(1));
+        store.set(SESSION_KEY_PREFIX + "session-1", session, Duration.ofHours(1));
         String businessJwt = jwtService.issueToken("session-1", session.user(), Duration.ofHours(1));
 
         Optional<String> accessToken = service.resolveUserAccessTokenByBusinessToken(businessJwt);
 
         assertThat(accessToken).isEmpty();
-        assertThat(store.sessions).doesNotContainKey("session-1");
+        assertThat(store.sessions).doesNotContainKey(SESSION_KEY_PREFIX + "session-1");
     }
 
     private static LarkOAuthProperties properties() {
@@ -112,34 +115,41 @@ class LarkOAuthServiceTests {
         }
     }
 
-    private static final class InMemoryStore implements LarkUserSessionStore {
+    private static final class InMemoryStore implements RedisStringStore, RedisJsonStore {
 
         private final Map<String, String> states = new HashMap<>();
         private final Map<String, LarkOAuthLoginSession> sessions = new HashMap<>();
 
         @Override
-        public void saveState(String state, Duration ttl) {
-            states.put(state, "1");
+        public void set(String key, String value, Duration ttl) {
+            states.put(key, value);
         }
 
         @Override
-        public boolean consumeState(String state) {
-            return states.remove(state) != null;
+        public Optional<String> get(String key) {
+            return Optional.ofNullable(states.get(key));
         }
 
         @Override
-        public void saveSession(String sessionId, LarkOAuthLoginSession session, Duration ttl) {
-            sessions.put(sessionId, session);
+        public boolean hasKey(String key) {
+            return states.containsKey(key);
         }
 
         @Override
-        public Optional<LarkOAuthLoginSession> findSession(String sessionId) {
-            return Optional.ofNullable(sessions.get(sessionId));
+        public void set(String key, Object value, Duration ttl) {
+            sessions.put(key, (LarkOAuthLoginSession) value);
         }
 
         @Override
-        public void deleteSession(String sessionId) {
-            sessions.remove(sessionId);
+        @SuppressWarnings("unchecked")
+        public <T> Optional<T> get(String key, Class<T> type) {
+            return Optional.ofNullable((T) sessions.get(key));
+        }
+
+        @Override
+        public void delete(String key) {
+            states.remove(key);
+            sessions.remove(key);
         }
     }
 }

@@ -26,6 +26,7 @@
         <module>im-collab-ai-assistant-planner</module>
         <module>im-collab-ai-assistant-skills</module>
         <module>im-collab-ai-assistant-imGateWay</module>
+        <module>im-collab-ai-assistant-store</module>
     </modules>
     <scm>
         <connection/>

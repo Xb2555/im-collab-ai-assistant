@@ -8,7 +8,8 @@ import com.lark.imcollab.gateway.auth.dto.LarkOAuthLoginResult;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthLoginSession;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
-import com.lark.imcollab.gateway.auth.store.LarkUserSessionStore;
+import com.lark.imcollab.store.redis.RedisJsonStore;
+import com.lark.imcollab.store.redis.RedisStringStore;
 import org.springframework.stereotype.Service;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -23,22 +24,27 @@ import java.util.Optional;
 public class LarkOAuthService {
 
     private static final Duration MIN_SESSION_TTL = Duration.ofMinutes(1);
+    private static final String STATE_KEY_PREFIX = "imcollab:auth:lark:state:";
+    private static final String SESSION_KEY_PREFIX = "imcollab:auth:lark:session:";
 
     private final LarkOAuthProperties properties;
     private final LarkOAuthClient oauthClient;
-    private final LarkUserSessionStore sessionStore;
+    private final RedisStringStore redisStringStore;
+    private final RedisJsonStore redisJsonStore;
     private final LarkBusinessJwtService jwtService;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public LarkOAuthService(
             LarkOAuthProperties properties,
             LarkOAuthClient oauthClient,
-            LarkUserSessionStore sessionStore,
+            RedisStringStore redisStringStore,
+            RedisJsonStore redisJsonStore,
             LarkBusinessJwtService jwtService
     ) {
         this.properties = properties;
         this.oauthClient = oauthClient;
-        this.sessionStore = sessionStore;
+        this.redisStringStore = redisStringStore;
+        this.redisJsonStore = redisJsonStore;
         this.jwtService = jwtService;
     }
 
@@ -47,7 +53,7 @@ public class LarkOAuthService {
         validateRequired(properties.getRedirectUri(), "redirectUri");
 
         String state = randomToken();
-        sessionStore.saveState(state, properties.getStateTtl());
+        redisStringStore.set(stateKey(state), "1", properties.getStateTtl());
         URI authorizationUri = UriComponentsBuilder.fromUriString(properties.getAuthorizeUrl())
                 .queryParam("app_id", properties.getAppId())
                 .queryParam("redirect_uri", properties.getRedirectUri())
@@ -62,7 +68,7 @@ public class LarkOAuthService {
         validateRequired(code, "code");
         validateRequired(properties.getAppSecret(), "appSecret");
 
-        if (state != null && !state.isBlank() && !sessionStore.consumeState(state.trim())) {
+        if (state != null && !state.isBlank() && !consumeState(state.trim())) {
             throw new IllegalArgumentException("Invalid or expired oauth state");
         }
 
@@ -71,7 +77,7 @@ public class LarkOAuthService {
         LarkOAuthLoginSession session = createSession(payload, null);
         String sessionId = randomToken();
         Duration ttl = sessionTtl(payload);
-        sessionStore.saveSession(sessionId, session, ttl);
+        redisJsonStore.set(sessionKey(sessionId), session, ttl);
         Duration jwtTtl = jwtTtl();
         String token = jwtService.issueToken(sessionId, session.user(), jwtTtl);
         return new LarkAuthTokenResponse(token, "Bearer", jwtTtl.toSeconds(), toFrontendUser(session.user()));
@@ -90,7 +96,7 @@ public class LarkOAuthService {
 
     public void logoutByBusinessToken(String businessToken) {
         jwtService.parseToken(businessToken)
-                .ifPresent(claims -> sessionStore.deleteSession(claims.sessionId()));
+                .ifPresent(claims -> redisJsonStore.delete(sessionKey(claims.sessionId())));
     }
 
     private Optional<LarkOAuthLoginSession> findSessionByBusinessToken(String businessToken) {
@@ -102,7 +108,7 @@ public class LarkOAuthService {
         if (sessionId == null || sessionId.isBlank()) {
             return Optional.empty();
         }
-        Optional<LarkOAuthLoginSession> session = sessionStore.findSession(sessionId.trim());
+        Optional<LarkOAuthLoginSession> session = redisJsonStore.get(sessionKey(sessionId.trim()), LarkOAuthLoginSession.class);
         if (session.isEmpty()) {
             return Optional.empty();
         }
@@ -113,17 +119,17 @@ public class LarkOAuthService {
         }
         if (current.refreshToken() == null || current.refreshTokenExpiresAt() == null
                 || !current.refreshTokenExpiresAt().isAfter(now)) {
-            sessionStore.deleteSession(sessionId.trim());
+            redisJsonStore.delete(sessionKey(sessionId.trim()));
             return Optional.empty();
         }
         try {
             String appAccessToken = oauthClient.getAppAccessToken();
             LarkOAuthTokenPayload refreshed = oauthClient.refreshUserAccessToken(appAccessToken, current.refreshToken());
             LarkOAuthLoginSession refreshedSession = createSession(refreshed, current.user());
-            sessionStore.saveSession(sessionId.trim(), refreshedSession, sessionTtl(refreshed));
+            redisJsonStore.set(sessionKey(sessionId.trim()), refreshedSession, sessionTtl(refreshed));
             return Optional.of(refreshedSession);
         } catch (RuntimeException exception) {
-            sessionStore.deleteSession(sessionId.trim());
+            redisJsonStore.delete(sessionKey(sessionId.trim()));
             return Optional.empty();
         }
     }
@@ -179,6 +185,23 @@ public class LarkOAuthService {
 
     private LarkFrontendUserResponse toFrontendUser(LarkOAuthUserResponse user) {
         return new LarkFrontendUserResponse(user.name(), user.avatarUrl());
+    }
+
+    private boolean consumeState(String state) {
+        String key = stateKey(state);
+        if (!redisStringStore.hasKey(key)) {
+            return false;
+        }
+        redisStringStore.delete(key);
+        return true;
+    }
+
+    private String stateKey(String state) {
+        return STATE_KEY_PREFIX + state;
+    }
+
+    private String sessionKey(String sessionId) {
+        return SESSION_KEY_PREFIX + sessionId;
     }
 
     private void validateRequired(String value, String fieldName) {
