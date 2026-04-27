@@ -1,35 +1,37 @@
 server:
-  port: 8078
+  port: ${GATEWAY_SERVER_PORT:8078}
+
 spring:
   ai:
     dashscope:
       api-key: ${DASHSCOPE_API_KEY:sk-ae49e9b4038c40f2ac6fd7d82ef1c5dc}
+
 imcollab:
   store:
     redis:
-      host: 81.71.143.236
-      port: 6379
-      password: redis@Yiiyye111
-      database: 6
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      password: ${REDIS_PASSWORD}
+      database: ${REDIS_DATABASE}
   skills:
     lark-cli:
-      executable: powershell
-      args: -ExecutionPolicy,Bypass,-File,C:\Users\14527\AppData\Roaming\npm\lark-cli.ps1
-      working-directory: C:\Users\14527\Desktop\lark-ai
+      executable: ${LARK_CLI_EXECUTABLE}
+      args: ${LARK_CLI_ARGS}
+      working-directory: ${LARK_CLI_WORKING_DIR}
   gateway:
     lark:
-      app-id: ${LARK_APP_ID:cli_a9618038b1789cc4}
-      app-secret: ${LARK_APP_SECRET:Zlma12cJaTVvyOXq0WacNbkqJn8n5DgX}
-      open-api-base-url: ${LARK_OPEN_API_BASE_URL:https://open.feishu.cn}
+      app-id: ${LARK_APP_ID}
+      app-secret: ${LARK_APP_SECRET}
+      open-api-base-url: ${LARK_OPEN_API_BASE_URL}
     im:
       listener:
-        auto-start-enabled: true
+        auto-start-enabled: ${LARK_IM_LISTENER_AUTO_START:true}
       event:
         domain: ${LARK_OPEN_DOMAIN:}
-        auto-reconnect-enabled: true
+        auto-reconnect-enabled: ${LARK_IM_AUTO_RECONNECT:true}
     auth:
       redirect-uri: ${LARK_OAUTH_REDIRECT_URI:http://localhost:8078/api/auth/lark/callback}
-      session-ttl: 12h
-      jwt-ttl: 2h
-      jwt-secret: ${IMCOLLAB_JWT_SECRET:changemechangeme}
-      state-ttl: 10m
+      session-ttl: ${LARK_AUTH_SESSION_TTL:12h}
+      jwt-ttl: ${LARK_AUTH_JWT_TTL:2h}
+      jwt-secret: ${IMCOLLAB_JWT_SECRET}
+      state-ttl: ${LARK_AUTH_STATE_TTL:10m}
