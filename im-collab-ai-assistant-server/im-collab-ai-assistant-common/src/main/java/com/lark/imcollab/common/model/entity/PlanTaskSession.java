@@ -50,4 +50,25 @@ public class PlanTaskSession implements Serializable {
 
     @Schema(description = "任务卡片列表")
     private List<UserPlanCard> planCards;
+
+    @Schema(description = "用户职业角色")
+    private String profession;
+
+    @Schema(description = "行业领域")
+    private String industry;
+
+    @Schema(description = "目标受众")
+    private String audience;
+
+    @Schema(description = "偏好风格")
+    private String tone;
+
+    @Schema(description = "输出语言")
+    private String language;
+
+    @Schema(description = "Prompt 模板配置档（default/pm/sales）")
+    private String promptProfile;
+
+    @Schema(description = "Prompt 模板版本（v1/v2/v3）")
+    private String promptVersion;
 }

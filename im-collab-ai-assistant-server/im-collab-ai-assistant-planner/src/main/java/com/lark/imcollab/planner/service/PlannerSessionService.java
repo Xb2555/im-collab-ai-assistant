@@ -4,6 +4,7 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class PlannerSessionService {
 
     private final PlannerStateStore stateRepository;
+    private final PlannerProperties plannerProperties;
     private final ConcurrentHashMap<String, Integer> eventIndexMap = new ConcurrentHashMap<>();
 
     public int getLastEventIndex(String taskId) {
@@ -38,6 +40,13 @@ public class PlannerSessionService {
                     .planScore(0)
                     .aborted(false)
                     .turnCount(0)
+                    .profession(plannerProperties.getPrompt().getDefaultProfession())
+                    .industry(plannerProperties.getPrompt().getDefaultIndustry())
+                    .audience(plannerProperties.getPrompt().getDefaultAudience())
+                    .tone(plannerProperties.getPrompt().getDefaultTone())
+                    .language(plannerProperties.getPrompt().getDefaultLanguage())
+                    .promptProfile(plannerProperties.getPrompt().getProfile())
+                    .promptVersion(plannerProperties.getPrompt().getVersion())
                     .build();
             stateRepository.saveSession(session);
             return session;

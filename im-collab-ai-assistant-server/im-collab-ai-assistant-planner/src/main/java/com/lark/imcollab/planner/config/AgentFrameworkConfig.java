@@ -4,6 +4,12 @@ import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.extension.interceptor.SubAgentInterceptor;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SequentialAgent;
 import com.alibaba.cloud.ai.graph.agent.hook.summarization.SummarizationHook;
+import com.lark.imcollab.common.model.entity.PlanCardsOutput;
+import com.lark.imcollab.common.model.entity.ResultAdviceOutput;
+import com.lark.imcollab.common.model.entity.ResultJudgeOutput;
+import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.planner.prompt.PlannerPromptFacade;
 import com.lark.imcollab.store.checkpoint.CheckpointSaverProvider;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -15,54 +21,78 @@ import java.util.List;
 @Configuration
 public class AgentFrameworkConfig {
 
+    private static final PlanTaskSession DEFAULT_PROMPT_SESSION = PlanTaskSession.builder()
+            .taskId("default")
+            .planningPhase(PlanningPhaseEnum.ASK_USER)
+            .build();
+
     @Bean
-    public SummarizationHook summarizationHook(ChatModel chatModel, PlannerProperties props) {
+    public SummarizationHook summarizationHook(
+            ChatModel chatModel,
+            PlannerProperties props,
+            PlannerPromptFacade promptFacade) {
         return SummarizationHook.builder()
                 .model(chatModel)
                 .maxTokensBeforeSummary(props.getSummarization().getMaxTokensBeforeSummary())
                 .messagesToKeep(props.getSummarization().getMessagesToKeep())
-                .summaryPrompt(PlannerPrompts.SUMMARIZATION_PROMPT)
+                .summaryPrompt(promptFacade.summarizationPrompt())
                 .build();
     }
 
     @Bean(name = "clarificationAgent")
-    public ReactAgent clarificationAgent(ChatModel chatModel, SummarizationHook summarizationHook) {
+    public ReactAgent clarificationAgent(
+            ChatModel chatModel,
+            SummarizationHook summarizationHook,
+            PlannerPromptFacade promptFacade) {
         return ReactAgent.builder()
                 .name("clarification-agent")
                 .description("澄清信息不足时生成反问问题")
-                .systemPrompt(PlannerPrompts.CLARIFICATION_SYSTEM)
+                .systemPrompt(promptFacade.clarificationPrompt(DEFAULT_PROMPT_SESSION))
                 .model(chatModel)
                 .hooks(summarizationHook)
                 .build();
     }
 
     @Bean(name = "planningAgent")
-    public ReactAgent planningAgent(ChatModel chatModel, SummarizationHook summarizationHook) {
+    public ReactAgent planningAgent(
+            ChatModel chatModel,
+            SummarizationHook summarizationHook,
+            PlannerPromptFacade promptFacade) {
         return ReactAgent.builder()
                 .name("planning-agent")
                 .description("将用户需求拆解为结构化任务计划")
-                .systemPrompt(PlannerPrompts.PLANNING_SYSTEM)
+                .systemPrompt(promptFacade.planningPrompt(DEFAULT_PROMPT_SESSION))
+                .instruction(promptFacade.planningInstruction(DEFAULT_PROMPT_SESSION))
+                .outputType(PlanCardsOutput.class)
                 .model(chatModel)
                 .hooks(summarizationHook)
                 .build();
     }
 
     @Bean(name = "resultJudgeAgent")
-    public ReactAgent resultJudgeAgent(ChatModel chatModel) {
+    public ReactAgent resultJudgeAgent(
+            ChatModel chatModel,
+            PlannerPromptFacade promptFacade) {
         return ReactAgent.builder()
                 .name("result-judge-agent")
                 .description("对子任务执行结果进行评分")
-                .systemPrompt(PlannerPrompts.RESULT_JUDGE_SYSTEM)
+                .systemPrompt(promptFacade.resultJudgePrompt(DEFAULT_PROMPT_SESSION))
+                .instruction(promptFacade.resultJudgeInstruction(DEFAULT_PROMPT_SESSION))
+                .outputType(ResultJudgeOutput.class)
                 .model(chatModel)
                 .build();
     }
 
     @Bean(name = "resultAdviceAgent")
-    public ReactAgent resultAdviceAgent(ChatModel chatModel) {
+    public ReactAgent resultAdviceAgent(
+            ChatModel chatModel,
+            PlannerPromptFacade promptFacade) {
         return ReactAgent.builder()
                 .name("result-advice-agent")
                 .description("基于评分结果生成改进建议并输出最终裁决")
-                .systemPrompt(PlannerPrompts.RESULT_ADVICE_SYSTEM)
+                .systemPrompt(promptFacade.resultAdvicePrompt(DEFAULT_PROMPT_SESSION))
+                .instruction(promptFacade.resultAdviceInstruction(DEFAULT_PROMPT_SESSION))
+                .outputType(ResultAdviceOutput.class)
                 .model(chatModel)
                 .build();
     }
@@ -103,11 +133,12 @@ public class AgentFrameworkConfig {
             ChatModel chatModel,
             SubAgentInterceptor subAgentInterceptor,
             SummarizationHook summarizationHook,
+            PlannerPromptFacade promptFacade,
             CheckpointSaverProvider checkpointSaverProvider) {
         return ReactAgent.builder()
                 .name("supervisor-agent")
                 .description("任务规划主控 Agent")
-                .systemPrompt(PlannerPrompts.SUPERVISOR_SYSTEM)
+                .systemPrompt(promptFacade.supervisorPrompt(DEFAULT_PROMPT_SESSION))
                 .model(chatModel)
                 .interceptors(subAgentInterceptor)
                 .hooks(summarizationHook)

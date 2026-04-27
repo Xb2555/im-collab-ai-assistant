@@ -2,16 +2,20 @@ package com.lark.imcollab.planner.service;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
+import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SequentialAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.ResultAdviceOutput;
+import com.lark.imcollab.common.model.entity.ResultJudgeOutput;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
+import com.lark.imcollab.planner.prompt.PlannerPromptFacade;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -20,6 +24,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Slf4j
@@ -27,18 +32,27 @@ import java.util.Optional;
 public class TaskResultEvaluationService {
 
     private final SequentialAgent resultEvaluationSequence;
+    private final ReactAgent resultJudgeAgent;
+    private final ReactAgent resultAdviceAgent;
     private final PlannerStateStore repository;
     private final PlannerSessionService sessionService;
+    private final PlannerPromptFacade promptFacade;
     private final ObjectMapper objectMapper;
 
     public TaskResultEvaluationService(
             @Qualifier("resultEvaluationSequence") SequentialAgent resultEvaluationSequence,
+            @Qualifier("resultJudgeAgent") ReactAgent resultJudgeAgent,
+            @Qualifier("resultAdviceAgent") ReactAgent resultAdviceAgent,
             PlannerStateStore repository,
             PlannerSessionService sessionService,
+            PlannerPromptFacade promptFacade,
             ObjectMapper objectMapper) {
         this.resultEvaluationSequence = resultEvaluationSequence;
+        this.resultJudgeAgent = resultJudgeAgent;
+        this.resultAdviceAgent = resultAdviceAgent;
         this.repository = repository;
         this.sessionService = sessionService;
+        this.promptFacade = promptFacade;
         this.objectMapper = objectMapper;
     }
 
@@ -47,18 +61,17 @@ public class TaskResultEvaluationService {
         RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
 
         String prompt = buildEvalPrompt(submission);
+        PlanTaskSession session = sessionService.get(submission.getTaskId());
+        applyDynamicPrompts(session, submission);
 
         TaskResultEvaluation evaluation;
         try {
             Optional<OverAllState> result = resultEvaluationSequence.invoke(prompt, config);
-            String output = result.flatMap(state -> state.<List<?>>value("messages"))
-                    .map(msgs -> msgs.stream()
-                            .filter(m -> m instanceof AssistantMessage)
-                            .map(m -> ((AssistantMessage) m).getText())
-                            .reduce("", (a, b) -> b))
-                    .orElse("");
-
-            evaluation = parseEvaluation(output, submission);
+            evaluation = extractEvaluationFromState(result, submission)
+                    .orElseGet(() -> {
+                        String output = extractLastAssistantText(result);
+                        return parseEvaluation(output, submission);
+                    });
         } catch (GraphRunnerException e) {
             log.error("Evaluation failed for task {}: {}", submission.getTaskId(), e.getMessage(), e);
             evaluation = TaskResultEvaluation.builder()
@@ -75,6 +88,13 @@ public class TaskResultEvaluationService {
         writeBackToCard(submission, evaluation);
         sessionService.publishEvent(submission.getTaskId(), evaluation.getVerdict().name());
         return evaluation;
+    }
+
+    private void applyDynamicPrompts(PlanTaskSession session, TaskSubmissionResult submission) {
+        resultJudgeAgent.setSystemPrompt(promptFacade.resultJudgePrompt(session));
+        resultJudgeAgent.setInstruction(promptFacade.resultJudgeInstruction(session, submission));
+        resultAdviceAgent.setSystemPrompt(promptFacade.resultAdvicePrompt(session));
+        resultAdviceAgent.setInstruction(promptFacade.resultAdviceInstruction(session, submission));
     }
 
     private void writeBackToCard(TaskSubmissionResult submission, TaskResultEvaluation evaluation) {
@@ -153,6 +173,93 @@ public class TaskResultEvaluationService {
                 .issues(issues)
                 .suggestions(suggestions)
                 .build();
+    }
+
+    private Optional<TaskResultEvaluation> extractEvaluationFromState(
+            Optional<OverAllState> state,
+            TaskSubmissionResult submission) {
+        if (state.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> data = state.get().data();
+        Object single = data.get("message");
+        if (single instanceof ResultAdviceOutput adviceOnly) {
+            return Optional.of(buildEvaluationFromTyped(null, adviceOnly, submission));
+        }
+        if (single instanceof ResultJudgeOutput judgeOnly) {
+            return Optional.of(buildEvaluationFromTyped(judgeOnly, null, submission));
+        }
+        Object raw = data.get("messages");
+        if (!(raw instanceof List<?> list)) {
+            if (raw instanceof ResultAdviceOutput advice) {
+                return Optional.of(buildEvaluationFromTyped(null, advice, submission));
+            }
+            if (raw instanceof ResultJudgeOutput judge) {
+                return Optional.of(buildEvaluationFromTyped(judge, null, submission));
+            }
+            return Optional.empty();
+        }
+
+        ResultJudgeOutput judge = null;
+        ResultAdviceOutput advice = null;
+        for (Object item : list) {
+            if (item instanceof ResultJudgeOutput output) {
+                judge = output;
+            } else if (item instanceof ResultAdviceOutput output) {
+                advice = output;
+            }
+        }
+        if (judge == null && advice == null) {
+            return Optional.empty();
+        }
+
+        return Optional.of(buildEvaluationFromTyped(judge, advice, submission));
+    }
+
+    private TaskResultEvaluation buildEvaluationFromTyped(
+            ResultJudgeOutput judge,
+            ResultAdviceOutput advice,
+            TaskSubmissionResult submission) {
+        int score = judge != null && judge.getResultScore() != null ? judge.getResultScore() : 0;
+        List<String> issues = judge != null && judge.getIssues() != null ? judge.getIssues() : List.of();
+        ResultVerdictEnum verdict = ResultVerdictEnum.HUMAN_REVIEW;
+        List<String> suggestions = List.of();
+        if (advice != null) {
+            if (advice.getVerdict() != null) {
+                try {
+                    verdict = ResultVerdictEnum.valueOf(advice.getVerdict().toUpperCase());
+                } catch (IllegalArgumentException ignored) {}
+            }
+            if (advice.getSuggestions() != null) {
+                suggestions = advice.getSuggestions();
+            }
+        }
+
+        if (advice == null) {
+            if (score >= 80) {
+                verdict = ResultVerdictEnum.PASS;
+            } else if (score >= 60) {
+                verdict = ResultVerdictEnum.RETRY;
+            }
+        }
+
+        return TaskResultEvaluation.builder()
+                .taskId(submission.getTaskId())
+                .agentTaskId(submission.getAgentTaskId())
+                .resultScore(score)
+                .verdict(verdict)
+                .issues(issues)
+                .suggestions(suggestions)
+                .build();
+    }
+
+    private String extractLastAssistantText(Optional<OverAllState> result) {
+        return result.flatMap(state -> state.<List<?>>value("messages"))
+                .map(msgs -> msgs.stream()
+                        .filter(m -> m instanceof AssistantMessage)
+                        .map(m -> ((AssistantMessage) m).getText())
+                        .reduce("", (a, b) -> b))
+                .orElse("");
     }
 
     private String extractJson(String text) {
