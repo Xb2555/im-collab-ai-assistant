@@ -15,6 +15,9 @@ import com.lark.imcollab.planner.repository.PlannerStateRepository;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.SupervisorPlannerService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -25,6 +28,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/planner/tasks")
+@Tag(name = "任务规划管理", description = "AI Agent 任务理解、规划、执行、反馈闭环接口")
 @RequiredArgsConstructor
 public class PlannerController {
 
@@ -34,6 +38,7 @@ public class PlannerController {
     private final PlannerStateRepository repository;
 
     @PostMapping("/plan")
+    @Operation(summary = "创建任务规划", description = "根据用户原始指令理解意图并拆解为可执行的任务卡片")
     public BaseResponse<PlanTaskSession> plan(@RequestBody PlanRequest request) {
         PlanTaskSession session = supervisorPlannerService.plan(
                 request.getRawInstruction(),
@@ -45,14 +50,17 @@ public class PlannerController {
     }
 
     @PostMapping("/{taskId}/interrupt")
-    public BaseResponse<PlanTaskSession> interrupt(@PathVariable String taskId) {
+    @Operation(summary = "中断任务", description = "中断正在执行的任务")
+    public BaseResponse<PlanTaskSession> interrupt(
+            @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId) {
         PlanTaskSession session = supervisorPlannerService.interrupt(taskId);
         return ResultUtils.success(session);
     }
 
     @PostMapping("/{taskId}/resume")
+    @Operation(summary = "恢复任务", description = "根据用户反馈恢复被中断的任务")
     public BaseResponse<PlanTaskSession> resume(
-            @PathVariable String taskId,
+            @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId,
             @RequestBody ResumeRequest request) {
         PlanTaskSession session = supervisorPlannerService.resume(
                 taskId,
@@ -63,20 +71,26 @@ public class PlannerController {
     }
 
     @GetMapping("/{taskId}")
-    public BaseResponse<PlanTaskSession> getTask(@PathVariable String taskId) {
+    @Operation(summary = "获取任务状态", description = "查询任务当前状态和进度")
+    public BaseResponse<PlanTaskSession> getTask(
+            @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId) {
         PlanTaskSession session = sessionService.get(taskId);
         return ResultUtils.success(session);
     }
 
     @GetMapping("/{taskId}/cards")
-    public BaseResponse<List<UserPlanCard>> getCards(@PathVariable String taskId) {
+    @Operation(summary = "获取任务卡片列表", description = "查询任务包含的所有卡片（子任务）")
+    public BaseResponse<List<UserPlanCard>> getCards(
+            @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId) {
         PlanTaskSession session = sessionService.get(taskId);
         List<UserPlanCard> cards = session.getPlanCards() != null ? session.getPlanCards() : List.of();
         return ResultUtils.success(cards);
     }
 
     @GetMapping(value = "/{taskId}/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> streamEvents(@PathVariable String taskId) {
+    @Operation(summary = "订阅任务事件流", description = "SSE实时推送任务状态变更事件")
+    public Flux<String> streamEvents(
+            @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId) {
         return Flux.interval(Duration.ofSeconds(1))
                 .flatMap(tick -> {
                     List<String> events = sessionService.getEventJsonList(taskId);
@@ -86,9 +100,10 @@ public class PlannerController {
     }
 
     @PostMapping("/{taskId}/agent-tasks/{agentTaskId}/submit-result")
+    @Operation(summary = "提交任务结果", description = "Agent任务执行完成后提交结果，触发评估")
     public BaseResponse<TaskResultEvaluation> submitResult(
-            @PathVariable String taskId,
-            @PathVariable String agentTaskId,
+            @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId,
+            @Parameter(description = "Agent任务ID", required = true, example = "agent-task-456") @PathVariable String agentTaskId,
             @RequestBody SubmitResultRequest request) {
         TaskSubmissionResult submission = TaskSubmissionResult.builder()
                 .taskId(taskId)
@@ -105,17 +120,19 @@ public class PlannerController {
     }
 
     @GetMapping("/{taskId}/agent-tasks/{agentTaskId}/evaluation")
+    @Operation(summary = "获取任务评估结果", description = "查询指定Agent任务的评估结果")
     public BaseResponse<TaskResultEvaluation> getEvaluation(
-            @PathVariable String taskId,
-            @PathVariable String agentTaskId) {
+            @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId,
+            @Parameter(description = "Agent任务ID", required = true, example = "agent-task-456") @PathVariable String agentTaskId) {
         TaskResultEvaluation evaluation = repository.findEvaluation(taskId, agentTaskId)
                 .orElseThrow(() -> new RuntimeException("Evaluation not found for agentTaskId: " + agentTaskId));
         return ResultUtils.success(evaluation);
     }
 
     @PostMapping("/{taskId}/commands")
+    @Operation(summary = "执行任务指令", description = "用户确认执行、重规划或取消任务")
     public BaseResponse<PlanTaskSession> command(
-            @PathVariable String taskId,
+            @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId,
             @RequestBody PlanCommandRequest request) {
         PlanTaskSession session = sessionService.get(taskId);
         sessionService.checkVersion(session, request.getVersion());
