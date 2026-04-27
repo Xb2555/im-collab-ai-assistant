@@ -11,42 +11,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LarkMessageEventSubscriptionServiceTests {
 
     @Test
-    void shouldStartSdkMessageReceiveSubscriptionForProfile() {
+    void shouldStartSdkMessageReceiveSubscription() {
         StubConnectionFactory factory = new StubConnectionFactory();
         LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
 
-        LarkEventSubscriptionStatus status = service.startMessageSubscription("profile-123", event -> {
+        LarkEventSubscriptionStatus status = service.startMessageSubscription(event -> {
         });
 
-        assertThat(status.profileName()).isEqualTo("profile-123");
         assertThat(status.running()).isTrue();
         assertThat(factory.startCount).isEqualTo(1);
     }
 
     @Test
-    void shouldStartSdkMessageReceiveSubscriptionForDefaultProfile() {
+    void shouldReuseRunningSubscription() {
         StubConnectionFactory factory = new StubConnectionFactory();
         LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
 
-        LarkEventSubscriptionStatus status = service.startMessageSubscription(null, event -> {
+        service.startMessageSubscription(event -> {
+        });
+        LarkEventSubscriptionStatus status = service.startMessageSubscription(event -> {
         });
 
-        assertThat(status.profileName()).isEqualTo("default");
-        assertThat(status.running()).isTrue();
-        assertThat(factory.startCount).isEqualTo(1);
-    }
-
-    @Test
-    void shouldReuseRunningSubscriptionForSameProfile() {
-        StubConnectionFactory factory = new StubConnectionFactory();
-        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
-
-        service.startMessageSubscription("profile-123", event -> {
-        });
-        LarkEventSubscriptionStatus status = service.startMessageSubscription("profile-123", event -> {
-        });
-
-        assertThat(status.profileName()).isEqualTo("profile-123");
         assertThat(status.running()).isTrue();
         assertThat(factory.startCount).isEqualTo(1);
     }
@@ -56,7 +41,7 @@ class LarkMessageEventSubscriptionServiceTests {
         StubConnectionFactory factory = new StubConnectionFactory();
         LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
         List<LarkMessageEvent> events = new ArrayList<>();
-        service.startMessageSubscription("profile-123", events::add);
+        service.startMessageSubscription(events::add);
 
         factory.connection.emit(new LarkMessageEvent(
                 "evt-1",
@@ -76,13 +61,13 @@ class LarkMessageEventSubscriptionServiceTests {
     }
 
     @Test
-    void shouldFanOutSdkEventsToConsumersForSameProfile() {
+    void shouldFanOutSdkEventsToConsumers() {
         StubConnectionFactory factory = new StubConnectionFactory();
         LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
         List<LarkMessageEvent> listenerEvents = new ArrayList<>();
         List<LarkMessageEvent> streamEvents = new ArrayList<>();
-        service.startMessageSubscription("profile-123", "listener", listenerEvents::add);
-        service.startMessageSubscription("profile-123", "stream", streamEvents::add);
+        service.startMessageSubscription("listener", listenerEvents::add);
+        service.startMessageSubscription("stream", streamEvents::add);
 
         factory.connection.emit(new LarkMessageEvent(
                 "evt-2",
@@ -106,10 +91,9 @@ class LarkMessageEventSubscriptionServiceTests {
         StubConnectionFactory factory = new StubConnectionFactory();
         LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
         List<String> dispatchOrder = new ArrayList<>();
-        service.startMessageSubscription("profile-123", "agent-listener",
+        service.startMessageSubscription("agent-listener",
                 event -> dispatchOrder.add("agent-listener"));
         service.startMessageSubscription(
-                "profile-123",
                 "frontend-stream",
                 LarkMessageEventSubscriptionService.FRONTEND_STREAM_CONSUMER_PRIORITY,
                 event -> dispatchOrder.add("frontend-stream")
@@ -134,10 +118,10 @@ class LarkMessageEventSubscriptionServiceTests {
     void shouldStopExistingSubscription() {
         StubConnectionFactory factory = new StubConnectionFactory();
         LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
-        service.startMessageSubscription("profile-123", event -> {
+        service.startMessageSubscription(event -> {
         });
 
-        LarkEventSubscriptionStatus status = service.stopMessageSubscription("profile-123");
+        LarkEventSubscriptionStatus status = service.stopMessageSubscription();
 
         assertThat(factory.connection.stopped).isTrue();
         assertThat(status.running()).isFalse();
@@ -147,16 +131,13 @@ class LarkMessageEventSubscriptionServiceTests {
     void shouldStopAllSubscriptions() {
         StubConnectionFactory factory = new StubConnectionFactory();
         LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
-        service.startMessageSubscription("profile-123", event -> {
-        });
-        service.startMessageSubscription("profile-456", event -> {
+        service.startMessageSubscription(event -> {
         });
 
         service.stopAllMessageSubscriptions();
 
         assertThat(factory.connections).allSatisfy(connection -> assertThat(connection.stopped).isTrue());
-        assertThat(service.getMessageSubscriptionStatus("profile-123").running()).isFalse();
-        assertThat(service.getMessageSubscriptionStatus("profile-456").running()).isFalse();
+        assertThat(service.getMessageSubscriptionStatus().running()).isFalse();
     }
 
     private static final class StubConnectionFactory implements LarkMessageEventConnectionFactory {

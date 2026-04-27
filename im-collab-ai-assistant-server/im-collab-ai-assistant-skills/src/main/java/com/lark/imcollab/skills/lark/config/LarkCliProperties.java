@@ -11,7 +11,5 @@ public class LarkCliProperties {
 
     private String executable = "lark-cli";
     private String workingDirectory = "";
-    private int qrCodeSize = 280;
-    private long authorizationCompletionTimeoutMillis = 10000;
 
 }

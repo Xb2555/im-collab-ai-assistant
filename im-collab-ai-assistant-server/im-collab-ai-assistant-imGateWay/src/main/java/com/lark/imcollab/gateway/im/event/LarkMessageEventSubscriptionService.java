@@ -5,59 +5,51 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 @Service
 public class LarkMessageEventSubscriptionService {
 
-    private static final String DEFAULT_PROFILE_NAME = "default";
     public static final int FRONTEND_STREAM_CONSUMER_PRIORITY = 0;
     public static final int DEFAULT_CONSUMER_PRIORITY = 100;
 
     private final LarkMessageEventConnectionFactory connectionFactory;
-    private final Map<String, SubscriptionState> subscriptions = new ConcurrentHashMap<>();
+    private volatile SubscriptionState subscription;
 
     public LarkMessageEventSubscriptionService(LarkMessageEventConnectionFactory connectionFactory) {
         this.connectionFactory = connectionFactory;
     }
 
-    public LarkEventSubscriptionStatus startMessageSubscription(
-            String profileName,
-            Consumer<LarkMessageEvent> messageConsumer
-    ) {
-        return startMessageSubscription(profileName, consumerKey(messageConsumer), messageConsumer);
+    public synchronized LarkEventSubscriptionStatus startMessageSubscription(Consumer<LarkMessageEvent> messageConsumer) {
+        return startMessageSubscription(consumerKey(messageConsumer), messageConsumer);
     }
 
-    public LarkEventSubscriptionStatus startMessageSubscription(
-            String profileName,
+    public synchronized LarkEventSubscriptionStatus startMessageSubscription(
             String consumerId,
             Consumer<LarkMessageEvent> messageConsumer
     ) {
-        return startMessageSubscription(profileName, consumerId, DEFAULT_CONSUMER_PRIORITY, messageConsumer);
+        return startMessageSubscription(consumerId, DEFAULT_CONSUMER_PRIORITY, messageConsumer);
     }
 
-    public LarkEventSubscriptionStatus startMessageSubscription(
-            String profileName,
+    public synchronized LarkEventSubscriptionStatus startMessageSubscription(
             String consumerId,
             int priority,
             Consumer<LarkMessageEvent> messageConsumer
     ) {
-        String normalizedProfileName = normalizeProfileName(profileName);
         String normalizedConsumerId = normalizeConsumerId(consumerId, messageConsumer);
-        SubscriptionState existing = subscriptions.get(normalizedProfileName);
+        SubscriptionState existing = subscription;
         if (existing != null && existing.isRunning()) {
             existing.putConsumer(normalizedConsumerId, priority, messageConsumer);
             return existing.toStatus();
         }
 
-        SubscriptionState state = new SubscriptionState(normalizedProfileName, Instant.now().toString());
+        SubscriptionState state = new SubscriptionState(Instant.now().toString());
         state.putConsumer(normalizedConsumerId, priority, messageConsumer);
         try {
             LarkMessageEventConnection connection = connectionFactory.start(state::dispatch);
             state.connection = connection;
-            subscriptions.put(normalizedProfileName, state);
+            subscription = state;
             return state.toStatus();
         } catch (RuntimeException exception) {
             state.lastError = exception.getMessage();
@@ -65,35 +57,29 @@ public class LarkMessageEventSubscriptionService {
         }
     }
 
-    public LarkEventSubscriptionStatus stopMessageSubscription(String profileName) {
-        String normalizedProfileName = normalizeProfileName(profileName);
-        SubscriptionState state = subscriptions.remove(normalizedProfileName);
+    public synchronized LarkEventSubscriptionStatus stopMessageSubscription() {
+        SubscriptionState state = subscription;
+        subscription = null;
         if (state == null) {
-            return new LarkEventSubscriptionStatus(normalizedProfileName, false, "stopped", null, null);
+            return new LarkEventSubscriptionStatus(false, "stopped", null, null);
         }
         state.stop();
         return state.toStatus();
     }
 
-    public LarkEventSubscriptionStatus getMessageSubscriptionStatus(String profileName) {
-        String normalizedProfileName = normalizeProfileName(profileName);
-        SubscriptionState state = subscriptions.get(normalizedProfileName);
+    public LarkEventSubscriptionStatus getMessageSubscriptionStatus() {
+        SubscriptionState state = subscription;
         if (state == null) {
-            return new LarkEventSubscriptionStatus(normalizedProfileName, false, "stopped", null, null);
+            return new LarkEventSubscriptionStatus(false, "stopped", null, null);
         }
         return state.toStatus();
     }
 
-    public void stopAllMessageSubscriptions() {
-        subscriptions.values().forEach(SubscriptionState::stop);
-        subscriptions.clear();
-    }
-
-    private String normalizeProfileName(String profileName) {
-        if (profileName == null || profileName.isBlank()) {
-            return DEFAULT_PROFILE_NAME;
+    public synchronized void stopAllMessageSubscriptions() {
+        if (subscription != null) {
+            subscription.stop();
+            subscription = null;
         }
-        return profileName.trim();
     }
 
     private String normalizeConsumerId(String consumerId, Consumer<LarkMessageEvent> messageConsumer) {
@@ -109,14 +95,12 @@ public class LarkMessageEventSubscriptionService {
 
     private static final class SubscriptionState {
 
-        private final String profileName;
         private final String startedAt;
-        private final Map<String, ConsumerRegistration> consumers = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, ConsumerRegistration> consumers = new ConcurrentHashMap<>();
         private LarkMessageEventConnection connection;
         private volatile String lastError;
 
-        private SubscriptionState(String profileName, String startedAt) {
-            this.profileName = profileName;
+        private SubscriptionState(String startedAt) {
             this.startedAt = startedAt;
         }
 
@@ -151,7 +135,6 @@ public class LarkMessageEventSubscriptionService {
         private LarkEventSubscriptionStatus toStatus() {
             boolean running = isRunning();
             return new LarkEventSubscriptionStatus(
-                    profileName,
                     running,
                     running ? "running" : "stopped",
                     startedAt,

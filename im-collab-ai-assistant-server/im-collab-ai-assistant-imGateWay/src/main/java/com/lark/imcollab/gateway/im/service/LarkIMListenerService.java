@@ -44,44 +44,32 @@ public class LarkIMListenerService {
         this.streamService = streamService;
     }
 
-    public LarkIMListenerStatusResponse start(LarkIMListenerStartRequest request) {
-        String profileName = requireValue(request.profileName(), "profileName");
-        return startWithProfile(profileName);
-    }
-
-    public LarkIMListenerStatusResponse startDefault(String profileName) {
-        return startWithProfile(normalizeOptionalProfileName(profileName));
-    }
-
-    private LarkIMListenerStatusResponse startWithProfile(String profileName) {
+    public LarkIMListenerStatusResponse start() {
         LarkEventSubscriptionStatus status = subscriptionService.startMessageSubscription(
-                profileName,
                 CONSUMER_ID,
-                event -> handleMessage(profileName, event)
+                this::handleMessage
         );
         return mapStatus(status);
     }
 
-    public LarkIMListenerStatusResponse stop(LarkIMListenerStartRequest request) {
-        String profileName = requireValue(request.profileName(), "profileName");
-        return mapStatus(subscriptionService.stopMessageSubscription(profileName));
+    public LarkIMListenerStatusResponse stop() {
+        return mapStatus(subscriptionService.stopMessageSubscription());
     }
 
-    public LarkIMListenerStatusResponse status(String profileName) {
-        return mapStatus(subscriptionService.getMessageSubscriptionStatus(requireValue(profileName, "profileName")));
+    public LarkIMListenerStatusResponse status() {
+        return mapStatus(subscriptionService.getMessageSubscriptionStatus());
     }
 
-    private void handleMessage(String profileName, LarkMessageEvent event) {
+    private void handleMessage(LarkMessageEvent event) {
         if (!shouldTriggerAgent(event)) {
             return;
         }
         try {
             dispatcher.dispatch(mapInboundMessage(event));
-            replyTool.replyText(profileName, event.messageId(), RECEIPT_TEXT);
+            replyTool.replyText(event.messageId(), RECEIPT_TEXT);
             publishReceiptReply(event);
         } catch (RuntimeException exception) {
-            log.warn("Failed to handle inbound Lark message: messageId={}, profileName={}",
-                    event.messageId(), profileName, exception);
+            log.warn("Failed to handle inbound Lark message: messageId={}", event.messageId(), exception);
         }
     }
 
@@ -118,25 +106,10 @@ public class LarkIMListenerService {
 
     private LarkIMListenerStatusResponse mapStatus(LarkEventSubscriptionStatus status) {
         return new LarkIMListenerStatusResponse(
-                status.profileName(),
                 status.running(),
                 status.state(),
                 status.startedAt(),
                 status.lastError()
         );
-    }
-
-    private String requireValue(String value, String fieldName) {
-        if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must be provided");
-        }
-        return value.trim();
-    }
-
-    private String normalizeOptionalProfileName(String profileName) {
-        if (profileName == null || profileName.isBlank()) {
-            return null;
-        }
-        return profileName.trim();
     }
 }

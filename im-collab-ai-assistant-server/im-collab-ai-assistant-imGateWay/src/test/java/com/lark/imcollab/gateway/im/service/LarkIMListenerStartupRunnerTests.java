@@ -1,6 +1,5 @@
 package com.lark.imcollab.gateway.im.service;
 
-import com.lark.imcollab.gateway.config.LarkAppProperties;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -8,35 +7,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LarkIMListenerStartupRunnerTests {
 
     @Test
-    void shouldStartMatchedProfileForConfiguredAppId() {
+    void shouldStartDefaultListenerWhenAutoStartEnabled() {
         RecordingListenerService listenerService = new RecordingListenerService();
         LarkIMListenerProperties properties = new LarkIMListenerProperties();
         properties.setAutoStartEnabled(true);
         LarkIMListenerStartupRunner runner = new LarkIMListenerStartupRunner(
                 properties,
-                listenerService,
-                new StubProfileResolver("imcollab-demo-app")
+                listenerService
         );
 
         runner.run(null);
 
-        assertThat(listenerService.startedProfileName).isEqualTo("imcollab-demo-app");
-    }
-
-    @Test
-    void shouldUseLarkCliDefaultProfileWhenConfiguredAppIdHasNoMatchedProfile() {
-        RecordingListenerService listenerService = new RecordingListenerService();
-        LarkIMListenerProperties properties = new LarkIMListenerProperties();
-        properties.setAutoStartEnabled(true);
-        LarkIMListenerStartupRunner runner = new LarkIMListenerStartupRunner(
-                properties,
-                listenerService,
-                new StubProfileResolver(null)
-        );
-
-        runner.run(null);
-
-        assertThat(listenerService.startedProfileName).isNull();
+        assertThat(listenerService.startCalled).isTrue();
     }
 
     @Test
@@ -46,8 +28,7 @@ class LarkIMListenerStartupRunnerTests {
         properties.setAutoStartEnabled(false);
         LarkIMListenerStartupRunner runner = new LarkIMListenerStartupRunner(
                 properties,
-                listenerService,
-                new StubProfileResolver("imcollab-demo-app")
+                listenerService
         );
 
         runner.run(null);
@@ -58,33 +39,15 @@ class LarkIMListenerStartupRunnerTests {
     private static final class RecordingListenerService extends LarkIMListenerService {
 
         private boolean startCalled;
-        private String startedProfileName;
 
         RecordingListenerService() {
             super(null, null, null);
         }
 
         @Override
-        public LarkIMListenerStatusResponse startDefault(String profileName) {
+        public LarkIMListenerStatusResponse start() {
             startCalled = true;
-            startedProfileName = profileName;
-            return new LarkIMListenerStatusResponse(profileName == null ? "default" : profileName, true, "running",
-                    null, null);
-        }
-    }
-
-    private static final class StubProfileResolver extends LarkCliProfileResolver {
-
-        private final String profileName;
-
-        StubProfileResolver(String profileName) {
-            super(new LarkAppProperties(), null);
-            this.profileName = profileName;
-        }
-
-        @Override
-        public String resolveConfiguredAppProfileName() {
-            return profileName;
+            return new LarkIMListenerStatusResponse(true, "running", null, null);
         }
     }
 }
