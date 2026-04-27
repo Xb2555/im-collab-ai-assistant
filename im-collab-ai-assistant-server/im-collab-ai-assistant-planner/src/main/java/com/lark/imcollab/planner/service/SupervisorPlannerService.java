@@ -82,6 +82,9 @@ public class SupervisorPlannerService {
             session.setClarificationAnswers(List.of(feedback));
         }
         session.setTransitionReason("Resume: " + feedback);
+
+        // 保持版本号每次请求只加1
+        session.setVersion(session.getVersion() - 1);
         sessionService.save(session);
         sessionService.publishEvent(taskId, "RESUMED");
 
