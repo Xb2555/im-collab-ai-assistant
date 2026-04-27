@@ -18,6 +18,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -66,7 +67,10 @@ public class SupervisorPlannerService {
             String responseText = supervisorResponse.getText();
 
             if (needsClarification(responseText, session)) {
-                return handleAskUser(session, responseText);
+                List<String> questions = buildClarificationQuestions(responseText, rawInstruction);
+                if (!questions.isEmpty()) {
+                    return handleAskUser(session, questions);
+                }
             }
 
             return runPlanning(session, prompt, planningConfig, resolvedTaskId);
@@ -117,7 +121,10 @@ public class SupervisorPlannerService {
         try {
             AssistantMessage supervisorResponse = supervisorAgent.call(feedback, config);
             if (needsClarification(supervisorResponse.getText(), session)) {
-                return handleAskUser(session, supervisorResponse.getText());
+                List<String> questions = buildClarificationQuestions(supervisorResponse.getText(), feedback);
+                if (!questions.isEmpty()) {
+                    return handleAskUser(session, questions);
+                }
             }
             return runPlanning(session, feedback, planningConfig, taskId);
         } catch (Exception e) {
@@ -202,8 +209,7 @@ public class SupervisorPlannerService {
         return qualityService.extractPlanCards(plannerResponse.getText(), taskId);
     }
 
-    private PlanTaskSession handleAskUser(PlanTaskSession session, String responseText) {
-        List<String> questions = extractQuestions(responseText);
+    private PlanTaskSession handleAskUser(PlanTaskSession session, List<String> questions) {
         session.setClarificationQuestions(questions);
         session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
         session.setTransitionReason("Information insufficient");
@@ -270,6 +276,70 @@ public class SupervisorPlannerService {
         return "";
     }
 
+    private List<String> buildClarificationQuestions(String responseText, String userInput) {
+        List<String> parsed = extractQuestions(responseText);
+        if (parsed.isEmpty()) {
+            return parsed;
+        }
+        return filterRedundantQuestions(parsed, userInput);
+    }
+
+    private List<String> filterRedundantQuestions(List<String> questions, String userInput) {
+        OutputPreference preference = detectOutputPreference(userInput);
+        LinkedHashSet<String> deduplicated = new LinkedHashSet<>();
+        for (String question : questions) {
+            if (question == null || question.isBlank()) {
+                continue;
+            }
+            String normalized = question.trim();
+            if (preference.isSingleType() && isOutputTypeChoiceQuestion(normalized)) {
+                continue;
+            }
+            deduplicated.add(normalized);
+        }
+        return new ArrayList<>(deduplicated);
+    }
+
+    private OutputPreference detectOutputPreference(String input) {
+        if (input == null || input.isBlank()) {
+            return OutputPreference.UNKNOWN;
+        }
+        String normalized = input.toLowerCase();
+        boolean hasDoc = containsAny(normalized,
+                "文档", "纪要", "报告", "总结", "周报", "方案", "需求文档", "prd", "doc", "markdown", "md");
+        boolean hasPpt = containsAny(normalized,
+                "ppt", "幻灯", "slides", "slide", "演示稿", "路演", "deck");
+        if (hasDoc && hasPpt) {
+            return OutputPreference.BOTH;
+        }
+        if (hasDoc) {
+            return OutputPreference.DOC_ONLY;
+        }
+        if (hasPpt) {
+            return OutputPreference.PPT_ONLY;
+        }
+        return OutputPreference.UNKNOWN;
+    }
+
+    private boolean isOutputTypeChoiceQuestion(String question) {
+        String normalized = question.toLowerCase();
+        boolean hasOutputWords = containsAny(normalized, "输出", "形式", "目标", "文档", "ppt", "演示稿", "幻灯");
+        boolean hasChoiceWords = containsAny(normalized, "还是", "两者", "都要", "二者", "或者");
+        return hasOutputWords && hasChoiceWords;
+    }
+
+    private boolean containsAny(String text, String... keywords) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private List<String> extractQuestions(String text) {
         try {
             com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
@@ -292,5 +362,16 @@ public class SupervisorPlannerService {
             }
         } catch (Exception ignored) {}
         return List.of();
+    }
+
+    private enum OutputPreference {
+        UNKNOWN,
+        DOC_ONLY,
+        PPT_ONLY,
+        BOTH;
+
+        boolean isSingleType() {
+            return this == DOC_ONLY || this == PPT_ONLY;
+        }
     }
 }
