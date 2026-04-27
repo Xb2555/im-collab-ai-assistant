@@ -1,6 +1,5 @@
-package com.lark.imcollab.skills.lark.event;
+package com.lark.imcollab.gateway.im.event;
 
-import com.lark.imcollab.skills.lark.config.LarkSdkProperties;
 import com.lark.oapi.event.EventDispatcher;
 import com.lark.oapi.service.im.ImService;
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1;
@@ -21,11 +20,11 @@ public class LarkSdkMessageEventConnectionFactory implements LarkMessageEventCon
 
     private static final Logger log = LoggerFactory.getLogger(LarkSdkMessageEventConnectionFactory.class);
 
-    private final LarkSdkProperties properties;
+    private final LarkIMEventProperties properties;
     private final LarkMessageEventMapper mapper;
 
     public LarkSdkMessageEventConnectionFactory(
-            LarkSdkProperties properties,
+            LarkIMEventProperties properties,
             LarkMessageEventMapper mapper
     ) {
         this.properties = properties;
@@ -34,8 +33,8 @@ public class LarkSdkMessageEventConnectionFactory implements LarkMessageEventCon
 
     @Override
     public LarkMessageEventConnection start(Consumer<LarkMessageEvent> messageConsumer) {
-        String appId = requireValue(properties.getAppId(), "imcollab.skills.lark-sdk.app-id");
-        String appSecret = requireValue(properties.getAppSecret(), "imcollab.skills.lark-sdk.app-secret");
+        String appId = requireValue(properties.getAppId(), "imcollab.gateway.im.event.app-id");
+        String appSecret = requireValue(properties.getAppSecret(), "imcollab.gateway.im.event.app-secret");
         EventDispatcher eventHandler = EventDispatcher.newBuilder("", "")
                 .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
                     @Override

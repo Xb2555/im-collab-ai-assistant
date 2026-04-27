@@ -1,4 +1,4 @@
-package com.lark.imcollab.skills.lark.event;
+package com.lark.imcollab.gateway.im.event;
 
 import org.junit.jupiter.api.Test;
 
@@ -8,14 +8,14 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class LarkMessageEventSubscriptionToolTests {
+class LarkMessageEventSubscriptionServiceTests {
 
     @Test
     void shouldStartSdkMessageReceiveSubscriptionForProfile() {
         StubConnectionFactory factory = new StubConnectionFactory();
-        LarkMessageEventSubscriptionTool tool = new LarkMessageEventSubscriptionTool(factory);
+        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
 
-        LarkEventSubscriptionStatus status = tool.startMessageSubscription("profile-123", event -> {
+        LarkEventSubscriptionStatus status = service.startMessageSubscription("profile-123", event -> {
         });
 
         assertThat(status.profileName()).isEqualTo("profile-123");
@@ -26,9 +26,9 @@ class LarkMessageEventSubscriptionToolTests {
     @Test
     void shouldStartSdkMessageReceiveSubscriptionForDefaultProfile() {
         StubConnectionFactory factory = new StubConnectionFactory();
-        LarkMessageEventSubscriptionTool tool = new LarkMessageEventSubscriptionTool(factory);
+        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
 
-        LarkEventSubscriptionStatus status = tool.startMessageSubscription(null, event -> {
+        LarkEventSubscriptionStatus status = service.startMessageSubscription(null, event -> {
         });
 
         assertThat(status.profileName()).isEqualTo("default");
@@ -39,11 +39,11 @@ class LarkMessageEventSubscriptionToolTests {
     @Test
     void shouldReuseRunningSubscriptionForSameProfile() {
         StubConnectionFactory factory = new StubConnectionFactory();
-        LarkMessageEventSubscriptionTool tool = new LarkMessageEventSubscriptionTool(factory);
+        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
 
-        tool.startMessageSubscription("profile-123", event -> {
+        service.startMessageSubscription("profile-123", event -> {
         });
-        LarkEventSubscriptionStatus status = tool.startMessageSubscription("profile-123", event -> {
+        LarkEventSubscriptionStatus status = service.startMessageSubscription("profile-123", event -> {
         });
 
         assertThat(status.profileName()).isEqualTo("profile-123");
@@ -54,9 +54,9 @@ class LarkMessageEventSubscriptionToolTests {
     @Test
     void shouldDeliverSdkEventsToConsumer() {
         StubConnectionFactory factory = new StubConnectionFactory();
-        LarkMessageEventSubscriptionTool tool = new LarkMessageEventSubscriptionTool(factory);
+        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
         List<LarkMessageEvent> events = new ArrayList<>();
-        tool.startMessageSubscription("profile-123", events::add);
+        service.startMessageSubscription("profile-123", events::add);
 
         factory.connection.emit(new LarkMessageEvent(
                 "evt-1",
@@ -78,11 +78,11 @@ class LarkMessageEventSubscriptionToolTests {
     @Test
     void shouldStopExistingSubscription() {
         StubConnectionFactory factory = new StubConnectionFactory();
-        LarkMessageEventSubscriptionTool tool = new LarkMessageEventSubscriptionTool(factory);
-        tool.startMessageSubscription("profile-123", event -> {
+        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
+        service.startMessageSubscription("profile-123", event -> {
         });
 
-        LarkEventSubscriptionStatus status = tool.stopMessageSubscription("profile-123");
+        LarkEventSubscriptionStatus status = service.stopMessageSubscription("profile-123");
 
         assertThat(factory.connection.stopped).isTrue();
         assertThat(status.running()).isFalse();
@@ -91,17 +91,17 @@ class LarkMessageEventSubscriptionToolTests {
     @Test
     void shouldStopAllSubscriptions() {
         StubConnectionFactory factory = new StubConnectionFactory();
-        LarkMessageEventSubscriptionTool tool = new LarkMessageEventSubscriptionTool(factory);
-        tool.startMessageSubscription("profile-123", event -> {
+        LarkMessageEventSubscriptionService service = new LarkMessageEventSubscriptionService(factory);
+        service.startMessageSubscription("profile-123", event -> {
         });
-        tool.startMessageSubscription("profile-456", event -> {
+        service.startMessageSubscription("profile-456", event -> {
         });
 
-        tool.stopAllMessageSubscriptions();
+        service.stopAllMessageSubscriptions();
 
         assertThat(factory.connections).allSatisfy(connection -> assertThat(connection.stopped).isTrue());
-        assertThat(tool.getMessageSubscriptionStatus("profile-123").running()).isFalse();
-        assertThat(tool.getMessageSubscriptionStatus("profile-456").running()).isFalse();
+        assertThat(service.getMessageSubscriptionStatus("profile-123").running()).isFalse();
+        assertThat(service.getMessageSubscriptionStatus("profile-456").running()).isFalse();
     }
 
     private static final class StubConnectionFactory implements LarkMessageEventConnectionFactory {

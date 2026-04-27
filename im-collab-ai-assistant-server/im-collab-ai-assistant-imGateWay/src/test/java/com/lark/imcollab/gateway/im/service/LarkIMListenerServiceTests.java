@@ -2,9 +2,9 @@ package com.lark.imcollab.gateway.im.service;
 
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
-import com.lark.imcollab.skills.lark.event.LarkEventSubscriptionStatus;
-import com.lark.imcollab.skills.lark.event.LarkMessageEvent;
-import com.lark.imcollab.skills.lark.event.LarkMessageEventSubscriptionTool;
+import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
+import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
+import com.lark.imcollab.gateway.im.event.LarkMessageEventSubscriptionService;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
 import org.junit.jupiter.api.Test;
 
@@ -112,7 +112,7 @@ class LarkIMListenerServiceTests {
         assertThat(subscriptionTool.profileName).isEqualTo("imcollab-demo-app");
     }
 
-    private static final class StubSubscriptionTool extends LarkMessageEventSubscriptionTool {
+    private static final class StubSubscriptionTool extends LarkMessageEventSubscriptionService {
 
         private Consumer<LarkMessageEvent> consumer;
         private String profileName;

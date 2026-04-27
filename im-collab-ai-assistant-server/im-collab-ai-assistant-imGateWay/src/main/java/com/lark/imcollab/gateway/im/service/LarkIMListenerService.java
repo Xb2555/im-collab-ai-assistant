@@ -2,9 +2,9 @@ package com.lark.imcollab.gateway.im.service;
 
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
-import com.lark.imcollab.skills.lark.event.LarkEventSubscriptionStatus;
-import com.lark.imcollab.skills.lark.event.LarkMessageEvent;
-import com.lark.imcollab.skills.lark.event.LarkMessageEventSubscriptionTool;
+import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
+import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
+import com.lark.imcollab.gateway.im.event.LarkMessageEventSubscriptionService;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,16 +16,16 @@ public class LarkIMListenerService {
     private static final Logger log = LoggerFactory.getLogger(LarkIMListenerService.class);
     private static final String RECEIPT_TEXT = "任务已收到，正在处理";
 
-    private final LarkMessageEventSubscriptionTool subscriptionTool;
+    private final LarkMessageEventSubscriptionService subscriptionService;
     private final LarkMessageReplyTool replyTool;
     private final LarkInboundMessageDispatcher dispatcher;
 
     public LarkIMListenerService(
-            LarkMessageEventSubscriptionTool subscriptionTool,
+            LarkMessageEventSubscriptionService subscriptionService,
             LarkMessageReplyTool replyTool,
             LarkInboundMessageDispatcher dispatcher
     ) {
-        this.subscriptionTool = subscriptionTool;
+        this.subscriptionService = subscriptionService;
         this.replyTool = replyTool;
         this.dispatcher = dispatcher;
     }
@@ -40,7 +40,7 @@ public class LarkIMListenerService {
     }
 
     private LarkIMListenerStatusResponse startWithProfile(String profileName) {
-        LarkEventSubscriptionStatus status = subscriptionTool.startMessageSubscription(
+        LarkEventSubscriptionStatus status = subscriptionService.startMessageSubscription(
                 profileName,
                 event -> handleMessage(profileName, event)
         );
@@ -49,11 +49,11 @@ public class LarkIMListenerService {
 
     public LarkIMListenerStatusResponse stop(LarkIMListenerStartRequest request) {
         String profileName = requireValue(request.profileName(), "profileName");
-        return mapStatus(subscriptionTool.stopMessageSubscription(profileName));
+        return mapStatus(subscriptionService.stopMessageSubscription(profileName));
     }
 
     public LarkIMListenerStatusResponse status(String profileName) {
-        return mapStatus(subscriptionTool.getMessageSubscriptionStatus(requireValue(profileName, "profileName")));
+        return mapStatus(subscriptionService.getMessageSubscriptionStatus(requireValue(profileName, "profileName")));
     }
 
     private void handleMessage(String profileName, LarkMessageEvent event) {

@@ -1,4 +1,4 @@
-package com.lark.imcollab.skills.lark.event;
+package com.lark.imcollab.gateway.im.event;
 
 public record LarkEventSubscriptionStatus(
         String profileName,

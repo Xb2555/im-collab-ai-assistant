@@ -1,4 +1,4 @@
-package com.lark.imcollab.skills.lark.event;
+package com.lark.imcollab.gateway.im.event;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.oapi.event.model.Header;

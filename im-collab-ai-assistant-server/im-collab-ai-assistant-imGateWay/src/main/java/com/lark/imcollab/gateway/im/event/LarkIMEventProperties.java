@@ -1,9 +1,9 @@
-package com.lark.imcollab.skills.lark.config;
+package com.lark.imcollab.gateway.im.event;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-@ConfigurationProperties(prefix = "imcollab.skills.lark-sdk")
-public class LarkSdkProperties {
+@ConfigurationProperties(prefix = "imcollab.gateway.im.event")
+public class LarkIMEventProperties {
 
     private String appId = "";
     private String appSecret = "";

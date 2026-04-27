@@ -5,6 +5,11 @@ imcollab:
     im:
       listener:
         auto-start-enabled: true
+      event:
+        app-id: ${LARK_APP_ID:}
+        app-secret: ${LARK_APP_SECRET:}
+        domain: ${LARK_OPEN_DOMAIN:}
+        auto-reconnect-enabled: true
     auth:
       app-id: ${LARK_APP_ID:}
       app-secret: ${LARK_APP_SECRET:}
@@ -13,12 +18,6 @@ imcollab:
       jwt-ttl: 2h
       jwt-secret: ${IMCOLLAB_JWT_SECRET:changemechangeme}
       state-ttl: 10m
-  skills:
-    lark-sdk:
-      app-id: ${LARK_APP_ID:}
-      app-secret: ${LARK_APP_SECRET:}
-      domain: ${LARK_OPEN_DOMAIN:}
-      auto-reconnect-enabled: true
   store:
     redis:
       host: localhost

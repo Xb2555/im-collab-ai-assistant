@@ -1,20 +1,20 @@
 package com.lark.imcollab.gateway.im.service;
 
-import com.lark.imcollab.skills.lark.event.LarkMessageEventSubscriptionTool;
+import com.lark.imcollab.gateway.im.event.LarkMessageEventSubscriptionService;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Component;
 
 @Component
 public class LarkIMListenerShutdown {
 
-    private final LarkMessageEventSubscriptionTool subscriptionTool;
+    private final LarkMessageEventSubscriptionService subscriptionService;
 
-    public LarkIMListenerShutdown(LarkMessageEventSubscriptionTool subscriptionTool) {
-        this.subscriptionTool = subscriptionTool;
+    public LarkIMListenerShutdown(LarkMessageEventSubscriptionService subscriptionService) {
+        this.subscriptionService = subscriptionService;
     }
 
     @PreDestroy
     public void destroy() {
-        subscriptionTool.stopAllMessageSubscriptions();
+        subscriptionService.stopAllMessageSubscriptions();
     }
 }

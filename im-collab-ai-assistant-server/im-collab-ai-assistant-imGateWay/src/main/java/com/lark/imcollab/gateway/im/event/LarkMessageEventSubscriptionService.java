@@ -1,21 +1,21 @@
-package com.lark.imcollab.skills.lark.event;
+package com.lark.imcollab.gateway.im.event;
 
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
-@Component
-public class LarkMessageEventSubscriptionTool {
+@Service
+public class LarkMessageEventSubscriptionService {
 
     private static final String DEFAULT_PROFILE_NAME = "default";
 
     private final LarkMessageEventConnectionFactory connectionFactory;
     private final Map<String, SubscriptionState> subscriptions = new ConcurrentHashMap<>();
 
-    public LarkMessageEventSubscriptionTool(LarkMessageEventConnectionFactory connectionFactory) {
+    public LarkMessageEventSubscriptionService(LarkMessageEventConnectionFactory connectionFactory) {
         this.connectionFactory = connectionFactory;
     }
 
