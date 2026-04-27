@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.ArrayList;
 import java.util.List;
 
 @Component
@@ -39,9 +40,11 @@ public class LarkCliClient {
 
     public CliCommandResult execute(List<String> args, String stdin, long timeoutMillis) {
         try {
+            List<String> fullArgs = new ArrayList<>(properties.getArgs());
+            fullArgs.addAll(args);
             return cliCommandExecutor.execute(new CliCommand(
                     properties.getExecutable(),
-                    args,
+                    fullArgs,
                     normalizeWorkingDirectory(properties.getWorkingDirectory()),
                     stdin,
                     timeoutMillis

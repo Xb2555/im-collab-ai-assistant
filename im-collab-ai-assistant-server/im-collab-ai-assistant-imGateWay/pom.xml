@@ -34,6 +34,11 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>com.lark</groupId>
+            <artifactId>im-collab-ai-assistant-planner</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>com.larksuite.oapi</groupId>
             <artifactId>oapi-sdk</artifactId>
             <version>2.5.3</version>

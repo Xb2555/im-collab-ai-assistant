@@ -1,7 +1,7 @@
 package com.lark.imcollab.gateway.auth.controller;
 
-import com.lark.imcollab.common.exception.ErrorCode;
 import com.lark.imcollab.common.model.entity.BaseResponse;
+import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.utils.ResultUtils;
 import com.lark.imcollab.gateway.auth.dto.LarkFrontendUserResponse;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthCallbackRequest;
@@ -40,7 +40,7 @@ public class LarkOAuthController {
         try {
             return ResponseEntity.ok(ResultUtils.success(oauthService.completeLogin(request.code(), request.state())));
         } catch (RuntimeException exception) {
-            return ResponseEntity.badRequest().body(ResultUtils.error(ErrorCode.PARAMS_ERROR, exception.getMessage()));
+            return ResponseEntity.badRequest().body(ResultUtils.error(BusinessCode.PARAMS_ERROR, exception.getMessage()));
         }
     }
 
@@ -50,7 +50,7 @@ public class LarkOAuthController {
     ) {
         Optional<LarkFrontendUserResponse> user = oauthService.findCurrentUserByBusinessToken(extractBearerToken(authorization));
         if (user.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ResultUtils.error(ErrorCode.NOT_LOGIN_ERROR));
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ResultUtils.error(BusinessCode.NOT_LOGIN_ERROR));
         }
         return ResponseEntity.ok(ResultUtils.success(user.get()));
     }

@@ -7,6 +7,7 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.BaseResponse;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.utils.ResultUtils;
+import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
 import com.lark.imcollab.common.model.dto.ResumeRequest;
@@ -33,6 +34,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class PlannerController {
 
+    private final PlannerPlanFacade plannerPlanFacade;
     private final SupervisorPlannerService supervisorPlannerService;
     private final PlannerSessionService sessionService;
     private final TaskResultEvaluationService evaluationService;
@@ -41,7 +43,7 @@ public class PlannerController {
     @PostMapping("/plan")
     @Operation(summary = "1. 创建任务规划", description = "根据用户原始指令理解意图并拆解为可执行的任务卡片")
     public BaseResponse<PlanTaskSession> plan(@RequestBody PlanRequest request) {
-        PlanTaskSession session = supervisorPlannerService.plan(
+        PlanTaskSession session = plannerPlanFacade.plan(
                 request.getRawInstruction(),
                 request.getWorkspaceContext(),
                 request.getTaskId(),
