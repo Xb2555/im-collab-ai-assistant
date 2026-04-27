@@ -1,4 +1,4 @@
-package com.lark.imcollab.planner.controller.dto;
+package com.lark.imcollab.common.model.dto;
 
 import lombok.Data;
 

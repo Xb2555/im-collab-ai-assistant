@@ -1,5 +1,7 @@
 package com.lark.imcollab.common.exception;
 
+import com.lark.imcollab.common.model.enums.BusinessCode;
+
 public class ThrowUtils {
 
     /**
@@ -18,20 +20,20 @@ public class ThrowUtils {
      * 条件成立则抛异常
      *
      * @param condition 条件
-     * @param errorCode 错误码
+     * @param businessCode 错误码
      */
-    public static void throwIf(boolean condition, ErrorCode errorCode) {
-        throwIf(condition, new AiAssistantException(errorCode));
+    public static void throwIf(boolean condition, BusinessCode businessCode) {
+        throwIf(condition, new AiAssistantException(businessCode));
     }
 
     /**
      * 条件成立则抛异常
      *
      * @param condition 条件
-     * @param errorCode 错误码
+     * @param businessCode 错误码
      * @param message   错误信息
      */
-    public static void throwIf(boolean condition, ErrorCode errorCode, String message) {
-        throwIf(condition, new AiAssistantException(errorCode, message));
+    public static void throwIf(boolean condition, BusinessCode businessCode, String message) {
+        throwIf(condition, new AiAssistantException(businessCode, message));
     }
 }

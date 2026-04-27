@@ -1,6 +1,6 @@
 package com.lark.imcollab.common.model.entity;
 
-import com.lark.imcollab.common.exception.ErrorCode;
+import com.lark.imcollab.common.model.enums.BusinessCode;
 import lombok.Data;
 
 import java.io.Serializable;
@@ -32,7 +32,7 @@ public class BaseResponse<T> implements Serializable {
         this(code, data, "");
     }
 
-    public BaseResponse(ErrorCode errorCode) {
-        this(errorCode.getCode(), null, errorCode.getMessage());
+    public BaseResponse(BusinessCode businessCode) {
+        this(businessCode.getCode(), null, businessCode.getMessage());
     }
 }

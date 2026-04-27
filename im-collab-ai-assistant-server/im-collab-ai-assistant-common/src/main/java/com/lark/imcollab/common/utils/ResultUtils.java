@@ -1,7 +1,7 @@
 package com.lark.imcollab.common.utils;
 
 
-import com.lark.imcollab.common.exception.ErrorCode;
+import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.entity.BaseResponse;
 
 /**
@@ -23,11 +23,11 @@ public class ResultUtils {
     /**
      * 失败
      *
-     * @param errorCode 错误码
+     * @param businessCode 错误码
      * @return 响应
      */
-    public static BaseResponse<?> error(ErrorCode errorCode) {
-        return new BaseResponse<>(errorCode);
+    public static BaseResponse<?> error(BusinessCode businessCode) {
+        return new BaseResponse<>(businessCode);
     }
 
     /**
@@ -44,10 +44,10 @@ public class ResultUtils {
     /**
      * 失败
      *
-     * @param errorCode 错误码
+     * @param businessCode 错误码
      * @return 响应
      */
-    public static BaseResponse<?> error(ErrorCode errorCode, String message) {
-        return new BaseResponse<>(errorCode.getCode(), null, message);
+    public static BaseResponse<?> error(BusinessCode businessCode, String message) {
+        return new BaseResponse<>(businessCode.getCode(), null, message);
     }
 }

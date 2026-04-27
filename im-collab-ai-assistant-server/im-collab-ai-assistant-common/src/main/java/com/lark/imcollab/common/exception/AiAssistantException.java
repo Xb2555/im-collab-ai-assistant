@@ -1,5 +1,6 @@
 package com.lark.imcollab.common.exception;
 
+import com.lark.imcollab.common.model.enums.BusinessCode;
 import lombok.Getter;
 
 @Getter
@@ -15,13 +16,13 @@ public class AiAssistantException extends RuntimeException{
         this.code = code;
     }
 
-    public AiAssistantException(ErrorCode errorCode) {
-        super(errorCode.getMessage());
-        this.code = errorCode.getCode();
+    public AiAssistantException(BusinessCode businessCode) {
+        super(businessCode.getMessage());
+        this.code = businessCode.getCode();
     }
 
-    public AiAssistantException(ErrorCode errorCode, String message) {
+    public AiAssistantException(BusinessCode businessCode, String message) {
         super(message);
-        this.code = errorCode.getCode();
+        this.code = businessCode.getCode();
     }
 }

@@ -1,9 +1,9 @@
-package com.lark.imcollab.common.exception;
+package com.lark.imcollab.common.model.enums;
 
 import lombok.Getter;
 
 @Getter
-public enum ErrorCode {
+public enum BusinessCode {
 
     SUCCESS(0, "ok"),
     PARAMS_ERROR(40000, "请求参数错误"),
@@ -26,7 +26,7 @@ public enum ErrorCode {
      */
     private final String message;
 
-    ErrorCode(int code, String message) {
+    BusinessCode(int code, String message) {
         this.code = code;
         this.message = message;
     }
