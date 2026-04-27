@@ -118,7 +118,7 @@ class LarkIMListenerServiceTests {
         private String profileName;
 
         StubSubscriptionTool() {
-            super(null, null, null);
+            super(null);
         }
 
         @Override

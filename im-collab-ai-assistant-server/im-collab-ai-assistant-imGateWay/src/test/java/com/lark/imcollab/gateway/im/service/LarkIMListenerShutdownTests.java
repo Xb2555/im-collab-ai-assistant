@@ -22,7 +22,7 @@ class LarkIMListenerShutdownTests {
         private boolean stopAllCalled;
 
         RecordingSubscriptionTool() {
-            super(null, null, null);
+            super(null);
         }
 
         @Override
