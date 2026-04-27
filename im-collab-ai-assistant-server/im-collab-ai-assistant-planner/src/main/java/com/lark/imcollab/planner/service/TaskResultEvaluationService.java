@@ -2,7 +2,6 @@ package com.lark.imcollab.planner.service;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
-import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SequentialAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,7 +14,7 @@ import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
-import com.lark.imcollab.planner.prompt.PlannerPromptFacade;
+import com.lark.imcollab.planner.prompt.AgentPromptContext;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -32,27 +31,18 @@ import java.util.Optional;
 public class TaskResultEvaluationService {
 
     private final SequentialAgent resultEvaluationSequence;
-    private final ReactAgent resultJudgeAgent;
-    private final ReactAgent resultAdviceAgent;
     private final PlannerStateStore repository;
     private final PlannerSessionService sessionService;
-    private final PlannerPromptFacade promptFacade;
     private final ObjectMapper objectMapper;
 
     public TaskResultEvaluationService(
             @Qualifier("resultEvaluationSequence") SequentialAgent resultEvaluationSequence,
-            @Qualifier("resultJudgeAgent") ReactAgent resultJudgeAgent,
-            @Qualifier("resultAdviceAgent") ReactAgent resultAdviceAgent,
             PlannerStateStore repository,
             PlannerSessionService sessionService,
-            PlannerPromptFacade promptFacade,
             ObjectMapper objectMapper) {
         this.resultEvaluationSequence = resultEvaluationSequence;
-        this.resultJudgeAgent = resultJudgeAgent;
-        this.resultAdviceAgent = resultAdviceAgent;
         this.repository = repository;
         this.sessionService = sessionService;
-        this.promptFacade = promptFacade;
         this.objectMapper = objectMapper;
     }
 
@@ -62,11 +52,11 @@ public class TaskResultEvaluationService {
 
         String prompt = buildEvalPrompt(submission);
         PlanTaskSession session = sessionService.get(submission.getTaskId());
-        applyDynamicPrompts(session, submission);
+        RunnableConfig evalConfig = AgentPromptContext.withSubmissionPromptContext(config, session, submission);
 
         TaskResultEvaluation evaluation;
         try {
-            Optional<OverAllState> result = resultEvaluationSequence.invoke(prompt, config);
+            Optional<OverAllState> result = resultEvaluationSequence.invoke(prompt, evalConfig);
             evaluation = extractEvaluationFromState(result, submission)
                     .orElseGet(() -> {
                         String output = extractLastAssistantText(result);
@@ -88,13 +78,6 @@ public class TaskResultEvaluationService {
         writeBackToCard(submission, evaluation);
         sessionService.publishEvent(submission.getTaskId(), evaluation.getVerdict().name());
         return evaluation;
-    }
-
-    private void applyDynamicPrompts(PlanTaskSession session, TaskSubmissionResult submission) {
-        resultJudgeAgent.setSystemPrompt(promptFacade.resultJudgePrompt(session));
-        resultJudgeAgent.setInstruction(promptFacade.resultJudgeInstruction(session, submission));
-        resultAdviceAgent.setSystemPrompt(promptFacade.resultAdvicePrompt(session));
-        resultAdviceAgent.setInstruction(promptFacade.resultAdviceInstruction(session, submission));
     }
 
     private void writeBackToCard(TaskSubmissionResult submission, TaskResultEvaluation evaluation) {

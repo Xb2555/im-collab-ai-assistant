@@ -32,15 +32,23 @@ public class PlannerPromptFacade {
     }
 
     public String supervisorPrompt(PlanTaskSession session) {
-        return renderRoleAware("supervisor-system.md", session);
+        return renderComposedPrompt("supervisor-system.md", "supervisor-examples.md", session, Map.of());
+    }
+
+    public String supervisorInstruction(PlanTaskSession session) {
+        return renderRoleAware("supervisor-instruction.md", session);
     }
 
     public String clarificationPrompt(PlanTaskSession session) {
-        return renderRoleAware("clarification-system.md", session);
+        return renderComposedPrompt("clarification-system.md", "clarification-examples.md", session, Map.of());
+    }
+
+    public String clarificationInstruction(PlanTaskSession session) {
+        return renderRoleAware("clarification-instruction.md", session);
     }
 
     public String planningPrompt(PlanTaskSession session) {
-        return renderRoleAware("planning-system.md", session);
+        return renderComposedPrompt("planning-system.md", "planning-examples.md", session, Map.of());
     }
 
     public String planningInstruction(PlanTaskSession session) {
@@ -60,7 +68,7 @@ public class PlannerPromptFacade {
     }
 
     public String resultJudgePrompt(PlanTaskSession session) {
-        return renderRoleAware("result-judge-system.md", session);
+        return renderComposedPrompt("result-judge-system.md", "result-judge-examples.md", session, Map.of());
     }
 
     public String resultJudgeInstruction(PlanTaskSession session) {
@@ -72,8 +80,12 @@ public class PlannerPromptFacade {
         return renderRoleAware("result-judge-instruction.md", session, extra);
     }
 
+    public String resultJudgeInstruction(PlanTaskSession session, Map<String, String> variables) {
+        return renderRoleAware("result-judge-instruction.md", session, variables == null ? Map.of() : variables);
+    }
+
     public String resultAdvicePrompt(PlanTaskSession session) {
-        return renderRoleAware("result-advice-system.md", session);
+        return renderComposedPrompt("result-advice-system.md", "result-advice-examples.md", session, Map.of());
     }
 
     public String resultAdviceInstruction(PlanTaskSession session) {
@@ -83,6 +95,10 @@ public class PlannerPromptFacade {
     public String resultAdviceInstruction(PlanTaskSession session, TaskSubmissionResult submission) {
         Map<String, String> extra = buildSubmissionVars(submission);
         return renderRoleAware("result-advice-instruction.md", session, extra);
+    }
+
+    public String resultAdviceInstruction(PlanTaskSession session, Map<String, String> variables) {
+        return renderRoleAware("result-advice-instruction.md", session, variables == null ? Map.of() : variables);
     }
 
     public String summarizationPrompt() {
@@ -108,6 +124,27 @@ public class PlannerPromptFacade {
         String version = fallback(session != null ? session.getPromptVersion() : null, defaults.getVersion());
         String promptPath = resolveTemplatePath(profile, version, fileName);
         return templateService.render(promptPath, variables);
+    }
+
+    private String renderComposedPrompt(
+            String systemFileName,
+            String examplesFileName,
+            PlanTaskSession session,
+            Map<String, String> extraVariables) {
+        String system = renderRoleAware(systemFileName, session, extraVariables);
+        String examples = tryRenderRoleAware(examplesFileName, session, extraVariables);
+        if (examples.isBlank()) {
+            return system;
+        }
+        return system + System.lineSeparator() + System.lineSeparator() + examples;
+    }
+
+    private String tryRenderRoleAware(String fileName, PlanTaskSession session, Map<String, String> extraVariables) {
+        try {
+            return renderRoleAware(fileName, session, extraVariables);
+        } catch (IllegalArgumentException ignored) {
+            return "";
+        }
     }
 
     private String resolveTemplatePath(String profile, String version, String fileName) {

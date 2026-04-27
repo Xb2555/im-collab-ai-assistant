@@ -11,7 +11,7 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.planner.exception.SupervisorException;
-import com.lark.imcollab.planner.prompt.PlannerPromptFacade;
+import com.lark.imcollab.planner.prompt.AgentPromptContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -22,7 +22,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -32,19 +31,16 @@ public class SupervisorPlannerService {
     private final ReactAgent planningAgent;
     private final PlannerSessionService sessionService;
     private final PlanQualityService qualityService;
-    private final PlannerPromptFacade promptFacade;
 
     public SupervisorPlannerService(
             @Qualifier("supervisorAgent") ReactAgent supervisorAgent,
             @Qualifier("planningAgent") ReactAgent planningAgent,
             PlannerSessionService sessionService,
-            PlanQualityService qualityService,
-            PlannerPromptFacade promptFacade) {
+            PlanQualityService qualityService) {
         this.supervisorAgent = supervisorAgent;
         this.planningAgent = planningAgent;
         this.sessionService = sessionService;
         this.qualityService = qualityService;
-        this.promptFacade = promptFacade;
     }
 
     public PlanTaskSession plan(String rawInstruction, WorkspaceContext workspaceContext, String taskId, String userFeedback) {
@@ -52,11 +48,18 @@ public class SupervisorPlannerService {
         PlanTaskSession session = sessionService.getOrCreate(resolvedTaskId);
         session.setTurnCount(session.getTurnCount() + 1);
         mergePersona(session, workspaceContext);
-        applyDynamicPrompts(session);
 
         String prompt = buildPrompt(rawInstruction, workspaceContext, userFeedback, session);
-        String planningInstruction = buildPlanningInstruction(rawInstruction, workspaceContext, session);
-        RunnableConfig config = RunnableConfig.builder().threadId(resolvedTaskId).build();
+        RunnableConfig config = AgentPromptContext.withPlanningPromptContext(
+                RunnableConfig.builder().threadId(resolvedTaskId).build(),
+                session,
+                rawInstruction,
+                extractContext(workspaceContext));
+        RunnableConfig planningConfig = AgentPromptContext.withPlanningPromptContext(
+                RunnableConfig.builder().threadId(resolvedTaskId + "-planning").build(),
+                session,
+                rawInstruction,
+                extractContext(workspaceContext));
 
         try {
             AssistantMessage supervisorResponse = supervisorAgent.call(prompt, config);
@@ -66,7 +69,7 @@ public class SupervisorPlannerService {
                 return handleAskUser(session, responseText);
             }
 
-            return runPlanning(session, prompt, planningInstruction, resolvedTaskId);
+            return runPlanning(session, prompt, planningConfig, resolvedTaskId);
         } catch (GraphRunnerException e) {
             log.error("Supervisor error for task {}: {}", resolvedTaskId, e.getMessage(), e);
             return failSession(session, e.getMessage());
@@ -94,31 +97,32 @@ public class SupervisorPlannerService {
             session.setClarificationAnswers(List.of(feedback));
         }
         session.setTransitionReason("Resume: " + feedback);
-        applyDynamicPrompts(session);
 
         // 保持版本号每次请求只加1
         session.setVersion(session.getVersion() - 1);
         sessionService.save(session);
         sessionService.publishEvent(taskId, "RESUMED");
 
-        RunnableConfig config = RunnableConfig.builder().threadId(taskId).build();
+        RunnableConfig config = AgentPromptContext.withPlanningPromptContext(
+                RunnableConfig.builder().threadId(taskId).build(),
+                session,
+                feedback,
+                "");
+        RunnableConfig planningConfig = AgentPromptContext.withPlanningPromptContext(
+                RunnableConfig.builder().threadId(taskId + "-planning").build(),
+                session,
+                feedback,
+                "");
 
         try {
             AssistantMessage supervisorResponse = supervisorAgent.call(feedback, config);
             if (needsClarification(supervisorResponse.getText(), session)) {
                 return handleAskUser(session, supervisorResponse.getText());
             }
-            String planningInstruction = buildPlanningInstruction(feedback, null, session);
-            return runPlanning(session, feedback, planningInstruction, taskId);
+            return runPlanning(session, feedback, planningConfig, taskId);
         } catch (Exception e) {
             return failSession(session, e.getMessage());
         }
-    }
-
-    private void applyDynamicPrompts(PlanTaskSession session) {
-        supervisorAgent.setSystemPrompt(promptFacade.supervisorPrompt(session));
-        planningAgent.setSystemPrompt(promptFacade.planningPrompt(session));
-        planningAgent.setInstruction(promptFacade.planningInstruction(session));
     }
 
     private void mergePersona(PlanTaskSession session, WorkspaceContext workspaceContext) {
@@ -148,10 +152,8 @@ public class SupervisorPlannerService {
         }
     }
 
-    private PlanTaskSession runPlanning(PlanTaskSession session, String prompt, String planningInstruction, String taskId) {
+    private PlanTaskSession runPlanning(PlanTaskSession session, String prompt, RunnableConfig config, String taskId) {
         try {
-            RunnableConfig config = RunnableConfig.builder().threadId(taskId + "-planning").build();
-            planningAgent.setInstruction(planningInstruction);
             Optional<com.alibaba.cloud.ai.graph.OverAllState> state = planningAgent.invoke(prompt, config);
             List<UserPlanCard> planCards = extractPlanCardsFromState(state, taskId)
                     .orElseGet(() -> {
@@ -255,19 +257,17 @@ public class SupervisorPlannerService {
         return sb.toString();
     }
 
-    private String buildPlanningInstruction(String rawInstruction, WorkspaceContext workspaceContext, PlanTaskSession session) {
-        String context = "";
-        if (workspaceContext != null) {
-            if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
-                context = String.join("\n", workspaceContext.getSelectedMessages());
-            } else if (workspaceContext.getTimeRange() != null && !workspaceContext.getTimeRange().isBlank()) {
-                context = workspaceContext.getTimeRange();
-            }
+    private String extractContext(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null) {
+            return "";
         }
-        String clarificationAnswers = session.getClarificationAnswers() == null
-                ? ""
-                : session.getClarificationAnswers().stream().collect(Collectors.joining("；"));
-        return promptFacade.planningInstruction(session, rawInstruction, context, clarificationAnswers);
+        if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
+            return String.join("\n", workspaceContext.getSelectedMessages());
+        }
+        if (workspaceContext.getTimeRange() != null && !workspaceContext.getTimeRange().isBlank()) {
+            return workspaceContext.getTimeRange();
+        }
+        return "";
     }
 
     private List<String> extractQuestions(String text) {

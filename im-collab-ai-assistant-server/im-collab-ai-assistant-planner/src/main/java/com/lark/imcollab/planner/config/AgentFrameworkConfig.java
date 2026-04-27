@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.extension.interceptor.SubAgentInterceptor;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SequentialAgent;
 import com.alibaba.cloud.ai.graph.agent.hook.summarization.SummarizationHook;
+import com.lark.imcollab.planner.prompt.AgentPromptInterceptor;
 import com.lark.imcollab.common.model.entity.PlanCardsOutput;
 import com.lark.imcollab.common.model.entity.ResultAdviceOutput;
 import com.lark.imcollab.common.model.entity.ResultJudgeOutput;
@@ -43,12 +44,14 @@ public class AgentFrameworkConfig {
     public ReactAgent clarificationAgent(
             ChatModel chatModel,
             SummarizationHook summarizationHook,
-            PlannerPromptFacade promptFacade) {
+            PlannerPromptFacade promptFacade,
+            AgentPromptInterceptor agentPromptInterceptor) {
         return ReactAgent.builder()
                 .name("clarification-agent")
                 .description("澄清信息不足时生成反问问题")
                 .systemPrompt(promptFacade.clarificationPrompt(DEFAULT_PROMPT_SESSION))
                 .model(chatModel)
+                .interceptors(agentPromptInterceptor)
                 .hooks(summarizationHook)
                 .build();
     }
@@ -57,14 +60,15 @@ public class AgentFrameworkConfig {
     public ReactAgent planningAgent(
             ChatModel chatModel,
             SummarizationHook summarizationHook,
-            PlannerPromptFacade promptFacade) {
+            PlannerPromptFacade promptFacade,
+            AgentPromptInterceptor agentPromptInterceptor) {
         return ReactAgent.builder()
                 .name("planning-agent")
                 .description("将用户需求拆解为结构化任务计划")
                 .systemPrompt(promptFacade.planningPrompt(DEFAULT_PROMPT_SESSION))
-                .instruction(promptFacade.planningInstruction(DEFAULT_PROMPT_SESSION))
                 .outputType(PlanCardsOutput.class)
                 .model(chatModel)
+                .interceptors(agentPromptInterceptor)
                 .hooks(summarizationHook)
                 .build();
     }
@@ -72,28 +76,30 @@ public class AgentFrameworkConfig {
     @Bean(name = "resultJudgeAgent")
     public ReactAgent resultJudgeAgent(
             ChatModel chatModel,
-            PlannerPromptFacade promptFacade) {
+            PlannerPromptFacade promptFacade,
+            AgentPromptInterceptor agentPromptInterceptor) {
         return ReactAgent.builder()
                 .name("result-judge-agent")
                 .description("对子任务执行结果进行评分")
                 .systemPrompt(promptFacade.resultJudgePrompt(DEFAULT_PROMPT_SESSION))
-                .instruction(promptFacade.resultJudgeInstruction(DEFAULT_PROMPT_SESSION))
                 .outputType(ResultJudgeOutput.class)
                 .model(chatModel)
+                .interceptors(agentPromptInterceptor)
                 .build();
     }
 
     @Bean(name = "resultAdviceAgent")
     public ReactAgent resultAdviceAgent(
             ChatModel chatModel,
-            PlannerPromptFacade promptFacade) {
+            PlannerPromptFacade promptFacade,
+            AgentPromptInterceptor agentPromptInterceptor) {
         return ReactAgent.builder()
                 .name("result-advice-agent")
                 .description("基于评分结果生成改进建议并输出最终裁决")
                 .systemPrompt(promptFacade.resultAdvicePrompt(DEFAULT_PROMPT_SESSION))
-                .instruction(promptFacade.resultAdviceInstruction(DEFAULT_PROMPT_SESSION))
                 .outputType(ResultAdviceOutput.class)
                 .model(chatModel)
+                .interceptors(agentPromptInterceptor)
                 .build();
     }
 
@@ -134,13 +140,14 @@ public class AgentFrameworkConfig {
             SubAgentInterceptor subAgentInterceptor,
             SummarizationHook summarizationHook,
             PlannerPromptFacade promptFacade,
+            AgentPromptInterceptor agentPromptInterceptor,
             CheckpointSaverProvider checkpointSaverProvider) {
         return ReactAgent.builder()
                 .name("supervisor-agent")
                 .description("任务规划主控 Agent")
                 .systemPrompt(promptFacade.supervisorPrompt(DEFAULT_PROMPT_SESSION))
                 .model(chatModel)
-                .interceptors(subAgentInterceptor)
+                .interceptors(subAgentInterceptor, agentPromptInterceptor)
                 .hooks(summarizationHook)
                 .saver(checkpointSaverProvider.getCheckpointSaver())
                 .build();
