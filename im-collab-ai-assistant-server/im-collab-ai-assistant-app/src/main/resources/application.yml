@@ -1,0 +1,61 @@
+server:
+  port: ${APP_SERVER_PORT:8078}
+
+spring:
+  application:
+    name: im-collab-ai-assistant-app
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+
+imcollab:
+  store:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      username: ${REDIS_USERNAME:}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:2s}
+    redisson:
+      enabled: ${REDISSON_ENABLED:true}
+  skills:
+    lark-cli:
+      executable: ${LARK_CLI_EXECUTABLE:lark-cli}
+      args: ${LARK_CLI_ARGS:}
+      working-directory: ${LARK_CLI_WORKING_DIR:}
+  gateway:
+    lark:
+      app-id: ${LARK_APP_ID:}
+      app-secret: ${LARK_APP_SECRET:}
+      open-api-base-url: ${LARK_OPEN_API_BASE_URL:}
+    im:
+      listener:
+        auto-start-enabled: ${LARK_IM_LISTENER_AUTO_START:true}
+      event:
+        domain: ${LARK_OPEN_DOMAIN:}
+        auto-reconnect-enabled: ${LARK_IM_AUTO_RECONNECT:true}
+    auth:
+      redirect-uri: ${LARK_OAUTH_REDIRECT_URI:http://localhost:8078/api/auth/lark/callback}
+      session-ttl: ${LARK_AUTH_SESSION_TTL:12h}
+      jwt-ttl: ${LARK_AUTH_JWT_TTL:2h}
+      jwt-secret: ${IMCOLLAB_JWT_SECRET:change-this-jwt-secret}
+      state-ttl: ${LARK_AUTH_STATE_TTL:10m}
+
+planner:
+  prompt:
+    profile: ${PLANNER_PROMPT_PROFILE:default}
+    version: ${PLANNER_PROMPT_VERSION:v1}
+    fallback-profile: ${PLANNER_PROMPT_FALLBACK_PROFILE:default}
+    fallback-version: ${PLANNER_PROMPT_FALLBACK_VERSION:v1}
+    default-profession: ${PLANNER_DEFAULT_PROFESSION:General Knowledge Worker}
+    default-industry: ${PLANNER_DEFAULT_INDUSTRY:General Industry}
+    default-audience: ${PLANNER_DEFAULT_AUDIENCE:General Audience}
+    default-tone: ${PLANNER_DEFAULT_TONE:Professional, Clear, Actionable}
+    default-language: ${PLANNER_DEFAULT_LANGUAGE:zh-CN}
+  quality:
+    pass-threshold: ${PLANNER_QUALITY_PASS_THRESHOLD:70}
+    max-replan-attempts: ${PLANNER_QUALITY_MAX_REPLAN_ATTEMPTS:2}
+  summarization:
+    max-tokens-before-summary: ${PLANNER_SUMMARY_MAX_TOKENS:6000}
+    messages-to-keep: ${PLANNER_SUMMARY_MESSAGES_TO_KEEP:20}
