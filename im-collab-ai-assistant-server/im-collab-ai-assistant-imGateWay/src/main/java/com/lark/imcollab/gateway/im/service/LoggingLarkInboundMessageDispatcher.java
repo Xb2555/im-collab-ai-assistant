@@ -31,6 +31,8 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             "\u89c4\u5212\u5df2\u751f\u6210\uff0c\u5efa\u8bae\u6309\u4ee5\u4e0b\u65b9\u5f0f\u63a8\u8fdb\uff1a";
     private static final String PLAN_EDIT_HINT =
             "\u5982\u9700\u4fee\u6539\u8ba1\u5212\uff0c\u53ef\u4ee5\u76f4\u63a5\u56de\u590d\u8865\u5145\u8981\u6c42\u3002";
+    private static final String TASK_CANCELLED_TEXT =
+            "\u4efb\u52a1\u5df2\u53d6\u6d88\uff0c\u540e\u7eed\u4e0d\u4f1a\u7ee7\u7eed\u89c4\u5212\u6216\u6267\u884c\u3002";
 
     private final PlannerPlanFacade plannerPlanFacade;
     private final LarkMessageReplyTool replyTool;
@@ -71,6 +73,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         );
         replyClarificationIfNeeded(message, session);
         replyPlanReadyIfNeeded(message, session);
+        replyCancelledIfNeeded(message, session);
         log.info("Scenario A inbound Lark message bridged to planner: messageId={}, chatId={}, taskId={}, phase={}",
                 message.messageId(), message.chatId(), session.getTaskId(), session.getPlanningPhase());
         return session;
@@ -100,6 +103,14 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         }
         safeReplyText(message, session, planReadyText, "plan ready");
         safePublishText(message, session, planReadyText, "plan ready");
+    }
+
+    private void replyCancelledIfNeeded(LarkInboundMessage message, PlanTaskSession session) {
+        if (message == null || session == null || session.getPlanningPhase() != PlanningPhaseEnum.ABORTED) {
+            return;
+        }
+        safeReplyText(message, session, TASK_CANCELLED_TEXT, "cancelled");
+        safePublishText(message, session, TASK_CANCELLED_TEXT, "cancelled");
     }
 
     private String buildClarificationText(PlanTaskSession session) {
