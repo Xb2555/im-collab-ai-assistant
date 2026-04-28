@@ -22,12 +22,12 @@ class LarkMessageReplyToolTests {
         LarkCliClient client = new LarkCliClient(executor, new LarkCliProperties(), new ObjectMapper());
         LarkMessageReplyTool tool = new LarkMessageReplyTool(client);
 
-        tool.replyText("om_1", "任务已收到，正在处理");
+        tool.replyText("om_1", "任务已收到，正在处理。\n请稍等，我会先分析并继续回复你。\n");
 
         assertThat(executor.recordedCommands()).hasSize(1);
         assertThat(executor.recordedCommands().get(0).arguments())
                 .containsExactly("im", "+messages-reply", "--message-id", "om_1", "--text",
-                        "任务已收到，正在处理", "--as", "bot");
+                        "任务已收到，正在处理。\n请稍等，我会先分析并继续回复你。", "--as", "bot");
     }
 
     private static final class StubCliCommandExecutor implements CliCommandExecutor {

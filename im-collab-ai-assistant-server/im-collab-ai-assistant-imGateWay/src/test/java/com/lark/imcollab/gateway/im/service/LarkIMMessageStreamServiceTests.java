@@ -78,7 +78,7 @@ class LarkIMMessageStreamServiceTests {
                 "ou_1",
                 "1773491924409",
                 true
-        ), "任务已收到，正在处理");
+        ), "任务已收到，正在处理。\n请稍等，我会先分析并继续回复你。\n");
 
         assertThat(emitter.sendCount).isEqualTo(1);
     }

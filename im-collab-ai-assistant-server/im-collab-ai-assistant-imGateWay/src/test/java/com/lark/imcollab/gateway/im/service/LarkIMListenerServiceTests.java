@@ -5,6 +5,7 @@ import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
 import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
 import com.lark.imcollab.gateway.im.event.LarkMessageEventSubscriptionService;
+import com.lark.imcollab.skills.lark.im.LarkBotMessageResult;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +15,8 @@ import java.util.function.Consumer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class LarkIMListenerServiceTests {
+
+    private static final String RECEIPT_TEXT = "任务已收到，正在处理。\n请稍等，我会先分析并继续回复你。\n";
 
     @Test
     void shouldStartListenerAndDispatchIncomingMessageWithReceiptReply() {
@@ -39,8 +42,10 @@ class LarkIMListenerServiceTests {
         assertThat(dispatcher.messages).hasSize(1);
         assertThat(dispatcher.messages.get(0).inputSource()).isEqualTo(InputSourceEnum.LARK_PRIVATE_CHAT);
         assertThat(dispatcher.messages.get(0).content()).isEqualTo("生成周报");
-        assertThat(replyTool.messageId).isEqualTo("om_1");
-        assertThat(replyTool.text).isEqualTo("任务已收到，正在处理");
+        assertThat(replyTool.openId).isEqualTo("ou_1");
+        assertThat(replyTool.privateText).isEqualTo(RECEIPT_TEXT);
+        assertThat(replyTool.privateSendCount).isEqualTo(1);
+        assertThat(replyTool.replyCount).isZero();
     }
 
     @Test
@@ -72,8 +77,9 @@ class LarkIMListenerServiceTests {
         assertThat(dispatcher.messages).hasSize(1);
         assertThat(dispatcher.messages.get(0).inputSource()).isEqualTo(InputSourceEnum.LARK_GROUP);
         assertThat(replyTool.replyCount).isEqualTo(1);
+        assertThat(replyTool.privateSendCount).isZero();
         assertThat(streamService.sourceEvent.messageId()).isEqualTo("om_2");
-        assertThat(streamService.text).isEqualTo("任务已收到，正在处理");
+        assertThat(streamService.text).isEqualTo(RECEIPT_TEXT);
     }
 
     @Test
@@ -98,6 +104,44 @@ class LarkIMListenerServiceTests {
 
         assertThat(dispatcher.messages).isEmpty();
         assertThat(replyTool.replyCount).isZero();
+        assertThat(replyTool.privateSendCount).isZero();
+    }
+
+    @Test
+    void shouldIgnoreMirroredP2PEventAfterGroupMention() {
+        StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
+        StubReplyTool replyTool = new StubReplyTool();
+        RecordingDispatcher dispatcher = new RecordingDispatcher();
+        LarkIMListenerService service = new LarkIMListenerService(subscriptionTool, replyTool, dispatcher);
+        service.start();
+
+        subscriptionTool.emit(new LarkMessageEvent(
+                "evt-group",
+                "om_group",
+                "oc_group",
+                "group",
+                "text",
+                "帮我生成周报",
+                "ou_5",
+                "1773491924413",
+                true
+        ));
+        subscriptionTool.emit(new LarkMessageEvent(
+                "evt-p2p",
+                "om_p2p",
+                "oc_p2p",
+                "p2p",
+                "text",
+                "帮我生成周报",
+                "ou_5",
+                "1773491924414",
+                false
+        ));
+
+        assertThat(dispatcher.messages).hasSize(1);
+        assertThat(dispatcher.messages.get(0).chatId()).isEqualTo("oc_group");
+        assertThat(replyTool.replyCount).isEqualTo(1);
+        assertThat(replyTool.privateSendCount).isZero();
     }
 
     @Test
@@ -124,7 +168,8 @@ class LarkIMListenerServiceTests {
         ));
 
         assertThat(status.running()).isTrue();
-        assertThat(replyTool.messageId).isEqualTo("om_3");
+        assertThat(replyTool.openId).isEqualTo("ou_3");
+        assertThat(replyTool.privateSendCount).isEqualTo(1);
     }
 
     private static final class StubSubscriptionTool extends LarkMessageEventSubscriptionService {
@@ -153,7 +198,10 @@ class LarkIMListenerServiceTests {
 
         private String messageId;
         private String text;
+        private String openId;
+        private String privateText;
         private int replyCount;
+        private int privateSendCount;
 
         StubReplyTool() {
             super(null);
@@ -164,6 +212,14 @@ class LarkIMListenerServiceTests {
             this.messageId = messageId;
             this.text = text;
             this.replyCount++;
+        }
+
+        @Override
+        public LarkBotMessageResult sendPrivateText(String openId, String text) {
+            this.openId = openId;
+            this.privateText = text;
+            this.privateSendCount++;
+            return new LarkBotMessageResult("om_bot", "oc_p2p", "1773491924411");
         }
     }
 
