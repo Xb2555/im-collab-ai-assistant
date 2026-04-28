@@ -2,6 +2,8 @@ package com.lark.imcollab.harness.document.config;
 
 import com.alibaba.cloud.ai.graph.CompiledGraph;
 import com.alibaba.cloud.ai.graph.CompileConfig;
+import com.alibaba.cloud.ai.graph.KeyStrategy;
+import com.alibaba.cloud.ai.graph.KeyStrategyFactoryBuilder;
 import com.alibaba.cloud.ai.graph.StateGraph;
 import com.alibaba.cloud.ai.graph.checkpoint.config.SaverConfig;
 import com.lark.imcollab.harness.document.service.DocumentWorkflowNodes;
@@ -18,7 +20,12 @@ public class DocumentWorkflowConfig {
     public CompiledGraph documentWorkflow(
             DocumentWorkflowNodes nodes,
             CheckpointSaverProvider checkpointSaverProvider) throws Exception {
-        StateGraph graph = new StateGraph("document-doc-workflow");
+        StateGraph graph = new StateGraph(
+                "document-doc-workflow",
+                new KeyStrategyFactoryBuilder()
+                        .defaultStrategy(KeyStrategy.REPLACE)
+                        .build()
+        );
         graph.addNode("dispatch_doc_task", nodes::dispatchDocTask);
         graph.addNode("generate_outline", nodes::generateOutline);
         graph.addNode("generate_sections", nodes::generateSections);

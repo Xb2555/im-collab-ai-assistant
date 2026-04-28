@@ -261,9 +261,11 @@ public class DocumentWorkflowNodes {
     }
 
     private DocumentOutline invokeOutline(String prompt, String taskId, String cardId) {
-        AssistantMessage response = documentOutlineAgent.call(prompt, RunnableConfig.builder()
-                .threadId(taskId + ":" + cardId + ":outline")
-                .build());
+        AssistantMessage response = callAgent(
+                documentOutlineAgent,
+                prompt,
+                taskId + ":" + cardId + ":outline"
+        );
         try {
             return objectMapper.readValue(response.getText(), DocumentOutline.class);
         } catch (Exception exception) {
@@ -283,9 +285,11 @@ public class DocumentWorkflowNodes {
             String prompt = "文档标题：" + outline.getTitle()
                     + "\n章节：" + section.getHeading()
                     + "\n要点：" + String.join("；", section.getKeyPoints());
-            AssistantMessage response = documentSectionAgent.call(prompt, RunnableConfig.builder()
-                    .threadId(taskId + ":" + cardId + ":section:" + normalize(section.getHeading()))
-                    .build());
+            AssistantMessage response = callAgent(
+                    documentSectionAgent,
+                    prompt,
+                    taskId + ":" + cardId + ":section:" + normalize(section.getHeading())
+            );
             drafts.add(parseSectionDraft(response.getText(), section));
         }
         return drafts;
@@ -303,9 +307,11 @@ public class DocumentWorkflowNodes {
             prompt.append("人工反馈：").append(userFeedback).append("\n");
         }
         drafts.forEach(section -> prompt.append("## ").append(section.getHeading()).append("\n").append(section.getBody()).append("\n"));
-        AssistantMessage response = documentReviewAgent.call(prompt.toString(), RunnableConfig.builder()
-                .threadId(taskId + ":" + cardId + ":review")
-                .build());
+        AssistantMessage response = callAgent(
+                documentReviewAgent,
+                prompt.toString(),
+                taskId + ":" + cardId + ":review"
+        );
         try {
             return objectMapper.readValue(response.getText(), DocumentReviewResult.class);
         } catch (Exception exception) {
@@ -320,6 +326,14 @@ public class DocumentWorkflowNodes {
                     .supplementalSections(List.of())
                     .summary(response.getText())
                     .build();
+        }
+    }
+
+    private AssistantMessage callAgent(ReactAgent agent, String prompt, String threadId) {
+        try {
+            return agent.call(prompt, RunnableConfig.builder().threadId(threadId).build());
+        } catch (Exception exception) {
+            throw new IllegalStateException("Failed to invoke agent for thread: " + threadId, exception);
         }
     }
 
