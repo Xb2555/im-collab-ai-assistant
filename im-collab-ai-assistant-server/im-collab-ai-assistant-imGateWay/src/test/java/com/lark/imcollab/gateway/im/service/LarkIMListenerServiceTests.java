@@ -289,6 +289,44 @@ class LarkIMListenerServiceTests {
     }
 
     @Test
+    void shouldSkipReceiptWhenPlannerAbortedTask() {
+        StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
+        StubReplyTool replyTool = new StubReplyTool();
+        RecordingDispatcher dispatcher = new RecordingDispatcher();
+        dispatcher.nextSession = PlanTaskSession.builder()
+                .taskId("task-aborted")
+                .planningPhase(PlanningPhaseEnum.ABORTED)
+                .build();
+        RecordingStreamService streamService = new RecordingStreamService();
+        LarkIMListenerService service = new LarkIMListenerService(
+                subscriptionTool,
+                replyTool,
+                dispatcher,
+                streamService,
+                null
+        );
+        service.start();
+
+        subscriptionTool.emit(new LarkMessageEvent(
+                "evt-abort",
+                "om_abort",
+                "oc_p2p",
+                "thread-abort",
+                "p2p",
+                "text",
+                "\u53d6\u6d88\u4efb\u52a1",
+                "ou_abort",
+                "1773491924419",
+                true
+        ));
+
+        assertThat(dispatcher.messages).hasSize(1);
+        assertThat(replyTool.privateSendCount).isZero();
+        assertThat(replyTool.replyCount).isZero();
+        assertThat(streamService.sourceEvent).isNull();
+    }
+
+    @Test
     void shouldIgnoreDuplicateInboundMessageByEventId() {
         StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
         StubReplyTool replyTool = new StubReplyTool();

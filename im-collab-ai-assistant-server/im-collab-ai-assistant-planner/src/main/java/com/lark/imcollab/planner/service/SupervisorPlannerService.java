@@ -81,6 +81,9 @@ public class SupervisorPlannerService {
         try {
             AssistantMessage supervisorResponse = supervisorAgent.call(prompt, supervisorConfig);
             String responseText = supervisorResponse.getText();
+            if (isCurrentSessionAborted(resolvedTaskId)) {
+                return sessionService.get(resolvedTaskId);
+            }
 
             if (needsClarification(responseText, session)) {
                 List<String> questions = buildClarificationQuestions(responseText, rawInstruction);
@@ -125,6 +128,9 @@ public class SupervisorPlannerService {
                             throw new SupervisorException(e.getMessage());
                         }
                     });
+            if (isCurrentSessionAborted(taskId)) {
+                return sessionService.get(taskId);
+            }
             qualityService.applyPlanAdjustment(session, blueprint, adjustmentInstruction);
             sessionService.save(session);
             taskRuntimeService.projectPlanReady(session, TaskEventTypeEnum.PLAN_ADJUSTED);
@@ -180,6 +186,9 @@ public class SupervisorPlannerService {
 
         try {
             AssistantMessage supervisorResponse = supervisorAgent.call(feedback, supervisorConfig);
+            if (isCurrentSessionAborted(taskId)) {
+                return sessionService.get(taskId);
+            }
             if (needsClarification(supervisorResponse.getText(), session)) {
                 List<String> questions = buildClarificationQuestions(supervisorResponse.getText(), feedback);
                 if (!questions.isEmpty()) {
@@ -213,6 +222,9 @@ public class SupervisorPlannerService {
             if (intentSnapshot == null) {
                 throw new SupervisorException("Intent understanding returned empty output");
             }
+            if (isCurrentSessionAborted(taskId)) {
+                throw new SupervisorException("Task was cancelled");
+            }
             qualityService.applyIntentReady(session, intentSnapshot);
             sessionService.save(session);
             sessionService.publishEvent(taskId, "INTENT_READY");
@@ -224,6 +236,9 @@ public class SupervisorPlannerService {
 
     private PlanTaskSession runPlanning(PlanTaskSession session, String prompt, RunnableConfig config, String taskId) {
         try {
+            if (isCurrentSessionAborted(taskId)) {
+                return sessionService.get(taskId);
+            }
             Optional<OverAllState> state = planningAgent.invoke(prompt, config);
             PlanBlueprint blueprint = extractPlanBlueprintFromState(state, taskId, session.getIntentSnapshot())
                     .orElseGet(() -> {
@@ -233,6 +248,9 @@ public class SupervisorPlannerService {
                             throw new SupervisorException(e.getMessage());
                         }
                     });
+            if (isCurrentSessionAborted(taskId)) {
+                return sessionService.get(taskId);
+            }
             qualityService.applyPlanReady(session, blueprint);
             sessionService.save(session);
             taskRuntimeService.projectPlanReady(session, TaskEventTypeEnum.PLAN_READY);
@@ -333,11 +351,27 @@ public class SupervisorPlannerService {
     }
 
     private PlanTaskSession failSession(PlanTaskSession session, String reason) {
+        if (session != null && isCurrentSessionAborted(session.getTaskId())) {
+            return sessionService.get(session.getTaskId());
+        }
         session.setPlanningPhase(PlanningPhaseEnum.FAILED);
         session.setTransitionReason(reason);
         sessionService.save(session);
         sessionService.publishEvent(session.getTaskId(), "FAILED");
         return session;
+    }
+
+    private boolean isCurrentSessionAborted(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            return false;
+        }
+        try {
+            PlanTaskSession current = sessionService.get(taskId);
+            return current != null
+                    && (current.isAborted() || current.getPlanningPhase() == PlanningPhaseEnum.ABORTED);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private RequireInput buildRequireInput(List<String> questions) {

@@ -191,6 +191,38 @@ class LoggingLarkInboundMessageDispatcherTests {
     }
 
     @Test
+    void shouldReplyCancelledWhenPlannerAbortsTask() {
+        PlannerPlanFacade plannerPlanFacade = mock(PlannerPlanFacade.class);
+        StubReplyTool replyTool = new StubReplyTool();
+        RecordingStreamService streamService = new RecordingStreamService();
+        LoggingLarkInboundMessageDispatcher dispatcher =
+                new LoggingLarkInboundMessageDispatcher(plannerPlanFacade, replyTool, streamService, null);
+        when(plannerPlanFacade.plan(any(), any(), eq(null), eq(null)))
+                .thenReturn(PlanTaskSession.builder()
+                        .taskId("task-cancel")
+                        .planningPhase(PlanningPhaseEnum.ABORTED)
+                        .build());
+
+        dispatcher.dispatch(new LarkInboundMessage(
+                "evt-cancel-1",
+                "msg-cancel-1",
+                "chat-cancel-1",
+                "thread-cancel-1",
+                "p2p",
+                "text",
+                "\u53d6\u6d88\u4efb\u52a1",
+                "user-cancel-1",
+                "1773491924414",
+                InputSourceEnum.LARK_PRIVATE_CHAT
+        ));
+
+        assertThat(replyTool.openId).isEqualTo("user-cancel-1");
+        assertThat(replyTool.privateText).isEqualTo("\u4efb\u52a1\u5df2\u53d6\u6d88\uff0c\u540e\u7eed\u4e0d\u4f1a\u7ee7\u7eed\u89c4\u5212\u6216\u6267\u884c\u3002");
+        assertThat(replyTool.privateText).doesNotContain("\u89c4\u5212\u5df2\u751f\u6210");
+        assertThat(streamService.text).isEqualTo(replyTool.privateText);
+    }
+
+    @Test
     void shouldKeepDispatchingWhenClarificationReplyFails() {
         PlannerPlanFacade plannerPlanFacade = mock(PlannerPlanFacade.class);
         ThrowingReplyTool replyTool = new ThrowingReplyTool();

@@ -43,6 +43,10 @@ public class PlannerConversationService {
 
         return switch (intakeDecision.intakeType()) {
             case STATUS_QUERY -> sessionService.get(session.getTaskId());
+            case CANCEL_TASK -> {
+                sessionService.markAborted(session.getTaskId(), "User cancelled from conversation: " + intakeDecision.effectiveInput());
+                yield sessionService.get(session.getTaskId());
+            }
             case CLARIFICATION_REPLY -> supervisorPlannerService.resume(session.getTaskId(), intakeDecision.effectiveInput(), false);
             case NEW_TASK -> supervisorPlannerService.plan(
                     intakeDecision.effectiveInput(),

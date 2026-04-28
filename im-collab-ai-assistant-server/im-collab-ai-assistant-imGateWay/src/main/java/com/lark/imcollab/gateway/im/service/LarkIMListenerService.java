@@ -303,7 +303,8 @@ public class LarkIMListenerService {
     private boolean shouldSendReceipt(PlanTaskSession session) {
         return session == null
                 || (session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
-                && session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY);
+                && session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY
+                && session.getPlanningPhase() != PlanningPhaseEnum.ABORTED);
     }
 
     private boolean hasText(String value) {
