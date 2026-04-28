@@ -52,6 +52,16 @@ public class TaskRuntimeService {
         syncDomainTask(session, graph);
     }
 
+    public void projectPhaseTransition(String taskId, PlanningPhaseEnum phase, TaskEventTypeEnum eventType) {
+        stateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(mapTaskStatus(phase));
+            task.setCurrentStage(phase.name());
+            task.setUpdatedAt(Instant.now());
+            stateStore.saveTask(task);
+        });
+        appendRuntimeEvent(taskId, eventType, null);
+    }
+
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
         return TaskRuntimeSnapshot.builder()
                 .task(stateStore.findTask(taskId).orElse(null))

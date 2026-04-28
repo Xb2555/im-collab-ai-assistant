@@ -13,6 +13,7 @@ import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.utils.ResultUtils;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.SupervisorPlannerService;
@@ -133,6 +134,7 @@ public class PlannerController {
                 session.setTransitionReason("User confirmed execution");
                 sessionService.save(session);
                 sessionService.publishEvent(taskId, "EXECUTING");
+                taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.EXECUTING, TaskEventTypeEnum.PLAN_APPROVED);
                 harnessFacade.startExecution(taskId);
                 yield ResultUtils.success(session);
             }

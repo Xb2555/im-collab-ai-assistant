@@ -71,7 +71,9 @@ public class DocumentWorkflowNodes {
         }
         String taskId = state.value(DocumentStateKeys.TASK_ID, "");
         String userFeedback = state.value(DocumentStateKeys.USER_FEEDBACK, "");
-        String prompt = "生成文档大纲。任务ID：" + taskId + (userFeedback.isBlank() ? "" : "\n用户反馈：" + userFeedback);
+        String rawInstruction = state.value(DocumentStateKeys.RAW_INSTRUCTION, "");
+        String prompt = "生成文档大纲。" + (rawInstruction.isBlank() ? "任务ID：" + taskId : "任务要求：" + rawInstruction)
+                + (userFeedback.isBlank() ? "" : "\n用户反馈：" + userFeedback);
         DocumentOutline outline = invokeOutline(prompt, taskId);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.OUTLINE_TASK_SUFFIX),
                 ArtifactType.DOC_OUTLINE, outline.getTitle(), support.writeJson(outline), null);

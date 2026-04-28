@@ -3,6 +3,7 @@ package com.lark.imcollab.harness.document.workflow;
 public final class DocumentStateKeys {
 
     public static final String TASK_ID = "taskId";
+    public static final String RAW_INSTRUCTION = "rawInstruction";
     public static final String CARD_ID = "cardId";
     public static final String TEMPLATE_TYPE = "templateType";
     public static final String USER_FEEDBACK = "userFeedback";

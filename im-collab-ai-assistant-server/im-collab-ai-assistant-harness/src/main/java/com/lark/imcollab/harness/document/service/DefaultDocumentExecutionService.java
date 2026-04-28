@@ -58,6 +58,11 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
         snapshot.ifPresent(s -> state.putAll(s.state().data()));
         state.put(DocumentStateKeys.TASK_ID, taskId);
         state.put(DocumentStateKeys.USER_FEEDBACK, userFeedback == null ? "" : userFeedback);
+        taskRepository.findById(taskId).ifPresent(task -> {
+            if (task.getRawInstruction() != null && !task.getRawInstruction().isBlank()) {
+                state.put(DocumentStateKeys.RAW_INSTRUCTION, task.getRawInstruction());
+            }
+        });
         documentWorkflow.invoke(new OverAllState(state), config);
     }
 
