@@ -24,10 +24,6 @@
             <artifactId>im-collab-ai-assistant-store</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.lark</groupId>
-            <artifactId>im-collab-ai-assistant-planner</artifactId>
-        </dependency>
-        <dependency>
             <groupId>com.larksuite.oapi</groupId>
             <artifactId>oapi-sdk</artifactId>
         </dependency>
@@ -42,6 +38,9 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
             </plugin>
         </plugins>
     </build>

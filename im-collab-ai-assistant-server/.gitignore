@@ -38,6 +38,7 @@ build/
 .DS_Store?
 
 **/src/main/resources/application.yml
+!im-collab-ai-assistant-app/src/main/resources/application.yml
 ### Local env
 .env
 .env.*
