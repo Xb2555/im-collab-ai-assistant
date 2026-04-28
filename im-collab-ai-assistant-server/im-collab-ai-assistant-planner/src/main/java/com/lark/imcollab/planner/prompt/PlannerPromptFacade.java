@@ -47,6 +47,14 @@ public class PlannerPromptFacade {
         return renderRoleAware("clarification-instruction.md", session);
     }
 
+    public String intentPrompt(PlanTaskSession session) {
+        return renderComposedPrompt("intent-system.md", "intent-examples.md", session, Map.of());
+    }
+
+    public String intentInstruction(PlanTaskSession session) {
+        return renderRoleAware("intent-instruction.md", session);
+    }
+
     public String planningPrompt(PlanTaskSession session) {
         return renderComposedPrompt("planning-system.md", "planning-examples.md", session, Map.of());
     }

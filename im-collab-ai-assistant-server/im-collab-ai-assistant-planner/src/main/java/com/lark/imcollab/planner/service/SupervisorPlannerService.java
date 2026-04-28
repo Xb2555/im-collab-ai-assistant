@@ -1,15 +1,18 @@
 package com.lark.imcollab.planner.service;
 
 import cn.hutool.core.util.StrUtil;
+import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
-import com.lark.imcollab.common.model.entity.PlanCardsOutput;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
+import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.PromptSlotState;
 import com.lark.imcollab.common.model.entity.RequireInput;
-import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.exception.SupervisorException;
 import com.lark.imcollab.planner.prompt.AgentPromptContext;
 import lombok.extern.slf4j.Slf4j;
@@ -24,24 +27,31 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-@Deprecated
 @Slf4j
+@Service
 public class SupervisorPlannerService {
 
     private final ReactAgent supervisorAgent;
+    private final ReactAgent intentAgent;
     private final ReactAgent planningAgent;
     private final PlannerSessionService sessionService;
     private final PlanQualityService qualityService;
+    private final TaskRuntimeService taskRuntimeService;
 
     public SupervisorPlannerService(
             @Qualifier("supervisorAgent") ReactAgent supervisorAgent,
+            @Qualifier("intentAgent") ReactAgent intentAgent,
             @Qualifier("planningAgent") ReactAgent planningAgent,
             PlannerSessionService sessionService,
-            PlanQualityService qualityService) {
+            PlanQualityService qualityService,
+            TaskRuntimeService taskRuntimeService
+    ) {
         this.supervisorAgent = supervisorAgent;
+        this.intentAgent = intentAgent;
         this.planningAgent = planningAgent;
         this.sessionService = sessionService;
         this.qualityService = qualityService;
+        this.taskRuntimeService = taskRuntimeService;
     }
 
     public PlanTaskSession plan(String rawInstruction, WorkspaceContext workspaceContext, String taskId, String userFeedback) {
@@ -51,23 +61,25 @@ public class SupervisorPlannerService {
         mergePersona(session, workspaceContext);
 
         String prompt = buildPrompt(rawInstruction, workspaceContext, userFeedback, session);
-
-        // Supervisor 的执行线程，用于理解用户意图、判断是否需要澄清
-        RunnableConfig config = AgentPromptContext.withPlanningPromptContext(
+        String extractedContext = extractContext(workspaceContext);
+        RunnableConfig supervisorConfig = AgentPromptContext.withPlanningPromptContext(
                 RunnableConfig.builder().threadId(resolvedTaskId).build(),
                 session,
                 rawInstruction,
-                extractContext(workspaceContext));
-
-        // Planning Agent 的执行线程，用于生成具体任务卡片
+                extractedContext);
+        RunnableConfig intentConfig = AgentPromptContext.withPlanningPromptContext(
+                RunnableConfig.builder().threadId(resolvedTaskId + "-intent").build(),
+                session,
+                rawInstruction,
+                extractedContext);
         RunnableConfig planningConfig = AgentPromptContext.withPlanningPromptContext(
                 RunnableConfig.builder().threadId(resolvedTaskId + "-planning").build(),
                 session,
                 rawInstruction,
-                extractContext(workspaceContext));
+                extractedContext);
 
         try {
-            AssistantMessage supervisorResponse = supervisorAgent.call(prompt, config);
+            AssistantMessage supervisorResponse = supervisorAgent.call(prompt, supervisorConfig);
             String responseText = supervisorResponse.getText();
 
             if (needsClarification(responseText, session)) {
@@ -77,9 +89,48 @@ public class SupervisorPlannerService {
                 }
             }
 
-            return runPlanning(session, prompt, planningConfig, resolvedTaskId);
+            IntentSnapshot intentSnapshot = runIntentUnderstanding(session, prompt, intentConfig, resolvedTaskId);
+            String planningPrompt = buildPlanningPrompt(prompt, intentSnapshot);
+            return runPlanning(session, planningPrompt, planningConfig, resolvedTaskId);
         } catch (GraphRunnerException e) {
             log.error("Supervisor error for task {}: {}", resolvedTaskId, e.getMessage(), e);
+            return failSession(session, e.getMessage());
+        }
+    }
+
+    public PlanTaskSession adjustPlan(String taskId, String adjustmentInstruction, WorkspaceContext workspaceContext) {
+        PlanTaskSession session = sessionService.getOrCreate(taskId);
+        if (session.getPlanBlueprint() == null) {
+            return plan(adjustmentInstruction, workspaceContext, taskId, null);
+        }
+
+        session.setTurnCount(session.getTurnCount() + 1);
+        mergePersona(session, workspaceContext);
+
+        String prompt = buildPlanAdjustmentPrompt(session, adjustmentInstruction, workspaceContext);
+        String extractedContext = extractContext(workspaceContext);
+        RunnableConfig planningConfig = AgentPromptContext.withPlanningPromptContext(
+                RunnableConfig.builder().threadId(taskId + "-planning-adjust").build(),
+                session,
+                adjustmentInstruction,
+                extractedContext);
+
+        try {
+            Optional<OverAllState> state = planningAgent.invoke(prompt, planningConfig);
+            PlanBlueprint blueprint = extractPlanBlueprintFromState(state, taskId, session.getIntentSnapshot())
+                    .orElseGet(() -> {
+                        try {
+                            return fallbackPlanBlueprintByText(prompt, planningConfig, taskId, session.getIntentSnapshot());
+                        } catch (GraphRunnerException e) {
+                            throw new SupervisorException(e.getMessage());
+                        }
+                    });
+            qualityService.applyPlanAdjustment(session, blueprint, adjustmentInstruction);
+            sessionService.save(session);
+            taskRuntimeService.projectPlanReady(session, TaskEventTypeEnum.PLAN_ADJUSTED);
+            sessionService.publishEvent(taskId, "PLAN_READY");
+            return session;
+        } catch (Exception e) {
             return failSession(session, e.getMessage());
         }
     }
@@ -101,18 +152,23 @@ public class SupervisorPlannerService {
         if (replanFromRoot) {
             session.setClarificationAnswers(null);
             session.setClarificationQuestions(null);
+            session.setActivePromptSlots(List.of());
         } else {
             session.setClarificationAnswers(List.of(feedback));
+            markPromptSlotsAnswered(session, feedback);
         }
         session.setTransitionReason("Resume: " + feedback);
-
-        // 保持版本号每次请求只加1
         session.setVersion(session.getVersion() - 1);
         sessionService.save(session);
         sessionService.publishEvent(taskId, "RESUMED");
 
-        RunnableConfig config = AgentPromptContext.withPlanningPromptContext(
+        RunnableConfig supervisorConfig = AgentPromptContext.withPlanningPromptContext(
                 RunnableConfig.builder().threadId(taskId).build(),
+                session,
+                feedback,
+                "");
+        RunnableConfig intentConfig = AgentPromptContext.withPlanningPromptContext(
+                RunnableConfig.builder().threadId(taskId + "-intent").build(),
                 session,
                 feedback,
                 "");
@@ -123,17 +179,118 @@ public class SupervisorPlannerService {
                 "");
 
         try {
-            AssistantMessage supervisorResponse = supervisorAgent.call(feedback, config);
+            AssistantMessage supervisorResponse = supervisorAgent.call(feedback, supervisorConfig);
             if (needsClarification(supervisorResponse.getText(), session)) {
                 List<String> questions = buildClarificationQuestions(supervisorResponse.getText(), feedback);
                 if (!questions.isEmpty()) {
                     return handleAskUser(session, questions);
                 }
             }
-            return runPlanning(session, feedback, planningConfig, taskId);
+            IntentSnapshot intentSnapshot = runIntentUnderstanding(session, feedback, intentConfig, taskId);
+            return runPlanning(session, buildPlanningPrompt(feedback, intentSnapshot), planningConfig, taskId);
         } catch (Exception e) {
             return failSession(session, e.getMessage());
         }
+    }
+
+    private IntentSnapshot runIntentUnderstanding(
+            PlanTaskSession session,
+            String prompt,
+            RunnableConfig config,
+            String taskId
+    ) {
+        try {
+            Optional<OverAllState> state = intentAgent.invoke(prompt, config);
+            IntentSnapshot intentSnapshot = extractIntentFromState(state)
+                    .orElseGet(() -> {
+                        try {
+                            AssistantMessage response = intentAgent.call(prompt, config);
+                            return qualityService.extractIntentSnapshot(response.getText());
+                        } catch (GraphRunnerException e) {
+                            throw new SupervisorException(e.getMessage());
+                        }
+                    });
+            if (intentSnapshot == null) {
+                throw new SupervisorException("Intent understanding returned empty output");
+            }
+            qualityService.applyIntentReady(session, intentSnapshot);
+            sessionService.save(session);
+            sessionService.publishEvent(taskId, "INTENT_READY");
+            return intentSnapshot;
+        } catch (Exception e) {
+            throw new SupervisorException(e.getMessage());
+        }
+    }
+
+    private PlanTaskSession runPlanning(PlanTaskSession session, String prompt, RunnableConfig config, String taskId) {
+        try {
+            Optional<OverAllState> state = planningAgent.invoke(prompt, config);
+            PlanBlueprint blueprint = extractPlanBlueprintFromState(state, taskId, session.getIntentSnapshot())
+                    .orElseGet(() -> {
+                        try {
+                            return fallbackPlanBlueprintByText(prompt, config, taskId, session.getIntentSnapshot());
+                        } catch (GraphRunnerException e) {
+                            throw new SupervisorException(e.getMessage());
+                        }
+                    });
+            qualityService.applyPlanReady(session, blueprint);
+            sessionService.save(session);
+            taskRuntimeService.projectPlanReady(session, TaskEventTypeEnum.PLAN_READY);
+            sessionService.publishEvent(taskId, "PLAN_READY");
+            return session;
+        } catch (Exception e) {
+            return failSession(session, e.getMessage());
+        }
+    }
+
+    private Optional<IntentSnapshot> extractIntentFromState(Optional<OverAllState> state) {
+        if (state.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> data = state.get().data();
+        Object structured = data.get("messages");
+        if (structured == null) {
+            structured = data.get("message");
+        }
+        if (structured instanceof IntentSnapshot snapshot) {
+            return Optional.of(snapshot);
+        }
+        if (structured instanceof String jsonText) {
+            return Optional.ofNullable(qualityService.extractIntentSnapshot(jsonText));
+        }
+        return Optional.empty();
+    }
+
+    private Optional<PlanBlueprint> extractPlanBlueprintFromState(
+            Optional<OverAllState> state,
+            String taskId,
+            IntentSnapshot intentSnapshot
+    ) {
+        if (state.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> data = state.get().data();
+        Object structured = data.get("messages");
+        if (structured == null) {
+            structured = data.get("message");
+        }
+        if (structured instanceof PlanBlueprint blueprint) {
+            return Optional.of(qualityService.extractPlanBlueprint(toJson(blueprint), taskId, intentSnapshot));
+        }
+        if (structured instanceof String jsonText) {
+            return Optional.of(qualityService.extractPlanBlueprint(jsonText, taskId, intentSnapshot));
+        }
+        return Optional.empty();
+    }
+
+    private PlanBlueprint fallbackPlanBlueprintByText(
+            String prompt,
+            RunnableConfig config,
+            String taskId,
+            IntentSnapshot intentSnapshot
+    ) throws GraphRunnerException {
+        AssistantMessage plannerResponse = planningAgent.call(prompt, config);
+        return qualityService.extractPlanBlueprint(plannerResponse.getText(), taskId, intentSnapshot);
     }
 
     private void mergePersona(PlanTaskSession session, WorkspaceContext workspaceContext) {
@@ -163,58 +320,9 @@ public class SupervisorPlannerService {
         }
     }
 
-    private PlanTaskSession runPlanning(PlanTaskSession session, String prompt, RunnableConfig config, String taskId) {
-        try {
-            Optional<com.alibaba.cloud.ai.graph.OverAllState> state = planningAgent.invoke(prompt, config);
-            List<UserPlanCard> planCards = extractPlanCardsFromState(state, taskId)
-                    .orElseGet(() -> {
-                        try {
-                            return fallbackPlanCardsByText(prompt, config, taskId);
-                        } catch (GraphRunnerException e) {
-                            throw new SupervisorException(e.getMessage());
-                        }
-                    });
-            qualityService.applyPlanReady(session, planCards);
-            sessionService.save(session);
-            sessionService.publishEvent(taskId, "PLAN_READY");
-            return session;
-        } catch (Exception e) {
-            return failSession(session, e.getMessage());
-        }
-    }
-
-    private Optional<List<UserPlanCard>> extractPlanCardsFromState(
-            Optional<com.alibaba.cloud.ai.graph.OverAllState> state,
-            String taskId) {
-        if (state.isEmpty()) {
-            return Optional.empty();
-        }
-        Map<String, Object> data = state.get().data();
-        Object structured = data.get("messages");
-        if (structured == null) {
-            structured = data.get("message");
-        }
-        if (structured instanceof PlanCardsOutput output && output.getPlanCards() != null) {
-            return Optional.of(output.getPlanCards().stream()
-                    .map(card -> {
-                        card.setTaskId(taskId);
-                        return card;
-                    })
-                    .toList());
-        }
-        if (structured instanceof String jsonText) {
-            return Optional.of(qualityService.extractPlanCards(jsonText, taskId));
-        }
-        return Optional.empty();
-    }
-
-    private List<UserPlanCard> fallbackPlanCardsByText(String prompt, RunnableConfig config, String taskId) throws GraphRunnerException {
-        AssistantMessage plannerResponse = planningAgent.call(prompt, config);
-        return qualityService.extractPlanCards(plannerResponse.getText(), taskId);
-    }
-
     private PlanTaskSession handleAskUser(PlanTaskSession session, List<String> questions) {
         session.setClarificationQuestions(questions);
+        session.setActivePromptSlots(toPromptSlots(questions));
         session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
         session.setTransitionReason("Information insufficient");
         sessionService.save(session);
@@ -246,25 +354,59 @@ public class SupervisorPlannerService {
         }
         String lower = text.toLowerCase();
         return lower.contains("\"questions\"") || lower.contains("questions:")
-                || lower.contains("请问") || lower.contains("需要明确") || lower.contains("clarif");
+                || lower.contains("clarif") || lower.contains("need more");
     }
 
     private String buildPrompt(String rawInstruction, WorkspaceContext workspaceContext, String userFeedback, PlanTaskSession session) {
-        StringBuilder sb = new StringBuilder("用户指令：").append(rawInstruction);
+        StringBuilder sb = new StringBuilder("User instruction: ").append(rawInstruction);
         if (workspaceContext != null) {
             if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
-                sb.append("\n\n精选消息（优先参考）：\n").append(String.join("\n", workspaceContext.getSelectedMessages()));
+                sb.append("\n\nSelected messages:\n").append(String.join("\n", workspaceContext.getSelectedMessages()));
             } else if (workspaceContext.getTimeRange() != null && !workspaceContext.getTimeRange().isBlank()) {
-                sb.append("\n\n时间范围：").append(workspaceContext.getTimeRange());
+                sb.append("\n\nTime range: ").append(workspaceContext.getTimeRange());
+            }
+            if (workspaceContext.getChatId() != null && !workspaceContext.getChatId().isBlank()) {
+                sb.append("\nChat ID: ").append(workspaceContext.getChatId());
             }
         }
         if (userFeedback != null && !userFeedback.isBlank()) {
-            sb.append("\n\n用户补充回答：").append(userFeedback);
+            sb.append("\n\nUser feedback: ").append(userFeedback);
         }
         if (session.getClarificationQuestions() != null && !session.getClarificationQuestions().isEmpty()) {
-            sb.append("\n\n之前的澄清问题：").append(String.join("；", session.getClarificationQuestions()));
+            sb.append("\n\nPrevious clarification questions: ").append(String.join(" | ", session.getClarificationQuestions()));
         }
         return sb.toString();
+    }
+
+    private String buildPlanningPrompt(String prompt, IntentSnapshot intentSnapshot) {
+        if (intentSnapshot == null) {
+            return prompt;
+        }
+        return prompt + "\n\nIntent snapshot:\n" + toJson(intentSnapshot);
+    }
+
+    private String buildPlanAdjustmentPrompt(
+            PlanTaskSession session,
+            String adjustmentInstruction,
+            WorkspaceContext workspaceContext
+    ) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("You are editing an existing plan, not creating a new task.")
+                .append("\nUser change request: ").append(adjustmentInstruction)
+                .append("\n\nCurrent plan blueprint JSON:\n").append(toJson(session.getPlanBlueprint()));
+        if (session.getIntentSnapshot() != null) {
+            builder.append("\n\nCurrent intent snapshot JSON:\n").append(toJson(session.getIntentSnapshot()));
+        }
+        if (workspaceContext != null && workspaceContext.getSelectedMessages() != null
+                && !workspaceContext.getSelectedMessages().isEmpty()) {
+            builder.append("\n\nConversation context:\n")
+                    .append(String.join("\n", workspaceContext.getSelectedMessages()));
+        }
+        builder.append("\n\nReturn one complete updated PlanBlueprint JSON object.")
+                .append("\nPreserve all unchanged fields from the current plan.")
+                .append("\nIf the user asks to add one item, append it instead of replacing existing items.")
+                .append("\nDo not rewrite taskBrief into the user's edit instruction unless the user explicitly asks to change the task itself.");
+        return builder.toString();
     }
 
     private String extractContext(WorkspaceContext workspaceContext) {
@@ -309,10 +451,8 @@ public class SupervisorPlannerService {
             return OutputPreference.UNKNOWN;
         }
         String normalized = input.toLowerCase();
-        boolean hasDoc = containsAny(normalized,
-                "文档", "纪要", "报告", "总结", "周报", "方案", "需求文档", "prd", "doc", "markdown", "md");
-        boolean hasPpt = containsAny(normalized,
-                "ppt", "幻灯", "slides", "slide", "演示稿", "路演", "deck");
+        boolean hasDoc = containsAny(normalized, "doc", "markdown", "report", "summary", "文档", "纪要");
+        boolean hasPpt = containsAny(normalized, "ppt", "slides", "deck", "演示", "汇报");
         if (hasDoc && hasPpt) {
             return OutputPreference.BOTH;
         }
@@ -327,8 +467,8 @@ public class SupervisorPlannerService {
 
     private boolean isOutputTypeChoiceQuestion(String question) {
         String normalized = question.toLowerCase();
-        boolean hasOutputWords = containsAny(normalized, "输出", "形式", "目标", "文档", "ppt", "演示稿", "幻灯");
-        boolean hasChoiceWords = containsAny(normalized, "还是", "两者", "都要", "二者", "或者");
+        boolean hasOutputWords = containsAny(normalized, "output", "format", "document", "ppt", "slides", "文档", "输出");
+        boolean hasChoiceWords = containsAny(normalized, "or", "both", "还是", "都要");
         return hasOutputWords && hasChoiceWords;
     }
 
@@ -364,8 +504,41 @@ public class SupervisorPlannerService {
             if (!fallback.isBlank() && !fallback.startsWith("{")) {
                 return List.of(fallback);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return List.of();
+    }
+
+    private List<PromptSlotState> toPromptSlots(List<String> questions) {
+        List<PromptSlotState> slots = new ArrayList<>();
+        int index = 1;
+        for (String question : questions) {
+            slots.add(PromptSlotState.builder()
+                    .slotKey("clarification-" + index++)
+                    .prompt(question)
+                    .value("")
+                    .answered(false)
+                    .build());
+        }
+        return slots;
+    }
+
+    private void markPromptSlotsAnswered(PlanTaskSession session, String feedback) {
+        if (session.getActivePromptSlots() == null || session.getActivePromptSlots().isEmpty()) {
+            return;
+        }
+        session.getActivePromptSlots().forEach(slot -> {
+            slot.setValue(feedback);
+            slot.setAnswered(true);
+        });
+    }
+
+    private String toJson(Object value) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(value);
+        } catch (Exception e) {
+            return String.valueOf(value);
+        }
     }
 
     private enum OutputPreference {

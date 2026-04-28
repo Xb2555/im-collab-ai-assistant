@@ -6,6 +6,7 @@ public record LarkInboundMessage(
         String eventId,
         String messageId,
         String chatId,
+        String threadId,
         String chatType,
         String messageType,
         String content,

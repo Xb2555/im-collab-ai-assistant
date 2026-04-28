@@ -29,6 +29,7 @@ class LarkIMMessageStreamServiceTests {
                 "evt-1",
                 "om_1",
                 "oc_group",
+                null,
                 "group",
                 "text",
                 "hello",
@@ -51,6 +52,7 @@ class LarkIMMessageStreamServiceTests {
                 "evt-mention",
                 "om_mention",
                 "oc_group",
+                "thread-mention",
                 "group",
                 "text",
                 "@bot hello",
@@ -72,13 +74,14 @@ class LarkIMMessageStreamServiceTests {
                 "evt-1",
                 "om_1",
                 "oc_group",
+                "thread-1",
                 "group",
                 "text",
                 "生成方案",
                 "ou_1",
                 "1773491924409",
                 true
-        ), "任务已收到，正在处理");
+        ), "任务已收到，正在处理。\n请稍等，我会先分析并继续回复你。\n");
 
         assertThat(emitter.sendCount).isEqualTo(1);
     }
@@ -118,6 +121,7 @@ class LarkIMMessageStreamServiceTests {
                 "evt-2",
                 "om_2",
                 "oc_group",
+                null,
                 "group",
                 "text",
                 "hello",
