@@ -1,5 +1,6 @@
 package com.lark.imcollab.planner.facade;
 
+import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.lark.imcollab.common.domain.Conversation;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.facade.PlannerFacade;
@@ -18,7 +19,7 @@ public class DefaultPlannerFacade implements PlannerFacade {
     private final PlanGate planGate;
 
     @Override
-    public Task plan(Conversation conversation) {
+    public Task plan(Conversation conversation) throws GraphRunnerException {
         Task task = taskPlanner.plan(conversation);
         if (!planGate.pass(task)) {
             throw new IllegalStateException("Plan gate failed for task: " + task.getTaskId());
@@ -27,7 +28,7 @@ public class DefaultPlannerFacade implements PlannerFacade {
     }
 
     @Override
-    public Task replan(String taskId, String userFeedback) {
+    public Task replan(String taskId, String userFeedback) throws GraphRunnerException {
         Task task = replanner.replan(taskId, userFeedback);
         if (!planGate.pass(task)) {
             throw new IllegalStateException("Plan gate failed on replan for task: " + taskId);

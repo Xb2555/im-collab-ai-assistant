@@ -1,13 +1,10 @@
 package com.lark.imcollab.harness.service;
 
-import com.lark.imcollab.common.model.entity.PlanTaskSession;
-import com.lark.imcollab.common.model.entity.UserPlanCard;
-import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.common.domain.Approval;
+import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.harness.document.service.DocumentExecutionService;
 import com.lark.imcollab.harness.presentation.service.PresentationExecutionService;
 import org.springframework.stereotype.Service;
-
-import java.util.List;
 
 @Service
 public class ExecutionTaskDispatcher {
@@ -22,24 +19,19 @@ public class ExecutionTaskDispatcher {
         this.presentationExecutionService = presentationExecutionService;
     }
 
-    public PlanTaskSession dispatch(PlanTaskSession session) {
-        List<UserPlanCard> cards = session.getPlanCards() == null ? List.of() : session.getPlanCards();
-        PlanTaskSession latest = session;
-        for (UserPlanCard card : cards) {
-            if (card.getType() == PlanCardTypeEnum.DOC) {
-                latest = documentExecutionService.execute(latest.getTaskId(), card.getCardId(), null);
-            } else if (card.getType() == PlanCardTypeEnum.PPT) {
-                latest = presentationExecutionService.reserveExecution(latest.getTaskId(), card.getCardId());
+    public void dispatch(Task task) {
+        switch (task.getType()) {
+            case WRITE_SLIDES -> presentationExecutionService.execute(task.getTaskId());
+            case MIXED -> {
+                documentExecutionService.execute(task.getTaskId());
+                presentationExecutionService.execute(task.getTaskId());
             }
+            default -> documentExecutionService.execute(task.getTaskId());
         }
-        return latest;
     }
 
-    public PlanTaskSession resume(String taskId, String userFeedback) {
-        return documentExecutionService.resume(taskId, userFeedback);
-    }
-
-    public PlanTaskSession interrupt(String taskId) {
-        return documentExecutionService.interrupt(taskId);
+    public void resume(String taskId, Approval approval) {
+        documentExecutionService.resume(taskId, approval);
     }
 }
+

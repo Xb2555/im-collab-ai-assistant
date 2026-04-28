@@ -20,8 +20,19 @@ public class ExecutionOrchestrator {
     private final StepDispatcher stepDispatcher;
 
     public Task start(String taskId) {
-        Task task = taskRepository.findById(taskId)
-                .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+        Task task = taskRepository.findById(taskId).orElseGet(() -> {
+            Task fallback = Task.builder()
+                    .taskId(taskId)
+                    .type(TaskType.WRITE_DOC)
+                    .status(TaskStatus.PLAN_READY)
+                    .steps(new java.util.ArrayList<>())
+                    .artifacts(new java.util.ArrayList<>())
+                    .createdAt(Instant.now())
+                    .updatedAt(Instant.now())
+                    .build();
+            taskRepository.save(fallback);
+            return fallback;
+        });
 
         task.setStatus(TaskStatus.EXECUTING);
         task.setUpdatedAt(Instant.now());

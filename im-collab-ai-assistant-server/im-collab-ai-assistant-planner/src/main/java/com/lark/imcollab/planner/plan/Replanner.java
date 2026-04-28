@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.plan;
 
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.lark.imcollab.common.domain.*;
 import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
@@ -20,7 +21,7 @@ public class Replanner {
     @Qualifier("planningAgent")
     private final ReactAgent planningAgent;
 
-    public Task replan(String taskId, String userFeedback) {
+    public Task replan(String taskId, String userFeedback) throws GraphRunnerException {
         Task task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
 

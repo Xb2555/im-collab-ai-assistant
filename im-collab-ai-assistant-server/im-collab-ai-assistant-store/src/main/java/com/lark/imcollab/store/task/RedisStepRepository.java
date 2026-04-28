@@ -41,7 +41,7 @@ public class RedisStepRepository implements StepRepository {
     @Override
     public List<Step> findByTaskId(String taskId) {
         return store.get(LIST_PREFIX + taskId, List.class)
-                .map(raw -> objectMapper.convertValue(raw, new TypeReference<List<Step>>() ))
+                .map(raw -> objectMapper.convertValue(raw, new TypeReference<List<Step>>() {}))
                 .orElse(new ArrayList<>());
     }
 

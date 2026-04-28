@@ -26,8 +26,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-@Deprecated
 @Slf4j
+@Service
 public class TaskResultEvaluationService {
 
     private final SequentialAgent resultEvaluationSequence;

@@ -19,6 +19,7 @@ public class PlannerConversationService {
     private final TaskIntakeService intakeService;
     private final PlannerSessionService sessionService;
     private final SupervisorPlannerService supervisorPlannerService;
+    private final TaskBridgeService taskBridgeService;
 
     public PlanTaskSession handlePlanRequest(
             String rawInstruction,
@@ -41,7 +42,7 @@ public class PlannerConversationService {
         sessionService.save(session);
         sessionService.publishEvent(session.getTaskId(), "INTAKE_ACCEPTED");
 
-        return switch (intakeDecision.intakeType()) {
+        PlanTaskSession result = switch (intakeDecision.intakeType()) {
             case STATUS_QUERY -> sessionService.get(session.getTaskId());
             case CLARIFICATION_REPLY -> supervisorPlannerService.resume(session.getTaskId(), intakeDecision.effectiveInput(), false);
             case NEW_TASK -> supervisorPlannerService.plan(
@@ -56,6 +57,8 @@ public class PlannerConversationService {
                     workspaceContext
             );
         };
+        taskBridgeService.bridgeAndExecuteIfReady(result);
+        return result;
     }
 
     private void updateSessionEnvelope(

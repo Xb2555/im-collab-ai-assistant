@@ -1,11 +1,11 @@
 package com.lark.imcollab.planner.plan;
 
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.lark.imcollab.common.domain.*;
 import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.planner.intent.IntentRouter;
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
@@ -14,16 +14,25 @@ import java.util.ArrayList;
 import java.util.UUID;
 
 @Component
-@RequiredArgsConstructor
 public class TaskPlanner {
 
-    private final IntentRouter intentRouter;
     private final TaskRepository taskRepository;
     private final TaskEventRepository eventRepository;
-    @Qualifier("planningAgent")
     private final ReactAgent planningAgent;
+    private final IntentRouter intentRouter;
 
-    public Task plan(Conversation conversation) {
+    public TaskPlanner(
+            TaskRepository taskRepository,
+            TaskEventRepository eventRepository,
+            @Qualifier("planningAgent") ReactAgent planningAgent,
+            IntentRouter intentRouter) {
+        this.taskRepository = taskRepository;
+        this.eventRepository = eventRepository;
+        this.planningAgent = planningAgent;
+        this.intentRouter = intentRouter;
+    }
+
+    public Task plan(Conversation conversation) throws GraphRunnerException {
         TaskType type = intentRouter.route(conversation);
 
         Task task = Task.builder()
@@ -42,7 +51,7 @@ public class TaskPlanner {
         taskRepository.save(task);
         publishEvent(task.getTaskId(), TaskEventType.TASK_CREATED);
 
-        String planResult = planningAgent.call(conversation.getRawMessage());
+        planningAgent.call(conversation.getRawMessage());
         task.setStatus(TaskStatus.PLAN_READY);
         task.setUpdatedAt(Instant.now());
         taskRepository.save(task);
