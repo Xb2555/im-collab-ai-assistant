@@ -8,12 +8,14 @@ import com.lark.imcollab.common.model.dto.SubmitResultRequest;
 import com.lark.imcollab.common.model.entity.BaseResponse;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
+import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.utils.ResultUtils;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.SupervisorPlannerService;
+import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import io.swagger.v3.oas.annotations.Hidden;
@@ -37,6 +39,7 @@ public class PlannerController {
     private final PlannerPlanFacade plannerPlanFacade;
     private final SupervisorPlannerService supervisorPlannerService;
     private final PlannerSessionService sessionService;
+    private final TaskRuntimeService taskRuntimeService;
     private final TaskResultEvaluationService evaluationService;
     private final PlannerStateStore repository;
 
@@ -96,6 +99,13 @@ public class PlannerController {
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId) {
         PlanTaskSession session = sessionService.get(taskId);
         return ResultUtils.success(session);
+    }
+
+    @GetMapping("/{taskId}/runtime")
+    @Operation(summary = "4.1. 获取任务运行时快照", description = "查询 Task、Step、Artifact 和标准事件，用于前端卡片和后续场景接入")
+    public BaseResponse<TaskRuntimeSnapshot> getRuntimeSnapshot(
+            @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId) {
+        return ResultUtils.success(taskRuntimeService.getSnapshot(taskId));
     }
 
     @GetMapping("/{taskId}/cards")

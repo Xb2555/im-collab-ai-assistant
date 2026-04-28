@@ -1,6 +1,7 @@
 package com.lark.imcollab.common.model.entity;
 
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -42,14 +43,38 @@ public class PlanTaskSession implements Serializable {
     @Schema(description = "状态变更原因")
     private String transitionReason;
 
+    @Schema(description = "杈撳叆涓婁笅鏂?")
+    private TaskInputContext inputContext;
+
+    @Schema(description = "鍏ュ彛鍒ゆ柇鐘舵€?")
+    private TaskIntakeState intakeState;
+
     @Schema(description = "澄清问题列表")
     private List<String> clarificationQuestions;
 
     @Schema(description = "澄清回答列表")
     private List<String> clarificationAnswers;
 
+    @Schema(description = "褰撳墠婢勬竻妲戒綅")
+    private List<PromptSlotState> activePromptSlots;
+
+    @Schema(description = "缁撴瀯鍖栨剰鍥惧揩鐓?")
+    private IntentSnapshot intentSnapshot;
+
+    @Schema(description = "璁″垝钃濆浘")
+    private PlanBlueprint planBlueprint;
+
+    @Schema(description = "璁″垝钃濆浘鎽樿")
+    private String planBlueprintSummary;
+
     @Schema(description = "任务卡片列表")
     private List<UserPlanCard> planCards;
+
+    @Schema(description = "鍦烘櫙璺緞")
+    private List<ScenarioCodeEnum> scenarioPath;
+
+    @Schema(description = "鍚庣画鍦烘櫙鎺ュ叆鎸傞挬")
+    private List<ScenarioIntegrationHook> integrationHooks;
 
     @Schema(description = "用户职业角色")
     private String profession;

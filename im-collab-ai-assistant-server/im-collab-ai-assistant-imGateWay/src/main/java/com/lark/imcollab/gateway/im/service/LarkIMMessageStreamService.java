@@ -76,6 +76,7 @@ public class LarkIMMessageStreamService {
                 "local-bot-reply-" + sourceEvent.messageId(),
                 "local-bot-reply-" + sourceEvent.messageId(),
                 sourceEvent.chatId(),
+                sourceEvent.threadId(),
                 sourceEvent.chatType(),
                 "text",
                 text,

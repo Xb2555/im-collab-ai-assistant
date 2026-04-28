@@ -1,8 +1,12 @@
 package com.lark.imcollab.store.planner;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.TaskEvent;
+import com.lark.imcollab.common.model.entity.TaskEventRecord;
+import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 
 import java.util.List;
@@ -14,9 +18,31 @@ public interface PlannerStateStore {
 
     Optional<PlanTaskSession> findSession(String taskId);
 
+    Optional<String> findConversationTaskId(String conversationKey);
+
+    void saveConversationTaskBinding(String conversationKey, String taskId);
+
     void appendEvent(TaskEvent event);
 
     List<String> getEventJsonList(String taskId);
+
+    void saveTask(TaskRecord task);
+
+    Optional<TaskRecord> findTask(String taskId);
+
+    void saveStep(TaskStepRecord step);
+
+    List<TaskStepRecord> findStepsByTaskId(String taskId);
+
+    Optional<TaskStepRecord> findStep(String stepId);
+
+    void saveArtifact(ArtifactRecord artifact);
+
+    List<ArtifactRecord> findArtifactsByTaskId(String taskId);
+
+    void appendRuntimeEvent(TaskEventRecord event);
+
+    List<TaskEventRecord> findRuntimeEventsByTaskId(String taskId);
 
     void saveSubmission(TaskSubmissionResult submission);
 
