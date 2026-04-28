@@ -7,33 +7,26 @@
         <artifactId>im-collab-ai-assistant-server</artifactId>
         <version>0.0.1-SNAPSHOT</version>
     </parent>
-    <artifactId>im-collab-ai-assistant-planner</artifactId>
+
+    <artifactId>im-collab-ai-assistant-app</artifactId>
+    <packaging>jar</packaging>
 
     <dependencies>
         <dependency>
             <groupId>com.lark</groupId>
-            <artifactId>im-collab-ai-assistant-common</artifactId>
+            <artifactId>im-collab-ai-assistant-imGateWay</artifactId>
         </dependency>
         <dependency>
             <groupId>com.lark</groupId>
-            <artifactId>im-collab-ai-assistant-store</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.alibaba.cloud.ai</groupId>
-            <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
+            <artifactId>im-collab-ai-assistant-planner</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-configuration-processor</artifactId>
-            <optional>true</optional>
-        </dependency>
-        <dependency>
-            <groupId>cn.hutool</groupId>
-            <artifactId>hutool-all</artifactId>
+            <groupId>com.github.xiaoymin</groupId>
+            <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
         </dependency>
     </dependencies>
 
@@ -42,9 +35,6 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <configuration>
-                    <skip>true</skip>
-                </configuration>
             </plugin>
         </plugins>
     </build>

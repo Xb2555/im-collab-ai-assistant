@@ -1,8 +1,9 @@
-package com.lark.imcollab.planner.exception;
+package com.lark.imcollab.app.planner.exception;
 
-import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.entity.BaseResponse;
+import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.utils.ResultUtils;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import io.swagger.v3.oas.annotations.Hidden;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.annotation.Order;

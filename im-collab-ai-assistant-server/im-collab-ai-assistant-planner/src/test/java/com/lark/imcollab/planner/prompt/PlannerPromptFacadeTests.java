@@ -73,7 +73,7 @@ class PlannerPromptFacadeTests {
                 "prompt/tests/template-placeholder.md",
                 Map.of("a", "1", "c", "3"));
 
-        assertEquals("A=1,B=,C=3\n", rendered);
+        assertEquals("A=1,B=,C=3\n", rendered.replace("\r\n", "\n"));
     }
 
     private PlannerProperties baseProperties() {

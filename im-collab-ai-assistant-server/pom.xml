@@ -15,6 +15,7 @@
     <packaging>pom</packaging>
 
     <modules>
+        <module>im-collab-ai-assistant-app</module>
         <module>im-collab-ai-assistant-common</module>
         <module>im-collab-ai-assistant-store</module>
         <module>im-collab-ai-assistant-skills</module>
@@ -53,6 +54,11 @@
             <dependency>
                 <groupId>com.lark</groupId>
                 <artifactId>im-collab-ai-assistant-planner</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.lark</groupId>
+                <artifactId>im-collab-ai-assistant-imGateWay</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <!-- Spring AI Alibaba -->

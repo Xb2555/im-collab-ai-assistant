@@ -1,14 +1,14 @@
-package com.lark.imcollab;
+package com.lark.imcollab.app;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "com.lark.imcollab")
 @ConfigurationPropertiesScan(basePackages = "com.lark.imcollab")
-public class ImCollabAiAssistantGatewayApplication {
+public class ImCollabAiAssistantApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(ImCollabAiAssistantGatewayApplication.class, args);
+        SpringApplication.run(ImCollabAiAssistantApplication.class, args);
     }
 }
