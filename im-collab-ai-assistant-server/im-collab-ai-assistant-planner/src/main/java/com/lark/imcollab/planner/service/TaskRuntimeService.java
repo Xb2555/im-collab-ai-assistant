@@ -1,6 +1,9 @@
 package com.lark.imcollab.planner.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.domain.Task;
+import com.lark.imcollab.common.domain.TaskStatus;
+import com.lark.imcollab.common.domain.TaskType;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
@@ -8,15 +11,18 @@ import com.lark.imcollab.common.model.entity.TaskPlanGraph;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -29,6 +35,7 @@ public class TaskRuntimeService {
     private final PlannerStateStore stateStore;
     private final PlanGraphBuilder planGraphBuilder;
     private final ObjectMapper objectMapper;
+    private final TaskRepository taskRepository;
 
     public void projectPlanReady(PlanTaskSession session, TaskEventTypeEnum eventType) {
         if (session == null || session.getPlanBlueprint() == null) {
@@ -42,6 +49,7 @@ public class TaskRuntimeService {
             stateStore.saveStep(step);
         }
         appendRuntimeEvent(session.getTaskId(), eventType, graph);
+        syncDomainTask(session, graph);
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
@@ -147,6 +155,35 @@ public class TaskRuntimeService {
         } catch (Exception e) {
             return String.valueOf(value);
         }
+    }
+
+    private void syncDomainTask(PlanTaskSession session, TaskPlanGraph graph) {
+        TaskType type = resolveTaskType(session);
+        Task existing = taskRepository.findById(session.getTaskId()).orElse(null);
+        Task task = Task.builder()
+                .taskId(session.getTaskId())
+                .rawInstruction(firstNonBlank(graph.getGoal(), session.getPlanBlueprintSummary()))
+                .type(type)
+                .status(TaskStatus.PLAN_READY)
+                .steps(new ArrayList<>())
+                .artifacts(new ArrayList<>())
+                .createdAt(existing != null ? existing.getCreatedAt() : Instant.now())
+                .updatedAt(Instant.now())
+                .build();
+        taskRepository.save(task);
+    }
+
+    private TaskType resolveTaskType(PlanTaskSession session) {
+        if (session.getPlanBlueprint() == null || session.getPlanBlueprint().getPlanCards() == null) {
+            return TaskType.WRITE_DOC;
+        }
+        boolean hasDoc = session.getPlanBlueprint().getPlanCards().stream()
+                .anyMatch(c -> c.getType() == PlanCardTypeEnum.DOC);
+        boolean hasPpt = session.getPlanBlueprint().getPlanCards().stream()
+                .anyMatch(c -> c.getType() == PlanCardTypeEnum.PPT);
+        if (hasDoc && hasPpt) return TaskType.MIXED;
+        if (hasPpt) return TaskType.WRITE_SLIDES;
+        return TaskType.WRITE_DOC;
     }
 
     private String firstNonBlank(String... values) {

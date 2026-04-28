@@ -48,7 +48,24 @@ public class ExecutionOrchestrator {
                 .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
 
         publishEvent(taskId, approval.getStepId(), TaskEventType.APPROVAL_DECIDED);
-        stepDispatcher.resumeAfterApproval(task, approval);
+
+        switch (approval.getStatus()) {
+            case APPROVED -> stepDispatcher.resumeAfterApproval(task, approval);
+            case MODIFIED -> {
+                task.setRawInstruction(approval.getUserFeedback());
+                task.setUpdatedAt(Instant.now());
+                taskRepository.save(task);
+                stepDispatcher.resumeAfterApproval(task, approval);
+            }
+            case REJECTED -> {
+                task.setStatus(TaskStatus.ABORTED);
+                task.setFailReason("User rejected: " + approval.getUserFeedback());
+                task.setUpdatedAt(Instant.now());
+                taskRepository.save(task);
+                publishEvent(taskId, approval.getStepId(), TaskEventType.TASK_ABORTED);
+            }
+            default -> stepDispatcher.resumeAfterApproval(task, approval);
+        }
         return taskRepository.findById(taskId).orElse(task);
     }
 
