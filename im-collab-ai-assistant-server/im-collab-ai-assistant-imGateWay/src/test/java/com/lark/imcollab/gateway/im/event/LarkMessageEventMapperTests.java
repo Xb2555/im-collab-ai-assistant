@@ -30,6 +30,7 @@ class LarkMessageEventMapperTests {
         data.setMessage(EventMessage.newBuilder()
                 .messageId("om_4")
                 .chatId("oc_group")
+                .threadId("omt-thread-1")
                 .chatType("group")
                 .messageType("text")
                 .content("{\"text\":\"生成复盘\"}")
@@ -47,6 +48,7 @@ class LarkMessageEventMapperTests {
         assertThat(event).isPresent();
         assertThat(event.get().eventId()).isEqualTo("evt-4");
         assertThat(event.get().messageId()).isEqualTo("om_4");
+        assertThat(event.get().threadId()).isEqualTo("omt-thread-1");
         assertThat(event.get().content()).isEqualTo("生成复盘");
         assertThat(event.get().senderOpenId()).isEqualTo("ou_4");
         assertThat(event.get().mentionDetected()).isTrue();
@@ -63,6 +65,7 @@ class LarkMessageEventMapperTests {
         data.setMessage(EventMessage.newBuilder()
                 .messageId("om_5")
                 .chatId("oc_group")
+                .rootId("om_root_5")
                 .chatType("group")
                 .messageType("text")
                 .content("{\"text\":\"普通群消息\"}")
@@ -78,6 +81,7 @@ class LarkMessageEventMapperTests {
 
         assertThat(event).isPresent();
         assertThat(event.get().messageId()).isEqualTo("om_5");
+        assertThat(event.get().threadId()).isEqualTo("om_root_5");
         assertThat(event.get().content()).isEqualTo("普通群消息");
         assertThat(event.get().mentionDetected()).isFalse();
     }

@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.skills.lark.config.LarkBotMessageProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -20,11 +22,20 @@ import java.util.UUID;
 @Component
 public class LarkBotMessageClient {
 
-    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(20);
+    private static final Logger log = LoggerFactory.getLogger(LarkBotMessageClient.class);
+    private static final long TOKEN_REFRESH_SKEW_SECONDS = 60L;
+    private static final long FALLBACK_TOKEN_TTL_SECONDS = 300L;
+    private static final int MAX_RETRY_ATTEMPTS = 3;
+    private static final long RETRY_BACKOFF_MILLIS = 1_500L;
 
     private final LarkBotMessageProperties properties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final Object tenantAccessTokenLock = new Object();
+
+    private volatile String cachedTenantAccessToken;
+    private volatile long tenantAccessTokenExpiresAtEpochMilli;
 
     public LarkBotMessageClient(LarkBotMessageProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
@@ -35,14 +46,19 @@ public class LarkBotMessageClient {
     }
 
     public LarkBotMessageResult sendTextToOpenId(String openId, String text) {
+        return sendTextToOpenId(openId, text, UUID.randomUUID().toString());
+    }
+
+    public LarkBotMessageResult sendTextToOpenId(String openId, String text, String idempotencyKey) {
         String normalizedOpenId = requireValue(openId, "openId");
         String normalizedText = requireValue(text, "text");
+        String normalizedIdempotencyKey = requireValue(idempotencyKey, "idempotencyKey");
 
         Map<String, Object> requestBody = new LinkedHashMap<>();
         requestBody.put("receive_id", normalizedOpenId);
         requestBody.put("msg_type", "text");
         requestBody.put("content", serialize(Map.of("text", normalizedText)));
-        requestBody.put("uuid", UUID.randomUUID().toString());
+        requestBody.put("uuid", normalizedIdempotencyKey);
 
         JsonNode data = post(
                 "/open-apis/im/v1/messages?receive_id_type=open_id",
@@ -57,15 +73,20 @@ public class LarkBotMessageClient {
     }
 
     public LarkBotMessageResult replyText(String messageId, String text) {
+        return replyText(messageId, text, UUID.randomUUID().toString());
+    }
+
+    public LarkBotMessageResult replyText(String messageId, String text, String idempotencyKey) {
         String normalizedMessageId = requireValue(messageId, "messageId");
         String normalizedText = requireValue(text, "text");
+        String normalizedIdempotencyKey = requireValue(idempotencyKey, "idempotencyKey");
 
         JsonNode data = post(
                 "/open-apis/im/v1/messages/" + normalizedMessageId + "/reply",
                 Map.of(
                         "content", serialize(Map.of("text", normalizedText)),
                         "msg_type", "text",
-                        "uuid", UUID.randomUUID().toString()
+                        "uuid", normalizedIdempotencyKey
                 ),
                 getTenantAccessToken()
         );
@@ -77,15 +98,35 @@ public class LarkBotMessageClient {
     }
 
     private String getTenantAccessToken() {
-        JsonNode data = post(
-                "/open-apis/auth/v3/tenant_access_token/internal",
-                Map.of(
-                        "app_id", requireValue(properties.getAppId(), "appId"),
-                        "app_secret", requireValue(properties.getAppSecret(), "appSecret")
-                ),
-                null
-        );
-        return requireValue(optionalText(data, "tenant_access_token"), "tenantAccessToken");
+        String cachedToken = cachedTenantAccessToken;
+        long now = System.currentTimeMillis();
+        if (cachedToken != null && now < tenantAccessTokenExpiresAtEpochMilli) {
+            return cachedToken;
+        }
+
+        synchronized (tenantAccessTokenLock) {
+            cachedToken = cachedTenantAccessToken;
+            now = System.currentTimeMillis();
+            if (cachedToken != null && now < tenantAccessTokenExpiresAtEpochMilli) {
+                return cachedToken;
+            }
+
+            JsonNode data = post(
+                    "/open-apis/auth/v3/tenant_access_token/internal",
+                    Map.of(
+                            "app_id", requireValue(properties.getAppId(), "appId"),
+                            "app_secret", requireValue(properties.getAppSecret(), "appSecret")
+                    ),
+                    null
+            );
+            String refreshedToken = requireValue(optionalText(data, "tenant_access_token"), "tenantAccessToken");
+            long expireSeconds = data.path("expire").asLong(FALLBACK_TOKEN_TTL_SECONDS);
+            long effectiveTtlSeconds = Math.max(1L, expireSeconds - TOKEN_REFRESH_SKEW_SECONDS);
+            cachedTenantAccessToken = refreshedToken;
+            tenantAccessTokenExpiresAtEpochMilli = System.currentTimeMillis() + Duration.ofSeconds(effectiveTtlSeconds).toMillis();
+            log.debug("Refreshed Lark tenant access token, expiresInSeconds={}", expireSeconds);
+            return refreshedToken;
+        }
     }
 
     private JsonNode post(String pathWithQuery, Object body, String accessToken) {
@@ -98,14 +139,27 @@ public class LarkBotMessageClient {
             requestBuilder.header("Authorization", "Bearer " + accessToken.trim());
         }
 
-        HttpResponse<String> response;
-        try {
-            response = httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        } catch (IOException exception) {
-            throw new IllegalStateException("Failed to call Lark OpenAPI", exception);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Lark OpenAPI call interrupted", exception);
+        HttpResponse<String> response = null;
+        IOException lastIoException = null;
+        for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+            try {
+                response = httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                break;
+            } catch (IOException exception) {
+                lastIoException = exception;
+                if (attempt >= MAX_RETRY_ATTEMPTS) {
+                    break;
+                }
+                log.warn("Lark OpenAPI call failed, retrying: path={}, attempt={}/{}",
+                        pathWithQuery, attempt, MAX_RETRY_ATTEMPTS, exception);
+                sleepBeforeRetry();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Lark OpenAPI call interrupted", exception);
+            }
+        }
+        if (response == null) {
+            throw new IllegalStateException("Failed to call Lark OpenAPI", lastIoException);
         }
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -127,6 +181,15 @@ public class LarkBotMessageClient {
             return root;
         }
         return data;
+    }
+
+    private void sleepBeforeRetry() {
+        try {
+            Thread.sleep(RETRY_BACKOFF_MILLIS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Lark OpenAPI retry interrupted", exception);
+        }
     }
 
     private URI buildUri(String pathWithQuery) {

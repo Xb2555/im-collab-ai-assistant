@@ -1,47 +1,29 @@
 package com.lark.imcollab.skills.lark.im;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.lark.imcollab.skills.framework.cli.CliCommand;
-import com.lark.imcollab.skills.framework.cli.CliCommandExecutor;
-import com.lark.imcollab.skills.framework.cli.CliCommandResult;
-import com.lark.imcollab.skills.lark.cli.LarkCliClient;
-import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 class LarkMessageReplyToolTests {
 
     @Test
-    void shouldReplyToMessageAsBotWithDefaultCliConfiguration() {
-        StubCliCommandExecutor executor = new StubCliCommandExecutor();
-        LarkCliClient client = new LarkCliClient(executor, new LarkCliProperties(), new ObjectMapper());
-        LarkMessageReplyTool tool = new LarkMessageReplyTool(client);
+    void shouldDelegateReplyToBotClientWithIdempotencyKey() {
+        LarkBotMessageClient messageClient = mock(LarkBotMessageClient.class);
+        LarkMessageReplyTool tool = new LarkMessageReplyTool(messageClient);
 
-        tool.replyText("om_1", "任务已收到，正在处理。\n请稍等，我会先分析并继续回复你。\n");
+        tool.replyText("om_1", "task received", "idem-1");
 
-        assertThat(executor.recordedCommands()).hasSize(1);
-        assertThat(executor.recordedCommands().get(0).arguments())
-                .containsExactly("im", "+messages-reply", "--message-id", "om_1", "--text",
-                        "任务已收到，正在处理。\n请稍等，我会先分析并继续回复你。", "--as", "bot");
+        verify(messageClient).replyText("om_1", "task received", "idem-1");
     }
 
-    private static final class StubCliCommandExecutor implements CliCommandExecutor {
+    @Test
+    void shouldDelegatePrivateSendToBotClientWithIdempotencyKey() {
+        LarkBotMessageClient messageClient = mock(LarkBotMessageClient.class);
+        LarkMessageReplyTool tool = new LarkMessageReplyTool(messageClient);
 
-        private final List<CliCommand> recordedCommands = new ArrayList<>();
+        tool.sendPrivateText("ou_1", "plan ready", "idem-2");
 
-        @Override
-        public CliCommandResult execute(CliCommand command) throws IOException {
-            recordedCommands.add(command);
-            return new CliCommandResult(0, "{}");
-        }
-
-        private List<CliCommand> recordedCommands() {
-            return recordedCommands;
-        }
+        verify(messageClient).sendTextToOpenId("ou_1", "plan ready", "idem-2");
     }
 }

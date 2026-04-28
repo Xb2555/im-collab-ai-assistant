@@ -4,12 +4,13 @@ import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.extension.interceptor.SubAgentInterceptor;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SequentialAgent;
 import com.alibaba.cloud.ai.graph.agent.hook.summarization.SummarizationHook;
-import com.lark.imcollab.planner.prompt.AgentPromptInterceptor;
-import com.lark.imcollab.common.model.entity.PlanCardsOutput;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
+import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.ResultAdviceOutput;
 import com.lark.imcollab.common.model.entity.ResultJudgeOutput;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.planner.prompt.AgentPromptInterceptor;
 import com.lark.imcollab.planner.prompt.PlannerPromptFacade;
 import com.lark.imcollab.store.checkpoint.CheckpointSaverProvider;
 import org.springframework.ai.chat.model.ChatModel;
@@ -24,7 +25,7 @@ public class AgentFrameworkConfig {
 
     private static final PlanTaskSession DEFAULT_PROMPT_SESSION = PlanTaskSession.builder()
             .taskId("default")
-            .planningPhase(PlanningPhaseEnum.ASK_USER)
+            .planningPhase(PlanningPhaseEnum.INTAKE)
             .build();
 
     @Bean
@@ -56,6 +57,23 @@ public class AgentFrameworkConfig {
                 .build();
     }
 
+    @Bean(name = "intentAgent")
+    public ReactAgent intentAgent(
+            ChatModel chatModel,
+            SummarizationHook summarizationHook,
+            PlannerPromptFacade promptFacade,
+            AgentPromptInterceptor agentPromptInterceptor) {
+        return ReactAgent.builder()
+                .name("intent-agent")
+                .description("Extracts a structured intent snapshot before planning")
+                .systemPrompt(promptFacade.intentPrompt(DEFAULT_PROMPT_SESSION))
+                .outputType(IntentSnapshot.class)
+                .model(chatModel)
+                .interceptors(agentPromptInterceptor)
+                .hooks(summarizationHook)
+                .build();
+    }
+
     @Bean(name = "planningAgent")
     public ReactAgent planningAgent(
             ChatModel chatModel,
@@ -66,7 +84,7 @@ public class AgentFrameworkConfig {
                 .name("planning-agent")
                 .description("将用户需求拆解为结构化任务计划")
                 .systemPrompt(promptFacade.planningPrompt(DEFAULT_PROMPT_SESSION))
-                .outputType(PlanCardsOutput.class)
+                .outputType(PlanBlueprint.class)
                 .model(chatModel)
                 .interceptors(agentPromptInterceptor)
                 .hooks(summarizationHook)

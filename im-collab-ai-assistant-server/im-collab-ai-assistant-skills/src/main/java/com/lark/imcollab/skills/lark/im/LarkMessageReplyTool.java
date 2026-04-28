@@ -1,11 +1,12 @@
 package com.lark.imcollab.skills.lark.im;
 
-import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+
+import java.util.UUID;
 
 @Component
 public class LarkMessageReplyTool {
@@ -13,49 +14,36 @@ public class LarkMessageReplyTool {
     private static final Logger log = LoggerFactory.getLogger(LarkMessageReplyTool.class);
 
     private final LarkBotMessageClient messageClient;
-    private final LarkCliClient larkCliClient;
 
     @Autowired
     public LarkMessageReplyTool(LarkBotMessageClient messageClient) {
         this.messageClient = messageClient;
-        this.larkCliClient = null;
-    }
-
-    LarkMessageReplyTool(LarkCliClient larkCliClient) {
-        this.messageClient = null;
-        this.larkCliClient = larkCliClient;
     }
 
     @Tool(description = "Scenario A: reply to a Lark group or thread message as bot by source messageId.")
     public void replyText(String messageId, String text) {
+        replyText(messageId, text, UUID.randomUUID().toString());
+    }
+
+    public void replyText(String messageId, String text, String idempotencyKey) {
         String normalizedMessageId = requireValue(messageId, "messageId");
         String normalizedText = requireValue(text, "text");
+        String normalizedIdempotencyKey = requireValue(idempotencyKey, "idempotencyKey");
         log.info("Sending Lark group reply: messageId={}, text={}", normalizedMessageId, escapeForLog(normalizedText));
-        if (messageClient != null) {
-            messageClient.replyText(normalizedMessageId, normalizedText);
-            return;
-        }
-        fallbackToCliReply(normalizedMessageId, normalizedText);
+        requireMessageClient().replyText(normalizedMessageId, normalizedText, normalizedIdempotencyKey);
     }
 
     @Tool(description = "Scenario A: send a text message to a Lark single-chat user as bot by user open_id.")
     public LarkBotMessageResult sendPrivateText(String openId, String text) {
-        String normalizedOpenId = requireValue(openId, "openId");
-        String normalizedText = requireValue(text, "text");
-        log.info("Sending Lark p2p message: openId={}, text={}", normalizedOpenId, escapeForLog(normalizedText));
-        return requireMessageClient().sendTextToOpenId(normalizedOpenId, normalizedText);
+        return sendPrivateText(openId, text, UUID.randomUUID().toString());
     }
 
-    private void fallbackToCliReply(String messageId, String text) {
-        var result = larkCliClient.execute(java.util.List.of(
-                "im", "+messages-reply",
-                "--message-id", messageId,
-                "--text", text,
-                "--as", "bot"
-        ));
-        if (!result.isSuccess()) {
-            throw new IllegalStateException(larkCliClient.extractErrorMessage(result.output()));
-        }
+    public LarkBotMessageResult sendPrivateText(String openId, String text, String idempotencyKey) {
+        String normalizedOpenId = requireValue(openId, "openId");
+        String normalizedText = requireValue(text, "text");
+        String normalizedIdempotencyKey = requireValue(idempotencyKey, "idempotencyKey");
+        log.info("Sending Lark p2p message: openId={}, text={}", normalizedOpenId, escapeForLog(normalizedText));
+        return requireMessageClient().sendTextToOpenId(normalizedOpenId, normalizedText, normalizedIdempotencyKey);
     }
 
     private LarkBotMessageClient requireMessageClient() {

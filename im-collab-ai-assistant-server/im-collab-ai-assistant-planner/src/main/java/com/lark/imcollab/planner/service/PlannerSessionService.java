@@ -4,6 +4,7 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
@@ -36,10 +37,11 @@ public class PlannerSessionService {
         return stateRepository.findSession(taskId).orElseGet(() -> {
             PlanTaskSession session = PlanTaskSession.builder()
                     .taskId(taskId)
-                    .planningPhase(PlanningPhaseEnum.ASK_USER)
+                    .planningPhase(PlanningPhaseEnum.INTAKE)
                     .planScore(0)
                     .aborted(false)
                     .turnCount(0)
+                    .scenarioPath(List.of(ScenarioCodeEnum.A_IM, ScenarioCodeEnum.B_PLANNING))
                     .profession(plannerProperties.getPrompt().getDefaultProfession())
                     .industry(plannerProperties.getPrompt().getDefaultIndustry())
                     .audience(plannerProperties.getPrompt().getDefaultAudience())

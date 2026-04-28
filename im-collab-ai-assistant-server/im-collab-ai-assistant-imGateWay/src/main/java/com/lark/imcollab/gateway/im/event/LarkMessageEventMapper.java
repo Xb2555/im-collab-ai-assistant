@@ -57,6 +57,7 @@ public class LarkMessageEventMapper {
                 header == null ? null : header.getEventId(),
                 message.getMessageId(),
                 message.getChatId(),
+                resolveThreadId(message),
                 message.getChatType(),
                 message.getMessageType(),
                 content,
@@ -105,5 +106,12 @@ public class LarkMessageEventMapper {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String resolveThreadId(EventMessage message) {
+        if (message == null) {
+            return null;
+        }
+        return firstText(message.getThreadId(), message.getRootId(), message.getParentId());
     }
 }

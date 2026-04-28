@@ -55,6 +55,7 @@ public class AgentPromptInterceptor extends ModelInterceptor {
 
     private String resolveSystemPrompt(String agentName, PlanTaskSession session) {
         return switch (agentName) {
+            case "intent-agent" -> promptFacade.intentPrompt(session);
             case "planning-agent" -> promptFacade.planningPrompt(session);
             case "result-judge-agent" -> promptFacade.resultJudgePrompt(session);
             case "result-advice-agent" -> promptFacade.resultAdvicePrompt(session);
@@ -68,6 +69,7 @@ public class AgentPromptInterceptor extends ModelInterceptor {
         return switch (agentName) {
             case "supervisor-agent" -> promptFacade.supervisorInstruction(session);
             case "clarification-agent" -> promptFacade.clarificationInstruction(session);
+            case "intent-agent" -> promptFacade.intentInstruction(session);
             case "planning-agent" -> promptFacade.planningInstruction(
                     session,
                     asString(context.get(PromptContextKeys.RAW_INSTRUCTION)),
