@@ -38,7 +38,7 @@ imcollab:
         domain: ${LARK_OPEN_DOMAIN:}
         auto-reconnect-enabled: ${LARK_IM_AUTO_RECONNECT:true}
     auth:
-      redirect-uri: ${LARK_OAUTH_REDIRECT_URI:http://localhost:5173/api/auth/callback}
+      redirect-uri: ${LARK_OAUTH_REDIRECT_URI:http://localhost:5173/auth-callback}
       session-ttl: ${LARK_AUTH_SESSION_TTL:12h}
       jwt-ttl: ${LARK_AUTH_JWT_TTL:2h}
       jwt-secret: ${IMCOLLAB_JWT_SECRET:change-this-jwt-secret}
