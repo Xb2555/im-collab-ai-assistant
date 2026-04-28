@@ -24,10 +24,12 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 @Component
 public class DocumentWorkflowNodes {
@@ -88,7 +90,8 @@ public class DocumentWorkflowNodes {
                     cardId,
                     executionSupport.subtaskId(cardId, DocumentExecutionSupport.OUTLINE_TASK_SUFFIX),
                     () -> invokeOutline(prompt, taskId, cardId),
-                    payload -> List.of()
+                    payload -> List.of(),
+                    session
             );
             executionSupport.updateSubtask(session, cardId, executionSupport.subtaskId(cardId, DocumentExecutionSupport.OUTLINE_TASK_SUFFIX), "COMPLETED", outline.getTitle());
             executionSupport.markCardProgress(session, cardId, "RUNNING", 25);
@@ -119,20 +122,28 @@ public class DocumentWorkflowNodes {
         String cardId = state.value(DocumentStateKeys.CARD_ID, "");
         PlanTaskSession session = executionSupport.loadSession(taskId);
         DocumentOutline outline = requireValue(state, DocumentStateKeys.OUTLINE, DocumentOutline.class);
+        UserPlanCard card = executionSupport.requireCard(session, cardId);
         executionSupport.updateSubtask(session, cardId, executionSupport.subtaskId(cardId, DocumentExecutionSupport.SECTIONS_TASK_SUFFIX), "RUNNING", null);
         executionSupport.publishEvent(taskId, "SECTIONS_GENERATING");
+        List<DocumentSectionDraft> existingDrafts = readSectionDrafts(state);
+        LinkedHashSet<String> completedKeys = new LinkedHashSet<>(readCompletedSectionKeys(state));
+        for (DocumentOutlineSection section : outline.getSections()) {
+            executionSupport.ensureSectionTask(session, card, normalize(section.getHeading()), section.getHeading());
+        }
         try {
-            List<DocumentSectionDraft> drafts = executionSupport.executeAndEvaluate(
-                    taskId,
+            List<DocumentSectionDraft> drafts = generateSectionDrafts(
+                    session,
                     cardId,
-                    executionSupport.subtaskId(cardId, DocumentExecutionSupport.SECTIONS_TASK_SUFFIX),
-                    () -> generateSectionDrafts(outline, taskId, cardId),
-                    payload -> List.of()
+                    outline,
+                    taskId,
+                    existingDrafts,
+                    completedKeys
             );
             executionSupport.updateSubtask(session, cardId, executionSupport.subtaskId(cardId, DocumentExecutionSupport.SECTIONS_TASK_SUFFIX), "COMPLETED", "sections-ready");
             executionSupport.markCardProgress(session, cardId, "RUNNING", 55);
             return CompletableFuture.completedFuture(Map.of(
                     DocumentStateKeys.SECTION_DRAFTS, drafts,
+                    DocumentStateKeys.COMPLETED_SECTION_KEYS, new ArrayList<>(completedKeys),
                     DocumentStateKeys.DONE_SECTIONS, true
             ));
         } catch (DocumentExecutionSupport.HumanReviewRequiredException exception) {
@@ -140,6 +151,8 @@ public class DocumentWorkflowNodes {
             executionSupport.publishHumanReview(taskId, exception.getEvaluation().getIssues(), exception.getEvaluation().getSuggestions());
             executionSupport.markCardProgress(session, cardId, "BLOCKED", 55);
             return CompletableFuture.completedFuture(Map.of(
+                    DocumentStateKeys.SECTION_DRAFTS, existingDrafts,
+                    DocumentStateKeys.COMPLETED_SECTION_KEYS, new ArrayList<>(completedKeys),
                     DocumentStateKeys.WAITING_HUMAN_REVIEW, true,
                     DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.SECTIONS_TASK_SUFFIX
             ));
@@ -166,7 +179,8 @@ public class DocumentWorkflowNodes {
                     cardId,
                     executionSupport.subtaskId(cardId, DocumentExecutionSupport.REVIEW_TASK_SUFFIX),
                     () -> reviewAndPatch(outline, drafts, taskId, cardId, state.value(DocumentStateKeys.USER_FEEDBACK, "")),
-                    payload -> List.of()
+                    payload -> List.of(),
+                    session
             );
             List<DocumentSectionDraft> mergedDrafts = mergeSupplementalSections(drafts, reviewResult.getSupplementalSections());
             executionSupport.updateSubtask(session, cardId, executionSupport.subtaskId(cardId, DocumentExecutionSupport.REVIEW_TASK_SUFFIX), "COMPLETED", reviewResult.getSummary());
@@ -224,7 +238,8 @@ public class DocumentWorkflowNodes {
                     cardId,
                     subtaskId,
                     () -> createDoc(outline.getTitle(), markdown),
-                    DocumentWriteResult::getArtifactRefs
+                    DocumentWriteResult::getArtifactRefs,
+                    session
             );
             executionSupport.updateSubtask(session, cardId, subtaskId, "COMPLETED", writeResult.getDocUrl());
             executionSupport.setCardArtifacts(session, cardId, writeResult.getArtifactRefs());
@@ -279,18 +294,42 @@ public class DocumentWorkflowNodes {
         }
     }
 
-    private List<DocumentSectionDraft> generateSectionDrafts(DocumentOutline outline, String taskId, String cardId) {
-        List<DocumentSectionDraft> drafts = new ArrayList<>();
+    private List<DocumentSectionDraft> generateSectionDrafts(
+            PlanTaskSession session,
+            String cardId,
+            DocumentOutline outline,
+            String taskId,
+            List<DocumentSectionDraft> existingDrafts,
+            LinkedHashSet<String> completedKeys) {
+        List<DocumentSectionDraft> drafts = new ArrayList<>(existingDrafts);
         for (DocumentOutlineSection section : outline.getSections()) {
+            String sectionKey = normalize(section.getHeading());
+            if (completedKeys.contains(sectionKey)) {
+                continue;
+            }
+            String subtaskId = executionSupport.sectionSubtaskId(cardId, sectionKey);
+            executionSupport.updateSubtask(session, cardId, subtaskId, "RUNNING", null);
             String prompt = "文档标题：" + outline.getTitle()
                     + "\n章节：" + section.getHeading()
                     + "\n要点：" + String.join("；", section.getKeyPoints());
-            AssistantMessage response = callAgent(
-                    documentSectionAgent,
-                    prompt,
-                    taskId + ":" + cardId + ":section:" + normalize(section.getHeading())
+            DocumentSectionDraft draft = executionSupport.executeAndEvaluate(
+                    taskId,
+                    cardId,
+                    subtaskId,
+                    () -> {
+                        AssistantMessage response = callAgent(
+                                documentSectionAgent,
+                                prompt,
+                                taskId + ":" + cardId + ":section:" + sectionKey
+                        );
+                        return parseSectionDraft(response.getText(), section);
+                    },
+                    payload -> List.of(),
+                    session
             );
-            drafts.add(parseSectionDraft(response.getText(), section));
+            replaceDraft(drafts, draft);
+            completedKeys.add(sectionKey);
+            executionSupport.updateSubtask(session, cardId, subtaskId, "COMPLETED", draft.getHeading());
         }
         return drafts;
     }
@@ -376,6 +415,14 @@ public class DocumentWorkflowNodes {
         return objectMapper.convertValue(raw, new TypeReference<>() {});
     }
 
+    private List<String> readCompletedSectionKeys(OverAllState state) {
+        Object raw = state.data().get(DocumentStateKeys.COMPLETED_SECTION_KEYS);
+        if (raw == null) {
+            return List.of();
+        }
+        return objectMapper.convertValue(raw, new TypeReference<>() {});
+    }
+
     private <T> T requireValue(OverAllState state, String key, Class<T> type) {
         Object raw = state.data().get(key);
         if (raw == null) {
@@ -404,5 +451,14 @@ public class DocumentWorkflowNodes {
 
     private String normalize(String input) {
         return input == null ? "section" : input.replaceAll("[^a-zA-Z0-9\\u4e00-\\u9fa5]+", "-");
+    }
+
+    private void replaceDraft(List<DocumentSectionDraft> drafts, DocumentSectionDraft draft) {
+        List<DocumentSectionDraft> kept = drafts.stream()
+                .filter(existing -> existing.getHeading() == null || !existing.getHeading().equals(draft.getHeading()))
+                .collect(Collectors.toCollection(ArrayList::new));
+        kept.add(draft);
+        drafts.clear();
+        drafts.addAll(kept);
     }
 }

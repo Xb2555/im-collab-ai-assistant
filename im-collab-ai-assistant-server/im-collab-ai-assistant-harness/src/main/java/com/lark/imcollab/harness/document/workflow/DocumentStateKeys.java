@@ -9,6 +9,9 @@ public final class DocumentStateKeys {
     public static final String OUTLINE = "outline";
     public static final String SECTION_DRAFTS = "sectionDrafts";
     public static final String REVIEW_RESULT = "reviewResult";
+    public static final String SECTION_PROGRESS = "sectionProgress";
+    public static final String COMPLETED_SECTION_KEYS = "completedSectionKeys";
+    public static final String CURRENT_SECTION_KEY = "currentSectionKey";
     public static final String DOC_MARKDOWN = "docMarkdown";
     public static final String ARTIFACT_REFS = "artifactRefs";
     public static final String DOC_ID = "docId";

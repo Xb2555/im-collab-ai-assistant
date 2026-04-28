@@ -145,7 +145,7 @@ class LarkOAuthControllerTests {
             LarkAppProperties appProperties = new LarkAppProperties();
             appProperties.setAppId("app_123");
             appProperties.setAppSecret("secret_123");
-            properties.setRedirectUri("http://localhost:8078/api/auth/lark/callback");
+            properties.setRedirectUri("http://localhost:5173/api/auth/callback");
             properties.setJwtSecret("test-secret-with-enough-length");
             this.jwtService = new LarkBusinessJwtService(properties, objectMapper);
             LarkOAuthService service = new LarkOAuthService(properties, appProperties, client, store, store, jwtService);

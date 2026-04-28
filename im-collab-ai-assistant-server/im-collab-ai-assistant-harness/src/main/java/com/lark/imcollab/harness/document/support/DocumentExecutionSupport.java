@@ -17,7 +17,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -89,12 +88,44 @@ public class DocumentExecutionSupport {
         plannerRuntimeFacade.saveSession(session);
     }
 
+    public void updateSubtaskMetrics(
+            PlanTaskSession session,
+            String cardId,
+            String subtaskId,
+            TaskResultEvaluation evaluation,
+            int retryCount) {
+        if (evaluation == null) {
+            return;
+        }
+        UserPlanCard card = requireCard(session, cardId);
+        ensureDocumentTasks(card);
+        card.getAgentTaskPlanCards().stream()
+                .filter(agentTaskPlanCard -> Objects.equals(agentTaskPlanCard.getTaskId(), subtaskId))
+                .findFirst()
+                .ifPresent(agentCard -> {
+                    agentCard.setLastResultScore(evaluation.getResultScore());
+                    agentCard.setLastVerdict(evaluation.getVerdict() == null ? null : evaluation.getVerdict().name());
+                    agentCard.setRetryCount(retryCount);
+                });
+        plannerRuntimeFacade.saveSession(session);
+    }
+
     public <T> T executeAndEvaluate(
             String taskId,
             String cardId,
             String subtaskId,
             Supplier<T> executor,
             Function<T, List<String>> artifactRefExtractor) {
+        return executeAndEvaluate(taskId, cardId, subtaskId, executor, artifactRefExtractor, null);
+    }
+
+    public <T> T executeAndEvaluate(
+            String taskId,
+            String cardId,
+            String subtaskId,
+            Supplier<T> executor,
+            Function<T, List<String>> artifactRefExtractor,
+            PlanTaskSession session) {
         TaskResultEvaluation evaluation = null;
         String rawOutput = "";
         for (int attempt = 0; attempt <= MAX_RETRY; attempt++) {
@@ -110,6 +141,9 @@ public class DocumentExecutionSupport {
                     .status("COMPLETED")
                     .build();
             evaluation = plannerRuntimeFacade.evaluate(submission);
+            if (session != null) {
+                updateSubtaskMetrics(session, cardId, subtaskId, evaluation, attempt);
+            }
             if (evaluation.getVerdict() == ResultVerdictEnum.PASS) {
                 return payload;
             }
@@ -138,6 +172,32 @@ public class DocumentExecutionSupport {
 
     public String subtaskId(String cardId, String suffix) {
         return cardId + ":document:" + suffix;
+    }
+
+    public String sectionSubtaskId(String cardId, String sectionKey) {
+        return cardId + ":document:generate_section:" + sectionKey;
+    }
+
+    public void ensureSectionTask(PlanTaskSession session, UserPlanCard card, String sectionKey, String sectionHeading) {
+        if (card.getAgentTaskPlanCards() == null) {
+            card.setAgentTaskPlanCards(new ArrayList<>());
+        }
+        String subtaskId = sectionSubtaskId(card.getCardId(), sectionKey);
+        boolean exists = card.getAgentTaskPlanCards().stream()
+                .anyMatch(task -> Objects.equals(task.getTaskId(), subtaskId));
+        if (exists) {
+            return;
+        }
+        card.getAgentTaskPlanCards().add(AgentTaskPlanCard.builder()
+                .taskId(subtaskId)
+                .parentCardId(card.getCardId())
+                .taskType(AgentTaskTypeEnum.WRITE_DOC)
+                .status("PENDING")
+                .context("document:generate_section:" + sectionKey)
+                .input(sectionHeading)
+                .tools(List.of("doc.write"))
+                .build());
+        plannerRuntimeFacade.saveSession(session);
     }
 
     private void ensureTask(UserPlanCard card, String suffix) {

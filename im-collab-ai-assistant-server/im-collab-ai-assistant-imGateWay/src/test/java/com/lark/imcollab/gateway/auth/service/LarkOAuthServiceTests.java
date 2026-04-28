@@ -76,7 +76,7 @@ class LarkOAuthServiceTests {
 
     private static LarkOAuthProperties properties() {
         LarkOAuthProperties properties = new LarkOAuthProperties();
-        properties.setRedirectUri("http://localhost:8078/api/auth/lark/callback");
+        properties.setRedirectUri("http://localhost:5173/api/auth/callback");
         properties.setJwtSecret("test-secret-with-enough-length");
         return properties;
     }
