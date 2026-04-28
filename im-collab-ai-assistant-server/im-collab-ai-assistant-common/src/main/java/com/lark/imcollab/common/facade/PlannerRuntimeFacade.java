@@ -8,8 +8,9 @@ import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import java.util.Optional;
 
 /**
- * Harness 运行期访问 planner 状态、事件和评估能力的内部门面。
+ * @deprecated replaced by {@link PlannerFacade} and domain model in common.domain
  */
+@Deprecated
 public interface PlannerRuntimeFacade {
 
     PlanTaskSession getSession(String taskId);

@@ -51,11 +51,15 @@ public class SupervisorPlannerService {
         mergePersona(session, workspaceContext);
 
         String prompt = buildPrompt(rawInstruction, workspaceContext, userFeedback, session);
+
+        // Supervisor 的执行线程，用于理解用户意图、判断是否需要澄清
         RunnableConfig config = AgentPromptContext.withPlanningPromptContext(
                 RunnableConfig.builder().threadId(resolvedTaskId).build(),
                 session,
                 rawInstruction,
                 extractContext(workspaceContext));
+
+        // Planning Agent 的执行线程，用于生成具体任务卡片
         RunnableConfig planningConfig = AgentPromptContext.withPlanningPromptContext(
                 RunnableConfig.builder().threadId(resolvedTaskId + "-planning").build(),
                 session,

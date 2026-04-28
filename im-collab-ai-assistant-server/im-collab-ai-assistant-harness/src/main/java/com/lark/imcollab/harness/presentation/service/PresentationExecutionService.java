@@ -1,8 +1,8 @@
 package com.lark.imcollab.harness.presentation.service;
 
-import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.domain.Approval;
 
 public interface PresentationExecutionService {
-
-    PlanTaskSession reserveExecution(String taskId, String cardId);
+    void execute(String taskId);
+    void resume(String taskId, Approval approval);
 }

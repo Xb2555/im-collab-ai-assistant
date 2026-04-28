@@ -4,81 +4,70 @@ import com.alibaba.cloud.ai.graph.CompiledGraph;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.state.StateSnapshot;
-import com.lark.imcollab.common.facade.PlannerRuntimeFacade;
-import com.lark.imcollab.common.model.entity.PlanTaskSession;
-import com.lark.imcollab.common.model.entity.UserPlanCard;
-import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
-import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.domain.Approval;
+import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.common.port.TaskEventRepository;
+import com.lark.imcollab.common.domain.TaskEvent;
+import com.lark.imcollab.common.domain.TaskEventType;
 import com.lark.imcollab.harness.document.support.DocumentExecutionGuard;
-import com.lark.imcollab.harness.document.support.DocumentExecutionSupport;
 import com.lark.imcollab.harness.document.workflow.DocumentStateKeys;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class DefaultDocumentExecutionService implements DocumentExecutionService {
 
     private final CompiledGraph documentWorkflow;
-    private final PlannerRuntimeFacade plannerRuntimeFacade;
+    private final TaskRepository taskRepository;
+    private final TaskEventRepository eventRepository;
     private final DocumentExecutionGuard executionGuard;
 
     public DefaultDocumentExecutionService(
             @Qualifier("documentWorkflow") CompiledGraph documentWorkflow,
-            PlannerRuntimeFacade plannerRuntimeFacade,
+            TaskRepository taskRepository,
+            TaskEventRepository eventRepository,
             DocumentExecutionGuard executionGuard) {
         this.documentWorkflow = documentWorkflow;
-        this.plannerRuntimeFacade = plannerRuntimeFacade;
+        this.taskRepository = taskRepository;
+        this.eventRepository = eventRepository;
         this.executionGuard = executionGuard;
     }
 
     @Override
-    public PlanTaskSession execute(String taskId, String cardId, String userFeedback) {
-        executionGuard.execute(taskId + ":" + cardId, () -> runWorkflow(taskId, cardId, userFeedback));
-        return plannerRuntimeFacade.getSession(taskId);
+    public void execute(String taskId) {
+        executionGuard.execute(taskId, () -> runWorkflow(taskId, null));
+        publishEvent(taskId, null, TaskEventType.STEP_COMPLETED);
     }
 
     @Override
-    public PlanTaskSession resume(String taskId, String userFeedback) {
-        PlanTaskSession session = plannerRuntimeFacade.getSession(taskId);
-        UserPlanCard card = session.getPlanCards().stream()
-                .filter(item -> item.getType() == PlanCardTypeEnum.DOC)
-                .filter(item -> "BLOCKED".equals(item.getStatus()) || "RUNNING".equals(item.getStatus()))
-                .findFirst()
-                .orElseGet(() -> session.getPlanCards().stream()
-                        .filter(item -> item.getType() == PlanCardTypeEnum.DOC)
-                        .findFirst()
-                        .orElseThrow(() -> new IllegalArgumentException("No resumable document card")));
-        executionGuard.execute(taskId + ":" + card.getCardId(), () -> runWorkflow(taskId, card.getCardId(), userFeedback));
-        return plannerRuntimeFacade.getSession(taskId);
+    public void resume(String taskId, Approval approval) {
+        executionGuard.execute(taskId, () -> runWorkflow(taskId, approval.getUserFeedback()));
+        publishEvent(taskId, approval.getStepId(), TaskEventType.STEP_COMPLETED);
     }
 
-    @Override
-    public PlanTaskSession interrupt(String taskId) {
-        PlanTaskSession session = plannerRuntimeFacade.getSession(taskId);
-        session.setPlanningPhase(PlanningPhaseEnum.ABORTED);
-        session.setAborted(true);
-        session.setTransitionReason("Harness interrupted");
-        plannerRuntimeFacade.saveSession(session);
-        plannerRuntimeFacade.publishEvent(taskId, "ABORTED");
-        return session;
-    }
-
-    private void runWorkflow(String taskId, String cardId, String userFeedback) {
-        RunnableConfig config = RunnableConfig.builder()
-                .threadId(taskId + ":" + cardId)
-                .build();
+    private void runWorkflow(String taskId, String userFeedback) {
+        RunnableConfig config = RunnableConfig.builder().threadId(taskId).build();
         Optional<StateSnapshot> snapshot = documentWorkflow.stateOf(config);
-        Map<String, Object> initialState = new HashMap<>();
-        if (snapshot.isPresent()) {
-            initialState.putAll(snapshot.get().state().data());
-        }
-        initialState.put(DocumentStateKeys.TASK_ID, taskId);
-        initialState.put(DocumentStateKeys.CARD_ID, cardId);
-        initialState.put(DocumentStateKeys.USER_FEEDBACK, userFeedback == null ? "" : userFeedback);
-        documentWorkflow.invoke(new OverAllState(initialState), config);
+        Map<String, Object> state = new HashMap<>();
+        snapshot.ifPresent(s -> state.putAll(s.state().data()));
+        state.put(DocumentStateKeys.TASK_ID, taskId);
+        state.put(DocumentStateKeys.USER_FEEDBACK, userFeedback == null ? "" : userFeedback);
+        documentWorkflow.invoke(new OverAllState(state), config);
+    }
+
+    private void publishEvent(String taskId, String stepId, TaskEventType type) {
+        eventRepository.save(TaskEvent.builder()
+                .eventId(UUID.randomUUID().toString())
+                .taskId(taskId)
+                .stepId(stepId)
+                .type(type)
+                .occurredAt(Instant.now())
+                .build());
     }
 }

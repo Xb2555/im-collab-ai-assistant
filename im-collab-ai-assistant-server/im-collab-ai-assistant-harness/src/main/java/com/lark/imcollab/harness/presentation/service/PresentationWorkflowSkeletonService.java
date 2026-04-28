@@ -1,8 +1,6 @@
 package com.lark.imcollab.harness.presentation.service;
 
-import com.lark.imcollab.common.facade.PlannerRuntimeFacade;
-import com.lark.imcollab.common.model.entity.PlanTaskSession;
-import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.port.TaskRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -10,18 +8,15 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class PresentationWorkflowSkeletonService {
 
-    private final PlannerRuntimeFacade plannerRuntimeFacade;
+    private final TaskRepository taskRepository;
 
-    public PlanTaskSession reserveSkeleton(String taskId, String cardId) {
-        PlanTaskSession session = plannerRuntimeFacade.getSession(taskId);
-        UserPlanCard card = session.getPlanCards().stream()
-                .filter(item -> item.getCardId().equals(cardId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("Card not found: " + cardId));
-        card.setStatus("BLOCKED");
-        card.setProgress(0);
-        plannerRuntimeFacade.saveSession(session);
-        plannerRuntimeFacade.publishEvent(taskId, "PRESENTATION_SKELETON_RESERVED");
-        return session;
+    public void reserveSkeleton(String taskId) {
+        taskRepository.findById(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+    }
+
+    public void resumeSkeleton(String taskId, String userFeedback) {
+        taskRepository.findById(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
     }
 }

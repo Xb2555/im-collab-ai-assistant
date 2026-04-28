@@ -1,0 +1,17 @@
+package com.lark.imcollab.common.domain;
+
+public enum TaskEventType {
+    TASK_CREATED,
+    PLANNING_STARTED,
+    PLAN_READY,
+    STEP_STARTED,
+    STEP_COMPLETED,
+    STEP_FAILED,
+    STEP_RETRYING,
+    APPROVAL_REQUESTED,
+    APPROVAL_DECIDED,
+    ARTIFACT_CREATED,
+    TASK_COMPLETED,
+    TASK_FAILED,
+    TASK_ABORTED
+}

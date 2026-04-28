@@ -13,6 +13,7 @@ import com.lark.imcollab.common.model.entity.DocumentOutlineSection;
 import com.lark.imcollab.common.model.entity.DocumentReviewResult;
 import com.lark.imcollab.common.model.entity.DocumentSectionDraft;
 import com.lark.imcollab.common.model.entity.DocumentWriteResult;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.harness.document.support.DocumentExecutionSupport;
 import com.lark.imcollab.harness.document.template.DocumentTemplateService;
 import com.lark.imcollab.harness.document.template.DocumentTemplateType;
@@ -108,6 +109,20 @@ public class DocumentWorkflowNodes {
                     DocumentStateKeys.WAITING_HUMAN_REVIEW, true,
                     DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.OUTLINE_TASK_SUFFIX
             ));
+        } catch (DocumentExecutionSupport.RetryExhaustedException exception) {
+            handleRetryExhausted(
+                    session,
+                    cardId,
+                    taskId,
+                    executionSupport.subtaskId(cardId, DocumentExecutionSupport.OUTLINE_TASK_SUFFIX),
+                    DocumentExecutionSupport.OUTLINE_TASK_SUFFIX,
+                    25,
+                    exception
+            );
+            return CompletableFuture.completedFuture(Map.of(
+                    DocumentStateKeys.WAITING_HUMAN_REVIEW, false,
+                    DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.OUTLINE_TASK_SUFFIX
+            ));
         }
     }
 
@@ -156,6 +171,22 @@ public class DocumentWorkflowNodes {
                     DocumentStateKeys.WAITING_HUMAN_REVIEW, true,
                     DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.SECTIONS_TASK_SUFFIX
             ));
+        } catch (DocumentExecutionSupport.RetryExhaustedException exception) {
+            handleRetryExhausted(
+                    session,
+                    cardId,
+                    taskId,
+                    executionSupport.subtaskId(cardId, DocumentExecutionSupport.SECTIONS_TASK_SUFFIX),
+                    DocumentExecutionSupport.SECTIONS_TASK_SUFFIX,
+                    55,
+                    exception
+            );
+            return CompletableFuture.completedFuture(Map.of(
+                    DocumentStateKeys.SECTION_DRAFTS, existingDrafts,
+                    DocumentStateKeys.COMPLETED_SECTION_KEYS, new ArrayList<>(completedKeys),
+                    DocumentStateKeys.WAITING_HUMAN_REVIEW, false,
+                    DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.SECTIONS_TASK_SUFFIX
+            ));
         }
     }
 
@@ -197,6 +228,20 @@ public class DocumentWorkflowNodes {
             executionSupport.markCardProgress(session, cardId, "BLOCKED", 75);
             return CompletableFuture.completedFuture(Map.of(
                     DocumentStateKeys.WAITING_HUMAN_REVIEW, true,
+                    DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.REVIEW_TASK_SUFFIX
+            ));
+        } catch (DocumentExecutionSupport.RetryExhaustedException exception) {
+            handleRetryExhausted(
+                    session,
+                    cardId,
+                    taskId,
+                    executionSupport.subtaskId(cardId, DocumentExecutionSupport.REVIEW_TASK_SUFFIX),
+                    DocumentExecutionSupport.REVIEW_TASK_SUFFIX,
+                    75,
+                    exception
+            );
+            return CompletableFuture.completedFuture(Map.of(
+                    DocumentStateKeys.WAITING_HUMAN_REVIEW, false,
                     DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.REVIEW_TASK_SUFFIX
             ));
         }
@@ -263,6 +308,21 @@ public class DocumentWorkflowNodes {
                     DocumentStateKeys.WAITING_HUMAN_REVIEW, true,
                     DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.WRITE_TASK_SUFFIX
             ));
+        } catch (DocumentExecutionSupport.RetryExhaustedException exception) {
+            handleRetryExhausted(
+                    session,
+                    cardId,
+                    taskId,
+                    subtaskId,
+                    DocumentExecutionSupport.WRITE_TASK_SUFFIX,
+                    90,
+                    exception
+            );
+            return CompletableFuture.completedFuture(Map.of(
+                    DocumentStateKeys.DOC_MARKDOWN, markdown,
+                    DocumentStateKeys.WAITING_HUMAN_REVIEW, false,
+                    DocumentStateKeys.HALTED_STAGE, DocumentExecutionSupport.WRITE_TASK_SUFFIX
+            ));
         }
     }
 
@@ -312,21 +372,30 @@ public class DocumentWorkflowNodes {
             String prompt = "文档标题：" + outline.getTitle()
                     + "\n章节：" + section.getHeading()
                     + "\n要点：" + String.join("；", section.getKeyPoints());
-            DocumentSectionDraft draft = executionSupport.executeAndEvaluate(
-                    taskId,
-                    cardId,
-                    subtaskId,
-                    () -> {
-                        AssistantMessage response = callAgent(
-                                documentSectionAgent,
-                                prompt,
-                                taskId + ":" + cardId + ":section:" + sectionKey
-                        );
-                        return parseSectionDraft(response.getText(), section);
-                    },
-                    payload -> List.of(),
-                    session
-            );
+            DocumentSectionDraft draft;
+            try {
+                draft = executionSupport.executeAndEvaluate(
+                        taskId,
+                        cardId,
+                        subtaskId,
+                        () -> {
+                            AssistantMessage response = callAgent(
+                                    documentSectionAgent,
+                                    prompt,
+                                    taskId + ":" + cardId + ":section:" + sectionKey
+                            );
+                            return parseSectionDraft(response.getText(), section);
+                        },
+                        payload -> List.of(),
+                        session
+                );
+            } catch (DocumentExecutionSupport.HumanReviewRequiredException exception) {
+                executionSupport.updateSubtask(session, cardId, subtaskId, "BLOCKED", "waiting human review");
+                throw exception;
+            } catch (DocumentExecutionSupport.RetryExhaustedException exception) {
+                executionSupport.updateSubtask(session, cardId, subtaskId, "FAILED", exception.getRawOutput());
+                throw exception;
+            }
             replaceDraft(drafts, draft);
             completedKeys.add(sectionKey);
             executionSupport.updateSubtask(session, cardId, subtaskId, "COMPLETED", draft.getHeading());
@@ -368,7 +437,7 @@ public class DocumentWorkflowNodes {
         }
     }
 
-    private AssistantMessage callAgent(ReactAgent agent, String prompt, String threadId) {
+    protected AssistantMessage callAgent(ReactAgent agent, String prompt, String threadId) {
         try {
             return agent.call(prompt, RunnableConfig.builder().threadId(threadId).build());
         } catch (Exception exception) {
@@ -434,8 +503,24 @@ public class DocumentWorkflowNodes {
     private void plannerSessionCompleted(PlanTaskSession session) {
         boolean allCompleted = session.getPlanCards().stream().allMatch(card -> "COMPLETED".equals(card.getStatus()) || "BLOCKED".equals(card.getStatus()));
         if (allCompleted) {
-            session.setPlanningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.COMPLETED);
+            session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
         }
+    }
+
+    private void handleRetryExhausted(
+            PlanTaskSession session,
+            String cardId,
+            String taskId,
+            String subtaskId,
+            String stage,
+            int progress,
+            DocumentExecutionSupport.RetryExhaustedException exception) {
+        executionSupport.updateSubtask(session, cardId, subtaskId, "FAILED", exception.getRawOutput());
+        executionSupport.markCardProgress(session, cardId, "FAILED", progress);
+        session.setPlanningPhase(PlanningPhaseEnum.FAILED);
+        session.setTransitionReason("Document stage failed: " + stage);
+        executionSupport.saveSession(session);
+        executionSupport.publishEvent(taskId, "FAILED");
     }
 
     private String buildOutlinePrompt(PlanTaskSession session, UserPlanCard card, String templateType) {
