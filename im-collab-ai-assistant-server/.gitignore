@@ -31,3 +31,14 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### 暂存区文件
+.DS_Store
+**/.DS_Store
+.DS_Store?
+
+**/src/main/resources/application.yml
+!im-collab-ai-assistant-app/src/main/resources/application.yml
+### Local env
+.env
+.env.*

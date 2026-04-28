@@ -1,0 +1,195 @@
+package com.lark.imcollab.gateway.im.service;
+
+import com.lark.imcollab.common.model.enums.InputSourceEnum;
+import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
+import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
+import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
+import com.lark.imcollab.gateway.im.event.LarkMessageEventSubscriptionService;
+import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.function.Consumer;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class LarkIMListenerServiceTests {
+
+    @Test
+    void shouldStartListenerAndDispatchIncomingMessageWithReceiptReply() {
+        StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
+        StubReplyTool replyTool = new StubReplyTool();
+        RecordingDispatcher dispatcher = new RecordingDispatcher();
+        LarkIMListenerService service = new LarkIMListenerService(subscriptionTool, replyTool, dispatcher);
+
+        LarkIMListenerStatusResponse status = service.start();
+        subscriptionTool.emit(new LarkMessageEvent(
+                "evt-1",
+                "om_1",
+                "oc_p2p",
+                "p2p",
+                "text",
+                "生成周报",
+                "ou_1",
+                "1773491924409",
+                true
+        ));
+
+        assertThat(status.running()).isTrue();
+        assertThat(dispatcher.messages).hasSize(1);
+        assertThat(dispatcher.messages.get(0).inputSource()).isEqualTo(InputSourceEnum.LARK_PRIVATE_CHAT);
+        assertThat(dispatcher.messages.get(0).content()).isEqualTo("生成周报");
+        assertThat(replyTool.messageId).isEqualTo("om_1");
+        assertThat(replyTool.text).isEqualTo("任务已收到，正在处理");
+    }
+
+    @Test
+    void shouldMapGroupMessageToGroupInputSource() {
+        StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
+        StubReplyTool replyTool = new StubReplyTool();
+        RecordingDispatcher dispatcher = new RecordingDispatcher();
+        RecordingStreamService streamService = new RecordingStreamService();
+        LarkIMListenerService service = new LarkIMListenerService(
+                subscriptionTool,
+                replyTool,
+                dispatcher,
+                streamService
+        );
+        service.start();
+
+        subscriptionTool.emit(new LarkMessageEvent(
+                "evt-2",
+                "om_2",
+                "oc_group",
+                "group",
+                "text",
+                "生成方案",
+                "ou_2",
+                "1773491924410",
+                true
+        ));
+
+        assertThat(dispatcher.messages).hasSize(1);
+        assertThat(dispatcher.messages.get(0).inputSource()).isEqualTo(InputSourceEnum.LARK_GROUP);
+        assertThat(replyTool.replyCount).isEqualTo(1);
+        assertThat(streamService.sourceEvent.messageId()).isEqualTo("om_2");
+        assertThat(streamService.text).isEqualTo("任务已收到，正在处理");
+    }
+
+    @Test
+    void shouldIgnoreGroupMessageWithoutMentionForAgentListener() {
+        StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
+        StubReplyTool replyTool = new StubReplyTool();
+        RecordingDispatcher dispatcher = new RecordingDispatcher();
+        LarkIMListenerService service = new LarkIMListenerService(subscriptionTool, replyTool, dispatcher);
+        service.start();
+
+        subscriptionTool.emit(new LarkMessageEvent(
+                "evt-4",
+                "om_4",
+                "oc_group",
+                "group",
+                "text",
+                "普通群消息",
+                "ou_4",
+                "1773491924412",
+                false
+        ));
+
+        assertThat(dispatcher.messages).isEmpty();
+        assertThat(replyTool.replyCount).isZero();
+    }
+
+    @Test
+    void shouldStartListenerWithDefaultCliConfiguration() {
+        StubSubscriptionTool subscriptionTool = new StubSubscriptionTool();
+        StubReplyTool replyTool = new StubReplyTool();
+        LarkIMListenerService service = new LarkIMListenerService(
+                subscriptionTool,
+                replyTool,
+                new RecordingDispatcher()
+        );
+
+        LarkIMListenerStatusResponse status = service.start();
+        subscriptionTool.emit(new LarkMessageEvent(
+                "evt-3",
+                "om_3",
+                "oc_p2p",
+                "p2p",
+                "text",
+                "你好",
+                "ou_3",
+                "1773491924411",
+                true
+        ));
+
+        assertThat(status.running()).isTrue();
+        assertThat(replyTool.messageId).isEqualTo("om_3");
+    }
+
+    private static final class StubSubscriptionTool extends LarkMessageEventSubscriptionService {
+
+        private Consumer<LarkMessageEvent> consumer;
+
+        StubSubscriptionTool() {
+            super(null);
+        }
+
+        @Override
+        public LarkEventSubscriptionStatus startMessageSubscription(
+                String consumerId,
+                Consumer<LarkMessageEvent> messageConsumer
+        ) {
+            this.consumer = messageConsumer;
+            return new LarkEventSubscriptionStatus(true, "running", null, null);
+        }
+
+        private void emit(LarkMessageEvent event) {
+            consumer.accept(event);
+        }
+    }
+
+    private static final class StubReplyTool extends LarkMessageReplyTool {
+
+        private String messageId;
+        private String text;
+        private int replyCount;
+
+        StubReplyTool() {
+            super(null);
+        }
+
+        @Override
+        public void replyText(String messageId, String text) {
+            this.messageId = messageId;
+            this.text = text;
+            this.replyCount++;
+        }
+    }
+
+    private static final class RecordingStreamService extends LarkIMMessageStreamService {
+
+        private LarkMessageEvent sourceEvent;
+        private String text;
+
+        RecordingStreamService() {
+            super(null, null);
+        }
+
+        @Override
+        void publishBotReply(LarkMessageEvent sourceEvent, String text) {
+            this.sourceEvent = sourceEvent;
+            this.text = text;
+        }
+    }
+
+    private static final class RecordingDispatcher implements LarkInboundMessageDispatcher {
+
+        private final List<LarkInboundMessage> messages = new java.util.ArrayList<>();
+
+        @Override
+        public void dispatch(LarkInboundMessage message) {
+            messages.add(message);
+        }
+    }
+}

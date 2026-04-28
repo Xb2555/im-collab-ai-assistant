@@ -1,0 +1,19 @@
+imcollab:
+  store:
+    redisson:
+      enabled: false
+spring:
+  ai:
+    dashscope:
+      api-key: test-key
+planner:
+  prompt:
+    profile: default
+    version: v1
+    fallback-profile: default
+    fallback-version: v1
+    default-profession: 测试角色
+    default-industry: 测试行业
+    default-audience: 测试受众
+    default-tone: 专业
+    default-language: 中文
