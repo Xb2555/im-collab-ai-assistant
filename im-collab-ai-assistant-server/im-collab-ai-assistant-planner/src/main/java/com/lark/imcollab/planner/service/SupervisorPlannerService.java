@@ -24,8 +24,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+@Deprecated
 @Slf4j
-@Service
 public class SupervisorPlannerService {
 
     private final ReactAgent supervisorAgent;
