@@ -5,6 +5,7 @@ import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.BaseResponse;
+import com.lark.imcollab.common.facade.ExecutionHarnessFacade;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.utils.ResultUtils;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
@@ -22,6 +23,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import io.swagger.v3.oas.annotations.Hidden;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
@@ -39,6 +41,7 @@ public class PlannerController {
     private final PlannerSessionService sessionService;
     private final TaskResultEvaluationService evaluationService;
     private final PlannerStateStore repository;
+    private final ObjectProvider<ExecutionHarnessFacade> executionHarnessFacadeProvider;
 
     @PostMapping("/plan")
     @Operation(summary = "1. 创建任务规划", description = "根据用户原始指令理解意图并拆解为可执行的任务卡片")
@@ -73,7 +76,11 @@ public class PlannerController {
     @Operation(summary = "2. 中断任务", description = "中断正在执行的任务")
     public BaseResponse<PlanTaskSession> interrupt(
             @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId) {
-        PlanTaskSession session = supervisorPlannerService.interrupt(taskId);
+        PlanTaskSession current = sessionService.get(taskId);
+        ExecutionHarnessFacade harnessFacade = executionHarnessFacadeProvider.getIfAvailable();
+        PlanTaskSession session = current.getPlanningPhase() == PlanningPhaseEnum.EXECUTING && harnessFacade != null
+                ? harnessFacade.interruptExecution(taskId)
+                : supervisorPlannerService.interrupt(taskId);
         return ResultUtils.success(session);
     }
 
@@ -82,11 +89,15 @@ public class PlannerController {
     public BaseResponse<PlanTaskSession> resume(
             @Parameter(description = "任务ID", required = true, example = "task-123") @PathVariable String taskId,
             @RequestBody ResumeRequest request) {
-        PlanTaskSession session = supervisorPlannerService.resume(
-                taskId,
-                request.getFeedback(),
-                request.isReplanFromRoot()
-        );
+        PlanTaskSession current = sessionService.get(taskId);
+        ExecutionHarnessFacade harnessFacade = executionHarnessFacadeProvider.getIfAvailable();
+        PlanTaskSession session = current.getPlanningPhase() == PlanningPhaseEnum.EXECUTING && harnessFacade != null
+                ? harnessFacade.resumeExecution(taskId, request.getFeedback())
+                : supervisorPlannerService.resume(
+                        taskId,
+                        request.getFeedback(),
+                        request.isReplanFromRoot()
+                );
         return ResultUtils.success(session);
     }
 
@@ -121,6 +132,10 @@ public class PlannerController {
                 session.setTransitionReason("User confirmed execution");
                 sessionService.save(session);
                 sessionService.publishEvent(taskId, "EXECUTING");
+                ExecutionHarnessFacade harnessFacade = executionHarnessFacadeProvider.getIfAvailable();
+                if (harnessFacade != null) {
+                    session = harnessFacade.startExecution(taskId);
+                }
                 yield ResultUtils.success(session);
             }
             case "REPLAN" -> {
@@ -171,4 +186,3 @@ public class PlannerController {
         return ResultUtils.success(evaluation);
     }
 }
-

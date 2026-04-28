@@ -19,6 +19,10 @@
             <artifactId>im-collab-ai-assistant-store</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.lark</groupId>
+            <artifactId>im-collab-ai-assistant-harness</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
