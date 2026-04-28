@@ -31,8 +31,8 @@ public class StubDocScenarioModule implements ScenarioModule {
     public ScenarioIntegrationHook buildHook(PlanBlueprint blueprint) {
         return ScenarioIntegrationHook.builder()
                 .scenarioCode(scenarioCode())
-                .moduleName("stub-doc-scenario-module")
-                .status("PENDING")
+                .moduleName("doc-scenario-module")
+                .status("READY")
                 .build();
     }
 

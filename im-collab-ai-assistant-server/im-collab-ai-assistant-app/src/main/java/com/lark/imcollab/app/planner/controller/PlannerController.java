@@ -1,5 +1,6 @@
 package com.lark.imcollab.app.planner.controller;
 
+import com.lark.imcollab.common.facade.HarnessFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
@@ -12,6 +13,7 @@ import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.utils.ResultUtils;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.SupervisorPlannerService;
@@ -42,6 +44,7 @@ public class PlannerController {
     private final TaskRuntimeService taskRuntimeService;
     private final TaskResultEvaluationService evaluationService;
     private final PlannerStateStore repository;
+    private final HarnessFacade harnessFacade;
 
     @PostMapping("/plan")
     @Operation(summary = "1. 创建任务规划", description = "根据用户原始指令理解意图并拆解为可执行的任务卡片")
@@ -131,6 +134,8 @@ public class PlannerController {
                 session.setTransitionReason("User confirmed execution");
                 sessionService.save(session);
                 sessionService.publishEvent(taskId, "EXECUTING");
+                taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.EXECUTING, TaskEventTypeEnum.PLAN_APPROVED);
+                harnessFacade.startExecution(taskId);
                 yield ResultUtils.success(session);
             }
             case "REPLAN" -> {

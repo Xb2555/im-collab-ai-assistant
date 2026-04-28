@@ -2,6 +2,8 @@ package com.lark.imcollab.store.redis;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -10,6 +12,8 @@ import java.util.Optional;
 
 @Component
 public class DefaultRedisJsonStore implements RedisJsonStore {
+
+    private static final Logger log = LoggerFactory.getLogger(DefaultRedisJsonStore.class);
 
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
@@ -24,7 +28,7 @@ public class DefaultRedisJsonStore implements RedisJsonStore {
         try {
             redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(value), ttl);
         } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("Failed to serialize value for redis", exception);
+            throw new IllegalStateException("Failed to serialize value for redis key=" + key, exception);
         }
     }
 
@@ -38,7 +42,9 @@ public class DefaultRedisJsonStore implements RedisJsonStore {
         try {
             return Optional.of(objectMapper.readValue(payload.get(), type));
         } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("Failed to deserialize value from redis", exception);
+            String preview = payload.get().length() > 200 ? payload.get().substring(0, 200) + "..." : payload.get();
+            log.error("Failed to deserialize redis key={} type={} payload={}", key, type.getSimpleName(), preview, exception);
+            throw new IllegalStateException("Failed to deserialize value from redis key=" + key + " type=" + type.getSimpleName(), exception);
         }
     }
 

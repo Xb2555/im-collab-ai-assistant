@@ -4,9 +4,9 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 
 /**
- * Planner 场景的统一计划门面。
- * GUI 直连 planner 或 IM 转接到 planner 都应复用此入口语义。
+ * @deprecated replaced by {@link PlannerFacade}
  */
+@Deprecated
 public interface PlannerPlanFacade {
 
     PlanTaskSession plan(

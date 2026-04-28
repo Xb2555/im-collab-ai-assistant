@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/im")
+@RequestMapping("/im")
 public class LarkIMChatController {
 
     private final LarkIMChatService chatService;
