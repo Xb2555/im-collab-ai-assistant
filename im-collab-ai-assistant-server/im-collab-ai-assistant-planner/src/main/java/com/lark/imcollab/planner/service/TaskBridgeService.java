@@ -10,6 +10,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -25,6 +26,7 @@ public class TaskBridgeService {
     private final TaskEventRepository eventRepository;
     private final HarnessFacade harnessFacade;
 
+    @Async
     public void bridgeAndExecuteIfReady(PlanTaskSession session) {
         if (session == null || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
             return;
