@@ -57,7 +57,7 @@ public class PlannerConversationService {
                     workspaceContext
             );
         };
-        taskBridgeService.bridgeAndExecuteIfReady(result);
+        taskBridgeService.ensureTask(result);
         return result;
     }
 

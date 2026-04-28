@@ -1,16 +1,13 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.domain.*;
-import com.lark.imcollab.common.facade.HarnessFacade;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
-import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -24,16 +21,6 @@ public class TaskBridgeService {
 
     private final TaskRepository taskRepository;
     private final TaskEventRepository eventRepository;
-    private final HarnessFacade harnessFacade;
-
-    @Async
-    public void bridgeAndExecuteIfReady(PlanTaskSession session) {
-        if (session == null || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
-            return;
-        }
-        Task task = ensureTask(session);
-        harnessFacade.startExecution(task.getTaskId());
-    }
 
     public Task ensureTask(PlanTaskSession session) {
         return taskRepository.findById(session.getTaskId())
