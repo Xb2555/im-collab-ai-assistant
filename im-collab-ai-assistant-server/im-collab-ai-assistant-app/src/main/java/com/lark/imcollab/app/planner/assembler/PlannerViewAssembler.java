@@ -62,9 +62,14 @@ public class PlannerViewAssembler {
     }
 
     private String resolveTitle(PlanTaskSession session) {
-        List<UserPlanCard> cards = session.getPlanCards();
-        if (cards != null && !cards.isEmpty() && cards.get(0) != null && cards.get(0).getTitle() != null) {
-            return cards.get(0).getTitle();
+        if (session.getExecutionContract() != null && session.getExecutionContract().getTaskBrief() != null) {
+            return session.getExecutionContract().getTaskBrief();
+        }
+        if (session.getPlanBlueprint() != null && session.getPlanBlueprint().getTaskBrief() != null) {
+            return session.getPlanBlueprint().getTaskBrief();
+        }
+        if (session.getIntentSnapshot() != null && session.getIntentSnapshot().getUserGoal() != null) {
+            return session.getIntentSnapshot().getUserGoal();
         }
         return session.getPlanBlueprintSummary();
     }

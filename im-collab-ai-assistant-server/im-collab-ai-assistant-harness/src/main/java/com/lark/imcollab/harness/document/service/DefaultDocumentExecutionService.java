@@ -57,6 +57,16 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
             if (task.getRawInstruction() != null && !task.getRawInstruction().isBlank()) {
                 state.put(DocumentStateKeys.RAW_INSTRUCTION, task.getRawInstruction());
             }
+            if (task.getClarifiedInstruction() != null && !task.getClarifiedInstruction().isBlank()) {
+                state.put(DocumentStateKeys.CLARIFIED_INSTRUCTION, task.getClarifiedInstruction());
+            }
+            if (task.getExecutionContract() != null) {
+                state.put(DocumentStateKeys.TEMPLATE_STRATEGY, task.getExecutionContract().getTemplateStrategy());
+                state.put(DocumentStateKeys.DIAGRAM_REQUIREMENT, task.getExecutionContract().getDiagramRequirement());
+                state.put(DocumentStateKeys.EXECUTION_CONSTRAINTS, task.getExecutionContract().getConstraints());
+                state.put(DocumentStateKeys.SOURCE_SCOPE, task.getExecutionContract().getSourceScope());
+                state.put(DocumentStateKeys.ALLOWED_ARTIFACTS, task.getExecutionContract().getAllowedArtifacts());
+            }
         });
         documentWorkflow.invoke(new OverAllState(state), config);
     }

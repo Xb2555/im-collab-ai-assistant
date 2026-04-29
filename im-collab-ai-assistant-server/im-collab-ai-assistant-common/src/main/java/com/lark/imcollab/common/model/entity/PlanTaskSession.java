@@ -21,6 +21,12 @@ public class PlanTaskSession implements Serializable {
     @Schema(description = "任务ID")
     private String taskId;
 
+    @Schema(description = "用户原始输入")
+    private String rawInstruction;
+
+    @Schema(description = "融合澄清后的完整目标")
+    private String clarifiedInstruction;
+
     @Schema(description = "规划阶段（ASK_USER/PLAN_READY/EXECUTING/COMPLETED/FAILED/ABORTED）")
     private PlanningPhaseEnum planningPhase;
 
@@ -75,6 +81,9 @@ public class PlanTaskSession implements Serializable {
 
     @Schema(description = "后续场景接入挂钩")
     private List<ScenarioIntegrationHook> integrationHooks;
+
+    @Schema(description = "执行契约")
+    private ExecutionContract executionContract;
 
     @Schema(description = "用户职业角色")
     private String profession;

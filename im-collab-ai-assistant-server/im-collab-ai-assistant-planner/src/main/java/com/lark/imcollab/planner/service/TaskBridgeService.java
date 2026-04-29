@@ -1,10 +1,9 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.domain.*;
+import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
-import com.lark.imcollab.common.model.entity.UserPlanCard;
-import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
 import lombok.RequiredArgsConstructor;
@@ -21,44 +20,49 @@ public class TaskBridgeService {
 
     private final TaskRepository taskRepository;
     private final TaskEventRepository eventRepository;
+    private final ExecutionContractFactory executionContractFactory;
 
     public Task ensureTask(PlanTaskSession session) {
-        return taskRepository.findById(session.getTaskId())
-                .orElseGet(() -> createTask(session));
-    }
-
-    private Task createTask(PlanTaskSession session) {
-        TaskType type = resolveType(session.getPlanBlueprint());
-        Task task = Task.builder()
-                .taskId(session.getTaskId())
-                .rawInstruction(session.getPlanBlueprintSummary())
-                .type(type)
-                .status(TaskStatus.PLAN_READY)
-                .steps(new ArrayList<>())
-                .artifacts(new ArrayList<>())
-                .createdAt(Instant.now())
-                .updatedAt(Instant.now())
-                .build();
+        Task existing = taskRepository.findById(session.getTaskId()).orElse(null);
+        Task task = createTask(session, existing);
         taskRepository.save(task);
-        eventRepository.save(TaskEvent.builder()
-                .eventId(UUID.randomUUID().toString())
-                .taskId(task.getTaskId())
-                .type(TaskEventType.PLAN_READY)
-                .occurredAt(Instant.now())
-                .build());
+        if (existing == null) {
+            eventRepository.save(TaskEvent.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .taskId(task.getTaskId())
+                    .type(TaskEventType.PLAN_READY)
+                    .occurredAt(Instant.now())
+                    .build());
+        }
         return task;
     }
 
-    private TaskType resolveType(PlanBlueprint blueprint) {
-        if (blueprint == null || blueprint.getPlanCards() == null) {
+    private Task createTask(PlanTaskSession session, Task existing) {
+        ExecutionContract contract = executionContractFactory.build(session);
+        return Task.builder()
+                .taskId(session.getTaskId())
+                .rawInstruction(contract.getRawInstruction())
+                .clarifiedInstruction(contract.getClarifiedInstruction())
+                .taskBrief(contract.getTaskBrief())
+                .executionContract(contract)
+                .type(resolveType(contract))
+                .status(TaskStatus.PLAN_READY)
+                .steps(new ArrayList<>())
+                .artifacts(new ArrayList<>())
+                .createdAt(existing == null ? Instant.now() : existing.getCreatedAt())
+                .updatedAt(Instant.now())
+                .build();
+    }
+
+    private TaskType resolveType(ExecutionContract contract) {
+        if (contract == null || contract.getAllowedArtifacts() == null || contract.getAllowedArtifacts().isEmpty()) {
             return TaskType.WRITE_DOC;
         }
-        List<UserPlanCard> cards = blueprint.getPlanCards();
-        boolean hasDoc = cards.stream().anyMatch(c -> c.getType() == PlanCardTypeEnum.DOC);
-        boolean hasPpt = cards.stream().anyMatch(c -> c.getType() == PlanCardTypeEnum.PPT);
+        List<String> artifacts = contract.getAllowedArtifacts();
+        boolean hasDoc = artifacts.stream().anyMatch(value -> "DOC".equalsIgnoreCase(value));
+        boolean hasPpt = artifacts.stream().anyMatch(value -> "PPT".equalsIgnoreCase(value));
         if (hasDoc && hasPpt) return TaskType.MIXED;
         if (hasPpt) return TaskType.WRITE_SLIDES;
         return TaskType.WRITE_DOC;
     }
 }
-

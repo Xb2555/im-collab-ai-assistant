@@ -4,8 +4,16 @@ public final class DocumentStateKeys {
 
     public static final String TASK_ID = "taskId";
     public static final String RAW_INSTRUCTION = "rawInstruction";
+    public static final String CLARIFIED_INSTRUCTION = "clarifiedInstruction";
+    public static final String EXECUTION_CONSTRAINTS = "executionConstraints";
+    public static final String SOURCE_SCOPE = "sourceScope";
+    public static final String ALLOWED_ARTIFACTS = "allowedArtifacts";
     public static final String CARD_ID = "cardId";
     public static final String TEMPLATE_TYPE = "templateType";
+    public static final String TEMPLATE_STRATEGY = "templateStrategy";
+    public static final String DIAGRAM_REQUIREMENT = "diagramRequirement";
+    public static final String DIAGRAM_PLAN = "diagramPlan";
+    public static final String MERMAID_DIAGRAM = "mermaidDiagram";
     public static final String USER_FEEDBACK = "userFeedback";
     public static final String OUTLINE = "outline";
     public static final String SECTION_DRAFTS = "sectionDrafts";

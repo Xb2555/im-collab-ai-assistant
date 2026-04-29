@@ -4,6 +4,7 @@ public enum ArtifactTypeEnum {
     DOC,
     PPT,
     WHITEBOARD,
+    DIAGRAM,
     FILE,
     SUMMARY
 }

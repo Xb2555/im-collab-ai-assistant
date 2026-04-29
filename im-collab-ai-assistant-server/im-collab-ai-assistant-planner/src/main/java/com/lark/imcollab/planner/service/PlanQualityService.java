@@ -27,10 +27,16 @@ public class PlanQualityService {
 
     private final ObjectMapper objectMapper;
     private final List<ScenarioModule> scenarioModules;
+    private final ExecutionContractFactory executionContractFactory;
 
-    public PlanQualityService(ObjectMapper objectMapper, List<ScenarioModule> scenarioModules) {
+    public PlanQualityService(
+            ObjectMapper objectMapper,
+            List<ScenarioModule> scenarioModules,
+            ExecutionContractFactory executionContractFactory
+    ) {
         this.objectMapper = objectMapper;
         this.scenarioModules = scenarioModules == null ? List.of() : scenarioModules;
+        this.executionContractFactory = executionContractFactory;
     }
 
     public int extractScore(String criticOutput) {
@@ -133,10 +139,16 @@ public class PlanQualityService {
     public PlanTaskSession applyPlanReady(PlanTaskSession session, PlanBlueprint blueprint) {
         PlanBlueprint normalized = normalizePlanBlueprint(blueprint, session.getTaskId(), session.getIntentSnapshot());
         session.setPlanBlueprint(normalized);
+        var contract = executionContractFactory.build(session);
+        normalized = executionContractFactory.applyArtifactGate(normalized, contract);
+        session.setPlanBlueprint(normalized);
+        contract = executionContractFactory.build(session);
+        session.setClarifiedInstruction(contract.getClarifiedInstruction());
         session.setPlanBlueprintSummary(buildBlueprintSummary(normalized));
         session.setPlanCards(normalized.getPlanCards() == null ? List.of() : normalized.getPlanCards());
         session.setScenarioPath(resolveScenarioPath(session.getIntentSnapshot(), normalized, session.getScenarioPath()));
         session.setIntegrationHooks(buildIntegrationHooks(normalized));
+        session.setExecutionContract(contract);
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
         session.setTransitionReason("Plan generated");
         return session;
@@ -154,12 +166,17 @@ public class PlanQualityService {
         PlanBlueprint existing = normalizePlanBlueprint(session.getPlanBlueprint(), session.getTaskId(), session.getIntentSnapshot());
         PlanBlueprint updated = normalizePlanBlueprint(updatedBlueprint, session.getTaskId(), session.getIntentSnapshot());
         PlanBlueprint merged = mergePlanBlueprint(existing, updated, adjustmentInstruction);
-
         session.setPlanBlueprint(merged);
+        var contract = executionContractFactory.build(session);
+        merged = executionContractFactory.applyArtifactGate(merged, contract);
+        session.setPlanBlueprint(merged);
+        contract = executionContractFactory.build(session);
+        session.setClarifiedInstruction(contract.getClarifiedInstruction());
         session.setPlanBlueprintSummary(buildBlueprintSummary(merged));
         session.setPlanCards(merged.getPlanCards() == null ? List.of() : merged.getPlanCards());
         session.setScenarioPath(resolveScenarioPath(session.getIntentSnapshot(), merged, session.getScenarioPath()));
         session.setIntegrationHooks(buildIntegrationHooks(merged));
+        session.setExecutionContract(contract);
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
         session.setTransitionReason("Plan adjusted");
         return session;
