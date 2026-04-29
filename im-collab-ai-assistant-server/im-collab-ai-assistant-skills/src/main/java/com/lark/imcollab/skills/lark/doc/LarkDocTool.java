@@ -3,6 +3,7 @@ package com.lark.imcollab.skills.lark.doc;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
+import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
 
@@ -13,9 +14,11 @@ import java.util.List;
 public class LarkDocTool {
 
     private final LarkCliClient larkCliClient;
+    private final LarkCliProperties properties;
 
-    public LarkDocTool(LarkCliClient larkCliClient) {
+    public LarkDocTool(LarkCliClient larkCliClient, LarkCliProperties properties) {
         this.larkCliClient = larkCliClient;
+        this.properties = properties;
     }
 
     @Tool(description = "Scenario C: create a Lark doc from markdown.")
@@ -25,6 +28,7 @@ public class LarkDocTool {
 
         List<String> args = List.of(
                 "docs", "+create",
+                "--as", resolveDocIdentity(),
                 "--api-version", "v2",
                 "--doc-format", "markdown",
                 "--content", normalizeMarkdown(title, markdown)
@@ -65,6 +69,8 @@ public class LarkDocTool {
         List<String> args = new ArrayList<>();
         args.add("docs");
         args.add("+update");
+        args.add("--as");
+        args.add(resolveDocIdentity());
         args.add("--doc");
         args.add(docIdOrUrl.trim());
         args.add("--mode");
@@ -128,5 +134,10 @@ public class LarkDocTool {
             }
         }
         return "";
+    }
+
+    private String resolveDocIdentity() {
+        String identity = properties.getDocIdentity();
+        return identity == null || identity.isBlank() ? "user" : identity.trim();
     }
 }
