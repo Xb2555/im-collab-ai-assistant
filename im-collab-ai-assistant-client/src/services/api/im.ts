@@ -12,7 +12,7 @@ export interface SendMessageRequest {
 export interface ChatItem { 
   chatId: string; 
   name: string; 
-  avatarUrl?: string; 
+  avatar?: string;
 }
 
 export interface GetChatsResponse { 
@@ -36,12 +36,22 @@ export interface CreateChatResponse {
   ownerOpenId: string; 
 }
 
-// 👇 就是因为少了下面这段，才会报你那个错！
 export interface UserItem {
   openId: string;
   name: string;
   avatarUrl?: string;
   department?: string;
+}
+
+export interface InviteChatRequest {
+  chatId: string;
+  userOpenIds: string[];
+}
+
+export interface InviteChatResponse {
+  invalidOpenIds: string[];
+  notExistedOpenIds: string[];
+  pendingApprovalOpenIds: string[];
 }
 
 export const imApi = {
@@ -87,6 +97,16 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
   sendMessage: async (data: SendMessageRequest): Promise<any> => {
     const response = await apiClient.post<ApiResponse<any>>(
       '/api/im/messages/send', 
+      data
+    );
+    if (response.data.code !== 0) throw new Error(response.data.message);
+    return response.data.data;
+  },
+
+  //  5. 新增：邀请用户加入群聊
+  invite: async (data: InviteChatRequest): Promise<InviteChatResponse> => {
+    const response = await apiClient.post<ApiResponse<InviteChatResponse>>(
+      '/api/im/chats/invite',
       data
     );
     if (response.data.code !== 0) throw new Error(response.data.message);

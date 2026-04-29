@@ -6,8 +6,9 @@ import { authApi } from '@/services/api/auth';
 import { imApi } from '@/services/api/im';
 import { useRequest } from 'ahooks';
 import { Button } from '@/components/ui/button';
-import { MessageSquare, LayoutTemplate, Bot, Plus, Search, LogOut, Settings, PanelRightClose, Loader2 } from 'lucide-react';
+import { MessageSquare, LayoutTemplate, Bot, Plus, Search, LogOut, Settings, PanelRightClose, Loader2,UserPlus } from 'lucide-react';
 import { CreateChatModal } from '@/components/chat/CreateChatModal';
+import { InviteMemberModal } from '@/components/chat/InviteMemberModal';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 
 export default function Dashboard() {
@@ -25,7 +26,7 @@ export default function Dashboard() {
   //  SSE 消息流状态
   const [messages, setMessages] = useState<any[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
-
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false); // ✨ 新增弹窗状态
   
 
   //  核心逻辑：监听 activeChatId 变化，建立 SSE 订阅
@@ -169,7 +170,7 @@ export default function Dashboard() {
               <MessageSquare className="h-4 w-4" />
               协作群聊
             </h2>
-            {/* ✨ 点击 + 号也打开建群弹窗 ✨ */}
+            {/*  点击 + 号也打开建群弹窗  */}
             <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500" onClick={() => setIsModalOpen(true)}>
               <Plus className="h-4 w-4" />
             </Button>
@@ -255,9 +256,23 @@ export default function Dashboard() {
           
           <div className="z-10 flex h-12 items-center justify-between border-b border-zinc-200 px-6 bg-white/80 backdrop-blur-sm">
             <h2 className="text-sm font-semibold text-zinc-800">当前会话投影</h2>
-            <Button variant="ghost" size="icon" className="h-8 w-8 lg:hidden">
-              <PanelRightClose className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center gap-2">
+              {/* ✨ 新增：邀请按钮，只有在选中群聊时才显示 */}
+              {activeChatId && (
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  className="h-8 text-zinc-500 gap-1.5 hover:text-blue-600 hover:bg-blue-50"
+                  onClick={() => setIsInviteModalOpen(true)}
+                >
+                  <UserPlus className="h-4 w-4" />
+                  <span className="hidden sm:inline">邀请成员</span>
+                </Button>
+              )}
+              <Button variant="ghost" size="icon" className="h-8 w-8 lg:hidden">
+                <PanelRightClose className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
           
           <div className="z-10 flex-1 overflow-y-auto p-6 space-y-4 flex flex-col">
@@ -356,6 +371,15 @@ export default function Dashboard() {
           setIsModalOpen(false);
         }} 
       />
+
+      {/* ✨ 新增：挂载邀请弹窗 */}
+      {activeChatId && (
+        <InviteMemberModal 
+          isOpen={isInviteModalOpen}
+          onClose={() => setIsInviteModalOpen(false)}
+          chatId={activeChatId}
+        />
+      )}                                                                      
     </div>
   );
 }
