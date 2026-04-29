@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskStatus;
 import com.lark.imcollab.common.domain.TaskType;
+import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
@@ -36,6 +37,7 @@ public class TaskRuntimeService {
     private final PlanGraphBuilder planGraphBuilder;
     private final ObjectMapper objectMapper;
     private final TaskRepository taskRepository;
+    private final ExecutionContractFactory executionContractFactory;
 
     public void projectPlanReady(PlanTaskSession session, TaskEventTypeEnum eventType) {
         if (session == null || session.getPlanBlueprint() == null) {
@@ -168,11 +170,15 @@ public class TaskRuntimeService {
     }
 
     private void syncDomainTask(PlanTaskSession session, TaskPlanGraph graph) {
-        TaskType type = resolveTaskType(session);
+        ExecutionContract contract = executionContractFactory.build(session);
+        TaskType type = resolveTaskType(contract);
         Task existing = taskRepository.findById(session.getTaskId()).orElse(null);
         Task task = Task.builder()
                 .taskId(session.getTaskId())
-                .rawInstruction(firstNonBlank(graph.getGoal(), session.getPlanBlueprintSummary()))
+                .rawInstruction(contract.getRawInstruction())
+                .clarifiedInstruction(contract.getClarifiedInstruction())
+                .taskBrief(contract.getTaskBrief())
+                .executionContract(contract)
                 .type(type)
                 .status(TaskStatus.PLAN_READY)
                 .steps(new ArrayList<>())
@@ -183,14 +189,14 @@ public class TaskRuntimeService {
         taskRepository.save(task);
     }
 
-    private TaskType resolveTaskType(PlanTaskSession session) {
-        if (session.getPlanBlueprint() == null || session.getPlanBlueprint().getPlanCards() == null) {
+    private TaskType resolveTaskType(ExecutionContract contract) {
+        if (contract == null || contract.getAllowedArtifacts() == null || contract.getAllowedArtifacts().isEmpty()) {
             return TaskType.WRITE_DOC;
         }
-        boolean hasDoc = session.getPlanBlueprint().getPlanCards().stream()
-                .anyMatch(c -> c.getType() == PlanCardTypeEnum.DOC);
-        boolean hasPpt = session.getPlanBlueprint().getPlanCards().stream()
-                .anyMatch(c -> c.getType() == PlanCardTypeEnum.PPT);
+        boolean hasDoc = contract.getAllowedArtifacts().stream()
+                .anyMatch(value -> "DOC".equalsIgnoreCase(value));
+        boolean hasPpt = contract.getAllowedArtifacts().stream()
+                .anyMatch(value -> "PPT".equalsIgnoreCase(value));
         if (hasDoc && hasPpt) return TaskType.MIXED;
         if (hasPpt) return TaskType.WRITE_SLIDES;
         return TaskType.WRITE_DOC;

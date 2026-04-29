@@ -1,6 +1,7 @@
 package com.lark.imcollab.harness.document.template;
 
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.DocumentOutline;
 import com.lark.imcollab.common.model.entity.DocumentReviewResult;
 import com.lark.imcollab.common.model.entity.DocumentSectionDraft;
@@ -33,12 +34,24 @@ public class DocumentTemplateService {
         return DocumentTemplateType.REPORT;
     }
 
+    public DocumentTemplateType resolveTemplate(ExecutionContract contract) {
+        if (contract == null || contract.getTemplateStrategy() == null || contract.getTemplateStrategy().isBlank()) {
+            return DocumentTemplateType.REPORT;
+        }
+        try {
+            return DocumentTemplateType.valueOf(contract.getTemplateStrategy());
+        } catch (IllegalArgumentException ignored) {
+            return DocumentTemplateType.REPORT;
+        }
+    }
+
     public String render(
             DocumentTemplateType templateType,
             DocumentOutline outline,
             List<DocumentSectionDraft> sections,
             DocumentReviewResult reviewResult,
-            String userFeedback) {
+            String userFeedback,
+            String mermaidDiagram) {
         Map<String, String> vars = new HashMap<>();
         vars.put("title", outline.getTitle());
         vars.put("background", findSection(sections, "背景", "背景与上下文", "会议背景"));
@@ -50,6 +63,11 @@ public class DocumentTemplateService {
         vars.put("sections", joinSections(sections));
         vars.put("reviewSummary", reviewResult != null && reviewResult.getSummary() != null ? reviewResult.getSummary() : "已完成自动审阅。");
         vars.put("userFeedback", userFeedback == null ? "" : userFeedback);
+        vars.put("contextDiagram", renderMermaidSection("系统上下文图", mermaidDiagram));
+        vars.put("dataFlowDiagram", renderMermaidSection("数据流转图", mermaidDiagram));
+        vars.put("sequenceDiagram", renderMermaidSection("关键时序图", mermaidDiagram));
+        vars.put("stateDiagram", renderMermaidSection("状态流转图", mermaidDiagram));
+        vars.put("diagramNotes", mermaidDiagram == null || mermaidDiagram.isBlank() ? "本次任务未要求附图。" : "图表已按 Mermaid 源码内嵌，可在后续场景复用。");
         return applyTemplate(loadTemplate(templateType), vars);
     }
 
@@ -76,6 +94,13 @@ public class DocumentTemplateService {
             rendered = rendered.replace("{" + entry.getKey() + "}", entry.getValue() == null ? "" : entry.getValue());
         }
         return rendered;
+    }
+
+    private String renderMermaidSection(String heading, String mermaidDiagram) {
+        if (mermaidDiagram == null || mermaidDiagram.isBlank()) {
+            return "## " + heading + "\n\n待补充";
+        }
+        return "## " + heading + "\n\n```mermaid\n" + mermaidDiagram.strip() + "\n```";
     }
 
     private String loadTemplate(DocumentTemplateType templateType) {

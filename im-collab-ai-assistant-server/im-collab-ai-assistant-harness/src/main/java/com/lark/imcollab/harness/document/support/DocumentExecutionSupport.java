@@ -287,6 +287,7 @@ public class DocumentExecutionSupport {
             case DOC_OUTLINE, DOC_DRAFT, DOC_LINK -> ArtifactTypeEnum.DOC;
             case SLIDES_LINK -> ArtifactTypeEnum.PPT;
             case WHITEBOARD_LINK -> ArtifactTypeEnum.WHITEBOARD;
+            case DIAGRAM_SOURCE -> ArtifactTypeEnum.DIAGRAM;
             case SUMMARY -> ArtifactTypeEnum.SUMMARY;
         };
     }

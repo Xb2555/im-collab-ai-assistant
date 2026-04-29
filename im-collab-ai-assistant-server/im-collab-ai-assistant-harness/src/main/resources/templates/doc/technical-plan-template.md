@@ -14,6 +14,8 @@
 
 {plan}
 
+{dataFlowDiagram}
+
 ## 风险与依赖
 
 {risks}

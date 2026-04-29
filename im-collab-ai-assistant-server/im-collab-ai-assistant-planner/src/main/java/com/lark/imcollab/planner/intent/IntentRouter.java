@@ -21,7 +21,7 @@ public class IntentRouter {
         if (msg.contains("白板") || msg.contains("流程图") || msg.contains("架构图")) {
             return TaskType.WRITE_WHITEBOARD;
         }
-        if (msg.contains("文档") || msg.contains("报告") || msg.contains("方案")) {
+        if (msg.contains("文档") || msg.contains("报告")) {
             return TaskType.WRITE_DOC;
         }
         return TaskType.WRITE_DOC;

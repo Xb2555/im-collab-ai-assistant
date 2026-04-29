@@ -50,6 +50,25 @@ public class DocumentAgentConfig {
                 .build();
     }
 
+    @Bean(name = "documentDiagramAgent")
+    public ReactAgent documentDiagramAgent(ChatModel chatModel) {
+        return ReactAgent.builder()
+                .name("document-diagram-agent")
+                .description("按要求生成 Mermaid 图源码")
+                .systemPrompt("""
+                        你负责生成 Mermaid 图源码。
+                        输出要求：
+                        - 只返回 Mermaid 源码本体
+                        - 第一行必须是合法图类型声明，例如 flowchart TD、sequenceDiagram、stateDiagram-v2
+                        - 不要返回 JSON
+                        - 不要返回 heading/body 字段
+                        - 不要写解释、前言、后记
+                        - 不要使用 Markdown 围栏
+                        """)
+                .model(chatModel)
+                .build();
+    }
+
     @Bean(name = "documentReviewAgent")
     public ReactAgent documentReviewAgent(ChatModel chatModel) {
         return ReactAgent.builder()
