@@ -201,6 +201,13 @@ public class DocumentWorkflowNodes {
             reviewResult.setMissingItems(appendMissingItem(reviewResult.getMissingItems(), "缺少必需的 Mermaid 图"));
         }
 
+        boolean autoSupplemented = reviewResult.getSupplementalSections() != null && !reviewResult.getSupplementalSections().isEmpty();
+        if (autoSupplemented && reviewResult.getMissingItems() != null && !reviewResult.getMissingItems().isEmpty()) {
+            reviewResult.setSummary((reviewResult.getSummary() == null ? "" : reviewResult.getSummary() + " ")
+                    + "已根据审阅结果自动补齐缺失章节。");
+            reviewResult.setMissingItems(List.of());
+        }
+
         boolean needsHumanReview = reviewResult.getMissingItems() != null && !reviewResult.getMissingItems().isEmpty();
         if (needsHumanReview && userFeedback.isBlank()) {
             support.publishApprovalRequest(taskId, null, "文档审核发现问题：" + String.join("；", reviewResult.getMissingItems()));
@@ -223,13 +230,15 @@ public class DocumentWorkflowNodes {
         }
         String taskId = state.value(DocumentStateKeys.TASK_ID, "");
         DocumentOutline outline = requireValue(state, DocumentStateKeys.OUTLINE, DocumentOutline.class);
-        List<DocumentSectionDraft> drafts = readSectionDrafts(state);
+        List<DocumentSectionDraft> drafts = mergeSupplementalSections(readSectionDrafts(state),
+                requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class).getSupplementalSections());
         DocumentReviewResult reviewResult = requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class);
         String markdown = templateService.render(
                 DocumentTemplateType.valueOf(state.value(DocumentStateKeys.TEMPLATE_TYPE, "REPORT")),
                 outline, drafts, reviewResult,
                 state.value(DocumentStateKeys.USER_FEEDBACK, ""),
-                state.value(DocumentStateKeys.MERMAID_DIAGRAM, "")
+                state.value(DocumentStateKeys.MERMAID_DIAGRAM, ""),
+                state.value(DocumentStateKeys.DIAGRAM_PLAN, "")
         );
         LarkDocCreateResult result = larkDocTool.createDoc(outline.getTitle(), markdown);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.WRITE_TASK_SUFFIX),
@@ -297,8 +306,34 @@ public class DocumentWorkflowNodes {
         String requiredHeader = switch (diagramPlan) {
             case "SEQUENCE" -> "sequenceDiagram";
             case "STATE" -> "stateDiagram-v2";
-            case "CONTEXT", "DATA_FLOW" -> "flowchart TD";
-            default -> "flowchart TD";
+            case "DATA_FLOW" -> "sequenceDiagram";
+            case "CONTEXT" -> "flowchart TB";
+            default -> "flowchart TB";
+        };
+        String styleReference = switch (diagramPlan) {
+            case "DATA_FLOW" -> """
+                    参考风格：
+                    sequenceDiagram
+                        participant U as User (Frontend/IM)
+                        participant S as SupervisorAgent
+                        participant R as RedisSaver (Checkpoint)
+                        participant P as PlanningAgent
+                        Note over U: 用户提交意图 + 上下文
+                        U->>S: POST /planner/tasks/plan
+                        S->>R: 读取/初始化 threadId(taskId) 状态
+                    """.strip();
+            case "CONTEXT" -> """
+                    参考风格：
+                    flowchart TB
+                        subgraph A[交互入口层]
+                            Entry[GUI / IM 双入口<br>接收指令、展示进度]
+                        end
+                        subgraph B[会话与任务中枢层]
+                            Core[会话与任务中枢<br/>沉淀 Task/Step/Artifact/Event]
+                        end
+                        Entry --> Core
+                    """.strip();
+            default -> "";
         };
         return """
                 请根据以下任务生成一张 Mermaid 图，只返回 Mermaid 源码，不要解释，不要 Markdown 围栏。
@@ -308,13 +343,19 @@ public class DocumentWorkflowNodes {
                 执行上下文：%s
                 文档标题：%s
                 章节：%s
+                参考风格：%s
+                额外规则：
+                1. 如果图类型是 flowchart，请优先使用 TB 方向。
+                2. 如果图类型是 sequenceDiagram，请显式声明 participant，并用箭头表达调用方向。
+                3. 节点命名必须贴合当前文档主题，不要输出泛泛的 A/B/C 或 Node1/Node2。
                 """.formatted(
                 requiredHeader,
                 diagramPlan,
                 clarifiedInstruction,
                 inlineExecutionContext(state),
                 outline.getTitle(),
-                outline.getSections() == null ? "" : outline.getSections().stream().map(DocumentOutlineSection::getHeading).collect(Collectors.joining("、"))
+                outline.getSections() == null ? "" : outline.getSections().stream().map(DocumentOutlineSection::getHeading).collect(Collectors.joining("、")),
+                styleReference
         );
     }
 
@@ -388,7 +429,8 @@ public class DocumentWorkflowNodes {
         return switch (diagramPlan) {
             case "SEQUENCE" -> lower.startsWith("sequencediagram");
             case "STATE" -> lower.startsWith("statediagram");
-            case "CONTEXT", "DATA_FLOW" -> lower.startsWith("flowchart") || lower.startsWith("graph");
+            case "DATA_FLOW" -> lower.startsWith("sequencediagram");
+            case "CONTEXT" -> lower.startsWith("flowchart") || lower.startsWith("graph");
             default -> lower.startsWith("flowchart") || lower.startsWith("graph") || lower.startsWith("sequencediagram");
         };
     }
@@ -411,14 +453,82 @@ public class DocumentWorkflowNodes {
                         PLAN_READY --> EXECUTING
                         EXECUTING --> COMPLETED
                     """.strip();
+            case "DATA_FLOW" -> """
+                    sequenceDiagram
+                        participant U as User (Frontend/IM)
+                        participant P as Planner
+                        participant H as Harness
+                        participant D as Doc Tool
+                        U->>P: 提交文档生成需求
+                        P->>H: 下发冻结后的执行契约
+                        H->>D: 写入正式文档与图表
+                        D-->>H: 返回文档链接
+                        H-->>U: 返回最终产物
+                    """.strip();
             default -> """
-                    flowchart TD
-                        User["User Request"] --> Planner["Planner"]
-                        Planner --> Contract["Execution Contract"]
-                        Contract --> Harness["Harness Workflow"]
-                        Harness --> Doc["Document Output"]
+                    flowchart TB
+                        subgraph A[交互入口层]
+                            Entry[GUI / IM 双入口<br>接收指令、展示进度]
+                        end
+                        subgraph B[会话与任务中枢层]
+                            Core[会话与任务中枢<br/>沉淀 Task/Step/Artifact/Event]
+                        end
+                        subgraph C[Planner / Orchestrator 层]
+                            Planner[规划层<br/>识别意图、拆解任务、必要时重规划]
+                            Harness[执行编排层<br/>按状态和条件调度执行]
+                        end
+                        Entry --> Core
+                        Core --> Planner
+                        Planner --> Harness
                     """.strip();
         };
+    }
+
+    private List<DocumentSectionDraft> mergeSupplementalSections(
+            List<DocumentSectionDraft> drafts,
+            List<DocumentSectionDraft> supplementals
+    ) {
+        List<DocumentSectionDraft> merged = new ArrayList<>(drafts == null ? List.of() : drafts);
+        if (supplementals == null || supplementals.isEmpty()) {
+            return merged;
+        }
+        for (DocumentSectionDraft supplemental : supplementals) {
+            if (supplemental == null || supplemental.getHeading() == null || supplemental.getHeading().isBlank()) {
+                continue;
+            }
+            int matchedIndex = -1;
+            for (int index = 0; index < merged.size(); index++) {
+                DocumentSectionDraft existing = merged.get(index);
+                if (existing != null && existing.getHeading() != null
+                        && existing.getHeading().contains(supplemental.getHeading())) {
+                    matchedIndex = index;
+                    break;
+                }
+            }
+            if (matchedIndex >= 0) {
+                DocumentSectionDraft existing = merged.get(matchedIndex);
+                String mergedBody = mergeBodies(existing == null ? "" : existing.getBody(), supplemental.getBody());
+                merged.set(matchedIndex, DocumentSectionDraft.builder()
+                        .heading(existing.getHeading())
+                        .body(mergedBody)
+                        .build());
+            } else {
+                merged.add(supplemental);
+            }
+        }
+        return merged;
+    }
+
+    private String mergeBodies(String original, String supplemental) {
+        String left = original == null ? "" : original.strip();
+        String right = supplemental == null ? "" : supplemental.strip();
+        if (left.isBlank()) {
+            return right;
+        }
+        if (right.isBlank() || left.contains(right)) {
+            return left;
+        }
+        return left + "\n\n" + right;
     }
 
     private List<String> appendMissingItem(List<String> items, String value) {

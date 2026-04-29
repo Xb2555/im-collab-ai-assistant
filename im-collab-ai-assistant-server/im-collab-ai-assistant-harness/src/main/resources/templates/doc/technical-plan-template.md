@@ -2,31 +2,33 @@
 {reviewSummary}
 </callout>
 
-## 背景与上下文
+## 一、项目背景与上下文
 
 {background}
 
-## 目标与范围
+## 二、目标与范围
 
 {goal}
 
-## 技术方案
+## 三、技术方案
 
 {plan}
 
 {dataFlowDiagram}
 
-## 风险与依赖
+## 四、风险与依赖
 
 {risks}
 
-## 责任分工
+## 五、责任分工
 
 {owners}
 
-## 时间计划
+## 六、时间计划
 
 {timeline}
+
+## 七、补充设计细节
 
 ---
 

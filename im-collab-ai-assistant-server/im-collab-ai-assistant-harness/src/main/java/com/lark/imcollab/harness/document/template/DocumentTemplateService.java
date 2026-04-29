@@ -51,33 +51,34 @@ public class DocumentTemplateService {
             List<DocumentSectionDraft> sections,
             DocumentReviewResult reviewResult,
             String userFeedback,
-            String mermaidDiagram) {
+            String mermaidDiagram,
+            String diagramPlan) {
         Map<String, String> vars = new HashMap<>();
         vars.put("title", outline.getTitle());
-        vars.put("background", findSection(sections, "背景", "背景与上下文", "会议背景"));
-        vars.put("goal", findSection(sections, "目标", "会议目标", "目标与范围"));
-        vars.put("plan", findSection(sections, "方案", "执行方案", "关键结论"));
-        vars.put("risks", findSection(sections, "风险", "风险与依赖", "待确认事项"));
-        vars.put("owners", findSection(sections, "分工", "责任分工", "行动项"));
-        vars.put("timeline", findSection(sections, "时间", "时间计划", "下一步安排"));
+        vars.put("background", findSection(outline, sections, "背景", "背景与上下文", "会议背景", "项目背景", "背景与问题"));
+        vars.put("goal", findSection(outline, sections, "目标", "会议目标", "目标与范围", "设计目标与非目标"));
+        vars.put("plan", findSection(outline, sections, "方案", "执行方案", "关键结论", "模块分层", "架构原则"));
+        vars.put("risks", findSection(outline, sections, "风险", "风险与依赖", "待确认事项", "风险与边界"));
+        vars.put("owners", findSection(outline, sections, "分工", "责任分工", "行动项", "演进建议"));
+        vars.put("timeline", findSection(outline, sections, "时间", "时间计划", "下一步安排"));
         vars.put("sections", joinSections(sections));
         vars.put("reviewSummary", reviewResult != null && reviewResult.getSummary() != null ? reviewResult.getSummary() : "已完成自动审阅。");
         vars.put("userFeedback", userFeedback == null ? "" : userFeedback);
-        vars.put("contextDiagram", renderMermaidSection("系统上下文图", mermaidDiagram));
-        vars.put("dataFlowDiagram", renderMermaidSection("数据流转图", mermaidDiagram));
-        vars.put("sequenceDiagram", renderMermaidSection("关键时序图", mermaidDiagram));
-        vars.put("stateDiagram", renderMermaidSection("状态流转图", mermaidDiagram));
-        vars.put("diagramNotes", mermaidDiagram == null || mermaidDiagram.isBlank() ? "本次任务未要求附图。" : "图表已按 Mermaid 源码内嵌，可在后续场景复用。");
+        vars.put("contextDiagram", renderMermaidSection("### 4.1 全局架构流程图", mermaidDiagram, diagramPlan, "CONTEXT"));
+        vars.put("dataFlowDiagram", renderMermaidSection("### 4.2 数据流转图", mermaidDiagram, diagramPlan, "DATA_FLOW"));
+        vars.put("sequenceDiagram", renderMermaidSection("### 4.3 关键时序图", mermaidDiagram, diagramPlan, "SEQUENCE"));
+        vars.put("stateDiagram", renderMermaidSection("### 4.4 状态流转图", mermaidDiagram, diagramPlan, "STATE"));
+        vars.put("diagramNotes", mermaidDiagram == null || mermaidDiagram.isBlank() ? "" : "图表已按 Mermaid 源码内嵌，可在后续场景复用。");
         return applyTemplate(loadTemplate(templateType), vars);
     }
 
     private String joinSections(List<DocumentSectionDraft> sections) {
         return sections.stream()
-                .map(section -> "## " + section.getHeading() + "\n\n" + section.getBody())
+                .map(section -> "## " + normalizeHeading(section.getHeading()) + "\n\n" + trimDuplicatedHeading(section.getBody(), section.getHeading()))
                 .collect(Collectors.joining("\n\n"));
     }
 
-    private String findSection(List<DocumentSectionDraft> sections, String... aliases) {
+    private String findSection(DocumentOutline outline, List<DocumentSectionDraft> sections, String... aliases) {
         for (DocumentSectionDraft section : sections) {
             for (String alias : aliases) {
                 if (section.getHeading() != null && section.getHeading().contains(alias)) {
@@ -85,7 +86,19 @@ public class DocumentTemplateService {
                 }
             }
         }
-        return "待补充";
+        if (outline != null && outline.getSections() != null) {
+            for (var section : outline.getSections()) {
+                for (String alias : aliases) {
+                    if (section.getHeading() != null && section.getHeading().contains(alias)
+                            && section.getKeyPoints() != null && !section.getKeyPoints().isEmpty()) {
+                        return section.getKeyPoints().stream()
+                                .map(point -> "- " + point)
+                                .collect(Collectors.joining("\n"));
+                    }
+                }
+            }
+        }
+        return "";
     }
 
     private String applyTemplate(String template, Map<String, String> vars) {
@@ -96,11 +109,43 @@ public class DocumentTemplateService {
         return rendered;
     }
 
-    private String renderMermaidSection(String heading, String mermaidDiagram) {
+    private String renderMermaidSection(String heading, String mermaidDiagram, String diagramPlan, String expectedPlan) {
         if (mermaidDiagram == null || mermaidDiagram.isBlank()) {
-            return "## " + heading + "\n\n待补充";
+            return "";
         }
-        return "## " + heading + "\n\n```mermaid\n" + mermaidDiagram.strip() + "\n```";
+        if (diagramPlan == null || diagramPlan.isBlank()) {
+            return "";
+        }
+        if (!expectedPlan.equalsIgnoreCase(diagramPlan)) {
+            return "";
+        }
+        return heading + "\n\n```mermaid\n" + mermaidDiagram.strip() + "\n```";
+    }
+
+    private String normalizeHeading(String heading) {
+        if (heading == null) {
+            return "";
+        }
+        String normalized = heading.strip();
+        while (normalized.startsWith("#")) {
+            normalized = normalized.substring(1).stripLeading();
+        }
+        return normalized;
+    }
+
+    private String trimDuplicatedHeading(String body, String heading) {
+        if (body == null || body.isBlank()) {
+            return "";
+        }
+        String normalizedHeading = normalizeHeading(heading);
+        String normalizedBody = body.strip();
+        if (normalizedHeading.isBlank()) {
+            return normalizedBody;
+        }
+        if (normalizedBody.startsWith("## " + normalizedHeading)) {
+            return normalizedBody.substring(("## " + normalizedHeading).length()).stripLeading();
+        }
+        return normalizedBody;
     }
 
     private String loadTemplate(DocumentTemplateType templateType) {
