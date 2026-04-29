@@ -20,11 +20,13 @@ class PlannerConversationCancelTests {
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
         SupervisorPlannerService supervisorPlannerService = mock(SupervisorPlannerService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
         PlannerConversationService service = new PlannerConversationService(
                 resolver,
                 intakeService,
                 sessionService,
-                supervisorPlannerService
+                supervisorPlannerService,
+                taskBridgeService
         );
 
         WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
@@ -47,6 +49,7 @@ class PlannerConversationCancelTests {
 
         assertThat(result).isSameAs(abortedSession);
         verify(sessionService).markAborted("task-1", "User cancelled from conversation: \u53d6\u6d88\u4efb\u52a1");
+        verify(taskBridgeService).ensureTask(abortedSession);
         verifyNoInteractions(supervisorPlannerService);
     }
 }

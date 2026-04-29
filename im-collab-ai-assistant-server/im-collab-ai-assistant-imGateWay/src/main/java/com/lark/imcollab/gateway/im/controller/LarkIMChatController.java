@@ -2,12 +2,14 @@ package com.lark.imcollab.gateway.im.controller;
 
 import com.lark.imcollab.common.model.entity.BaseResponse;
 import com.lark.imcollab.common.utils.ResultUtils;
+import com.lark.imcollab.gateway.im.dto.LarkChatShareLinkRequest;
 import com.lark.imcollab.gateway.im.dto.LarkCreateChatRequest;
 import com.lark.imcollab.gateway.im.dto.LarkInviteChatMembersRequest;
 import com.lark.imcollab.gateway.im.dto.LarkSendMessageRequest;
 import com.lark.imcollab.gateway.im.service.LarkIMChatService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -44,6 +46,31 @@ public class LarkIMChatController {
         return ResultUtils.success(chatService.sendMessage(authorization, request));
     }
 
+    @GetMapping("/messages/history")
+    public BaseResponse<?> fetchMessageHistory(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @RequestParam String containerIdType,
+            @RequestParam String containerId,
+            @RequestParam(required = false) String startTime,
+            @RequestParam(required = false) String endTime,
+            @RequestParam(required = false) String sortType,
+            @RequestParam(required = false) Integer pageSize,
+            @RequestParam(required = false) String pageToken,
+            @RequestParam(required = false) String cardMsgContentType
+    ) {
+        return ResultUtils.success(chatService.fetchMessageHistory(
+                authorization,
+                containerIdType,
+                containerId,
+                startTime,
+                endTime,
+                sortType,
+                pageSize,
+                pageToken,
+                cardMsgContentType
+        ));
+    }
+
     @PostMapping("/chats/createChat")
     public BaseResponse<?> createChat(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
@@ -68,5 +95,14 @@ public class LarkIMChatController {
             @RequestBody LarkInviteChatMembersRequest request
     ) {
         return ResultUtils.success(chatService.inviteMembers(authorization, request));
+    }
+
+    @PostMapping("/chats/{chatId}/link")
+    public BaseResponse<?> createShareLink(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @PathVariable String chatId,
+            @RequestBody(required = false) LarkChatShareLinkRequest request
+    ) {
+        return ResultUtils.success(chatService.createShareLink(authorization, chatId, request));
     }
 }

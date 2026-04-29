@@ -8,6 +8,8 @@ import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
 import com.lark.imcollab.gateway.im.client.LarkOpenApiClient;
 import com.lark.imcollab.gateway.im.dto.LarkChatListResponse;
+import com.lark.imcollab.gateway.im.dto.LarkChatShareLinkRequest;
+import com.lark.imcollab.gateway.im.dto.LarkChatShareLinkResponse;
 import com.lark.imcollab.gateway.im.dto.LarkChatSummary;
 import com.lark.imcollab.gateway.im.dto.LarkCreateChatRequest;
 import com.lark.imcollab.gateway.im.dto.LarkCreateChatResponse;
@@ -17,6 +19,8 @@ import com.lark.imcollab.gateway.im.dto.LarkSendMessageRequest;
 import com.lark.imcollab.gateway.im.dto.LarkSendMessageResponse;
 import com.lark.imcollab.gateway.im.dto.LarkUserSearchResponse;
 import com.lark.imcollab.gateway.im.dto.LarkUserSummary;
+import com.lark.imcollab.skills.lark.im.LarkMessageHistoryMapper;
+import com.lark.imcollab.skills.lark.im.LarkMessageHistoryResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
@@ -31,6 +35,7 @@ public class LarkIMChatService {
 
     private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MAX_PAGE_SIZE = 100;
+    private static final int MAX_MESSAGE_HISTORY_PAGE_SIZE = 50;
     private static final int TENANT_CHAT_PAGE_SIZE = 100;
     private static final int MAX_BOT_CHAT_PAGES = 20;
     private static final int MAX_FILTER_SCAN_USER_PAGES = 20;
@@ -237,6 +242,59 @@ public class LarkIMChatService {
         );
     }
 
+    public LarkChatShareLinkResponse createShareLink(
+            String authorization,
+            String chatId,
+            LarkChatShareLinkRequest request
+    ) {
+        LarkAuthenticatedSession session = requireSession(authorization);
+        String normalizedChatId = requireValue(chatId, "chatId");
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (request != null) {
+            putBodyIfPresent(body, "validity_period", normalizeShareLinkValidityPeriod(request.validityPeriod()));
+        }
+
+        JsonNode data = openApiClient.post(
+                "/open-apis/im/v1/chats/" + normalizedChatId + "/link",
+                Map.of(),
+                body,
+                session.accessToken()
+        );
+        return new LarkChatShareLinkResponse(
+                optionalText(data, "share_link"),
+                optionalText(data, "expire_time"),
+                data.path("is_permanent").asBoolean(false)
+        );
+    }
+
+    public LarkMessageHistoryResponse fetchMessageHistory(
+            String authorization,
+            String containerIdType,
+            String containerId,
+            String startTime,
+            String endTime,
+            String sortType,
+            Integer pageSize,
+            String pageToken,
+            String cardMsgContentType
+    ) {
+        LarkAuthenticatedSession session = requireSession(authorization);
+        Map<String, String> queryParams = new LinkedHashMap<>();
+        queryParams.put("container_id_type", normalizeContainerIdType(containerIdType));
+        queryParams.put("container_id", requireValue(containerId, "containerId"));
+        putIfPresent(queryParams, "start_time", startTime);
+        putIfPresent(queryParams, "end_time", endTime);
+        putIfPresent(queryParams, "sort_type", sortType);
+        if (pageSize != null) {
+            queryParams.put("page_size", String.valueOf(normalizeMessageHistoryPageSize(pageSize)));
+        }
+        putIfPresent(queryParams, "page_token", pageToken);
+        putIfPresent(queryParams, "card_msg_content_type", cardMsgContentType);
+
+        JsonNode data = openApiClient.get("/open-apis/im/v1/messages", queryParams, session.accessToken());
+        return LarkMessageHistoryMapper.fromData(data);
+    }
+
     private LarkAuthenticatedSession requireSession(String authorization) {
         return oauthService.resolveAuthenticatedSessionByBusinessToken(extractBearerToken(authorization))
                 .orElseThrow(() -> new LarkIMUnauthorizedException("Unauthorized"));
@@ -261,6 +319,32 @@ public class LarkIMChatService {
             throw new IllegalArgumentException("pageSize must be between 1 and 100");
         }
         return pageSize;
+    }
+
+    private String normalizeContainerIdType(String containerIdType) {
+        String normalized = requireValue(containerIdType, "containerIdType");
+        if (!"chat".equals(normalized) && !"thread".equals(normalized)) {
+            throw new IllegalArgumentException("containerIdType must be chat or thread");
+        }
+        return normalized;
+    }
+
+    private int normalizeMessageHistoryPageSize(int pageSize) {
+        if (pageSize < 1 || pageSize > MAX_MESSAGE_HISTORY_PAGE_SIZE) {
+            throw new IllegalArgumentException("pageSize must be between 1 and 50");
+        }
+        return pageSize;
+    }
+
+    private String normalizeShareLinkValidityPeriod(String validityPeriod) {
+        if (validityPeriod == null || validityPeriod.isBlank()) {
+            return null;
+        }
+        String normalized = validityPeriod.trim();
+        if (!"week".equals(normalized) && !"year".equals(normalized) && !"permanently".equals(normalized)) {
+            throw new IllegalArgumentException("validityPeriod must be week, year, or permanently");
+        }
+        return normalized;
     }
 
     private LinkedHashMap<String, String> chatListQuery(int pageSize, String pageToken, String sortType) {
