@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -97,6 +98,33 @@ public class LarkBotMessageClient {
         );
     }
 
+    public LarkMessageHistoryResponse fetchHistory(
+            String containerIdType,
+            String containerId,
+            String startTime,
+            String endTime,
+            String sortType,
+            Integer pageSize,
+            String pageToken,
+            String cardMsgContentType
+    ) {
+        Map<String, String> queryParams = new LinkedHashMap<>();
+        queryParams.put("container_id_type", normalizeContainerIdType(containerIdType));
+        queryParams.put("container_id", requireValue(containerId, "containerId"));
+        putIfPresent(queryParams, "start_time", startTime);
+        putIfPresent(queryParams, "end_time", endTime);
+        putIfPresent(queryParams, "sort_type", sortType);
+        putIfPresent(queryParams, "page_size", pageSize == null ? null : String.valueOf(normalizePageSize(pageSize)));
+        putIfPresent(queryParams, "page_token", pageToken);
+        putIfPresent(queryParams, "card_msg_content_type", cardMsgContentType);
+
+        JsonNode data = get(
+                "/open-apis/im/v1/messages" + toQueryString(queryParams),
+                getTenantAccessToken()
+        );
+        return LarkMessageHistoryMapper.fromData(data);
+    }
+
     private String getTenantAccessToken() {
         String cachedToken = cachedTenantAccessToken;
         long now = System.currentTimeMillis();
@@ -129,6 +157,17 @@ public class LarkBotMessageClient {
         }
     }
 
+    private JsonNode get(String pathWithQuery, String accessToken) {
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                .uri(buildUri(pathWithQuery))
+                .timeout(DEFAULT_TIMEOUT)
+                .GET();
+        if (accessToken != null && !accessToken.isBlank()) {
+            requestBuilder.header("Authorization", "Bearer " + accessToken.trim());
+        }
+        return execute(requestBuilder, pathWithQuery);
+    }
+
     private JsonNode post(String pathWithQuery, Object body, String accessToken) {
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(buildUri(pathWithQuery))
@@ -138,7 +177,10 @@ public class LarkBotMessageClient {
         if (accessToken != null && !accessToken.isBlank()) {
             requestBuilder.header("Authorization", "Bearer " + accessToken.trim());
         }
+        return execute(requestBuilder, pathWithQuery);
+    }
 
+    private JsonNode execute(HttpRequest.Builder requestBuilder, String pathWithQuery) {
         HttpResponse<String> response = null;
         IOException lastIoException = null;
         for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
@@ -206,6 +248,29 @@ public class LarkBotMessageClient {
         return URI.create(normalizedBaseUrl + pathWithQuery);
     }
 
+    private String toQueryString(Map<String, String> queryParams) {
+        if (queryParams == null || queryParams.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        queryParams.forEach((key, value) -> {
+            if (value == null || value.isBlank()) {
+                return;
+            }
+            if (builder.isEmpty()) {
+                builder.append('?');
+            } else {
+                builder.append('&');
+            }
+            builder.append(encode(key)).append('=').append(encode(value));
+        });
+        return builder.toString();
+    }
+
+    private String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
     private String serialize(Object body) {
         try {
             return objectMapper.writeValueAsString(body);
@@ -228,6 +293,27 @@ public class LarkBotMessageClient {
             return null;
         }
         return field.asText();
+    }
+
+    private String normalizeContainerIdType(String containerIdType) {
+        String normalized = requireValue(containerIdType, "containerIdType");
+        if (!"chat".equals(normalized) && !"thread".equals(normalized)) {
+            throw new IllegalArgumentException("containerIdType must be chat or thread");
+        }
+        return normalized;
+    }
+
+    private int normalizePageSize(int pageSize) {
+        if (pageSize < 1 || pageSize > 50) {
+            throw new IllegalArgumentException("pageSize must be between 1 and 50");
+        }
+        return pageSize;
+    }
+
+    private void putIfPresent(Map<String, String> queryParams, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            queryParams.put(key, value.trim());
+        }
     }
 
     private String requireValue(String value, String fieldName) {

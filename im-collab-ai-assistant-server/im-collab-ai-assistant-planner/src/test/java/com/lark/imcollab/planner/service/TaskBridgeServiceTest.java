@@ -54,7 +54,6 @@ class TaskBridgeServiceTest {
         session.setTaskId("task-2");
 
         when(taskRepository.findById("task-2")).thenReturn(Optional.empty());
-        when(taskRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         Task result = taskBridgeService.ensureTask(session);
 
