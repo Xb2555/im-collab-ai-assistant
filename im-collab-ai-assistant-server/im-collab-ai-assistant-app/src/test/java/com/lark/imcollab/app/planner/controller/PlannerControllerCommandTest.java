@@ -1,5 +1,7 @@
 package com.lark.imcollab.app.planner.controller;
 
+import com.lark.imcollab.app.planner.assembler.PlannerViewAssembler;
+import com.lark.imcollab.app.planner.assembler.TaskRuntimeViewAssembler;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskStatus;
 import com.lark.imcollab.common.domain.TaskType;
@@ -8,6 +10,7 @@ import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.SupervisorPlannerService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
@@ -34,6 +37,8 @@ class PlannerControllerCommandTest {
     @Mock private TaskResultEvaluationService evaluationService;
     @Mock private PlannerStateStore repository;
     @Mock private HarnessFacade harnessFacade;
+    @Mock private PlannerViewAssembler plannerViewAssembler;
+    @Mock private TaskRuntimeViewAssembler taskRuntimeViewAssembler;
 
     @InjectMocks
     private PlannerController controller;
@@ -50,6 +55,9 @@ class PlannerControllerCommandTest {
                 .taskId("task-1").type(TaskType.WRITE_DOC).status(TaskStatus.EXECUTING)
                 .steps(new ArrayList<>()).artifacts(new ArrayList<>())
                 .createdAt(Instant.now()).updatedAt(Instant.now()).build());
+        when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
+                "task-1", "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+        ));
 
         PlanCommandRequest request = new PlanCommandRequest();
         request.setAction("CONFIRM_EXECUTE");
@@ -58,6 +66,7 @@ class PlannerControllerCommandTest {
         controller.command("task-1", request);
 
         verify(harnessFacade).startExecution("task-1");
+        verify(plannerViewAssembler).toPlanPreview(session);
     }
 
     @Test
@@ -73,6 +82,10 @@ class PlannerControllerCommandTest {
         request.setAction("REPLAN");
         request.setVersion(1);
         request.setFeedback("change it");
+        when(supervisorPlannerService.resume("task-1", "change it", false)).thenReturn(session);
+        when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
+                "task-1", "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+        ));
 
         controller.command("task-1", request);
 

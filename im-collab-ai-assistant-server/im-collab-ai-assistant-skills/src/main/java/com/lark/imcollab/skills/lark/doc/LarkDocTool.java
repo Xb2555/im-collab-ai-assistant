@@ -3,6 +3,7 @@ package com.lark.imcollab.skills.lark.doc;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
+import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
 
@@ -13,9 +14,11 @@ import java.util.List;
 public class LarkDocTool {
 
     private final LarkCliClient larkCliClient;
+    private final LarkCliProperties properties;
 
-    public LarkDocTool(LarkCliClient larkCliClient) {
+    public LarkDocTool(LarkCliClient larkCliClient, LarkCliProperties properties) {
         this.larkCliClient = larkCliClient;
+        this.properties = properties;
     }
 
     @Tool(description = "Scenario C: create a Lark doc from markdown.")
@@ -25,15 +28,29 @@ public class LarkDocTool {
 
         List<String> args = List.of(
                 "docs", "+create",
-                "--title", title.trim(),
-                "--markdown", markdown
+                "--as", resolveDocIdentity(),
+                "--api-version", "v2",
+                "--doc-format", "markdown",
+                "--content", normalizeMarkdown(title, markdown)
         );
         JsonNode root = executeJson(args);
         JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
+        JsonNode document = data.path("document").isMissingNode() ? data : data.path("document");
         return LarkDocCreateResult.builder()
-                .docId(text(data, "doc_id"))
-                .docUrl(text(data, "doc_url"))
-                .message(text(data, "message"))
+                .docId(firstNonBlank(
+                        text(document, "document_id"),
+                        text(data, "doc_id"),
+                        text(data, "document_id")
+                ))
+                .docUrl(firstNonBlank(
+                        text(document, "url"),
+                        text(data, "doc_url"),
+                        text(data, "url")
+                ))
+                .message(firstNonBlank(
+                        text(data, "message"),
+                        text(root, "message")
+                ))
                 .build();
     }
 
@@ -52,6 +69,8 @@ public class LarkDocTool {
         List<String> args = new ArrayList<>();
         args.add("docs");
         args.add("+update");
+        args.add("--as");
+        args.add(resolveDocIdentity());
         args.add("--doc");
         args.add(docIdOrUrl.trim());
         args.add("--mode");
@@ -98,5 +117,27 @@ public class LarkDocTool {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(fieldName + " must be provided");
         }
+    }
+
+    private String normalizeMarkdown(String title, String markdown) {
+        String trimmed = markdown.trim();
+        if (trimmed.startsWith("# ")) {
+            return trimmed;
+        }
+        return "# " + title.trim() + "\n\n" + trimmed;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private String resolveDocIdentity() {
+        String identity = properties.getDocIdentity();
+        return identity == null || identity.isBlank() ? "user" : identity.trim();
     }
 }

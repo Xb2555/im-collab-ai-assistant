@@ -12,24 +12,24 @@ import java.io.Serializable;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "浠诲姟杈撳叆涓婁笅鏂?")
+@Schema(description = "任务输入上下文")
 public class TaskInputContext implements Serializable {
 
-    @Schema(description = "杈撳叆鏉ユ簮")
+    @Schema(description = "输入来源")
     private String inputSource;
 
-    @Schema(description = "浼氳瘽ID")
+    @Schema(description = "会话 ID")
     private String chatId;
 
-    @Schema(description = "绾跨▼ID")
+    @Schema(description = "线程 ID")
     private String threadId;
 
-    @Schema(description = "娑堟伅ID")
+    @Schema(description = "消息 ID")
     private String messageId;
 
-    @Schema(description = "鍙戦€佽€卌penId")
+    @Schema(description = "发送者 OpenId")
     private String senderOpenId;
 
-    @Schema(description = "鑱婂ぉ绫诲瀷")
+    @Schema(description = "聊天类型")
     private String chatType;
 }

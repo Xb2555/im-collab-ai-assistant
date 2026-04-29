@@ -3,13 +3,25 @@ package com.lark.imcollab.harness.document.support;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.domain.*;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.TaskEventRecord;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
+import com.lark.imcollab.common.model.enums.StepTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.port.ArtifactRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -24,16 +36,19 @@ public class DocumentExecutionSupport {
     private final TaskRepository taskRepository;
     private final TaskEventRepository eventRepository;
     private final ArtifactRepository artifactRepository;
+    private final PlannerStateStore plannerStateStore;
     private final ObjectMapper objectMapper;
 
     public DocumentExecutionSupport(
             TaskRepository taskRepository,
             TaskEventRepository eventRepository,
             ArtifactRepository artifactRepository,
+            PlannerStateStore plannerStateStore,
             ObjectMapper objectMapper) {
         this.taskRepository = taskRepository;
         this.eventRepository = eventRepository;
         this.artifactRepository = artifactRepository;
+        this.plannerStateStore = plannerStateStore;
         this.objectMapper = objectMapper;
     }
 
@@ -43,7 +58,7 @@ public class DocumentExecutionSupport {
     }
 
     public void saveArtifact(String taskId, String stepId, ArtifactType type, String title, String content, String url) {
-        artifactRepository.save(Artifact.builder()
+        Artifact artifact = Artifact.builder()
                 .artifactId(UUID.randomUUID().toString())
                 .taskId(taskId)
                 .stepId(stepId)
@@ -52,28 +67,39 @@ public class DocumentExecutionSupport {
                 .content(content)
                 .externalUrl(url)
                 .createdAt(Instant.now())
-                .build());
+                .build();
+        artifactRepository.save(artifact);
+        syncPlannerArtifact(artifact);
     }
 
     public void publishEvent(String taskId, String stepId, TaskEventType type) {
-        eventRepository.save(TaskEvent.builder()
+        publishEvent(taskId, stepId, type, null);
+    }
+
+    public void publishEvent(String taskId, String stepId, TaskEventType type, String payload) {
+        TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
                 .stepId(stepId)
                 .type(type)
+                .payload(payload)
                 .occurredAt(Instant.now())
-                .build());
+                .build();
+        eventRepository.save(event);
+        syncPlannerEvent(event);
     }
 
     public void publishApprovalRequest(String taskId, String stepId, String prompt) {
-        eventRepository.save(TaskEvent.builder()
+        TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
                 .stepId(stepId)
                 .type(TaskEventType.APPROVAL_REQUESTED)
                 .payload(prompt)
                 .occurredAt(Instant.now())
-                .build());
+                .build();
+        eventRepository.save(event);
+        syncPlannerEvent(event);
     }
 
     public <T> T execute(Supplier<T> executor) {
@@ -94,6 +120,206 @@ public class DocumentExecutionSupport {
         } catch (JsonProcessingException e) {
             return String.valueOf(payload);
         }
+    }
+
+    private void syncPlannerArtifact(Artifact artifact) {
+        plannerStateStore.saveArtifact(ArtifactRecord.builder()
+                .artifactId(artifact.getArtifactId())
+                .taskId(artifact.getTaskId())
+                .sourceStepId(resolvePlannerStepId(artifact.getTaskId()))
+                .type(mapArtifactType(artifact.getType()))
+                .title(artifact.getTitle())
+                .url(blankToNull(artifact.getExternalUrl()))
+                .preview(blankToNull(artifact.getContent()))
+                .status("CREATED")
+                .version(1)
+                .createdAt(artifact.getCreatedAt())
+                .updatedAt(artifact.getCreatedAt())
+                .build());
+
+        plannerStateStore.findTask(artifact.getTaskId()).ifPresent(task -> {
+            List<String> artifactIds = new ArrayList<>(task.getArtifactIds() == null ? List.of() : task.getArtifactIds());
+            if (!artifactIds.contains(artifact.getArtifactId())) {
+                artifactIds.add(artifact.getArtifactId());
+            }
+            task.setArtifactIds(artifactIds);
+            task.setUpdatedAt(Instant.now());
+            plannerStateStore.saveTask(task);
+        });
+    }
+
+    private void syncPlannerEvent(TaskEvent event) {
+        plannerStateStore.appendRuntimeEvent(TaskEventRecord.builder()
+                .eventId(event.getEventId())
+                .taskId(event.getTaskId())
+                .stepId(resolvePlannerStepId(event.getTaskId()))
+                .artifactId(null)
+                .type(mapEventType(event.getType()))
+                .payloadJson(toPayloadJson(event.getPayload()))
+                .version(1)
+                .createdAt(event.getOccurredAt())
+                .build());
+
+        switch (event.getType()) {
+            case STEP_STARTED -> markPrimaryStepRunning(event.getTaskId());
+            case APPROVAL_REQUESTED -> markPrimaryStepWaitingApproval(event.getTaskId());
+            case TASK_COMPLETED -> markTaskCompleted(event.getTaskId());
+            case TASK_FAILED -> markTaskFailed(event.getTaskId(), event.getPayload());
+            case TASK_ABORTED -> markTaskCancelled(event.getTaskId(), event.getPayload());
+            case STEP_FAILED -> markPrimaryStepFailed(event.getTaskId(), event.getPayload());
+            default -> {
+            }
+        }
+    }
+
+    private void markPrimaryStepRunning(String taskId) {
+        updatePrimaryDocStep(taskId, step -> {
+            if (step.getStartedAt() == null) {
+                step.setStartedAt(Instant.now());
+            }
+            step.setStatus(StepStatusEnum.RUNNING);
+            step.setProgress(Math.max(step.getProgress(), 10));
+        });
+        plannerStateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.EXECUTING);
+            task.setCurrentStage(TaskStatusEnum.EXECUTING.name());
+            task.setNeedUserAction(false);
+            task.setUpdatedAt(Instant.now());
+            plannerStateStore.saveTask(task);
+        });
+    }
+
+    private void markPrimaryStepWaitingApproval(String taskId) {
+        updatePrimaryDocStep(taskId, step -> {
+            if (step.getStartedAt() == null) {
+                step.setStartedAt(Instant.now());
+            }
+            step.setStatus(StepStatusEnum.WAITING_APPROVAL);
+        });
+        plannerStateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.WAITING_APPROVAL);
+            task.setCurrentStage(TaskStatusEnum.WAITING_APPROVAL.name());
+            task.setNeedUserAction(true);
+            task.setUpdatedAt(Instant.now());
+            plannerStateStore.saveTask(task);
+        });
+    }
+
+    private void markPrimaryStepFailed(String taskId, String reason) {
+        updatePrimaryDocStep(taskId, step -> {
+            step.setStatus(StepStatusEnum.FAILED);
+            step.setOutputSummary(blankToNull(reason));
+            step.setEndedAt(Instant.now());
+        });
+    }
+
+    private void markTaskCompleted(String taskId) {
+        updatePrimaryDocStep(taskId, step -> {
+            step.setStatus(StepStatusEnum.COMPLETED);
+            step.setProgress(100);
+            if (step.getStartedAt() == null) {
+                step.setStartedAt(Instant.now());
+            }
+            step.setEndedAt(Instant.now());
+        });
+        plannerStateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.COMPLETED);
+            task.setCurrentStage(TaskStatusEnum.COMPLETED.name());
+            task.setProgress(100);
+            task.setNeedUserAction(false);
+            task.setUpdatedAt(Instant.now());
+            plannerStateStore.saveTask(task);
+        });
+    }
+
+    private void markTaskFailed(String taskId, String reason) {
+        markPrimaryStepFailed(taskId, reason);
+        plannerStateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.FAILED);
+            task.setCurrentStage(TaskStatusEnum.FAILED.name());
+            task.setNeedUserAction(false);
+            task.setUpdatedAt(Instant.now());
+            plannerStateStore.saveTask(task);
+        });
+    }
+
+    private void markTaskCancelled(String taskId, String reason) {
+        updatePrimaryDocStep(taskId, step -> {
+            step.setStatus(StepStatusEnum.SKIPPED);
+            step.setOutputSummary(blankToNull(reason));
+            step.setEndedAt(Instant.now());
+        });
+        plannerStateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.CANCELLED);
+            task.setCurrentStage(TaskStatusEnum.CANCELLED.name());
+            task.setNeedUserAction(false);
+            task.setUpdatedAt(Instant.now());
+            plannerStateStore.saveTask(task);
+        });
+    }
+
+    private void updatePrimaryDocStep(String taskId, java.util.function.Consumer<TaskStepRecord> updater) {
+        findPrimaryDocStep(taskId).ifPresent(step -> {
+            updater.accept(step);
+            step.setVersion(step.getVersion() + 1);
+            plannerStateStore.saveStep(step);
+        });
+    }
+
+    private Optional<TaskStepRecord> findPrimaryDocStep(String taskId) {
+        List<TaskStepRecord> steps = plannerStateStore.findStepsByTaskId(taskId);
+        return steps.stream()
+                .filter(Objects::nonNull)
+                .filter(step -> step.getType() == StepTypeEnum.DOC_CREATE || step.getType() == StepTypeEnum.DOC_DRAFT)
+                .filter(step -> step.getStatus() != StepStatusEnum.COMPLETED
+                        && step.getStatus() != StepStatusEnum.SKIPPED
+                        && step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .findFirst()
+                .or(() -> steps.stream().filter(Objects::nonNull).findFirst());
+    }
+
+    private String resolvePlannerStepId(String taskId) {
+        return findPrimaryDocStep(taskId).map(TaskStepRecord::getStepId).orElse(null);
+    }
+
+    private ArtifactTypeEnum mapArtifactType(ArtifactType type) {
+        return switch (type) {
+            case DOC_OUTLINE, DOC_DRAFT, DOC_LINK -> ArtifactTypeEnum.DOC;
+            case SLIDES_LINK -> ArtifactTypeEnum.PPT;
+            case WHITEBOARD_LINK -> ArtifactTypeEnum.WHITEBOARD;
+            case SUMMARY -> ArtifactTypeEnum.SUMMARY;
+        };
+    }
+
+    private TaskEventTypeEnum mapEventType(TaskEventType type) {
+        return switch (type) {
+            case PLAN_READY -> TaskEventTypeEnum.PLAN_READY;
+            case STEP_STARTED -> TaskEventTypeEnum.STEP_STARTED;
+            case STEP_COMPLETED -> TaskEventTypeEnum.STEP_COMPLETED;
+            case STEP_FAILED -> TaskEventTypeEnum.STEP_FAILED;
+            case STEP_RETRYING -> TaskEventTypeEnum.STEP_RETRY_SCHEDULED;
+            case APPROVAL_REQUESTED -> TaskEventTypeEnum.PLAN_APPROVAL_REQUIRED;
+            case ARTIFACT_CREATED -> TaskEventTypeEnum.ARTIFACT_CREATED;
+            case TASK_COMPLETED -> TaskEventTypeEnum.TASK_COMPLETED;
+            case TASK_FAILED -> TaskEventTypeEnum.TASK_FAILED;
+            case TASK_ABORTED -> TaskEventTypeEnum.TASK_CANCELLED;
+            case TASK_CREATED, PLANNING_STARTED, APPROVAL_DECIDED -> TaskEventTypeEnum.STEP_READY;
+        };
+    }
+
+    private String toPayloadJson(String payload) {
+        if (payload == null || payload.isBlank()) {
+            return "null";
+        }
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException exception) {
+            return "\"" + payload.replace("\"", "\\\"") + "\"";
+        }
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     public static class HumanReviewRequiredException extends RuntimeException {
