@@ -195,7 +195,7 @@ public class LarkOAuthService {
     }
 
     private LarkFrontendUserResponse toFrontendUser(LarkOAuthUserResponse user) {
-        return new LarkFrontendUserResponse(user.name(), user.avatarUrl());
+        return new LarkFrontendUserResponse(user.openId(), user.name(), user.avatarUrl());
     }
 
     private boolean consumeState(String state) {

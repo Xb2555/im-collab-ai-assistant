@@ -8,6 +8,8 @@ public record LarkRealtimeMessage(
         String messageType,
         String content,
         String senderOpenId,
+        String senderName,
+        String senderAvatar,
         String createTime,
         boolean mentionDetected
 ) {

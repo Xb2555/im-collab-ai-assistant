@@ -45,7 +45,9 @@ public final class LarkMessageHistoryMapper {
                 optionalText(sender, "tenant_key"),
                 optionalText(item.path("body"), "content"),
                 mapMentions(item.path("mentions")),
-                optionalText(item, "upper_message_id")
+                optionalText(item, "upper_message_id"),
+                null,
+                null
         );
     }
 

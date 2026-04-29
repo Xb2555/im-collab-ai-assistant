@@ -25,15 +25,18 @@ public class LarkIMMessageStreamService {
 
     private final LarkOAuthService oauthService;
     private final LarkMessageEventSubscriptionService subscriptionService;
+    private final LarkIMMessageProjectionService messageProjectionService;
     private final Map<String, Set<SseEmitter>> emittersByChatId = new ConcurrentHashMap<>();
     private final AtomicBoolean subscriptionRegistered = new AtomicBoolean(false);
 
     public LarkIMMessageStreamService(
             LarkOAuthService oauthService,
-            LarkMessageEventSubscriptionService subscriptionService
+            LarkMessageEventSubscriptionService subscriptionService,
+            LarkIMMessageProjectionService messageProjectionService
     ) {
         this.oauthService = oauthService;
         this.subscriptionService = subscriptionService;
+        this.messageProjectionService = messageProjectionService;
     }
 
     public SseEmitter subscribe(String authorization, String chatId) {
@@ -161,17 +164,7 @@ public class LarkIMMessageStreamService {
     }
 
     private LarkRealtimeMessage mapMessage(LarkMessageEvent event) {
-        return new LarkRealtimeMessage(
-                event.eventId(),
-                event.messageId(),
-                event.chatId(),
-                event.chatType(),
-                event.messageType(),
-                event.content(),
-                event.senderOpenId(),
-                event.createTime(),
-                event.mentionDetected()
-        );
+        return messageProjectionService.projectRealtime(event);
     }
 
     private String requireValue(String value, String fieldName) {
