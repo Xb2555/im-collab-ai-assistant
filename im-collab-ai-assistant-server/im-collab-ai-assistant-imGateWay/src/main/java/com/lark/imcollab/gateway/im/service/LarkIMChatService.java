@@ -43,15 +43,18 @@ public class LarkIMChatService {
     private final LarkOAuthService oauthService;
     private final LarkOpenApiClient openApiClient;
     private final ObjectMapper objectMapper;
+    private final LarkIMMessageProjectionService messageProjectionService;
 
     public LarkIMChatService(
             LarkOAuthService oauthService,
             LarkOpenApiClient openApiClient,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            LarkIMMessageProjectionService messageProjectionService
     ) {
         this.oauthService = oauthService;
         this.openApiClient = openApiClient;
         this.objectMapper = objectMapper;
+        this.messageProjectionService = messageProjectionService;
     }
 
     public LarkChatListResponse listChats(
@@ -292,7 +295,7 @@ public class LarkIMChatService {
         putIfPresent(queryParams, "card_msg_content_type", cardMsgContentType);
 
         JsonNode data = openApiClient.get("/open-apis/im/v1/messages", queryParams, session.accessToken());
-        return LarkMessageHistoryMapper.fromData(data);
+        return messageProjectionService.projectHistory(LarkMessageHistoryMapper.fromData(data), session.accessToken());
     }
 
     private LarkAuthenticatedSession requireSession(String authorization) {

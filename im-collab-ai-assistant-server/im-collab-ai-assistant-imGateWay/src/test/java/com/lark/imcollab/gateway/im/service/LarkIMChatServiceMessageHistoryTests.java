@@ -24,7 +24,11 @@ class LarkIMChatServiceMessageHistoryTests {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final LarkOAuthService oauthService = mock(LarkOAuthService.class);
     private final LarkOpenApiClient openApiClient = mock(LarkOpenApiClient.class);
-    private final LarkIMChatService service = new LarkIMChatService(oauthService, openApiClient, objectMapper);
+    private final LarkUserProfileHydrationService userProfileHydrationService = mock(LarkUserProfileHydrationService.class);
+    private final LarkIMMessageProjectionService messageProjectionService =
+            new LarkIMMessageProjectionService(userProfileHydrationService, objectMapper);
+    private final LarkIMChatService service =
+            new LarkIMChatService(oauthService, openApiClient, objectMapper, messageProjectionService);
 
     @Test
     void shouldFetchMessageHistoryWithUserAccessToken() throws Exception {
@@ -41,6 +45,11 @@ class LarkIMChatServiceMessageHistoryTests {
                       "message_id": "om_1",
                       "msg_type": "text",
                       "chat_id": "oc_1",
+                      "sender": {
+                        "id": "ou_sender",
+                        "id_type": "open_id",
+                        "sender_type": "user"
+                      },
                       "body": {
                         "content": "{\\"text\\":\\"history\\"}"
                       }
@@ -50,6 +59,8 @@ class LarkIMChatServiceMessageHistoryTests {
                 """);
         when(openApiClient.get(eq("/open-apis/im/v1/messages"), org.mockito.ArgumentMatchers.anyMap(), eq("user-access-token")))
                 .thenReturn(data);
+        when(userProfileHydrationService.resolveByUserAccessToken("user-access-token", "ou_sender"))
+                .thenReturn(new LarkUserProfile("ou_sender", "张三", "https://avatar.example/zhang.png"));
 
         LarkMessageHistoryResponse response = service.fetchMessageHistory(
                 "Bearer biz-token",
@@ -75,5 +86,52 @@ class LarkIMChatServiceMessageHistoryTests {
                 .containsEntry("card_msg_content_type", "user_card_content");
         assertThat(response.items()).hasSize(1);
         assertThat(response.items().get(0).content()).isEqualTo("{\"text\":\"history\"}");
+        assertThat(response.items().get(0).senderName()).isEqualTo("张三");
+        assertThat(response.items().get(0).senderAvatar()).isEqualTo("https://avatar.example/zhang.png");
+    }
+
+    @Test
+    void shouldRenderSystemMessageContentWithResolvedUserNames() throws Exception {
+        when(oauthService.resolveAuthenticatedSessionByBusinessToken("biz-token"))
+                .thenReturn(Optional.of(new LarkAuthenticatedSession(
+                        "user-access-token",
+                        new LarkOAuthUserResponse("ou_1", null, null, null, "User", null)
+                )));
+        JsonNode data = objectMapper.readTree("""
+                {
+                  "has_more": false,
+                  "items": [
+                    {
+                      "message_id": "om_system",
+                      "msg_type": "system",
+                      "chat_id": "oc_1",
+                      "body": {
+                        "content": "{\\"template\\":\\"{from_user} 创建了群聊，并邀请了 {members}\\",\\"from_user\\":{\\"id\\":\\"ou_zhang\\"},\\"members\\":[{\\"id\\":\\"ou_li\\"}]}"
+                      }
+                    }
+                  ]
+                }
+                """);
+        when(openApiClient.get(eq("/open-apis/im/v1/messages"), org.mockito.ArgumentMatchers.anyMap(), eq("user-access-token")))
+                .thenReturn(data);
+        when(userProfileHydrationService.resolveByUserAccessToken("user-access-token", "ou_zhang"))
+                .thenReturn(new LarkUserProfile("ou_zhang", "张三", null));
+        when(userProfileHydrationService.resolveByUserAccessToken("user-access-token", "ou_li"))
+                .thenReturn(new LarkUserProfile("ou_li", "李四", null));
+
+        LarkMessageHistoryResponse response = service.fetchMessageHistory(
+                "Bearer biz-token",
+                "chat",
+                "oc_1",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+
+        assertThat(response.items()).hasSize(1);
+        assertThat(response.items().get(0).content()).isEqualTo("张三 创建了群聊，并邀请了 李四");
     }
 }

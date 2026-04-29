@@ -81,6 +81,20 @@ export interface GetHistoryRequest {
   pageToken?: string;
 }
 
+// ✨ 新增：分享链接相关契约
+export type ChatShareLinkValidityPeriod = "week" | "year" | "permanently";
+
+export interface CreateChatShareLinkRequest {
+  chatId: string;
+  validityPeriod?: ChatShareLinkValidityPeriod;
+}
+
+export interface ChatShareLinkData {
+  shareLink: string | null;
+  expireTime: string | null;
+  isPermanent: boolean;
+}
+
 export const imApi = {
   // 1. 获取群聊列表
 getJoinedChats: async (): Promise<GetChatsResponse> => {
@@ -90,7 +104,7 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
         params: { 
           containsCurrentBot: true, 
           pageSize: 20,
-          _t: Date.now() // ✨ 核心修复：加上时间戳，强制打破浏览器 GET 缓存！
+          _t: Date.now() //  核心修复：加上时间戳，强制打破浏览器 GET 缓存！
         }
       }
     );
@@ -145,6 +159,16 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
     const response = await apiClient.get<ApiResponse<LarkMessageHistoryResponse>>(
       '/api/im/messages/history',
       { params }
+    );
+    if (response.data.code !== 0) throw new Error(response.data.message);
+    return response.data.data;
+  },
+
+  //  7. 获取群分享链接
+  createShareLink: async (data: CreateChatShareLinkRequest): Promise<ChatShareLinkData> => {
+    const response = await apiClient.post<ApiResponse<ChatShareLinkData>>(
+      `/api/im/chats/${encodeURIComponent(data.chatId)}/link`,
+      { validityPeriod: data.validityPeriod || 'week' }
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;

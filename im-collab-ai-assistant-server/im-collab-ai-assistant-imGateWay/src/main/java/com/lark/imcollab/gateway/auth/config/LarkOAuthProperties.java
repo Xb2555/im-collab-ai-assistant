@@ -15,6 +15,8 @@ public class LarkOAuthProperties {
 
     private List<String> scopes = new ArrayList<>(List.of(
             "auth:user.id:read",
+            "contact:contact.base:readonly",
+            "contact:user.base:readonly",
             "contact:user:search",
             "contact:user.basic_profile:readonly",
             "im:chat:read",
