@@ -12,19 +12,19 @@ import java.io.Serializable;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "婢勬竻妲戒綅鐘舵€?")
+@Schema(description = "澄清槽位状态")
 public class PromptSlotState implements Serializable {
 
-    @Schema(description = "妲戒綅閿?")
+    @Schema(description = "槽位键")
     private String slotKey;
 
-    @Schema(description = "闂鎻愮ず")
+    @Schema(description = "问题提示")
     private String prompt;
 
-    @Schema(description = "妲戒綅鍊?")
+    @Schema(description = "槽位值")
     private String value;
 
     @Builder.Default
-    @Schema(description = "鏄惁宸插洖绛?")
+    @Schema(description = "是否已回答")
     private boolean answered = false;
 }

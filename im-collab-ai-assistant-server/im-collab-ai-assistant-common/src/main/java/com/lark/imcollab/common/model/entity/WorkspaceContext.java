@@ -25,34 +25,34 @@ public class WorkspaceContext implements Serializable {
     @Schema(description = "选中的消息内容列表")
     private List<String> selectedMessages;
 
-    @Schema(description = "閫変腑鐨勬秷鎭疘D鍒楄〃")
+    @Schema(description = "选中的消息 ID 列表")
     private List<String> selectedMessageIds;
 
-    @Schema(description = "闄勪欢寮曠敤鍒楄〃")
+    @Schema(description = "附件引用列表")
     private List<String> attachmentRefs;
 
-    @Schema(description = "鏂囨。寮曠敤鍒楄〃")
+    @Schema(description = "文档引用列表")
     private List<String> docRefs;
 
-    @Schema(description = "浼氳瘽ID")
+    @Schema(description = "会话 ID")
     private String chatId;
 
-    @Schema(description = "绾跨▼ID")
+    @Schema(description = "线程 ID")
     private String threadId;
 
-    @Schema(description = "娑堟伅ID")
+    @Schema(description = "消息 ID")
     private String messageId;
 
-    @Schema(description = "鍙戦€佽€卌penId")
+    @Schema(description = "发送者 OpenId")
     private String senderOpenId;
 
-    @Schema(description = "鑱婂ぉ绫诲瀷")
+    @Schema(description = "聊天类型")
     private String chatType;
 
-    @Schema(description = "杈撳叆鏉ユ簮")
+    @Schema(description = "输入来源")
     private String inputSource;
 
-    @Schema(description = "浼氳瘽缁帴妯″紡")
+    @Schema(description = "会话续接模式")
     private String continuationMode;
 
     @Schema(description = "用户职业角色（如产品经理、销售、运营）")

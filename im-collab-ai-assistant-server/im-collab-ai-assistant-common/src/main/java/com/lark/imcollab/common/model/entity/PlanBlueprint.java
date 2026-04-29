@@ -14,30 +14,30 @@ import java.util.List;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "瀹屾暣璁″垝钃濆浘")
+@Schema(description = "完整计划蓝图")
 public class PlanBlueprint implements Serializable {
 
-    @Schema(description = "浠诲姟鎽樿")
+    @Schema(description = "任务摘要")
     private String taskBrief;
 
-    @Schema(description = "鍦烘櫙璺緞")
+    @Schema(description = "场景路径")
     private List<ScenarioCodeEnum> scenarioPath;
 
-    @Schema(description = "浜や粯鐗╁垪琛?")
+    @Schema(description = "交付物列表")
     private List<String> deliverables;
 
-    @Schema(description = "鏉ユ簮鑼冨洿")
+    @Schema(description = "来源范围")
     private WorkspaceContext sourceScope;
 
-    @Schema(description = "绾︽潫鏉′欢")
+    @Schema(description = "约束条件")
     private List<String> constraints;
 
-    @Schema(description = "鎴愬姛鏍囧噯")
+    @Schema(description = "成功标准")
     private List<String> successCriteria;
 
-    @Schema(description = "椋庨櫓鎻愮ず")
+    @Schema(description = "风险提示")
     private List<String> risks;
 
-    @Schema(description = "璁″垝鍗＄墖")
+    @Schema(description = "计划卡片")
     private List<UserPlanCard> planCards;
 }
