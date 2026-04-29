@@ -54,6 +54,33 @@ export interface InviteChatResponse {
   pendingApprovalOpenIds: string[];
 }
 
+// --- 新增：历史消息接口契约 ---
+export interface LarkMessageHistoryItem {
+  messageId?: string | null;
+  msgType?: string | null;
+  createTime?: string | null;
+  chatId?: string | null;
+  senderId?: string | null;
+  senderType?: string | null;
+  content?: string | null;
+}
+
+export interface LarkMessageHistoryResponse {
+  items: LarkMessageHistoryItem[];
+  hasMore: boolean;
+  pageToken?: string | null;
+}
+
+export interface GetHistoryRequest {
+  containerIdType: 'chat' | 'thread';
+  containerId: string;
+  startTime?: string;
+  endTime?: string;
+  sortType?: 'ByCreateTimeAsc' | 'ByCreateTimeDesc';
+  pageSize?: number;
+  pageToken?: string;
+}
+
 export const imApi = {
   // 1. 获取群聊列表
 getJoinedChats: async (): Promise<GetChatsResponse> => {
@@ -108,6 +135,16 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
     const response = await apiClient.post<ApiResponse<InviteChatResponse>>(
       '/api/im/chats/invite',
       data
+    );
+    if (response.data.code !== 0) throw new Error(response.data.message);
+    return response.data.data;
+  },
+
+  // 6. 获取飞书历史消息
+  getChatHistory: async (params: GetHistoryRequest): Promise<LarkMessageHistoryResponse> => {
+    const response = await apiClient.get<ApiResponse<LarkMessageHistoryResponse>>(
+      '/api/im/messages/history',
+      { params }
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;

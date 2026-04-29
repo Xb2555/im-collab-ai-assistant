@@ -6,10 +6,75 @@ import { authApi } from '@/services/api/auth';
 import { imApi } from '@/services/api/im';
 import { useRequest } from 'ahooks';
 import { Button } from '@/components/ui/button';
-import { MessageSquare, LayoutTemplate, Bot, Plus, Search, LogOut, Settings, PanelRightClose, Loader2,UserPlus } from 'lucide-react';
+import { MessageSquare, LayoutTemplate, Bot, Plus, Search, LogOut, Settings, PanelRightClose, Loader2,UserPlus, User } from 'lucide-react';
 import { CreateChatModal } from '@/components/chat/CreateChatModal';
 import { InviteMemberModal } from '@/components/chat/InviteMemberModal';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
+
+// ✨ 飞书消息内容智能解析器
+// ✨ 飞书消息内容智能解析器 (增强版)
+const parseFeishuContent = (rawContent: string | null | undefined, msgType?: string) => {
+  if (!rawContent) return '';
+  try {
+    const json = JSON.parse(rawContent);
+
+    // 1. 常规文本消息
+    if (json.text) return json.text;
+
+    // 2. 飞书系统通知消息 (System)
+    if (msgType === 'system' || json.template) {
+      let tpl = json.template || '';
+
+      // --- A. 替换常见变量占位符为可读的中文 ---
+      tpl = tpl
+        .replace(/\{botName\}/g, '机器人')
+        .replace(/\{name\}/g, '某人') // 实际开发中，这里需要根据 from_user 等字段映射真实名字，目前做兜底
+        .replace(/\{users\}/g, '新成员')
+        .replace(/\{GroupOwner\}/g, '群主')
+        .replace(/\{NewGroupAdministrators\}/g, '新管理员')
+        .replace(/\{group_type\}/g, '群聊')
+        .replace(/\{to_chatters\}/g, '成员');
+
+      // --- B. 翻译常见的英文核心句式 ---
+      // 匹配: {botName} started the group chat, assigned {name} as the group owner, and invited {users} to the group.
+      if (tpl.includes('started the group chat')) {
+        tpl = tpl
+          .replace('started the group chat, assigned', '创建了群聊，指定')
+          .replace('as the group owner, and invited', '为群主，并邀请')
+          .replace('to the group.', '入群。');
+      }
+      
+      // 匹配: {GroupOwner} added {NewGroupAdministrators} to group administrators.
+      if (tpl.includes('added') && tpl.includes('to group administrators')) {
+        tpl = tpl.replace('added', '将').replace('to group administrators.', '设为了群管理员。');
+      }
+
+      // 匹配: Welcome to {group_type}
+      if (tpl.includes('Welcome to')) {
+        tpl = tpl.replace('Welcome to', '欢迎来到');
+      }
+      
+      // 匹配: {from_user} invited {to_chatters} to the group.
+      if (tpl.includes('invited') && tpl.includes('to the group')) {
+        tpl = tpl.replace('invited', '邀请了').replace('to the group.', '加入群聊。');
+      }
+
+      return `[系统消息] ${tpl}`;
+    }
+
+    // 3. 富文本或其他暂不支持的格式
+    if (msgType === 'post') {
+      // 飞书的 post 富文本是一个深层嵌套数组，MVP 阶段为了防止报错，简单提示
+      return '[长图文消息，请在飞书原生客户端查看]'; 
+    }
+    if (msgType === 'interactive') return '[交互式卡片消息]';
+    
+    return '[未知或加密消息格式]';
+  } catch (e) {
+    // 纯文本或其他非 JSON 格式
+    return rawContent;
+  }
+};
 
 export default function Dashboard() {
   const { user, clearAuth } = useAuthStore();
@@ -25,8 +90,9 @@ export default function Dashboard() {
   const [syncingChatId, setSyncingChatId] = useState<string | null>(null);
   //  SSE 消息流状态
   const [messages, setMessages] = useState<any[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false); // 新增：用于历史消息加载状态
   const abortControllerRef = useRef<AbortController | null>(null);
-  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false); // ✨ 新增弹窗状态
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false); // 新增弹窗状态
   
 
   //  核心逻辑：监听 activeChatId 变化，建立 SSE 订阅
@@ -43,9 +109,40 @@ export default function Dashboard() {
 
     const connectSSE = async () => {
       setMessages([]); // 清空旧消息
+      setIsLoadingHistory(true); // ✨ 开始加载历史消息
 
+      // ✨ 1. 先拉取历史消息补偿盲区
       try {
-        // ✨ 核心重构：使用微软包，完全接管复杂的流式解析与重连逻辑 [cite: 87-88]
+        const historyRes = await imApi.getChatHistory({
+          containerIdType: 'chat',
+          containerId: activeChatId,
+          sortType: 'ByCreateTimeDesc',
+          pageSize: 20
+        });
+        
+        // 飞书返回的是倒序（最新在前），需要 reverse 让旧消息在上面
+        const formattedHistory = historyRes.items.reverse().map((item: any) => {
+          return {
+            eventId: item.messageId, // 用作去重 Key
+            senderOpenId: item.senderId,
+            senderType: item.senderType,
+            //  使用专门的解析器处理 content 和 msgType
+            content: parseFeishuContent(item.content, item.msgType),
+            createTime: item.createTime
+          };
+        });
+        setMessages(formattedHistory);
+      } catch (err) {
+        console.warn('拉取历史消息失败', err);
+      } finally {
+        setIsLoadingHistory(false);
+      }
+
+      // 如果在拉取历史消息时，用户切换了群聊，直接终止后续 SSE 连接
+      if (ctrl.signal.aborted) return; 
+
+      //  2. 继续原有的 SSE 长连接逻辑
+      try {
         await fetchEventSource(`/api/im/chats/${activeChatId}/messages/stream`, {
           method: 'GET',
           headers: {
@@ -54,22 +151,25 @@ export default function Dashboard() {
           },
           signal: ctrl.signal,
           async onopen(response) {
-            if (response.ok) {
-              console.log('SSE 通道已建立');
-              return; // 建立成功
-            }
-            throw new Error(`SSE 建立失败: ${response.status}`);
+            if (!response.ok) throw new Error(`SSE 建立失败: ${response.status}`);
           },
           onmessage(event) {
-            // 只处理 event: message 的数据 [cite: 88]
             if (event.event === 'message') {
               try {
                 const msgData = JSON.parse(event.data);
-                // ✨ 数据清洗：忽略后端发来的系统连接提示 [cite: 76-77]
                 if (msgData.state === 'connected') return; 
                 
-                // 追加新消息到屏幕
-                setMessages(prev => [...prev, msgData]);
+//  核心优化：去重并解析新消息
+                setMessages(prev => {
+                  if (prev.some(m => m.eventId === msgData.eventId || m.messageId === msgData.messageId)) return prev;
+                  
+                  // 解析新到来的实时消息
+                  const parsedMsg = {
+                    ...msgData,
+                    content: parseFeishuContent(msgData.content, msgData.messageType || msgData.msgType)
+                  };
+                  return [...prev, parsedMsg];
+                });
               } catch (parseError) {
                 console.debug('JSON解析失败:', parseError);
               }
@@ -77,13 +177,11 @@ export default function Dashboard() {
           },
           onerror(err) {
             console.error('SSE 发生异常:', err);
-            throw err; // 抛出错误停止无脑重试
+            throw err;
           }
         });
       } catch (err: unknown) {
-        if (err instanceof Error && err.name !== 'AbortError') {
-          console.error('SSE 流断开:', err);
-        }
+        if (err instanceof Error && err.name !== 'AbortError') console.error('SSE 流断开:', err);
       }
     };
 
@@ -94,6 +192,7 @@ export default function Dashboard() {
     };
   }, [activeChatId]);
   
+
 
   const handleLogout = async () => {
     try {
@@ -250,8 +349,8 @@ export default function Dashboard() {
           </div>
         </aside>
 
-        {/* --- 中栏：IM 消息投影与指令输入 --- */}
-        <section className="flex flex-1 flex-col bg-white relative">
+{/* 中栏：IM 投影区（小屏隐藏，中屏以上显示并限制最大宽度，给右侧让路） */}
+<section className="hidden lg:flex flex-col flex-1 xl:max-w-[400px] border-r border-zinc-200 bg-white relative">
           <div className="absolute inset-0 z-0 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px] opacity-30 pointer-events-none"></div>
           
           <div className="z-10 flex h-12 items-center justify-between border-b border-zinc-200 px-6 bg-white/80 backdrop-blur-sm">
@@ -276,18 +375,64 @@ export default function Dashboard() {
           </div>
           
           <div className="z-10 flex-1 overflow-y-auto p-6 space-y-4 flex flex-col">
-            {/* 🚀 动态渲染消息流 🚀 */}
+{/* 🚀 动态渲染消息流 🚀 */}
             {!activeChatId ? (
-              <div className="m-auto text-zinc-400">请在左侧选择一个协作群聊以加载消息流</div>
+              <div className="m-auto text-zinc-400 text-sm">请在左侧选择一个协作群聊以加载消息流</div>
+            ) : isLoadingHistory ? (
+              <div className="m-auto text-zinc-400 text-sm flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" /> 正在拉取历史消息...
+              </div>
             ) : messages.length === 0 ? (
-              <div className="m-auto text-zinc-400 animate-pulse">正在监听该群聊的飞书实时消息...</div>
+              <div className="m-auto text-zinc-400 text-sm">暂无消息记录</div>
             ) : (
-              messages.map((msg, index) => (
-                <div key={index} className="flex flex-col space-y-1 p-3 bg-zinc-50 border border-zinc-200 rounded-lg w-fit max-w-[80%]">
-                  <span className="text-xs font-semibold text-blue-600">{msg.senderName || '成员'}</span>
-                  <p className="text-sm text-zinc-800">{msg.content || JSON.stringify(msg)}</p>
-                </div>
-              ))
+              messages.map((msg, index) => {
+                // ✨ 1. 智能判断发送者类型
+                const isBot = msg.senderType === 'app' || msg.senderOpenId?.includes('bot');
+                
+                // ⚠️ 理想情况：等后端在登录接口返回了你的 openId，应该用 msg.senderOpenId === user?.openId 来判断。
+                // 现在的临时兜底：只要不是机器人发的消息，我们就暂时当成是你发的（仅限你单人测试阶段）
+                const isMe = msg.senderOpenId && !isBot; 
+
+                // ✨ 2. 动态获取头像和名字
+                // 如果是我，优先用 store 里的头像；否则用消息自带的（等后端传）；最后兜底空值
+                const avatarUrl = isMe ? user?.avatarUrl : msg.senderAvatar;
+                // 如果是机器人就显示 Agent，如果是我显示 store 里的名字，否则显示群成员
+                const displayName = isBot ? 'Agent Pilot' : (isMe ? user?.name : (msg.senderName || '群成员'));
+                
+                return (
+                  <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`flex max-w-[85%] gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
+                      
+                      {/* ✨ 3. 头像渲染区域优化 */}
+                      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm overflow-hidden ${
+                        isBot ? 'bg-blue-600 text-white' : 'bg-zinc-200 text-zinc-600'
+                      }`}>
+                        {isBot ? (
+                          <Bot className="h-4 w-4" />
+                        ) : avatarUrl ? (
+                          <img src={avatarUrl} alt="avatar" className="h-full w-full object-cover" />
+                        ) : (
+                          <User className="h-4 w-4" />
+                        )}
+                      </div>
+
+                      {/* ✨ 4. 气泡与名字渲染区域 */}
+                      <div className={`flex flex-col space-y-1 ${isMe ? 'items-end' : 'items-start'}`}>
+                        <span className="text-[11px] font-medium text-zinc-400 px-1">
+                          {displayName}
+                        </span>
+                        <div className={`rounded-2xl px-3.5 py-2 text-sm shadow-sm leading-relaxed whitespace-pre-wrap break-words ${
+                          isMe ? 'bg-zinc-800 text-white rounded-tr-sm' 
+                               : 'bg-white border border-zinc-200 text-zinc-800 rounded-tl-sm'
+                        }`}>
+                          {msg.content}
+                        </div>
+                      </div>
+                      
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
 
@@ -318,8 +463,8 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {/* --- 右栏：AI 任务工作台 --- */}
-        <aside className="w-80 lg:w-96 shrink-0 flex-col border-l border-zinc-200 bg-zinc-50 hidden lg:flex shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.02)]">
+ {/* 右栏：Agent 任务工作台（所有屏幕下都是核心 flex-1 占据绝大部分空间） */}
+<aside className="flex flex-1 flex-col bg-zinc-50 shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.02)] relative z-10">
           <div className="flex h-12 items-center justify-between px-4 border-b border-zinc-200 bg-white">
             <h2 className="text-sm font-semibold text-zinc-800 flex items-center gap-2">
               <LayoutTemplate className="h-4 w-4 text-blue-600" />
