@@ -182,30 +182,38 @@ public class DocumentWorkflowNodes {
         DocumentOutline outline = requireValue(state, DocumentStateKeys.OUTLINE, DocumentOutline.class);
         List<DocumentSectionDraft> drafts = readSectionDrafts(state);
         String mermaid = state.value(DocumentStateKeys.MERMAID_DIAGRAM, "");
-        StringBuilder prompt = new StringBuilder("原始需求：").append(rawInstruction)
-                .append("\n任务目标：").append(clarifiedInstruction)
-                .append(buildExecutionContext(state))
-                .append("\n允许交付物：").append(formatAllowedArtifacts(state))
-                .append("\n请重点检查：goal_alignment、artifact_scope_alignment、diagram_alignment。")
-                .append("\n文档标题：").append(outline.getTitle()).append("\n");
-        if (!userFeedback.isBlank()) prompt.append("人工反馈：").append(userFeedback).append("\n");
-        if (mermaid != null && !mermaid.isBlank()) {
-            prompt.append("Mermaid 图：\n```mermaid\n").append(mermaid).append("\n```\n");
-        }
-        drafts.forEach(s -> prompt.append("## ").append(s.getHeading()).append("\n").append(s.getBody()).append("\n"));
-        AssistantMessage response = callAgent(documentReviewAgent, prompt.toString(), taskId + ":review");
-        DocumentReviewResult reviewResult = parseReviewResult(response.getText());
+        DocumentReviewResult reviewResult = evaluateReview(taskId, rawInstruction, clarifiedInstruction, outline, drafts, mermaid, userFeedback, state, "");
 
         DiagramRequirement requirement = readDiagramRequirement(state);
         if (requirement != null && requirement.isRequired() && (mermaid == null || mermaid.isBlank())) {
             reviewResult.setMissingItems(appendMissingItem(reviewResult.getMissingItems(), "缺少必需的 Mermaid 图"));
         }
 
+        List<DocumentSectionDraft> effectiveDrafts = drafts;
         boolean autoSupplemented = reviewResult.getSupplementalSections() != null && !reviewResult.getSupplementalSections().isEmpty();
-        if (autoSupplemented && reviewResult.getMissingItems() != null && !reviewResult.getMissingItems().isEmpty()) {
-            reviewResult.setSummary((reviewResult.getSummary() == null ? "" : reviewResult.getSummary() + " ")
-                    + "已根据审阅结果自动补齐缺失章节。");
-            reviewResult.setMissingItems(List.of());
+        if (autoSupplemented) {
+            effectiveDrafts = mergeSupplementalSections(drafts, reviewResult.getSupplementalSections());
+            DocumentReviewResult secondPass = evaluateReview(
+                    taskId,
+                    rawInstruction,
+                    clarifiedInstruction,
+                    outline,
+                    effectiveDrafts,
+                    mermaid,
+                    userFeedback,
+                    state,
+                    "\n补充说明：上一轮审阅已自动补齐缺失章节，请基于补齐后的完整文档重新审阅，只保留仍无法自动解决的问题。"
+            );
+            if (requirement != null && requirement.isRequired() && (mermaid == null || mermaid.isBlank())) {
+                secondPass.setMissingItems(appendMissingItem(secondPass.getMissingItems(), "缺少必需的 Mermaid 图"));
+            }
+            secondPass.setSupplementalSections(List.of());
+            secondPass.setSummary(joinSummary(
+                    reviewResult.getSummary(),
+                    "系统已自动合并补充章节并完成二次复审。",
+                    secondPass.getSummary()
+            ));
+            reviewResult = secondPass;
         }
 
         boolean needsHumanReview = reviewResult.getMissingItems() != null && !reviewResult.getMissingItems().isEmpty();
@@ -213,14 +221,16 @@ public class DocumentWorkflowNodes {
             support.publishApprovalRequest(taskId, null, "文档审核发现问题：" + String.join("；", reviewResult.getMissingItems()));
             return CompletableFuture.completedFuture(Map.of(
                     DocumentStateKeys.WAITING_HUMAN_REVIEW, true,
-                    DocumentStateKeys.REVIEW_RESULT, reviewResult
+                    DocumentStateKeys.REVIEW_RESULT, reviewResult,
+                    DocumentStateKeys.SECTION_DRAFTS, effectiveDrafts
             ));
         }
         support.publishEvent(taskId, null, TaskEventType.STEP_COMPLETED);
         return CompletableFuture.completedFuture(Map.of(
                 DocumentStateKeys.REVIEW_RESULT, reviewResult,
                 DocumentStateKeys.DONE_REVIEW, true,
-                DocumentStateKeys.WAITING_HUMAN_REVIEW, false
+                DocumentStateKeys.WAITING_HUMAN_REVIEW, false,
+                DocumentStateKeys.SECTION_DRAFTS, effectiveDrafts
         ));
     }
 
@@ -529,6 +539,45 @@ public class DocumentWorkflowNodes {
             return left;
         }
         return left + "\n\n" + right;
+    }
+
+    private DocumentReviewResult evaluateReview(
+            String taskId,
+            String rawInstruction,
+            String clarifiedInstruction,
+            DocumentOutline outline,
+            List<DocumentSectionDraft> drafts,
+            String mermaid,
+            String userFeedback,
+            OverAllState state,
+            String extraInstruction
+    ) {
+        StringBuilder prompt = new StringBuilder("原始需求：").append(rawInstruction)
+                .append("\n任务目标：").append(clarifiedInstruction)
+                .append(buildExecutionContext(state))
+                .append("\n允许交付物：").append(formatAllowedArtifacts(state))
+                .append("\n请重点检查：goal_alignment、artifact_scope_alignment、diagram_alignment。")
+                .append(extraInstruction)
+                .append("\n文档标题：").append(outline.getTitle()).append("\n");
+        if (!userFeedback.isBlank()) {
+            prompt.append("人工反馈：").append(userFeedback).append("\n");
+        }
+        if (mermaid != null && !mermaid.isBlank()) {
+            prompt.append("Mermaid 图：\n```mermaid\n").append(mermaid).append("\n```\n");
+        }
+        drafts.forEach(s -> prompt.append("## ").append(s.getHeading()).append("\n").append(s.getBody()).append("\n"));
+        AssistantMessage response = callAgent(documentReviewAgent, prompt.toString(), taskId + ":review");
+        return parseReviewResult(response.getText());
+    }
+
+    private String joinSummary(String... parts) {
+        List<String> filtered = new ArrayList<>();
+        for (String part : parts) {
+            if (part != null && !part.isBlank()) {
+                filtered.add(part.trim());
+            }
+        }
+        return String.join(" ", filtered);
     }
 
     private List<String> appendMissingItem(List<String> items, String value) {

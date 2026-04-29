@@ -91,14 +91,12 @@ public class DocumentTemplateService {
                 for (String alias : aliases) {
                     if (section.getHeading() != null && section.getHeading().contains(alias)
                             && section.getKeyPoints() != null && !section.getKeyPoints().isEmpty()) {
-                        return section.getKeyPoints().stream()
-                                .map(point -> "- " + point)
-                                .collect(Collectors.joining("\n"));
+                        return synthesizeBodyFromKeyPoints(section.getHeading(), section.getKeyPoints());
                     }
                 }
             }
         }
-        return "";
+        return defaultSectionContent(aliases);
     }
 
     private String applyTemplate(String template, Map<String, String> vars) {
@@ -146,6 +144,41 @@ public class DocumentTemplateService {
             return normalizedBody.substring(("## " + normalizedHeading).length()).stripLeading();
         }
         return normalizedBody;
+    }
+
+    private String synthesizeBodyFromKeyPoints(String heading, List<String> keyPoints) {
+        if (keyPoints == null || keyPoints.isEmpty()) {
+            return defaultSectionContent(heading);
+        }
+        String lead = "### 1.1 核心说明\n\n"
+                + "本节围绕“" + normalizeHeading(heading) + "”展开，结合当前任务目标对关键内容进行归纳说明。";
+        String details = keyPoints.stream()
+                .filter(point -> point != null && !point.isBlank())
+                .map(String::trim)
+                .map(point -> "- " + point)
+                .collect(Collectors.joining("\n"));
+        String closing = "#### 1.1.1 落地要点\n\n"
+                + "以上要点可作为当前章节的执行依据与汇报口径，在后续评审或扩展实现中继续细化。";
+        if (details.isBlank()) {
+            return lead + "\n\n" + closing;
+        }
+        return lead + "\n\n" + details + "\n\n" + closing;
+    }
+
+    private String defaultSectionContent(String... aliases) {
+        String topic = "当前主题";
+        if (aliases != null) {
+            for (String alias : aliases) {
+                if (alias != null && !alias.isBlank()) {
+                    topic = alias.trim();
+                    break;
+                }
+            }
+        }
+        return "### 1.1 核心说明\n\n"
+                + "本节用于说明“" + topic + "”在当前任务中的作用、范围与交付预期。系统在生成正式文档时，应优先围绕用户原始需求、补充约束和已有上下文给出完整说明。\n\n"
+                + "#### 1.1.1 汇报口径\n\n"
+                + "从汇报视角看，需要明确该主题对应的背景动因、关键判断、执行方式以及后续落地影响，确保不同目标读者都能快速理解本节结论。";
     }
 
     private String loadTemplate(DocumentTemplateType templateType) {
