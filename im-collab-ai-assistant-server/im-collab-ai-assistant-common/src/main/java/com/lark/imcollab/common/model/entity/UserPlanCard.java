@@ -44,6 +44,9 @@ public class UserPlanCard implements Serializable {
     @Builder.Default
     private int progress = 0;
 
+    @Schema(description = "产出物引用列表")
+    private List<String> artifactRefs;
+
     @Schema(description = "依赖的卡片ID列表")
     private List<String> dependsOn;
 

@@ -19,6 +19,7 @@ public class PlannerConversationService {
     private final TaskIntakeService intakeService;
     private final PlannerSessionService sessionService;
     private final SupervisorPlannerService supervisorPlannerService;
+    private final TaskBridgeService taskBridgeService;
 
     public PlanTaskSession handlePlanRequest(
             String rawInstruction,
@@ -41,7 +42,7 @@ public class PlannerConversationService {
         sessionService.save(session);
         sessionService.publishEvent(session.getTaskId(), "INTAKE_ACCEPTED");
 
-        return switch (intakeDecision.intakeType()) {
+        PlanTaskSession result = switch (intakeDecision.intakeType()) {
             case STATUS_QUERY -> sessionService.get(session.getTaskId());
             case CANCEL_TASK -> {
                 sessionService.markAborted(session.getTaskId(), "User cancelled from conversation: " + intakeDecision.effectiveInput());
@@ -60,6 +61,8 @@ public class PlannerConversationService {
                     workspaceContext
             );
         };
+        taskBridgeService.ensureTask(result);
+        return result;
     }
 
     private void updateSessionEnvelope(

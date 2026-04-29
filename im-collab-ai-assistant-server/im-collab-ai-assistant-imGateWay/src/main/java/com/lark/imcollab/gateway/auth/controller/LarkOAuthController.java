@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Optional;
 
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/auth")
 public class LarkOAuthController {
 
     private final LarkOAuthService oauthService;

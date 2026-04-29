@@ -20,7 +20,9 @@ public class LarkOAuthProperties {
             "im:chat:read",
             "im:chat.members:write_only",
             "im:message.send_as_user",
-            "offline_access"
+            "offline_access",
+            "im:message",
+            "im:message:send_as_bot"
     ));
 
     private Duration sessionTtl = Duration.ofHours(12);

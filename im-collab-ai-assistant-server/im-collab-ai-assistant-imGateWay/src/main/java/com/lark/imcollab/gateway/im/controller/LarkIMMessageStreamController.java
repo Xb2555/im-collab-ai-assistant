@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
-@RequestMapping("/api/im")
+@RequestMapping("/im")
 public class LarkIMMessageStreamController {
 
     private final LarkIMMessageStreamService streamService;
