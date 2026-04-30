@@ -56,6 +56,12 @@ public class ExecutionContract implements Serializable {
     @Schema(description = "上下文引用")
     private List<String> contextRefs;
 
+    @Schema(description = "领域上下文")
+    private String domainContext;
+
+    @Schema(description = "术语消歧结果")
+    private List<TermResolution> termResolutions;
+
     @Schema(description = "模板策略")
     private String templateStrategy;
 

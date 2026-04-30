@@ -33,6 +33,8 @@ public class DocumentAgentConfig {
                         3. 章节 heading 只输出 H2 标题文本本身，不要带 ##。
                         4. 如果任务是技术架构/技术介绍/方案设计，必须优先选择 technical_architecture 或 technical_plan，不要退化成 report。
                         5. 如果用户要求 Mermaid 图，需要在相关章节 keyPoints 中显式写明图的用途和图类型，例如“输出全局架构分层 Mermaid flowchart TB”“输出数据流转 Mermaid sequenceDiagram”。
+                        6. 严禁把当前项目中的 harness 模块擅自扩写为第三方 Harness CI/CD 产品；如果上下文只提到 harness 模块/场景 c/IM 协同助手，则默认指当前仓库内的执行编排模块。
+                        7. 严禁引入任务上下文中未出现的外部厂商、云平台、产品白皮书式细节；标题和章节必须紧扣用户原始需求，不得主题漂移。
                         """)
                 .outputType(DocumentOutline.class)
                 .model(chatModel)
@@ -56,6 +58,8 @@ public class DocumentAgentConfig {
                         4. 如果某个章节需要展开列表、原则、约束、接口、风险，请优先用 H3/H4 组织，而不是一整段散文。
                         5. 禁止输出“待补充”“略”“TBD”“TODO”。
                         6. 如果上下文不足，也要基于任务目标先产出专业且自洽的默认内容，不要空缺。
+                        7. 严禁把当前项目的 harness 模块写成第三方 Harness CI/CD 平台，不得臆造 AWS/GCP/GitOps/Delegate/OPA 等外部产品细节，除非任务上下文明确要求。
+                        8. 所有论述必须围绕给定任务、当前系统架构、模块职责和数据流转展开，不要输出行业白皮书式泛化内容。
                         不要返回 markdown 代码块。
                         """)
                 .outputType(DocumentSectionDraft.class)
@@ -104,6 +108,7 @@ public class DocumentAgentConfig {
                         2. 如果 supplementalSections 已足以解决缺项，missingItems 应尽量置空或仅保留无法自动补齐的问题。
                         3. 禁止建议输出“待补充”“TODO”“TBD”。
                         4. 对架构类文档，额外检查是否覆盖“设计目标与非目标”“Mermaid 图与正文一致性”“模块边界是否清晰”。
+                        5. 必须检查是否发生主题漂移：如果任务说的是当前项目的 harness 模块，却写成第三方 Harness CI/CD 产品、云平台方案或行业白皮书，必须判定为缺陷并写入 missingItems。
                         如果信息已充分，supplementalSections 返回空数组。
                         """)
                 .outputType(DocumentReviewResult.class)

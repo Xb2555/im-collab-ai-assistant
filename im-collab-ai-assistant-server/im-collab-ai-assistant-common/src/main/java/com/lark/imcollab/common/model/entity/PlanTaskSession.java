@@ -67,6 +67,9 @@ public class PlanTaskSession implements Serializable {
     @Schema(description = "结构化意图快照")
     private IntentSnapshot intentSnapshot;
 
+    @Schema(description = "术语消歧结果")
+    private List<TermResolution> termResolutions;
+
     @Schema(description = "计划蓝图")
     private PlanBlueprint planBlueprint;
 

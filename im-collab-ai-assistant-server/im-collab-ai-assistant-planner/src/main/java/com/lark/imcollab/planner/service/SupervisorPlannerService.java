@@ -14,6 +14,7 @@ import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.exception.SupervisorException;
+import com.lark.imcollab.planner.intent.TermDisambiguationService;
 import com.lark.imcollab.planner.prompt.AgentPromptContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -37,6 +38,7 @@ public class SupervisorPlannerService {
     private final PlannerSessionService sessionService;
     private final PlanQualityService qualityService;
     private final TaskRuntimeService taskRuntimeService;
+    private final TermDisambiguationService termDisambiguationService;
 
     public SupervisorPlannerService(
             @Qualifier("supervisorAgent") ReactAgent supervisorAgent,
@@ -44,7 +46,8 @@ public class SupervisorPlannerService {
             @Qualifier("planningAgent") ReactAgent planningAgent,
             PlannerSessionService sessionService,
             PlanQualityService qualityService,
-            TaskRuntimeService taskRuntimeService
+            TaskRuntimeService taskRuntimeService,
+            TermDisambiguationService termDisambiguationService
     ) {
         this.supervisorAgent = supervisorAgent;
         this.intentAgent = intentAgent;
@@ -52,6 +55,7 @@ public class SupervisorPlannerService {
         this.sessionService = sessionService;
         this.qualityService = qualityService;
         this.taskRuntimeService = taskRuntimeService;
+        this.termDisambiguationService = termDisambiguationService;
     }
 
     public PlanTaskSession plan(String rawInstruction, WorkspaceContext workspaceContext, String taskId, String userFeedback) {
@@ -93,6 +97,10 @@ public class SupervisorPlannerService {
             }
 
             IntentSnapshot intentSnapshot = runIntentUnderstanding(session, prompt, intentConfig, resolvedTaskId);
+            PlanTaskSession disambiguated = handleDisambiguation(session, rawInstruction, workspaceContext);
+            if (disambiguated != null) {
+                return disambiguated;
+            }
             String planningPrompt = buildPlanningPrompt(prompt, intentSnapshot);
             return runPlanning(session, planningPrompt, planningConfig, resolvedTaskId);
         } catch (GraphRunnerException e) {
@@ -196,6 +204,10 @@ public class SupervisorPlannerService {
                 }
             }
             IntentSnapshot intentSnapshot = runIntentUnderstanding(session, feedback, intentConfig, taskId);
+            PlanTaskSession disambiguated = handleDisambiguation(session, feedback, null);
+            if (disambiguated != null) {
+                return disambiguated;
+            }
             return runPlanning(session, buildPlanningPrompt(feedback, intentSnapshot), planningConfig, taskId);
         } catch (Exception e) {
             return failSession(session, e.getMessage());
@@ -339,15 +351,31 @@ public class SupervisorPlannerService {
     }
 
     private PlanTaskSession handleAskUser(PlanTaskSession session, List<String> questions) {
+        return handleAskUser(session, buildRequireInput(questions), questions);
+    }
+
+    private PlanTaskSession handleAskUser(PlanTaskSession session, RequireInput requireInput, List<String> questions) {
         session.setClarificationQuestions(questions);
         session.setActivePromptSlots(toPromptSlots(questions));
         session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
         session.setTransitionReason("Information insufficient");
         sessionService.save(session);
 
-        RequireInput requireInput = buildRequireInput(questions);
         sessionService.publishEvent(session.getTaskId(), "ASK_USER", requireInput);
         return session;
+    }
+
+    private PlanTaskSession handleDisambiguation(PlanTaskSession session, String rawInstruction, WorkspaceContext workspaceContext) {
+        TermDisambiguationService.DisambiguationOutcome outcome =
+                termDisambiguationService.resolve(session, rawInstruction, workspaceContext);
+        if (outcome.resolutions() != null && !outcome.resolutions().isEmpty()) {
+            session.setTermResolutions(outcome.resolutions());
+            sessionService.save(session);
+        }
+        if (outcome.requireInput() != null) {
+            return handleAskUser(session, outcome.requireInput(), List.of(outcome.requireInput().getPrompt()));
+        }
+        return null;
     }
 
     private PlanTaskSession failSession(PlanTaskSession session, String reason) {

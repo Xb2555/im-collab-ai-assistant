@@ -10,13 +10,15 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class DocumentTemplateServiceTests {
+class DocumentTemplateRendererTests {
 
-    private final DocumentTemplateService service = new DocumentTemplateService();
+    private final DocumentBodyNormalizer bodyNormalizer = new DocumentBodyNormalizer();
+    private final DocumentTemplateRenderer renderer =
+            new DocumentTemplateRenderer(new TemplateSectionResolver(bodyNormalizer), bodyNormalizer);
 
     @Test
     void shouldNotRepeatTemplateMappedSectionsInDetailedExpansion() {
-        String markdown = service.render(
+        String markdown = renderer.render(
                 DocumentTemplateType.TECHNICAL_ARCHITECTURE,
                 DocumentOutline.builder()
                         .title("Harness 架构设计")
@@ -48,7 +50,7 @@ class DocumentTemplateServiceTests {
         assertThat(markdown).contains("## 一、项目背景与问题");
         assertThat(markdown).contains("背景正文");
         assertThat(markdown).contains("## 九、详细设计展开");
-        assertThat(markdown).contains("## 执行流程");
+        assertThat(markdown).contains("### 9.1 执行流程");
         assertThat(markdown).doesNotContain("## 项目背景");
         assertThat(markdown).doesNotContain("## 设计目标与非目标");
         assertThat(markdown).doesNotContain("## 模块分层与职责");
@@ -56,13 +58,11 @@ class DocumentTemplateServiceTests {
 
     @Test
     void shouldNotGenerateHardcodedSubsectionNumbersForFallbackContent() {
-        String markdown = service.render(
+        String markdown = renderer.render(
                 DocumentTemplateType.REPORT,
                 DocumentOutline.builder()
                         .title("季度汇报")
-                        .sections(List.of(
-                                DocumentOutlineSection.builder().heading("背景").keyPoints(List.of("背景关键点")).build()
-                        ))
+                        .sections(List.of(DocumentOutlineSection.builder().heading("背景").keyPoints(List.of("背景关键点")).build()))
                         .build(),
                 List.of(),
                 DocumentReviewResult.builder().summary("通过").build(),
@@ -78,7 +78,7 @@ class DocumentTemplateServiceTests {
 
     @Test
     void shouldPreferModuleSectionOverPrinciplesForPlanSlot() {
-        String markdown = service.render(
+        String markdown = renderer.render(
                 DocumentTemplateType.TECHNICAL_ARCHITECTURE,
                 DocumentOutline.builder()
                         .title("Harness 架构设计")
@@ -109,7 +109,7 @@ class DocumentTemplateServiceTests {
 
     @Test
     void shouldStripOutlineOrdinalsWhenRenderingDetailedSections() {
-        String markdown = service.render(
+        String markdown = renderer.render(
                 DocumentTemplateType.TECHNICAL_ARCHITECTURE,
                 DocumentOutline.builder()
                         .title("Harness 架构设计")
@@ -128,20 +128,18 @@ class DocumentTemplateServiceTests {
                 ""
         );
 
-        assertThat(markdown).contains("## 补充说明");
+        assertThat(markdown).contains("### 9.1 补充说明");
         assertThat(markdown).doesNotContain("## 九、补充说明");
         assertThat(markdown).doesNotContain("\n## 一、项目背景\n");
     }
 
     @Test
     void shouldNormalizeEmbeddedSubsectionOrdinalsAndHideEmptyOptionalSections() {
-        String markdown = service.render(
+        String markdown = renderer.render(
                 DocumentTemplateType.TECHNICAL_ARCHITECTURE,
                 DocumentOutline.builder()
                         .title("Harness 架构设计")
-                        .sections(List.of(
-                                DocumentOutlineSection.builder().heading("模块分层与职责").keyPoints(List.of("分层要点")).build()
-                        ))
+                        .sections(List.of(DocumentOutlineSection.builder().heading("模块分层与职责").keyPoints(List.of("分层要点")).build()))
                         .build(),
                 List.of(
                         DocumentSectionDraft.builder()
@@ -155,8 +153,8 @@ class DocumentTemplateServiceTests {
                 ""
         );
 
-        assertThat(markdown).contains("### 4.1 Pipeline 执行流程");
-        assertThat(markdown).contains("### 4.2 数据流转图");
+        assertThat(markdown).contains("### 5.1 Pipeline 执行流程");
+        assertThat(markdown).contains("### 5.2 数据流转图");
         assertThat(markdown).contains("### 5.1 Pipeline 执行核心阶段");
         assertThat(markdown).contains("#### 5.1.1 YAML 解析与 DAG 构建");
         assertThat(markdown).doesNotContain("## 九、图表说明");
@@ -166,17 +164,13 @@ class DocumentTemplateServiceTests {
 
     @Test
     void shouldRenumberArchitectureSubviewsAndTopLevelAppendixContinuously() {
-        String markdown = service.render(
+        String markdown = renderer.render(
                 DocumentTemplateType.TECHNICAL_ARCHITECTURE,
                 DocumentOutline.builder()
                         .title("Harness 架构设计")
-                        .sections(List.of(
-                                DocumentOutlineSection.builder().heading("执行流程与数据流转").keyPoints(List.of("流程要点")).build()
-                        ))
+                        .sections(List.of(DocumentOutlineSection.builder().heading("执行流程与数据流转").keyPoints(List.of("流程要点")).build()))
                         .build(),
-                List.of(
-                        DocumentSectionDraft.builder().heading("执行流程与数据流转").body("1.1 流程阶段\n1.2 状态回传").build()
-                ),
+                List.of(DocumentSectionDraft.builder().heading("执行流程与数据流转").body("1.1 流程阶段\n1.2 状态回传").build()),
                 DocumentReviewResult.builder().summary("通过").build(),
                 "",
                 "sequenceDiagram\nA->>B: test",
@@ -187,7 +181,54 @@ class DocumentTemplateServiceTests {
         assertThat(markdown).doesNotContain("### 4.2 数据流转图");
         assertThat(markdown).contains("## 九、详细设计展开");
         assertThat(markdown).doesNotContain("## 十、详细设计展开");
-        assertThat(markdown).contains("### 1.1 流程阶段");
-        assertThat(markdown).contains("### 1.2 状态回传");
+        assertThat(markdown).contains("### 9.1 执行流程与数据流转");
+        assertThat(markdown).contains("#### 9.1.1 流程阶段");
+        assertThat(markdown).contains("#### 9.1.2 状态回传");
+    }
+
+    @Test
+    void shouldKeepDetailedContentNestedUnderDetailedDesignChapter() {
+        String markdown = renderer.render(
+                DocumentTemplateType.TECHNICAL_ARCHITECTURE,
+                DocumentOutline.builder()
+                        .title("Harness 架构设计")
+                        .sections(List.of(
+                                DocumentOutlineSection.builder().heading("执行流程与数据流转").keyPoints(List.of("流程要点")).build(),
+                                DocumentOutlineSection.builder().heading("故障回滚策略").keyPoints(List.of("回滚要点")).build()
+                        ))
+                        .build(),
+                List.of(
+                        DocumentSectionDraft.builder().heading("执行流程与数据流转").body("5.1 全链路执行阶段分解").build(),
+                        DocumentSectionDraft.builder().heading("故障回滚策略").body("6.1 自动回滚触发条件").build()
+                ),
+                DocumentReviewResult.builder().summary("通过").build(),
+                "",
+                "",
+                ""
+        );
+
+        assertThat(markdown).contains("## 九、详细设计展开");
+        assertThat(markdown).contains("### 9.1 执行流程与数据流转");
+        assertThat(markdown).contains("#### 9.1.1 全链路执行阶段分解");
+        assertThat(markdown).contains("### 9.2 故障回滚策略");
+        assertThat(markdown).contains("#### 9.2.1 自动回滚触发条件");
+        assertThat(markdown).doesNotContain("\n## 执行流程与数据流转\n");
+    }
+
+    @Test
+    void shouldRenderRemainingSectionsForReportTemplate() {
+        String markdown = renderer.render(
+                DocumentTemplateType.REPORT,
+                DocumentOutline.builder().title("项目汇报").sections(List.of()).build(),
+                List.of(DocumentSectionDraft.builder().heading("补充说明").body("说明正文").build()),
+                DocumentReviewResult.builder().summary("通过").build(),
+                "",
+                "",
+                ""
+        );
+
+        assertThat(markdown).contains("## 补充说明");
+        assertThat(markdown).contains("说明正文");
+        assertThat(markdown).doesNotContain("{sections}");
     }
 }

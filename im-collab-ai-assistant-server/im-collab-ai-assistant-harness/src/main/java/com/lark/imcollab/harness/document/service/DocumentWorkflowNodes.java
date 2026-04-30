@@ -15,7 +15,8 @@ import com.lark.imcollab.common.model.entity.DocumentReviewResult;
 import com.lark.imcollab.common.model.entity.DocumentSectionDraft;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.harness.document.support.DocumentExecutionSupport;
-import com.lark.imcollab.harness.document.template.DocumentTemplateService;
+import com.lark.imcollab.harness.document.template.DocumentTemplateRenderer;
+import com.lark.imcollab.harness.document.template.DocumentTemplateStrategyResolver;
 import com.lark.imcollab.harness.document.template.DocumentTemplateType;
 import com.lark.imcollab.harness.document.workflow.DocumentStateKeys;
 import com.lark.imcollab.skills.lark.doc.LarkDocCreateResult;
@@ -38,7 +39,8 @@ public class DocumentWorkflowNodes {
     private static final Pattern BODY_WHITESPACE_PATTERN = Pattern.compile("\\s+");
 
     private final DocumentExecutionSupport support;
-    private final DocumentTemplateService templateService;
+    private final DocumentTemplateRenderer templateRenderer;
+    private final DocumentTemplateStrategyResolver templateStrategyResolver;
     private final ReactAgent documentOutlineAgent;
     private final ReactAgent documentSectionAgent;
     private final ReactAgent documentDiagramAgent;
@@ -48,7 +50,8 @@ public class DocumentWorkflowNodes {
 
     public DocumentWorkflowNodes(
             DocumentExecutionSupport support,
-            DocumentTemplateService templateService,
+            DocumentTemplateRenderer templateRenderer,
+            DocumentTemplateStrategyResolver templateStrategyResolver,
             @Qualifier("documentOutlineAgent") ReactAgent documentOutlineAgent,
             @Qualifier("documentSectionAgent") ReactAgent documentSectionAgent,
             @Qualifier("documentDiagramAgent") ReactAgent documentDiagramAgent,
@@ -56,7 +59,8 @@ public class DocumentWorkflowNodes {
             LarkDocTool larkDocTool,
             ObjectMapper objectMapper) {
         this.support = support;
-        this.templateService = templateService;
+        this.templateRenderer = templateRenderer;
+        this.templateStrategyResolver = templateStrategyResolver;
         this.documentOutlineAgent = documentOutlineAgent;
         this.documentSectionAgent = documentSectionAgent;
         this.documentDiagramAgent = documentDiagramAgent;
@@ -73,7 +77,7 @@ public class DocumentWorkflowNodes {
         if ((templateStrategy == null || templateStrategy.isBlank()) && task.getExecutionContract() != null) {
             templateStrategy = task.getExecutionContract().getTemplateStrategy();
         }
-        var templateType = templateService.resolveTemplate(task.getExecutionContract());
+        var templateType = templateStrategyResolver.resolve(task.getExecutionContract());
         return CompletableFuture.completedFuture(Map.of(
                 DocumentStateKeys.TEMPLATE_STRATEGY, templateStrategy == null ? "" : templateStrategy,
                 DocumentStateKeys.TEMPLATE_TYPE, templateType.name(),
@@ -247,7 +251,7 @@ public class DocumentWorkflowNodes {
         List<DocumentSectionDraft> drafts = mergeSupplementalSections(readSectionDrafts(state),
                 requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class).getSupplementalSections());
         DocumentReviewResult reviewResult = requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class);
-        String markdown = templateService.render(
+        String markdown = templateRenderer.render(
                 DocumentTemplateType.valueOf(state.value(DocumentStateKeys.TEMPLATE_TYPE, "REPORT")),
                 outline, drafts, reviewResult,
                 state.value(DocumentStateKeys.USER_FEEDBACK, ""),
