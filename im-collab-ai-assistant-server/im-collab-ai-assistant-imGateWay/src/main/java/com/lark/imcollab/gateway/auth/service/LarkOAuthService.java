@@ -13,10 +13,11 @@ import com.lark.imcollab.gateway.config.LarkAppProperties;
 import com.lark.imcollab.store.redis.RedisJsonStore;
 import com.lark.imcollab.store.redis.RedisStringStore;
 import org.springframework.stereotype.Service;
-import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.security.SecureRandom;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -59,15 +60,30 @@ public class LarkOAuthService {
 
         String state = randomToken();
         redisStringStore.set(stateKey(state), "1", properties.getStateTtl());
-        URI authorizationUri = UriComponentsBuilder.fromUriString(properties.getAuthorizeUrl())
-                .queryParam("app_id", appProperties.getAppId())
-                .queryParam("redirect_uri", properties.getRedirectUri())
-                .queryParam("state", state)
-                .queryParamIfPresent("scope", authorizationScope())
-                .build()
-                .encode()
-                .toUri();
+        URI authorizationUri = buildAuthorizationUri(state);
         return new LarkOAuthLoginResult(authorizationUri, state);
+    }
+
+    private URI buildAuthorizationUri(String state) {
+        StringBuilder builder = new StringBuilder(properties.getAuthorizeUrl());
+        appendQuery(builder, true, "client_id", appProperties.getAppId());
+        appendQuery(builder, false, "response_type", "code");
+        appendQuery(builder, false, "redirect_uri", properties.getRedirectUri());
+        appendQuery(builder, false, "state", state);
+        authorizationScope().ifPresent(scope -> appendQuery(builder, false, "scope", scope));
+        return URI.create(builder.toString());
+    }
+
+    private void appendQuery(StringBuilder builder, boolean first, String name, String value) {
+        builder.append(first ? '?' : '&')
+                .append(urlEncode(name))
+                .append('=')
+                .append(urlEncode(value));
+    }
+
+    private String urlEncode(String value) {
+        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8)
+                .replace("+", "%20");
     }
 
     public LarkAuthTokenResponse completeLogin(String code, String state) {

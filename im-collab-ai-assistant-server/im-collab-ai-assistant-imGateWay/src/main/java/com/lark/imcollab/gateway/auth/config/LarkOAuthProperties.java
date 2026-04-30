@@ -11,7 +11,7 @@ public class LarkOAuthProperties {
 
     private String redirectUri;
 
-    private String authorizeUrl = "https://open.feishu.cn/open-apis/authen/v1/authorize";
+    private String authorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
 
     private List<String> scopes = new ArrayList<>(List.of(
             "auth:user.id:read",
