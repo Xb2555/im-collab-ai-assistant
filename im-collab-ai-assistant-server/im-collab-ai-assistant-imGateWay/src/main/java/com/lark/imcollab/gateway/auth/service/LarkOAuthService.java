@@ -12,6 +12,8 @@ import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
 import com.lark.imcollab.gateway.config.LarkAppProperties;
 import com.lark.imcollab.store.redis.RedisJsonStore;
 import com.lark.imcollab.store.redis.RedisStringStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -25,6 +27,7 @@ import java.util.Optional;
 @Service
 public class LarkOAuthService {
 
+    private static final Logger log = LoggerFactory.getLogger(LarkOAuthService.class);
     private static final Duration MIN_SESSION_TTL = Duration.ofMinutes(1);
     private static final String STATE_KEY_PREFIX = "imcollab:auth:lark:state:";
     private static final String SESSION_KEY_PREFIX = "imcollab:auth:lark:session:";
@@ -63,14 +66,17 @@ public class LarkOAuthService {
 
         String state = randomToken();
         redisStringStore.set(stateKey(state), "1", properties.getStateTtl());
+        Optional<String> scope = authorizationScope();
         URI authorizationUri = UriComponentsBuilder.fromUriString(properties.getAuthorizeUrl())
                 .queryParam("app_id", appProperties.getAppId())
                 .queryParam("redirect_uri", properties.getRedirectUri())
                 .queryParam("state", state)
-                .queryParamIfPresent("scope", authorizationScope())
+                .queryParamIfPresent("scope", scope)
                 .build()
                 .encode()
                 .toUri();
+        log.info("Lark OAuth Web redirect login init: authorizeDomain={}, scope={}",
+                properties.getAuthorizeUrl(), scope.orElse("<empty>"));
         return new LarkOAuthLoginResult(authorizationUri, state);
     }
 
@@ -85,15 +91,18 @@ public class LarkOAuthService {
                 ? "client_id"
                 : properties.getQrClientIdParam().trim();
 
+        Optional<String> scope = authorizationScope();
         URI authorizationUri = UriComponentsBuilder.fromUriString(properties.getQrAuthorizeUrl())
                 .queryParam(clientIdParamName, appProperties.getAppId())
                 .queryParam("redirect_uri", properties.getRedirectUri())
                 .queryParam("response_type", "code")
                 .queryParam("state", state)
-                .queryParamIfPresent("scope", authorizationScope())
+                .queryParamIfPresent("scope", scope)
                 .build()
                 .encode()
                 .toUri();
+        log.info("Lark OAuth QR embed login init: authorizeDomain={}, clientIdParam={}, scope={}",
+                properties.getQrAuthorizeUrl(), clientIdParamName, scope.orElse("<empty>"));
         return new LarkOAuthLoginResult(authorizationUri, state);
     }
 
@@ -107,6 +116,8 @@ public class LarkOAuthService {
 
         String appAccessToken = oauthClient.getAppAccessToken();
         LarkOAuthTokenPayload payload = oauthClient.exchangeAuthorizationCode(appAccessToken, code.trim());
+        log.info("Lark OAuth token exchanged: scope={}, tokenType={}, expiresIn={}, refreshExpiresIn={}",
+                payload.scope(), payload.tokenType(), payload.expiresIn(), payload.refreshExpiresIn());
         LarkOAuthLoginSession session = createSession(payload, null);
         String sessionId = randomToken();
         Duration ttl = sessionTtl(payload);
