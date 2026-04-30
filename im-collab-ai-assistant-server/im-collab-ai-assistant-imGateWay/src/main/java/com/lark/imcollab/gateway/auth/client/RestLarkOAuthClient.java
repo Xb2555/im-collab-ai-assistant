@@ -48,7 +48,8 @@ public class RestLarkOAuthClient implements LarkOAuthClient {
                         "grant_type", "authorization_code",
                         "client_id", appProperties.getAppId(),
                         "client_secret", appProperties.getAppSecret(),
-                        "code", code
+                        "code", code,
+                        "redirect_uri", "http://localhost:5173/auth-callback"
                 ))
                 .retrieve()
                 .body(JsonNode.class);
