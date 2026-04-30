@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 
 import java.util.List;
 import java.util.Optional;
@@ -29,6 +30,8 @@ public interface PlannerStateStore {
     void saveTask(TaskRecord task);
 
     Optional<TaskRecord> findTask(String taskId);
+
+    List<TaskRecord> findTasksByOwner(String ownerOpenId, List<TaskStatusEnum> statuses, int offset, int limit);
 
     void saveStep(TaskStepRecord step);
 

@@ -14,8 +14,11 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -29,6 +32,7 @@ public class LarkBotMessageClient {
     private static final long FALLBACK_TOKEN_TTL_SECONDS = 300L;
     private static final int MAX_RETRY_ATTEMPTS = 3;
     private static final long RETRY_BACKOFF_MILLIS = 1_500L;
+    static final int MAX_UUID_LENGTH = 50;
 
     private final LarkBotMessageProperties properties;
     private final ObjectMapper objectMapper;
@@ -53,7 +57,7 @@ public class LarkBotMessageClient {
     public LarkBotMessageResult sendTextToOpenId(String openId, String text, String idempotencyKey) {
         String normalizedOpenId = requireValue(openId, "openId");
         String normalizedText = requireValue(text, "text");
-        String normalizedIdempotencyKey = requireValue(idempotencyKey, "idempotencyKey");
+        String normalizedIdempotencyKey = normalizeIdempotencyKey(idempotencyKey);
 
         Map<String, Object> requestBody = new LinkedHashMap<>();
         requestBody.put("receive_id", normalizedOpenId);
@@ -80,7 +84,7 @@ public class LarkBotMessageClient {
     public LarkBotMessageResult replyText(String messageId, String text, String idempotencyKey) {
         String normalizedMessageId = requireValue(messageId, "messageId");
         String normalizedText = requireValue(text, "text");
-        String normalizedIdempotencyKey = requireValue(idempotencyKey, "idempotencyKey");
+        String normalizedIdempotencyKey = normalizeIdempotencyKey(idempotencyKey);
 
         JsonNode data = post(
                 "/open-apis/im/v1/messages/" + normalizedMessageId + "/reply",
@@ -317,6 +321,30 @@ public class LarkBotMessageClient {
     }
 
     private String requireValue(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must be provided");
+        }
+        return value.trim();
+    }
+
+    static String normalizeIdempotencyKey(String idempotencyKey) {
+        String normalized = requireStaticValue(idempotencyKey, "idempotencyKey");
+        if (normalized.length() <= MAX_UUID_LENGTH) {
+            return normalized;
+        }
+        return "im-" + sha256Hex(normalized).substring(0, MAX_UUID_LENGTH - 3);
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 digest is not available", exception);
+        }
+    }
+
+    private static String requireStaticValue(String value, String fieldName) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(fieldName + " must be provided");
         }

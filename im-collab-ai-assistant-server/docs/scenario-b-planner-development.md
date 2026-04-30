@@ -1,5 +1,7 @@
 # 场景 B：任务理解与规划开发文档
 
+> 开发 planner 与 IM 交互前，请先阅读补充规则：[Planner 与 IM 交互开发规则](planner-im-development-rules.md)。该文档沉淀了意图识别、UNKNOWN 回复、计划修改、IM 文案、产物通知、失败重试和真实测试的约束。下一阶段演进建议见：[Planner 下一阶段优化建议](planner-next-optimizations.md)。
+
 ## 1. 定位
 
 场景 B 是从自然语言输入到可执行任务图的核心层，对应最终 Harness 架构中的 `Planner / Orchestrator` 层，并承接 `会话与任务中枢层` 的一部分状态建模。

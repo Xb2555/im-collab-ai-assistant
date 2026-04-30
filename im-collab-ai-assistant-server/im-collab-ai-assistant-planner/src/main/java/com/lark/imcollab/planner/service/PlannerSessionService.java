@@ -62,6 +62,11 @@ public class PlannerSessionService {
         return session;
     }
 
+    public PlanTaskSession saveWithoutVersionChange(PlanTaskSession session) {
+        stateRepository.saveSession(session);
+        return session;
+    }
+
     public void checkVersion(PlanTaskSession session, int clientVersion) {
         if (session.getVersion() != clientVersion) {
             throw new com.lark.imcollab.planner.exception.VersionConflictException(
