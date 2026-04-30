@@ -87,4 +87,14 @@ class LarkUserProfileHydrationServiceTests {
                 eq("user-access-token")
         );
     }
+
+    @Test
+    void shouldSkipInvalidOrBotOpenId() {
+        assertThat(service.resolveByTenantAccessToken("bot")).isNull();
+        assertThat(service.resolveByTenantAccessToken("user_1")).isNull();
+        assertThat(service.resolveByTenantAccessToken("")).isNull();
+
+        verify(openApiClient, never()).getWithTenantToken(any(), any());
+        verify(redisJsonStore, never()).get(any(), any());
+    }
 }

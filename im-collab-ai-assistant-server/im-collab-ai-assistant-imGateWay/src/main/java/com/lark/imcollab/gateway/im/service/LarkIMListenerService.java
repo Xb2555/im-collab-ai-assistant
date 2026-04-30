@@ -304,6 +304,9 @@ public class LarkIMListenerService {
         return session == null
                 || (session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
                 && session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY
+                && session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING
+                && session.getPlanningPhase() != PlanningPhaseEnum.COMPLETED
+                && session.getPlanningPhase() != PlanningPhaseEnum.FAILED
                 && session.getPlanningPhase() != PlanningPhaseEnum.ABORTED);
     }
 
