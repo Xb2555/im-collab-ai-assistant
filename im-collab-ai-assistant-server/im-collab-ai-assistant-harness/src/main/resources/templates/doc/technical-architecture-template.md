@@ -20,13 +20,7 @@
 
 ## 四、架构视图
 
-{contextDiagram}
-
-{dataFlowDiagram}
-
-{sequenceDiagram}
-
-{stateDiagram}
+{architectureViewBlock}
 
 ## 五、模块分层与职责
 
@@ -44,12 +38,4 @@
 
 {timeline}
 
-## 九、图表说明
-
-{diagramNotes}
-
-## 十、详细设计展开
-
----
-
-{sections}
+{additionalSectionsBlock}

@@ -18,17 +18,25 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
 public class DocumentTemplateService {
 
+    private static final String[] CHINESE_SECTION_NUMBERS = {
+            "零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+            "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"
+    };
+
     private static final Pattern LEADING_HEADING_MARKS = Pattern.compile("^#+\\s*");
     private static final Pattern LEADING_SECTION_ORDINAL = Pattern.compile(
             "^(?:第[一二三四五六七八九十百千万0-9]+[章节部分篇]\\s*|\\(?[一二三四五六七八九十百千万0-9]+\\)?[、.．]\\s*|[（(][一二三四五六七八九十百千万0-9]+[）)]\\s*|[0-9]+(?:\\.[0-9]+)*\\s+)"
     );
     private static final Pattern MATCH_PUNCTUATION = Pattern.compile("[\\s:：,.，。;；、/\\\\()（）\\-]+");
+    private static final Pattern PLAIN_DECIMAL_SECTION = Pattern.compile("^([0-9]+(?:\\.[0-9]+)+)\\s+(.+)$");
+    private static final Pattern PLAIN_CHINESE_SECTION = Pattern.compile("^([一二三四五六七八九十百千万]+)、\\s*(.+)$");
 
     public DocumentTemplateType selectTemplate(UserPlanCard card) {
         String text = (card.getTitle() + " " + card.getDescription()).toLowerCase(Locale.ROOT);
@@ -73,14 +81,11 @@ public class DocumentTemplateService {
         vars.put("risks", templateSections.risks());
         vars.put("owners", templateSections.owners());
         vars.put("timeline", templateSections.timeline());
-        vars.put("sections", joinSections(templateSections.remainingSections()));
+        vars.put("architectureViewBlock", buildArchitectureViewBlock(mermaidDiagram, diagramPlan));
+        String detailedSections = joinSections(templateSections.remainingSections());
+        vars.put("additionalSectionsBlock", buildAdditionalSectionsBlock(detailedSections));
         vars.put("reviewSummary", reviewResult != null && reviewResult.getSummary() != null ? reviewResult.getSummary() : "已完成自动审阅。");
         vars.put("userFeedback", userFeedback == null ? "" : userFeedback);
-        vars.put("contextDiagram", renderMermaidSection("### 4.1 全局架构流程图", mermaidDiagram, diagramPlan, "CONTEXT"));
-        vars.put("dataFlowDiagram", renderMermaidSection("### 4.2 数据流转图", mermaidDiagram, diagramPlan, "DATA_FLOW"));
-        vars.put("sequenceDiagram", renderMermaidSection("### 4.3 关键时序图", mermaidDiagram, diagramPlan, "SEQUENCE"));
-        vars.put("stateDiagram", renderMermaidSection("### 4.4 状态流转图", mermaidDiagram, diagramPlan, "STATE"));
-        vars.put("diagramNotes", mermaidDiagram == null || mermaidDiagram.isBlank() ? "" : "图表已按 Mermaid 源码内嵌，可在后续场景复用。");
         return applyTemplate(loadTemplate(templateType), vars);
     }
 
@@ -96,7 +101,7 @@ public class DocumentTemplateService {
                         && !section.getBody().isBlank())
                 .map(section -> {
                     String renderedHeading = displayHeading(section.getHeading());
-                    return "## " + renderedHeading + "\n\n" + trimDuplicatedHeading(section.getBody(), section.getHeading());
+                    return "## " + renderedHeading + "\n\n" + normalizeBodyStructure(trimDuplicatedHeading(section.getBody(), section.getHeading()));
                 })
                 .collect(Collectors.joining("\n\n"));
     }
@@ -127,7 +132,7 @@ public class DocumentTemplateService {
         DocumentSectionDraft matchedDraft = findBestDraftMatch(sections, aliases);
         if (matchedDraft != null) {
             consumedHeadings.add(normalizeHeadingForMatch(matchedDraft.getHeading()));
-            return matchedDraft.getBody();
+            return normalizeBodyStructure(matchedDraft.getBody());
         }
         if (outline != null && outline.getSections() != null) {
             var matchedOutlineSection = findBestOutlineMatch(outline.getSections(), aliases);
@@ -148,7 +153,48 @@ public class DocumentTemplateService {
         return rendered;
     }
 
-    private String renderMermaidSection(String heading, String mermaidDiagram, String diagramPlan, String expectedPlan) {
+    private String buildArchitectureViewBlock(String mermaidDiagram, String diagramPlan) {
+        List<String> blocks = new ArrayList<>();
+        addDiagramBlock(blocks, "全局架构流程图", mermaidDiagram, diagramPlan, "CONTEXT");
+        addDiagramBlock(blocks, "数据流转图", mermaidDiagram, diagramPlan, "DATA_FLOW");
+        addDiagramBlock(blocks, "关键时序图", mermaidDiagram, diagramPlan, "SEQUENCE");
+        addDiagramBlock(blocks, "状态流转图", mermaidDiagram, diagramPlan, "STATE");
+        if (blocks.isEmpty()) {
+            return "";
+        }
+        for (int index = 0; index < blocks.size(); index++) {
+            blocks.set(index, "### 4." + (index + 1) + " " + blocks.get(index));
+        }
+        return String.join("\n\n", blocks);
+    }
+
+    private void addDiagramBlock(List<String> blocks, String title, String mermaidDiagram, String diagramPlan, String expectedPlan) {
+        String content = renderMermaidSection(title, mermaidDiagram, diagramPlan, expectedPlan);
+        if (!content.isBlank()) {
+            blocks.add(content);
+        }
+    }
+
+    private String buildAdditionalSectionsBlock(String detailedSections) {
+        List<String> blocks = new ArrayList<>();
+        if (!detailedSections.isBlank()) {
+            blocks.add(renderTopLevelSection(9 + blocks.size(), "详细设计展开", detailedSections));
+        }
+        return String.join("\n\n", blocks);
+    }
+
+    private String renderTopLevelSection(int index, String title, String body) {
+        return "## " + toChineseSectionNumber(index) + "、" + title + "\n\n" + body;
+    }
+
+    private String toChineseSectionNumber(int index) {
+        if (index >= 0 && index < CHINESE_SECTION_NUMBERS.length) {
+            return CHINESE_SECTION_NUMBERS[index];
+        }
+        return Integer.toString(index);
+    }
+
+    private String renderMermaidSection(String title, String mermaidDiagram, String diagramPlan, String expectedPlan) {
         if (mermaidDiagram == null || mermaidDiagram.isBlank()) {
             return "";
         }
@@ -158,7 +204,7 @@ public class DocumentTemplateService {
         if (!expectedPlan.equalsIgnoreCase(diagramPlan)) {
             return "";
         }
-        return heading + "\n\n```mermaid\n" + mermaidDiagram.strip() + "\n```";
+        return title + "\n\n```mermaid\n" + mermaidDiagram.strip() + "\n```";
     }
 
     private String normalizeHeading(String heading) {
@@ -206,6 +252,44 @@ public class DocumentTemplateService {
             return normalizedBody.substring(("## " + displayHeading).length()).stripLeading();
         }
         return normalizedBody;
+    }
+
+    private String normalizeBodyStructure(String body) {
+        if (body == null || body.isBlank()) {
+            return "";
+        }
+        List<String> normalizedLines = new ArrayList<>();
+        for (String rawLine : body.strip().split("\\R")) {
+            normalizedLines.add(normalizeBodyLine(rawLine));
+        }
+        return String.join("\n", normalizedLines).strip();
+    }
+
+    private String normalizeBodyLine(String line) {
+        String trimmed = line == null ? "" : line.strip();
+        if (trimmed.isBlank()) {
+            return "";
+        }
+        Matcher decimalMatcher = PLAIN_DECIMAL_SECTION.matcher(trimmed);
+        if (decimalMatcher.matches()) {
+            String numbering = decimalMatcher.group(1);
+            String title = stripLeadingOrdinal(decimalMatcher.group(2));
+            int depth = Math.min(6, 1 + numbering.split("\\.").length);
+            return "#".repeat(depth) + " " + numbering + " " + title;
+        }
+        Matcher chineseMatcher = PLAIN_CHINESE_SECTION.matcher(trimmed);
+        if (chineseMatcher.matches()) {
+            return "### " + chineseMatcher.group(1) + "、" + stripLeadingOrdinal(chineseMatcher.group(2));
+        }
+        if (trimmed.startsWith("#")) {
+            int headingEnd = 0;
+            while (headingEnd < trimmed.length() && trimmed.charAt(headingEnd) == '#') {
+                headingEnd++;
+            }
+            String title = trimmed.substring(headingEnd).strip();
+            return trimmed.substring(0, headingEnd) + " " + title;
+        }
+        return line == null ? "" : line.stripTrailing();
     }
 
     private DocumentSectionDraft findBestDraftMatch(List<DocumentSectionDraft> sections, String... aliases) {

@@ -47,7 +47,7 @@ class DocumentTemplateServiceTests {
 
         assertThat(markdown).contains("## 一、项目背景与问题");
         assertThat(markdown).contains("背景正文");
-        assertThat(markdown).contains("## 十、详细设计展开");
+        assertThat(markdown).contains("## 九、详细设计展开");
         assertThat(markdown).contains("## 执行流程");
         assertThat(markdown).doesNotContain("## 项目背景");
         assertThat(markdown).doesNotContain("## 设计目标与非目标");
@@ -131,5 +131,63 @@ class DocumentTemplateServiceTests {
         assertThat(markdown).contains("## 补充说明");
         assertThat(markdown).doesNotContain("## 九、补充说明");
         assertThat(markdown).doesNotContain("\n## 一、项目背景\n");
+    }
+
+    @Test
+    void shouldNormalizeEmbeddedSubsectionOrdinalsAndHideEmptyOptionalSections() {
+        String markdown = service.render(
+                DocumentTemplateType.TECHNICAL_ARCHITECTURE,
+                DocumentOutline.builder()
+                        .title("Harness 架构设计")
+                        .sections(List.of(
+                                DocumentOutlineSection.builder().heading("模块分层与职责").keyPoints(List.of("分层要点")).build()
+                        ))
+                        .build(),
+                List.of(
+                        DocumentSectionDraft.builder()
+                                .heading("模块分层与职责")
+                                .body("4.1 Pipeline 执行流程\n4.2 数据流转图\n5.1 Pipeline 执行核心阶段\n5.1.1 YAML 解析与 DAG 构建")
+                                .build()
+                ),
+                DocumentReviewResult.builder().summary("通过").build(),
+                "",
+                "",
+                ""
+        );
+
+        assertThat(markdown).contains("### 4.1 Pipeline 执行流程");
+        assertThat(markdown).contains("### 4.2 数据流转图");
+        assertThat(markdown).contains("### 5.1 Pipeline 执行核心阶段");
+        assertThat(markdown).contains("#### 5.1.1 YAML 解析与 DAG 构建");
+        assertThat(markdown).doesNotContain("## 九、图表说明");
+        assertThat(markdown).doesNotContain("图表已按 Mermaid 源码内嵌");
+        assertThat(markdown).doesNotContain("## 九、详细设计展开");
+    }
+
+    @Test
+    void shouldRenumberArchitectureSubviewsAndTopLevelAppendixContinuously() {
+        String markdown = service.render(
+                DocumentTemplateType.TECHNICAL_ARCHITECTURE,
+                DocumentOutline.builder()
+                        .title("Harness 架构设计")
+                        .sections(List.of(
+                                DocumentOutlineSection.builder().heading("执行流程与数据流转").keyPoints(List.of("流程要点")).build()
+                        ))
+                        .build(),
+                List.of(
+                        DocumentSectionDraft.builder().heading("执行流程与数据流转").body("1.1 流程阶段\n1.2 状态回传").build()
+                ),
+                DocumentReviewResult.builder().summary("通过").build(),
+                "",
+                "sequenceDiagram\nA->>B: test",
+                "DATA_FLOW"
+        );
+
+        assertThat(markdown).contains("### 4.1 数据流转图");
+        assertThat(markdown).doesNotContain("### 4.2 数据流转图");
+        assertThat(markdown).contains("## 九、详细设计展开");
+        assertThat(markdown).doesNotContain("## 十、详细设计展开");
+        assertThat(markdown).contains("### 1.1 流程阶段");
+        assertThat(markdown).contains("### 1.2 状态回传");
     }
 }
