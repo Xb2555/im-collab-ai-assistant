@@ -4,6 +4,7 @@ import java.util.List;
 
 public record PlanPreviewVO(
         String taskId,
+        int version,
         String planningPhase,
         String title,
         String summary,

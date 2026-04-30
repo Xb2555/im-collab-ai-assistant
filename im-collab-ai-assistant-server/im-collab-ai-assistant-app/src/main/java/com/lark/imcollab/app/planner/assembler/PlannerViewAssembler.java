@@ -19,6 +19,7 @@ public class PlannerViewAssembler {
         }
         return new PlanPreviewVO(
                 session.getTaskId(),
+                session.getVersion(),
                 enumName(session.getPlanningPhase()),
                 resolveTitle(session),
                 session.getPlanBlueprintSummary(),

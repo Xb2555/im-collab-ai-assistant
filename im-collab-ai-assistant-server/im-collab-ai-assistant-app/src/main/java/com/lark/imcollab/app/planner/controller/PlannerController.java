@@ -28,6 +28,9 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -50,6 +53,7 @@ public class PlannerController {
     private final HarnessFacade harnessFacade;
     private final PlannerViewAssembler plannerViewAssembler;
     private final TaskRuntimeViewAssembler taskRuntimeViewAssembler;
+    private final ObjectMapper objectMapper;
 
     @PostMapping("/plan")
     @Operation(summary = "1. 创建任务规划", description = "根据用户原始指令理解意图并拆解为可执行的任务卡片")
@@ -73,7 +77,8 @@ public class PlannerController {
                     int lastIndex = sessionService.getLastEventIndex(taskId);
                     if (events.size() > lastIndex) {
                         sessionService.setLastEventIndex(taskId, events.size());
-                        return Flux.fromIterable(events.subList(lastIndex, events.size()));
+                        return Flux.fromIterable(events.subList(lastIndex, events.size()))
+                                .map(eventJson -> ensureEventVersion(taskId, eventJson));
                     }
                     return Flux.empty();
                 })
@@ -188,5 +193,20 @@ public class PlannerController {
         TaskResultEvaluation evaluation = repository.findEvaluation(taskId, agentTaskId)
                 .orElseThrow(() -> new RuntimeException("Evaluation not found for agentTaskId: " + agentTaskId));
         return ResultUtils.success(evaluation);
+    }
+
+    private String ensureEventVersion(String taskId, String eventJson) {
+        try {
+            JsonNode root = objectMapper.readTree(eventJson);
+            if (!(root instanceof ObjectNode objectNode)) {
+                return eventJson;
+            }
+            if (!objectNode.has("version") || objectNode.path("version").isNull()) {
+                objectNode.put("version", sessionService.get(taskId).getVersion());
+            }
+            return objectMapper.writeValueAsString(objectNode);
+        } catch (Exception ignored) {
+            return eventJson;
+        }
     }
 }

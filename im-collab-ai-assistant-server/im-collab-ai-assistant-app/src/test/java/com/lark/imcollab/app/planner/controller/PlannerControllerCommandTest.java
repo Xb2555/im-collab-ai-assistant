@@ -56,7 +56,7 @@ class PlannerControllerCommandTest {
                 .steps(new ArrayList<>()).artifacts(new ArrayList<>())
                 .createdAt(Instant.now()).updatedAt(Instant.now()).build());
         when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
-                "task-1", "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+                "task-1", 1, "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
         PlanCommandRequest request = new PlanCommandRequest();
@@ -84,7 +84,7 @@ class PlannerControllerCommandTest {
         request.setFeedback("change it");
         when(supervisorPlannerService.resume("task-1", "change it", false)).thenReturn(session);
         when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
-                "task-1", "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+                "task-1", 1, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
         controller.command("task-1", request);
