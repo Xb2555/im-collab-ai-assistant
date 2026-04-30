@@ -1,6 +1,7 @@
 package com.lark.imcollab.gateway.auth.client;
 
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
+import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
 
 public interface LarkOAuthClient {
 
@@ -9,4 +10,6 @@ public interface LarkOAuthClient {
     LarkOAuthTokenPayload exchangeAuthorizationCode(String appAccessToken, String code);
 
     LarkOAuthTokenPayload refreshUserAccessToken(String appAccessToken, String refreshToken);
+
+    LarkOAuthUserResponse fetchCurrentUser(String userAccessToken);
 }

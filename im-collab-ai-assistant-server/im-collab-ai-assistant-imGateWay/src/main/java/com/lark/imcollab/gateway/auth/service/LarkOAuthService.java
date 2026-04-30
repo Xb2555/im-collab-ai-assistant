@@ -118,7 +118,13 @@ public class LarkOAuthService {
         LarkOAuthTokenPayload payload = oauthClient.exchangeAuthorizationCode(appAccessToken, code.trim());
         log.info("Lark OAuth token exchanged: scope={}, tokenType={}, expiresIn={}, refreshExpiresIn={}",
                 payload.scope(), payload.tokenType(), payload.expiresIn(), payload.refreshExpiresIn());
-        LarkOAuthLoginSession session = createSession(payload, null);
+        LarkOAuthUserResponse userInfo = null;
+        try {
+            userInfo = oauthClient.fetchCurrentUser(payload.accessToken());
+        } catch (RuntimeException exception) {
+            log.warn("Failed to fetch current user profile from Lark user_info endpoint.", exception);
+        }
+        LarkOAuthLoginSession session = createSession(payload, userInfo);
         String sessionId = randomToken();
         Duration ttl = sessionTtl(payload);
         redisJsonStore.set(sessionKey(sessionId), session, ttl);
