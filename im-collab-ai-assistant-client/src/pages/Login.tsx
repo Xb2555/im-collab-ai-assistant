@@ -1,4 +1,6 @@
 // src/pages/Login.tsx
+import { useState } from 'react';
+import { Capacitor } from '@capacitor/core';
 import { Button } from '@/components/ui/button';
 import { authLauncher } from '@/services/os/launcher/auth';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -7,13 +9,36 @@ import { Terminal, LayoutDashboard, Zap } from 'lucide-react';
 
 export default function Login() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const [loading, setLoading] = useState(false);
+  const isWebPlatform = Capacitor.getPlatform() === 'web';
 
   if (isAuthenticated) {
     return <Navigate to="/" replace />;
   }
 
-  const handleLogin = () => {
-    authLauncher.startLogin();
+  const handleLogin = async () => {
+    try {
+      setLoading(true);
+      const platform = Capacitor.getPlatform();
+
+      if (platform === 'ios' || platform === 'android') {
+        const oauthUrl = await authLauncher.getOAuthUrl();
+        await authLauncher.openInAppBrowser(oauthUrl);
+        return;
+      }
+
+      const oauthUrl = await authLauncher.getOAuthUrl();
+      window.location.href = oauthUrl;
+    } catch (error) {
+      console.error(error);
+      alert(error instanceof Error ? error.message : '获取登录二维码失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleWebDirectLogin = () => {
+    window.location.href = '/api/auth/lark/login';
   };
 
   return (
@@ -72,12 +97,25 @@ export default function Login() {
             </div>
 
             <div className="space-y-4">
-              <Button 
-                className="w-full h-12 text-base font-medium bg-[#3370ff] hover:bg-[#2b5fd9] text-white shadow-sm transition-all active:scale-[0.98]" 
+              <Button
+                className="w-full h-12 text-base font-medium bg-[#3370ff] hover:bg-[#2b5fd9] text-white shadow-sm transition-all active:scale-[0.98]"
                 onClick={handleLogin}
+                disabled={loading}
               >
-                授权飞书账号登录
+                {loading ? '正在跳转飞书授权...' : '授权飞书账号登录'}
               </Button>
+
+              {isWebPlatform && (
+                <button
+                  type="button"
+                  className="w-full text-sm text-zinc-500 hover:text-zinc-700 underline underline-offset-2"
+                  onClick={handleWebDirectLogin}
+                  disabled={loading}
+                >
+                  在浏览器中直接登录
+                </button>
+              )}
+
               <div className="text-center text-xs text-zinc-400">
                 登录即表示同意以 OAuth2 接入飞书开放平台
               </div>

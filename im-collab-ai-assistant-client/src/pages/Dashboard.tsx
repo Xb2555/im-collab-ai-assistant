@@ -273,7 +273,7 @@ export default function Dashboard() {
               </>
             ) : chatData?.items && chatData.items.length > 0 ? (
               <>
-                {/* 🚀 核心 UX 优化：如果正在后台同步，在最上面显示一个专属的 Loading 条 */}
+                {/*  核心 UX 优化：如果正在后台同步，在最上面显示一个专属的 Loading 条 */}
                 {syncingChatId && (
                   <div className="flex animate-pulse cursor-wait items-center space-x-3 rounded-lg p-2 bg-blue-50/50 border border-blue-100">
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-blue-200 text-blue-600">
@@ -350,7 +350,7 @@ export default function Dashboard() {
           </div>
           
           <div className="z-10 flex-1 overflow-y-auto p-6 space-y-4 flex flex-col">
-{/* 🚀 动态渲染消息流 🚀 */}
+{/* 动态渲染消息流 */}
             {!activeChatId ? (
               <div className="m-auto text-zinc-400 text-sm">请在左侧选择一个协作群聊以加载消息流</div>
             ) : isLoadingHistory ? (
@@ -363,7 +363,7 @@ export default function Dashboard() {
 messages.map((msg, index) => {
                 const isBot = msg.senderType === 'app' || msg.senderOpenId?.includes('bot');
                 
-                // ✨ 核心修复 2：准确判断“哪句话是我说的”
+                //  核心修复 2：准确判断“哪句话是我说的”
                 // 终极方案应该是 msg.senderOpenId === user?.openId，但在后端还没给 openId 前，
                 // 我们临时用名字判断（如果这条消息的发送者名字和当前登录用户的名字一样，就是我）
                 const isMe = msg.senderName ? msg.senderName === user?.name : false; 
@@ -461,7 +461,7 @@ messages.map((msg, index) => {
 
       </main>
 
-      {/* 🚀 挂载建群弹窗 🚀 */}
+      {/* 挂载建群弹窗 */}
       <CreateChatModal 
         isOpen={isModalOpen} 
         // onClose={() => setIsModalOpen(false)} // 之前是直接关
@@ -476,7 +476,7 @@ messages.map((msg, index) => {
               const isSyncCompleted = freshData?.items.some(chat => chat.chatId === newChatId);
               if (isSyncCompleted) {
                 setActiveChatId(newChatId); // 选中新群
-                setIsModalOpen(false); // ✨ 核心优化：查到数据了，再关闭弹窗！
+                setIsModalOpen(false); // 核心优化：查到数据了，再关闭弹窗！
                 break; 
               }
             } catch (e) {
@@ -489,7 +489,7 @@ messages.map((msg, index) => {
         }} 
       />
 
-      {/* ✨ 新增：挂载邀请弹窗 */}
+      {/* 新增：挂载邀请弹窗 */}
       {activeChatId && (
         <InviteMemberModal 
           isOpen={isInviteModalOpen}
