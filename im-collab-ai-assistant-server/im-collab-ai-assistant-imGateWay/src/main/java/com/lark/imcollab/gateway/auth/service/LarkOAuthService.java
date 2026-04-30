@@ -54,6 +54,10 @@ public class LarkOAuthService {
     }
 
     public LarkOAuthLoginResult startLogin() {
+        return startLoginForWebRedirect();
+    }
+
+    public LarkOAuthLoginResult startLoginForWebRedirect() {
         validateRequired(appProperties.getAppId(), "appId");
         validateRequired(properties.getRedirectUri(), "redirectUri");
 
@@ -62,6 +66,29 @@ public class LarkOAuthService {
         URI authorizationUri = UriComponentsBuilder.fromUriString(properties.getAuthorizeUrl())
                 .queryParam("app_id", appProperties.getAppId())
                 .queryParam("redirect_uri", properties.getRedirectUri())
+                .queryParam("state", state)
+                .queryParamIfPresent("scope", authorizationScope())
+                .build()
+                .encode()
+                .toUri();
+        return new LarkOAuthLoginResult(authorizationUri, state);
+    }
+
+    public LarkOAuthLoginResult startLoginForQrEmbed() {
+        validateRequired(appProperties.getAppId(), "appId");
+        validateRequired(properties.getRedirectUri(), "redirectUri");
+        validateRequired(properties.getQrAuthorizeUrl(), "qrAuthorizeUrl");
+
+        String state = randomToken();
+        redisStringStore.set(stateKey(state), "1", properties.getStateTtl());
+        String clientIdParamName = (properties.getQrClientIdParam() == null || properties.getQrClientIdParam().isBlank())
+                ? "client_id"
+                : properties.getQrClientIdParam().trim();
+
+        URI authorizationUri = UriComponentsBuilder.fromUriString(properties.getQrAuthorizeUrl())
+                .queryParam(clientIdParamName, appProperties.getAppId())
+                .queryParam("redirect_uri", properties.getRedirectUri())
+                .queryParam("response_type", "code")
                 .queryParam("state", state)
                 .queryParamIfPresent("scope", authorizationScope())
                 .build()
