@@ -68,7 +68,7 @@ public class LarkOAuthService {
         redisStringStore.set(stateKey(state), "1", properties.getStateTtl());
         Optional<String> scope = authorizationScope();
         URI authorizationUri = UriComponentsBuilder.fromUriString(properties.getAuthorizeUrl())
-                .queryParam("app_id", appProperties.getAppId())
+                .queryParam("client_id", appProperties.getAppId())
                 .queryParam("redirect_uri", properties.getRedirectUri())
                 .queryParam("state", state)
                 .queryParamIfPresent("scope", scope)

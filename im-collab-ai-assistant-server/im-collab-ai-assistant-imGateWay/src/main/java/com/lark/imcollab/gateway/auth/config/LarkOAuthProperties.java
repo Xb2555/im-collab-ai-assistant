@@ -11,9 +11,9 @@ public class LarkOAuthProperties {
 
     private String redirectUri;
 
-    private String authorizeUrl = "https://open.feishu.cn/open-apis/authen/v1/authorize";
+    private String authorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
 
-    private String qrAuthorizeUrl = "https://passport.feishu.cn/suite/passport/oauth/authorize";
+    private String qrAuthorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
 
     private String qrClientIdParam = "client_id";
 

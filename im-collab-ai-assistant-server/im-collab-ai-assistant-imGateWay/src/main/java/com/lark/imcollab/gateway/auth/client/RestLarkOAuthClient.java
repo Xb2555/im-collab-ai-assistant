@@ -42,11 +42,12 @@ public class RestLarkOAuthClient implements LarkOAuthClient {
     @Override
     public LarkOAuthTokenPayload exchangeAuthorizationCode(String appAccessToken, String code) {
         JsonNode response = restClient.post()
-                .uri("/open-apis/authen/v1/access_token")
-                .headers(headers -> headers.setBearerAuth(appAccessToken))
+                .uri("/open-apis/authen/v2/oauth/token")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of(
                         "grant_type", "authorization_code",
+                        "client_id", appProperties.getAppId(),
+                        "client_secret", appProperties.getAppSecret(),
                         "code", code
                 ))
                 .retrieve()
@@ -57,11 +58,12 @@ public class RestLarkOAuthClient implements LarkOAuthClient {
     @Override
     public LarkOAuthTokenPayload refreshUserAccessToken(String appAccessToken, String refreshToken) {
         JsonNode response = restClient.post()
-                .uri("/open-apis/authen/v1/refresh_access_token")
-                .headers(headers -> headers.setBearerAuth(appAccessToken))
+                .uri("/open-apis/authen/v2/oauth/token")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of(
                         "grant_type", "refresh_token",
+                        "client_id", appProperties.getAppId(),
+                        "client_secret", appProperties.getAppSecret(),
                         "refresh_token", refreshToken
                 ))
                 .retrieve()
