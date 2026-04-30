@@ -32,8 +32,14 @@ public class LarkOAuthController {
 
     @GetMapping("/lark/login")
     public ResponseEntity<Void> login() {
-        LarkOAuthLoginResult result = oauthService.startLogin();
+        LarkOAuthLoginResult result = oauthService.startLoginForWebRedirect();
         return redirect(result.authorizationUri()).build();
+    }
+
+    @GetMapping("/login-url")
+    public ResponseEntity<BaseResponse<?>> loginUrl() {
+        LarkOAuthLoginResult result = oauthService.startLoginForQrEmbed();
+        return ResponseEntity.ok(ResultUtils.success(result));
     }
 
     @PostMapping("/callback")

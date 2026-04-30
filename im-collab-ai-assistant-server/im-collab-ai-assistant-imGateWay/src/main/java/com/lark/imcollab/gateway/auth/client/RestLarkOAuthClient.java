@@ -1,7 +1,9 @@
 package com.lark.imcollab.gateway.auth.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.lark.imcollab.gateway.auth.config.LarkOAuthProperties;
 import com.lark.imcollab.gateway.auth.dto.LarkOAuthTokenPayload;
+import com.lark.imcollab.gateway.auth.dto.LarkOAuthUserResponse;
 import com.lark.imcollab.gateway.config.LarkAppProperties;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -13,13 +15,16 @@ import java.util.Map;
 public class RestLarkOAuthClient implements LarkOAuthClient {
 
     private final LarkAppProperties appProperties;
+    private final LarkOAuthProperties oauthProperties;
     private final RestClient restClient;
 
     public RestLarkOAuthClient(
             LarkAppProperties appProperties,
+            LarkOAuthProperties oauthProperties,
             RestClient.Builder restClientBuilder
     ) {
         this.appProperties = appProperties;
+        this.oauthProperties = oauthProperties;
         this.restClient = restClientBuilder
                 .baseUrl(appProperties.getOpenApiBaseUrl())
                 .build();
@@ -42,12 +47,14 @@ public class RestLarkOAuthClient implements LarkOAuthClient {
     @Override
     public LarkOAuthTokenPayload exchangeAuthorizationCode(String appAccessToken, String code) {
         JsonNode response = restClient.post()
-                .uri("/open-apis/authen/v1/access_token")
-                .headers(headers -> headers.setBearerAuth(appAccessToken))
+                .uri("/open-apis/authen/v2/oauth/token")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of(
                         "grant_type", "authorization_code",
-                        "code", code
+                        "client_id", appProperties.getAppId(),
+                        "client_secret", appProperties.getAppSecret(),
+                        "code", code,
+                        "redirect_uri", oauthProperties.getRedirectUri()
                 ))
                 .retrieve()
                 .body(JsonNode.class);
@@ -57,16 +64,35 @@ public class RestLarkOAuthClient implements LarkOAuthClient {
     @Override
     public LarkOAuthTokenPayload refreshUserAccessToken(String appAccessToken, String refreshToken) {
         JsonNode response = restClient.post()
-                .uri("/open-apis/authen/v1/refresh_access_token")
-                .headers(headers -> headers.setBearerAuth(appAccessToken))
+                .uri("/open-apis/authen/v2/oauth/token")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of(
                         "grant_type", "refresh_token",
+                        "client_id", appProperties.getAppId(),
+                        "client_secret", appProperties.getAppSecret(),
                         "refresh_token", refreshToken
                 ))
                 .retrieve()
                 .body(JsonNode.class);
         return readTokenPayload(requireSuccess(response));
+    }
+
+    @Override
+    public LarkOAuthUserResponse fetchCurrentUser(String userAccessToken) {
+        JsonNode response = restClient.get()
+                .uri("/open-apis/authen/v1/user_info")
+                .headers(headers -> headers.setBearerAuth(userAccessToken))
+                .retrieve()
+                .body(JsonNode.class);
+        JsonNode data = requireSuccess(response);
+        return new LarkOAuthUserResponse(
+                optionalText(data, "open_id"),
+                optionalText(data, "union_id"),
+                optionalText(data, "user_id"),
+                optionalText(data, "tenant_key"),
+                optionalText(data, "name"),
+                optionalText(data, "avatar_url")
+        );
     }
 
     private JsonNode requireSuccess(JsonNode response) {

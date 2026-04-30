@@ -46,6 +46,12 @@ imcollab:
         domain: ${LARK_OPEN_DOMAIN:}
         auto-reconnect-enabled: ${LARK_IM_AUTO_RECONNECT:true}
     auth:
+      # Web 直跳授权地址（302）
+      authorize-url: ${LARK_OAUTH_AUTHORIZE_URL:https://accounts.feishu.cn/open-apis/authen/v1/authorize}
+      # 二维码嵌入授权地址（QRLogin）
+      qr-authorize-url: ${LARK_OAUTH_QR_AUTHORIZE_URL:https://passport.feishu.cn/suite/passport/oauth/authorize}
+      # 二维码授权地址中的 client id 参数名
+      qr-client-id-param: ${LARK_OAUTH_QR_CLIENT_ID_PARAM:client_id}
       redirect-uri: ${LARK_OAUTH_REDIRECT_URI:http://localhost:5173/auth-callback}
       session-ttl: ${LARK_AUTH_SESSION_TTL:12h}
       jwt-ttl: ${LARK_AUTH_JWT_TTL:2h}

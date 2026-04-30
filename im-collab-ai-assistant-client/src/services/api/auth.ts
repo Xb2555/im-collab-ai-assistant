@@ -2,13 +2,32 @@
 import { apiClient } from './client';
 import type { ApiResponse, AuthCallbackRequest, AuthCallbackResponse, User } from '@/types/api';
 
+export interface LarkLoginUrlData {
+  authorizationUri: string;
+  state: string;
+}
+
+export type LarkLoginUrlResponse = ApiResponse<LarkLoginUrlData>;
+
 export const authApi = {
   /**
-   * 跳转飞书授权页
-   * 前端可以直接让浏览器打开该地址，后端会重定向到飞书授权页
+   * Web 端直跳后端登录入口（后端 302 到飞书授权页）
    */
-  getLoginUrl: () => {
+  getLoginUrlRedirectPath: (): string => {
     return '/api/auth/lark/login';
+  },
+
+  /**
+   * 获取飞书授权 URL（JSON，不重定向）
+   */
+  getLoginUrl: async (): Promise<LarkLoginUrlData> => {
+    const response = await apiClient.get<LarkLoginUrlResponse>('/api/auth/login-url');
+    if (response.data.code !== 0) {
+      throw new Error(response.data.message || '获取登录授权链接失败');
+    }
+    // 【新增这一行】：把 state 存入本地缓存
+    localStorage.setItem('lark_oauth_state', response.data.data.state)
+    return response.data.data;
   },
 
   /**
