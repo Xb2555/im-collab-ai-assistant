@@ -12,16 +12,23 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
 public class DocumentTemplateService {
+
+    private static final Pattern LEADING_HEADING_MARKS = Pattern.compile("^#+\\s*");
+    private static final Pattern LEADING_SECTION_ORDINAL = Pattern.compile(
+            "^(?:第[一二三四五六七八九十百千万0-9]+[章节部分篇]\\s*|\\(?[一二三四五六七八九十百千万0-9]+\\)?[、.．]\\s*|[（(][一二三四五六七八九十百千万0-9]+[）)]\\s*|[0-9]+(?:\\.[0-9]+)*\\s+)"
+    );
+    private static final Pattern MATCH_PUNCTUATION = Pattern.compile("[\\s:：,.，。;；、/\\\\()（）\\-]+");
 
     public DocumentTemplateType selectTemplate(UserPlanCard card) {
         String text = (card.getTitle() + " " + card.getDescription()).toLowerCase(Locale.ROOT);
@@ -61,6 +68,7 @@ public class DocumentTemplateService {
         vars.put("title", outline.getTitle());
         vars.put("background", templateSections.background());
         vars.put("goal", templateSections.goal());
+        vars.put("principles", templateSections.principles());
         vars.put("plan", templateSections.plan());
         vars.put("risks", templateSections.risks());
         vars.put("owners", templateSections.owners());
@@ -86,24 +94,28 @@ public class DocumentTemplateService {
                         && !section.getHeading().isBlank()
                         && section.getBody() != null
                         && !section.getBody().isBlank())
-                .map(section -> "## " + normalizeHeading(section.getHeading()) + "\n\n" + trimDuplicatedHeading(section.getBody(), section.getHeading()))
+                .map(section -> {
+                    String renderedHeading = displayHeading(section.getHeading());
+                    return "## " + renderedHeading + "\n\n" + trimDuplicatedHeading(section.getBody(), section.getHeading());
+                })
                 .collect(Collectors.joining("\n\n"));
     }
 
     private TemplateSections resolveTemplateSections(DocumentOutline outline, List<DocumentSectionDraft> sections) {
         List<DocumentSectionDraft> safeSections = sections == null ? List.of() : sections;
         Set<String> consumedHeadings = new HashSet<>();
-        String background = findSection(outline, safeSections, consumedHeadings, "背景", "背景与上下文", "会议背景", "项目背景", "背景与问题");
-        String goal = findSection(outline, safeSections, consumedHeadings, "目标", "会议目标", "目标与范围", "设计目标与非目标");
-        String plan = findSection(outline, safeSections, consumedHeadings, "方案", "执行方案", "关键结论", "模块分层", "架构原则");
-        String risks = findSection(outline, safeSections, consumedHeadings, "风险", "风险与依赖", "待确认事项", "风险与边界");
-        String owners = findSection(outline, safeSections, consumedHeadings, "分工", "责任分工", "行动项", "演进建议");
-        String timeline = findSection(outline, safeSections, consumedHeadings, "时间", "时间计划", "下一步安排");
+        String background = findSection(outline, safeSections, consumedHeadings, "项目背景", "背景与问题", "背景与上下文", "会议背景", "背景");
+        String goal = findSection(outline, safeSections, consumedHeadings, "设计目标与非目标", "目标与范围", "会议目标", "目标");
+        String principles = findSection(outline, safeSections, consumedHeadings, "设计原则", "架构原则", "目标与设计原则", "原则");
+        String plan = findSection(outline, safeSections, consumedHeadings, "模块分层与职责", "模块分层", "总体架构", "执行方案", "方案", "关键结论");
+        String risks = findSection(outline, safeSections, consumedHeadings, "风险与边界", "风险与依赖", "待确认事项", "风险");
+        String owners = findSection(outline, safeSections, consumedHeadings, "演进建议", "责任分工", "分工", "行动项");
+        String timeline = findSection(outline, safeSections, consumedHeadings, "实施节奏与时间计划", "时间计划", "下一步安排", "时间");
         List<DocumentSectionDraft> remainingSections = safeSections.stream()
                 .filter(section -> section != null)
-                .filter(section -> !consumedHeadings.contains(normalizeHeading(section.getHeading())))
+                .filter(section -> !consumedHeadings.contains(normalizeHeadingForMatch(section.getHeading())))
                 .toList();
-        return new TemplateSections(background, goal, plan, risks, owners, timeline, remainingSections);
+        return new TemplateSections(background, goal, principles, plan, risks, owners, timeline, remainingSections);
     }
 
     private String findSection(
@@ -112,22 +124,17 @@ public class DocumentTemplateService {
             Set<String> consumedHeadings,
             String... aliases
     ) {
-        for (DocumentSectionDraft section : sections) {
-            for (String alias : aliases) {
-                if (section.getHeading() != null && section.getHeading().contains(alias)) {
-                    consumedHeadings.add(normalizeHeading(section.getHeading()));
-                    return section.getBody();
-                }
-            }
+        DocumentSectionDraft matchedDraft = findBestDraftMatch(sections, aliases);
+        if (matchedDraft != null) {
+            consumedHeadings.add(normalizeHeadingForMatch(matchedDraft.getHeading()));
+            return matchedDraft.getBody();
         }
         if (outline != null && outline.getSections() != null) {
-            for (var section : outline.getSections()) {
-                for (String alias : aliases) {
-                    if (section.getHeading() != null && section.getHeading().contains(alias)
-                            && section.getKeyPoints() != null && !section.getKeyPoints().isEmpty()) {
-                        return synthesizeBodyFromKeyPoints(section.getHeading(), section.getKeyPoints());
-                    }
-                }
+            var matchedOutlineSection = findBestOutlineMatch(outline.getSections(), aliases);
+            if (matchedOutlineSection != null
+                    && matchedOutlineSection.getKeyPoints() != null
+                    && !matchedOutlineSection.getKeyPoints().isEmpty()) {
+                return synthesizeBodyFromKeyPoints(matchedOutlineSection.getHeading(), matchedOutlineSection.getKeyPoints());
             }
         }
         return defaultSectionContent(aliases);
@@ -158,11 +165,28 @@ public class DocumentTemplateService {
         if (heading == null) {
             return "";
         }
-        String normalized = heading.strip();
-        while (normalized.startsWith("#")) {
-            normalized = normalized.substring(1).stripLeading();
-        }
-        return normalized;
+        return LEADING_HEADING_MARKS.matcher(heading.strip()).replaceFirst("").strip();
+    }
+
+    private String displayHeading(String heading) {
+        String normalized = normalizeHeading(heading);
+        String stripped = stripLeadingOrdinal(normalized);
+        return stripped.isBlank() ? normalized : stripped;
+    }
+
+    private String normalizeHeadingForMatch(String heading) {
+        String normalized = stripLeadingOrdinal(normalizeHeading(heading)).toLowerCase(Locale.ROOT);
+        return MATCH_PUNCTUATION.matcher(normalized).replaceAll("");
+    }
+
+    private String stripLeadingOrdinal(String heading) {
+        String stripped = normalizeHeading(heading);
+        String previous;
+        do {
+            previous = stripped;
+            stripped = LEADING_SECTION_ORDINAL.matcher(stripped).replaceFirst("").stripLeading();
+        } while (!stripped.equals(previous));
+        return stripped;
     }
 
     private String trimDuplicatedHeading(String body, String heading) {
@@ -170,6 +194,7 @@ public class DocumentTemplateService {
             return "";
         }
         String normalizedHeading = normalizeHeading(heading);
+        String displayHeading = displayHeading(heading);
         String normalizedBody = body.strip();
         if (normalizedHeading.isBlank()) {
             return normalizedBody;
@@ -177,7 +202,68 @@ public class DocumentTemplateService {
         if (normalizedBody.startsWith("## " + normalizedHeading)) {
             return normalizedBody.substring(("## " + normalizedHeading).length()).stripLeading();
         }
+        if (!displayHeading.isBlank() && normalizedBody.startsWith("## " + displayHeading)) {
+            return normalizedBody.substring(("## " + displayHeading).length()).stripLeading();
+        }
         return normalizedBody;
+    }
+
+    private DocumentSectionDraft findBestDraftMatch(List<DocumentSectionDraft> sections, String... aliases) {
+        DocumentSectionDraft bestMatch = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (DocumentSectionDraft section : sections) {
+            if (section == null || section.getHeading() == null || section.getHeading().isBlank()) {
+                continue;
+            }
+            int score = scoreHeadingMatch(section.getHeading(), aliases);
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = section;
+            }
+        }
+        return bestScore > 0 ? bestMatch : null;
+    }
+
+    private com.lark.imcollab.common.model.entity.DocumentOutlineSection findBestOutlineMatch(
+            List<com.lark.imcollab.common.model.entity.DocumentOutlineSection> sections,
+            String... aliases
+    ) {
+        com.lark.imcollab.common.model.entity.DocumentOutlineSection bestMatch = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (com.lark.imcollab.common.model.entity.DocumentOutlineSection section : sections) {
+            if (section == null || section.getHeading() == null || section.getHeading().isBlank()) {
+                continue;
+            }
+            int score = scoreHeadingMatch(section.getHeading(), aliases);
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = section;
+            }
+        }
+        return bestScore > 0 ? bestMatch : null;
+    }
+
+    private int scoreHeadingMatch(String heading, String... aliases) {
+        String normalizedHeading = normalizeHeadingForMatch(heading);
+        int bestScore = Integer.MIN_VALUE;
+        for (String alias : aliases) {
+            if (alias == null || alias.isBlank()) {
+                continue;
+            }
+            String normalizedAlias = normalizeHeadingForMatch(alias);
+            if (normalizedHeading.equals(normalizedAlias)) {
+                bestScore = Math.max(bestScore, 300 + normalizedAlias.length());
+                continue;
+            }
+            if (normalizedHeading.startsWith(normalizedAlias)) {
+                bestScore = Math.max(bestScore, 200 + normalizedAlias.length());
+                continue;
+            }
+            if (normalizedHeading.contains(normalizedAlias)) {
+                bestScore = Math.max(bestScore, 100 + normalizedAlias.length());
+            }
+        }
+        return bestScore;
     }
 
     private String synthesizeBodyFromKeyPoints(String heading, List<String> keyPoints) {
@@ -223,6 +309,7 @@ public class DocumentTemplateService {
     private record TemplateSections(
             String background,
             String goal,
+            String principles,
             String plan,
             String risks,
             String owners,

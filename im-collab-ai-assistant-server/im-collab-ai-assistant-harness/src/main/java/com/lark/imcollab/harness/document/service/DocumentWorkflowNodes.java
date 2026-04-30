@@ -28,10 +28,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
 public class DocumentWorkflowNodes {
+
+    private static final Pattern BODY_HEADING_PATTERN = Pattern.compile("(?m)^#+\\s*");
+    private static final Pattern BODY_WHITESPACE_PATTERN = Pattern.compile("\\s+");
 
     private final DocumentExecutionSupport support;
     private final DocumentTemplateService templateService;
@@ -535,10 +539,23 @@ public class DocumentWorkflowNodes {
         if (left.isBlank()) {
             return right;
         }
-        if (right.isBlank() || left.contains(right)) {
+        if (right.isBlank()) {
             return left;
         }
+        String normalizedLeft = normalizeBodyForMerge(left);
+        String normalizedRight = normalizeBodyForMerge(right);
+        if (normalizedLeft.contains(normalizedRight)) {
+            return left;
+        }
+        if (normalizedRight.contains(normalizedLeft)) {
+            return right;
+        }
         return left + "\n\n" + right;
+    }
+
+    private String normalizeBodyForMerge(String body) {
+        String normalized = BODY_HEADING_PATTERN.matcher(body == null ? "" : body).replaceAll("");
+        return BODY_WHITESPACE_PATTERN.matcher(normalized).replaceAll("").toLowerCase();
     }
 
     private DocumentReviewResult evaluateReview(

@@ -75,4 +75,61 @@ class DocumentTemplateServiceTests {
         assertThat(markdown).doesNotContain("### 1.1");
         assertThat(markdown).doesNotContain("#### 1.1.1");
     }
+
+    @Test
+    void shouldPreferModuleSectionOverPrinciplesForPlanSlot() {
+        String markdown = service.render(
+                DocumentTemplateType.TECHNICAL_ARCHITECTURE,
+                DocumentOutline.builder()
+                        .title("Harness 架构设计")
+                        .sections(List.of(
+                                DocumentOutlineSection.builder().heading("1. 目标与设计原则").keyPoints(List.of("原则要点")).build(),
+                                DocumentOutlineSection.builder().heading("3. 总体架构").keyPoints(List.of("总体架构要点")).build(),
+                                DocumentOutlineSection.builder().heading("4. 六层详细说明").keyPoints(List.of("模块分层要点")).build()
+                        ))
+                        .build(),
+                List.of(
+                        DocumentSectionDraft.builder().heading("1. 目标与设计原则").body("原则正文").build(),
+                        DocumentSectionDraft.builder().heading("3. 总体架构").body("总体架构正文").build(),
+                        DocumentSectionDraft.builder().heading("4. 六层详细说明").body("模块分层正文").build()
+                ),
+                DocumentReviewResult.builder().summary("通过").build(),
+                "",
+                "",
+                ""
+        );
+
+        assertThat(markdown).contains("## 三、架构原则");
+        assertThat(markdown).contains("原则正文");
+        assertThat(markdown).contains("## 五、模块分层与职责");
+        assertThat(markdown).contains("总体架构正文");
+        assertThat(markdown).doesNotContain("## 1. 目标与设计原则");
+        assertThat(markdown).doesNotContain("## 3. 总体架构");
+    }
+
+    @Test
+    void shouldStripOutlineOrdinalsWhenRenderingDetailedSections() {
+        String markdown = service.render(
+                DocumentTemplateType.TECHNICAL_ARCHITECTURE,
+                DocumentOutline.builder()
+                        .title("Harness 架构设计")
+                        .sections(List.of(
+                                DocumentOutlineSection.builder().heading("一、项目背景").keyPoints(List.of("背景要点")).build(),
+                                DocumentOutlineSection.builder().heading("九、补充说明").keyPoints(List.of("补充要点")).build()
+                        ))
+                        .build(),
+                List.of(
+                        DocumentSectionDraft.builder().heading("一、项目背景").body("背景正文").build(),
+                        DocumentSectionDraft.builder().heading("九、补充说明").body("补充正文").build()
+                ),
+                DocumentReviewResult.builder().summary("通过").build(),
+                "",
+                "",
+                ""
+        );
+
+        assertThat(markdown).contains("## 补充说明");
+        assertThat(markdown).doesNotContain("## 九、补充说明");
+        assertThat(markdown).doesNotContain("\n## 一、项目背景\n");
+    }
 }

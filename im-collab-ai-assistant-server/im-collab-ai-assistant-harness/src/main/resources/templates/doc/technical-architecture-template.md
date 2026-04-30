@@ -16,6 +16,8 @@
 - 所有执行节点围绕冻结后的 execution contract 运转
 - 图表、文档、外部写入均应具备独立可重试能力
 
+{principles}
+
 ## 四、架构视图
 
 {contextDiagram}
