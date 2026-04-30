@@ -35,6 +35,12 @@ public class LarkOAuthController {
         return redirect(result.authorizationUri()).build();
     }
 
+    @GetMapping("/login-url")
+    public ResponseEntity<BaseResponse<?>> loginUrl() {
+        LarkOAuthLoginResult result = oauthService.startLogin();
+        return ResponseEntity.ok(ResultUtils.success(result));
+    }
+
     @PostMapping("/callback")
     public ResponseEntity<BaseResponse<?>> callback(@RequestBody LarkOAuthCallbackRequest request) {
         try {
