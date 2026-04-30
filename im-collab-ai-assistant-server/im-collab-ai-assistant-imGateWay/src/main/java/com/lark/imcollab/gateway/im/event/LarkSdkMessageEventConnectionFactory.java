@@ -24,15 +24,18 @@ public class LarkSdkMessageEventConnectionFactory implements LarkMessageEventCon
     private final LarkAppProperties appProperties;
     private final LarkIMEventProperties properties;
     private final LarkMessageEventMapper mapper;
+    private final LarkSdkMessageEventProcessor eventProcessor;
 
     public LarkSdkMessageEventConnectionFactory(
             LarkAppProperties appProperties,
             LarkIMEventProperties properties,
-            LarkMessageEventMapper mapper
+            LarkMessageEventMapper mapper,
+            LarkSdkMessageEventProcessor eventProcessor
     ) {
         this.appProperties = appProperties;
         this.properties = properties;
         this.mapper = mapper;
+        this.eventProcessor = eventProcessor;
     }
 
     @Override
@@ -44,9 +47,10 @@ public class LarkSdkMessageEventConnectionFactory implements LarkMessageEventCon
                     @Override
                     public void handle(P2MessageReceiveV1 event) {
                         try {
-                            mapper.fromSdkEvent(event).ifPresent(messageConsumer);
+                            mapper.fromSdkEvent(event)
+                                    .ifPresent(mappedEvent -> eventProcessor.submit(mappedEvent, messageConsumer));
                         } catch (RuntimeException exception) {
-                            log.warn("Failed to handle Lark SDK message receive event.", exception);
+                            log.warn("Failed to map Lark SDK message receive event.", exception);
                         }
                     }
                 })

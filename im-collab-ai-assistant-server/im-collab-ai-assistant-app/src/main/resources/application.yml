@@ -26,6 +26,7 @@ imcollab:
       executable: ${LARK_CLI_EXECUTABLE:lark-cli}
       args: ${LARK_CLI_ARGS:}
       working-directory: ${LARK_CLI_WORKING_DIR:}
+      doc-identity: ${LARK_DOC_IDENTITY:bot}
   gateway:
     lark:
       app-id: ${LARK_APP_ID:}

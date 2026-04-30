@@ -13,15 +13,15 @@ import java.io.Serializable;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "鍦烘櫙妯″潡鎺ュ叆鎸傞挬")
+@Schema(description = "场景模块接入挂钩")
 public class ScenarioIntegrationHook implements Serializable {
 
-    @Schema(description = "鍦烘櫙浠ｇ爜")
+    @Schema(description = "场景代码")
     private ScenarioCodeEnum scenarioCode;
 
-    @Schema(description = "妯″潡鍚嶇О")
+    @Schema(description = "模块名称")
     private String moduleName;
 
-    @Schema(description = "鍚庣画澶勭悊鐘舵€?")
+    @Schema(description = "后续处理状态")
     private String status;
 }

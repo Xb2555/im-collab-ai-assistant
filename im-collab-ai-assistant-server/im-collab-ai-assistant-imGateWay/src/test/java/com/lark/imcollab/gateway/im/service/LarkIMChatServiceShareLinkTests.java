@@ -26,7 +26,9 @@ class LarkIMChatServiceShareLinkTests {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final LarkOAuthService oauthService = mock(LarkOAuthService.class);
     private final LarkOpenApiClient openApiClient = mock(LarkOpenApiClient.class);
-    private final LarkIMChatService service = new LarkIMChatService(oauthService, openApiClient, objectMapper);
+    private final LarkIMMessageProjectionService messageProjectionService = mock(LarkIMMessageProjectionService.class);
+    private final LarkIMChatService service =
+            new LarkIMChatService(oauthService, openApiClient, objectMapper, messageProjectionService);
 
     @Test
     void shouldCreateShareLinkWithUserAccessToken() throws Exception {

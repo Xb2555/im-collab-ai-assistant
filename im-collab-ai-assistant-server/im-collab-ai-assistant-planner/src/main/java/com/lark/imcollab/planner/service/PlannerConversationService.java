@@ -71,6 +71,9 @@ public class PlannerConversationService {
             TaskIntakeDecision intakeDecision,
             TaskSessionResolution resolution
     ) {
+        if (!resolution.existingSession() && session.getRawInstruction() == null) {
+            session.setRawInstruction(intakeDecision.effectiveInput());
+        }
         session.setInputContext(TaskInputContext.builder()
                 .inputSource(workspaceContext == null ? null : workspaceContext.getInputSource())
                 .chatId(workspaceContext == null ? null : workspaceContext.getChatId())

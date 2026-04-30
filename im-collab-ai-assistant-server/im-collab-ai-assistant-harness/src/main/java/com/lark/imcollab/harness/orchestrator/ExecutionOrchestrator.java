@@ -18,6 +18,7 @@ public class ExecutionOrchestrator {
     private final StepRepository stepRepository;
     private final TaskEventRepository eventRepository;
     private final StepDispatcher stepDispatcher;
+    private final ExecutionIntakeGate executionIntakeGate;
 
     public Task start(String taskId) {
         Task task = taskRepository.findById(taskId).orElseGet(() -> {
@@ -34,6 +35,7 @@ public class ExecutionOrchestrator {
             return fallback;
         });
 
+        task = executionIntakeGate.freeze(task);
         task.setStatus(TaskStatus.EXECUTING);
         task.setUpdatedAt(Instant.now());
         taskRepository.save(task);

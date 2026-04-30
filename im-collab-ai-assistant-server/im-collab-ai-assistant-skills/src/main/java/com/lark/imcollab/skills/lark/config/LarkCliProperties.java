@@ -14,5 +14,6 @@ public class LarkCliProperties {
     private String executable = "lark-cli";
     private List<String> args = List.of();
     private String workingDirectory = "";
+    private String docIdentity = "user";
 
 }

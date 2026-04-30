@@ -14,30 +14,30 @@ import java.util.List;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "缁撴瀯鍖栨剰鍥惧揩鐓?")
+@Schema(description = "结构化意图快照")
 public class IntentSnapshot implements Serializable {
 
-    @Schema(description = "鐢ㄦ埛鐩爣")
+    @Schema(description = "用户目标")
     private String userGoal;
 
-    @Schema(description = "浜や粯鐗╃洰鏍囧垪琛?")
+    @Schema(description = "交付物目标列表")
     private List<String> deliverableTargets;
 
-    @Schema(description = "鏉ユ簮鑼冨洿")
+    @Schema(description = "来源范围")
     private WorkspaceContext sourceScope;
 
-    @Schema(description = "鏃堕棿鑼冨洿")
+    @Schema(description = "时间范围")
     private String timeRange;
 
-    @Schema(description = "鐩爣鍙椾紬")
+    @Schema(description = "目标受众")
     private String audience;
 
-    @Schema(description = "绾︽潫鏉′欢")
+    @Schema(description = "约束条件")
     private List<String> constraints;
 
-    @Schema(description = "缂哄け妲戒綅")
+    @Schema(description = "缺失槽位")
     private List<String> missingSlots;
 
-    @Schema(description = "鍦烘櫙璺緞")
+    @Schema(description = "场景路径")
     private List<ScenarioCodeEnum> scenarioPath;
 }

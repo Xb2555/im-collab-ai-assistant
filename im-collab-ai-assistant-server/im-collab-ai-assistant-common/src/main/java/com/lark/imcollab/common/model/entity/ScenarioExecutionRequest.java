@@ -13,15 +13,15 @@ import java.io.Serializable;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "鍦烘櫙鎵ц璇锋眰")
+@Schema(description = "场景执行请求")
 public class ScenarioExecutionRequest implements Serializable {
 
-    @Schema(description = "鍦烘櫙浠ｇ爜")
+    @Schema(description = "场景代码")
     private ScenarioCodeEnum scenarioCode;
 
     @Schema(description = "浠诲姟ID")
     private String taskId;
 
-    @Schema(description = "鎵ц鏂囦笂鏂?")
+    @Schema(description = "执行计划蓝图")
     private PlanBlueprint planBlueprint;
 }

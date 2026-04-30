@@ -1,5 +1,7 @@
 package com.lark.imcollab.app.planner.controller;
 
+import com.lark.imcollab.app.planner.assembler.PlannerViewAssembler;
+import com.lark.imcollab.app.planner.assembler.TaskRuntimeViewAssembler;
 import com.lark.imcollab.common.facade.HarnessFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
@@ -9,11 +11,12 @@ import com.lark.imcollab.common.model.dto.SubmitResultRequest;
 import com.lark.imcollab.common.model.entity.BaseResponse;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
-import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
-import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.model.vo.PlanCardVO;
+import com.lark.imcollab.common.model.vo.PlanPreviewVO;
+import com.lark.imcollab.common.model.vo.TaskDetailVO;
 import com.lark.imcollab.common.utils.ResultUtils;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.SupervisorPlannerService;
@@ -45,17 +48,19 @@ public class PlannerController {
     private final TaskResultEvaluationService evaluationService;
     private final PlannerStateStore repository;
     private final HarnessFacade harnessFacade;
+    private final PlannerViewAssembler plannerViewAssembler;
+    private final TaskRuntimeViewAssembler taskRuntimeViewAssembler;
 
     @PostMapping("/plan")
     @Operation(summary = "1. 创建任务规划", description = "根据用户原始指令理解意图并拆解为可执行的任务卡片")
-    public BaseResponse<PlanTaskSession> plan(@RequestBody PlanRequest request) {
+    public BaseResponse<PlanPreviewVO> plan(@RequestBody PlanRequest request) {
         PlanTaskSession session = plannerPlanFacade.plan(
                 request.getRawInstruction(),
                 request.getWorkspaceContext(),
                 request.getTaskId(),
                 request.getUserFeedback()
         );
-        return ResultUtils.success(session);
+        return ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
     }
 
     @GetMapping(value = "/{taskId}/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -77,15 +82,15 @@ public class PlannerController {
 
     @PostMapping("/{taskId}/interrupt")
     @Operation(summary = "2. 中断任务", description = "中断正在执行的任务")
-    public BaseResponse<PlanTaskSession> interrupt(
+    public BaseResponse<PlanPreviewVO> interrupt(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId) {
         PlanTaskSession session = supervisorPlannerService.interrupt(taskId);
-        return ResultUtils.success(session);
+        return ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
     }
 
     @PostMapping("/{taskId}/resume")
     @Operation(summary = "3. 恢复任务（回答 LLM 的反问）", description = "根据用户反馈恢复被中断的任务")
-    public BaseResponse<PlanTaskSession> resume(
+    public BaseResponse<PlanPreviewVO> resume(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId,
             @RequestBody ResumeRequest request) {
         PlanTaskSession session = supervisorPlannerService.resume(
@@ -93,36 +98,35 @@ public class PlannerController {
                 request.getFeedback(),
                 request.isReplanFromRoot()
         );
-        return ResultUtils.success(session);
+        return ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
     }
 
     @GetMapping("/{taskId}")
     @Operation(summary = "4. 获取任务状态", description = "查询任务当前状态和进度")
-    public BaseResponse<PlanTaskSession> getTask(
+    public BaseResponse<PlanPreviewVO> getTask(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId) {
         PlanTaskSession session = sessionService.get(taskId);
-        return ResultUtils.success(session);
+        return ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
     }
 
     @GetMapping("/{taskId}/runtime")
     @Operation(summary = "4.1. 获取任务运行时快照", description = "查询 Task、Step、Artifact 和标准事件，用于前端卡片和后续场景接入")
-    public BaseResponse<TaskRuntimeSnapshot> getRuntimeSnapshot(
+    public BaseResponse<TaskDetailVO> getRuntimeSnapshot(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId) {
-        return ResultUtils.success(taskRuntimeService.getSnapshot(taskId));
+        return ResultUtils.success(taskRuntimeViewAssembler.toTaskDetail(taskRuntimeService.getSnapshot(taskId)));
     }
 
     @GetMapping("/{taskId}/cards")
     @Operation(summary = "5. 获取任务卡片列表", description = "查询任务包含的所有卡片（子任务）")
-    public BaseResponse<List<UserPlanCard>> getCards(
+    public BaseResponse<List<PlanCardVO>> getCards(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId) {
         PlanTaskSession session = sessionService.get(taskId);
-        List<UserPlanCard> cards = session.getPlanCards() != null ? session.getPlanCards() : List.of();
-        return ResultUtils.success(cards);
+        return ResultUtils.success(plannerViewAssembler.toPlanCards(session.getPlanCards()));
     }
 
     @PostMapping("/{taskId}/commands")
     @Operation(summary = "6. 执行任务指令（确认执行/重新规划/取消规划）", description = "用户确认执行、重规划或取消任务")
-    public BaseResponse<PlanTaskSession> command(
+    public BaseResponse<PlanPreviewVO> command(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId,
             @RequestBody PlanCommandRequest request) {
         PlanTaskSession session = sessionService.get(taskId);
@@ -136,11 +140,11 @@ public class PlannerController {
                 sessionService.publishEvent(taskId, "EXECUTING");
                 taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.EXECUTING, TaskEventTypeEnum.PLAN_APPROVED);
                 harnessFacade.startExecution(taskId);
-                yield ResultUtils.success(session);
+                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
             }
             case "REPLAN" -> {
                 PlanTaskSession updated = supervisorPlannerService.resume(taskId, request.getFeedback(), false);
-                yield ResultUtils.success(updated);
+                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
             }
             case "CANCEL" -> {
                 session.setPlanningPhase(PlanningPhaseEnum.ABORTED);
@@ -148,7 +152,7 @@ public class PlannerController {
                 session.setTransitionReason("User cancelled");
                 sessionService.save(session);
                 sessionService.publishEvent(taskId, "ABORTED");
-                yield ResultUtils.success(session);
+                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
             }
             default -> throw new IllegalArgumentException("Unknown action: " + request.getAction());
         };

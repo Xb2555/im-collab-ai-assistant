@@ -13,21 +13,21 @@ import java.io.Serializable;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "浠诲姟鍏ュ彛鐘舵€?")
+@Schema(description = "任务入口状态")
 public class TaskIntakeState implements Serializable {
 
-    @Schema(description = "鍏ュ彛鍒ゆ柇绫诲瀷")
+    @Schema(description = "入口判定类型")
     private TaskIntakeTypeEnum intakeType;
 
-    @Schema(description = "鏄惁缁帴鏃ф浼氳瘽")
+    @Schema(description = "是否续接已有会话")
     private boolean continuedConversation;
 
-    @Schema(description = "浼氳瘽缁戝畾閿?")
+    @Schema(description = "会话绑定键")
     private String continuationKey;
 
-    @Schema(description = "鏈€杩戜竴娆＄敤鎴疯緭鍏?")
+    @Schema(description = "最近一次用户输入")
     private String lastUserMessage;
 
-    @Schema(description = "鏈€杩戜竴娆¤緭鍏ユ椂闂?")
+    @Schema(description = "最近一次输入时间")
     private String lastInputAt;
 }

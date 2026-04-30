@@ -1,5 +1,6 @@
 package com.lark.imcollab.common.domain;
 
+import com.lark.imcollab.common.model.entity.ExecutionContract;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -18,6 +19,9 @@ public class Task implements Serializable {
     private String conversationId;
     private String userId;
     private String rawInstruction;
+    private String clarifiedInstruction;
+    private String taskBrief;
+    private ExecutionContract executionContract;
     private TaskType type;
     private TaskStatus status;
     private List<Step> steps;

@@ -12,12 +12,12 @@ import java.io.Serializable;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Schema(description = "鍦烘櫙鎵ц缁撴灉")
+@Schema(description = "场景执行结果")
 public class ScenarioExecutionResult implements Serializable {
 
-    @Schema(description = "鏄惁鎴愬姛")
+    @Schema(description = "是否成功")
     private boolean success;
 
-    @Schema(description = "缁撴灉鎻忚堪")
+    @Schema(description = "结果描述")
     private String message;
 }

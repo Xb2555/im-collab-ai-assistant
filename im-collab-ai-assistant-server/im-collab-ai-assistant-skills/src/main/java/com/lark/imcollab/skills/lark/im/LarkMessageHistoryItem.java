@@ -19,6 +19,8 @@ public record LarkMessageHistoryItem(
         String tenantKey,
         String content,
         List<LarkMessageMention> mentions,
-        String upperMessageId
+        String upperMessageId,
+        String senderName,
+        String senderAvatar
 ) {
 }
