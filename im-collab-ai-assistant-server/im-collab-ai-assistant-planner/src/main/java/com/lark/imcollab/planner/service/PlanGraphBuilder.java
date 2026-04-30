@@ -74,6 +74,7 @@ public class PlanGraphBuilder {
             case "COMPLETED" -> StepStatusEnum.COMPLETED;
             case "FAILED" -> StepStatusEnum.FAILED;
             case "SKIPPED" -> StepStatusEnum.SKIPPED;
+            case "SUPERSEDED" -> StepStatusEnum.SUPERSEDED;
             default -> StepStatusEnum.READY;
         };
     }

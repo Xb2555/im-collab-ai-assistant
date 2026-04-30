@@ -28,6 +28,12 @@ public class TaskIntakeState implements Serializable {
     @Schema(description = "最近一次用户输入")
     private String lastUserMessage;
 
+    @Schema(description = "意图识别说明")
+    private String routingReason;
+
+    @Schema(description = "无法处理当前意图时面向用户的自然回复")
+    private String assistantReply;
+
     @Schema(description = "最近一次输入时间")
     private String lastInputAt;
 }

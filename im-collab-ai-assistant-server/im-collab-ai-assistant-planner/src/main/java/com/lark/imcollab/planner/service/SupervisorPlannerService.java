@@ -14,7 +14,20 @@ import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.exception.SupervisorException;
+import com.lark.imcollab.planner.clarification.ClarificationService;
+import com.lark.imcollab.planner.gate.PlanGateResult;
+import com.lark.imcollab.planner.gate.PlanGateService;
+import com.lark.imcollab.planner.planning.FastPlanBlueprintFactory;
+import com.lark.imcollab.planner.planning.PlanRoutingDecision;
+import com.lark.imcollab.planner.planning.PlanRoutingGate;
+import com.lark.imcollab.planner.planning.TaskPlanningResult;
+import com.lark.imcollab.planner.planning.TaskPlanningService;
 import com.lark.imcollab.planner.prompt.AgentPromptContext;
+import com.lark.imcollab.planner.replan.CardPlanPatchMerger;
+import com.lark.imcollab.planner.replan.PlanAdjustmentInterpreter;
+import com.lark.imcollab.planner.replan.PlanPatchIntent;
+import com.lark.imcollab.planner.replan.PlanPatchOperation;
+import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -37,6 +50,14 @@ public class SupervisorPlannerService {
     private final PlannerSessionService sessionService;
     private final PlanQualityService qualityService;
     private final TaskRuntimeService taskRuntimeService;
+    private final ClarificationService clarificationService;
+    private final TaskPlanningService taskPlanningService;
+    private final PlanGateService planGateService;
+    private final TaskRuntimeProjectionService projectionService;
+    private final FastPlanBlueprintFactory fastPlanBlueprintFactory;
+    private final PlanRoutingGate planRoutingGate;
+    private final PlanAdjustmentInterpreter planAdjustmentInterpreter;
+    private final CardPlanPatchMerger cardPlanPatchMerger;
 
     public SupervisorPlannerService(
             @Qualifier("supervisorAgent") ReactAgent supervisorAgent,
@@ -44,7 +65,15 @@ public class SupervisorPlannerService {
             @Qualifier("planningAgent") ReactAgent planningAgent,
             PlannerSessionService sessionService,
             PlanQualityService qualityService,
-            TaskRuntimeService taskRuntimeService
+            TaskRuntimeService taskRuntimeService,
+            ClarificationService clarificationService,
+            TaskPlanningService taskPlanningService,
+            PlanGateService planGateService,
+            TaskRuntimeProjectionService projectionService,
+            FastPlanBlueprintFactory fastPlanBlueprintFactory,
+            PlanRoutingGate planRoutingGate,
+            PlanAdjustmentInterpreter planAdjustmentInterpreter,
+            CardPlanPatchMerger cardPlanPatchMerger
     ) {
         this.supervisorAgent = supervisorAgent;
         this.intentAgent = intentAgent;
@@ -52,13 +81,25 @@ public class SupervisorPlannerService {
         this.sessionService = sessionService;
         this.qualityService = qualityService;
         this.taskRuntimeService = taskRuntimeService;
+        this.clarificationService = clarificationService;
+        this.taskPlanningService = taskPlanningService;
+        this.planGateService = planGateService;
+        this.projectionService = projectionService;
+        this.fastPlanBlueprintFactory = fastPlanBlueprintFactory;
+        this.planRoutingGate = planRoutingGate;
+        this.planAdjustmentInterpreter = planAdjustmentInterpreter;
+        this.cardPlanPatchMerger = cardPlanPatchMerger;
     }
 
     public PlanTaskSession plan(String rawInstruction, WorkspaceContext workspaceContext, String taskId, String userFeedback) {
         String resolvedTaskId = !StrUtil.isEmpty(taskId) ? taskId : UUID.randomUUID().toString();
         PlanTaskSession session = sessionService.getOrCreate(resolvedTaskId);
+        if (session.getRawInstruction() == null && rawInstruction != null && !rawInstruction.isBlank()) {
+            session.setRawInstruction(rawInstruction.trim());
+        }
         session.setTurnCount(session.getTurnCount() + 1);
         mergePersona(session, workspaceContext);
+        projectionService.projectStage(session, TaskEventTypeEnum.PLANNING_STARTED, "Planner accepted task");
 
         String prompt = buildPrompt(rawInstruction, workspaceContext, userFeedback, session);
         String extractedContext = extractContext(workspaceContext);
@@ -79,7 +120,33 @@ public class SupervisorPlannerService {
                 extractedContext);
 
         try {
+            PlanRoutingDecision routingDecision = planRoutingGate.decide(rawInstruction, workspaceContext);
+            log.info("Planner route selected task={} route={} reasons={}",
+                    resolvedTaskId,
+                    routingDecision.route(),
+                    routingDecision.reasons());
+            Optional<IntentSnapshot> fastIntent = routingDecision.allowsFastPlan()
+                    ? fastPlanBlueprintFactory.buildIntentSnapshot(rawInstruction, workspaceContext)
+                    : Optional.empty();
+            if (fastIntent.isPresent()) {
+                projectionService.projectStage(session, TaskEventTypeEnum.INTENT_ROUTING, "Fast intent routing");
+                qualityService.applyIntentReady(session, fastIntent.get());
+                sessionService.saveWithoutVersionChange(session);
+                sessionService.publishEvent(resolvedTaskId, "INTENT_READY");
+                PlanBlueprint blueprint = fastPlanBlueprintFactory.buildBlueprint(resolvedTaskId, rawInstruction, fastIntent.get())
+                        .orElseGet(() -> fastPlanBlueprintFactory.fallbackDocBlueprint(resolvedTaskId, rawInstruction, fastIntent.get()));
+                log.info("Planner fast path selected for task {}", resolvedTaskId);
+                return completePlanReady(session, blueprint, resolvedTaskId, TaskEventTypeEnum.PLAN_READY, "Checking fast generated plan");
+            }
+
+            if (!routingDecision.allowsFastPlan()) {
+                projectionService.projectStage(session, TaskEventTypeEnum.INTENT_ROUTING,
+                        "Plan routing gate selected " + routingDecision.route() + ": " + String.join("; ", routingDecision.reasons()));
+            }
+            projectionService.projectStage(session, TaskEventTypeEnum.INTENT_ROUTING, "Supervisor checking whether clarification is needed");
+            long supervisorStartedAt = System.nanoTime();
             AssistantMessage supervisorResponse = supervisorAgent.call(prompt, supervisorConfig);
+            logStageDuration(resolvedTaskId, "supervisor", supervisorStartedAt);
             String responseText = supervisorResponse.getText();
             if (isCurrentSessionAborted(resolvedTaskId)) {
                 return sessionService.get(resolvedTaskId);
@@ -119,19 +186,45 @@ public class SupervisorPlannerService {
                 extractedContext);
 
         try {
+            PlanPatchIntent patchIntent = planAdjustmentInterpreter.interpret(session, adjustmentInstruction, workspaceContext);
+            if (patchIntent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED) {
+                return handleAskUser(session, List.of(firstNonBlank(
+                        patchIntent.getClarificationQuestion(),
+                        "我没完全判断清楚，你想修改哪一个步骤？")));
+            }
+            if (patchIntent.getOperation() != PlanPatchOperation.REGENERATE_ALL) {
+                log.info("Planner patch adjustment selected for task {} operation={} confidence={}",
+                        taskId, patchIntent.getOperation(), patchIntent.getConfidence());
+                PlanBlueprint mergedBlueprint = cardPlanPatchMerger.merge(session.getPlanBlueprint(), patchIntent, taskId);
+                qualityService.applyMergedPlanAdjustment(session, mergedBlueprint, patchIntent.getReason());
+                TaskPlanningResult planningResult = taskPlanningService.buildReadyPlan(session);
+                projectionService.projectStage(session, TaskEventTypeEnum.PLAN_GATE_CHECKING, "Checking patch adjusted plan");
+                PlanGateResult gateResult = planGateService.check(planningResult.graph(), planningResult.executionContract());
+                if (!gateResult.passed()) {
+                    return handleAskUser(session, List.of("计划修改还需要确认一下：你想保留哪些步骤？"));
+                }
+                sessionService.save(session);
+                taskRuntimeService.projectPlanReady(session, TaskEventTypeEnum.PLAN_ADJUSTED);
+                sessionService.publishEvent(taskId, "PLAN_READY");
+                return session;
+            }
+
+            projectionService.projectStage(session, TaskEventTypeEnum.PLANNING_STARTED, "Planner regenerating existing plan");
+            long planningStartedAt = System.nanoTime();
             Optional<OverAllState> state = planningAgent.invoke(prompt, planningConfig);
+            logStageDuration(taskId, "planning-adjust", planningStartedAt);
             PlanBlueprint blueprint = extractPlanBlueprintFromState(state, taskId, session.getIntentSnapshot())
-                    .orElseGet(() -> {
-                        try {
-                            return fallbackPlanBlueprintByText(prompt, planningConfig, taskId, session.getIntentSnapshot());
-                        } catch (GraphRunnerException e) {
-                            throw new SupervisorException(e.getMessage());
-                        }
-                    });
+                    .orElseGet(() -> fallbackBlueprintWithoutSecondModelCall(taskId, adjustmentInstruction, session.getIntentSnapshot()));
             if (isCurrentSessionAborted(taskId)) {
                 return sessionService.get(taskId);
             }
             qualityService.applyPlanAdjustment(session, blueprint, adjustmentInstruction);
+            TaskPlanningResult planningResult = taskPlanningService.buildReadyPlan(session);
+            projectionService.projectStage(session, TaskEventTypeEnum.PLAN_GATE_CHECKING, "Checking adjusted plan");
+            PlanGateResult gateResult = planGateService.check(planningResult.graph(), planningResult.executionContract());
+            if (!gateResult.passed()) {
+                return failSession(session, String.join("; ", gateResult.reasons()));
+            }
             sessionService.save(session);
             taskRuntimeService.projectPlanReady(session, TaskEventTypeEnum.PLAN_ADJUSTED);
             sessionService.publishEvent(taskId, "PLAN_READY");
@@ -160,12 +253,10 @@ public class SupervisorPlannerService {
             session.setClarificationQuestions(null);
             session.setActivePromptSlots(List.of());
         } else {
-            session.setClarificationAnswers(List.of(feedback));
-            markPromptSlotsAnswered(session, feedback);
+            clarificationService.absorbAnswer(session, feedback);
         }
         session.setTransitionReason("Resume: " + feedback);
-        session.setVersion(session.getVersion() - 1);
-        sessionService.save(session);
+        sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(taskId, "RESUMED");
 
         RunnableConfig supervisorConfig = AgentPromptContext.withPlanningPromptContext(
@@ -185,7 +276,9 @@ public class SupervisorPlannerService {
                 "");
 
         try {
+            long supervisorStartedAt = System.nanoTime();
             AssistantMessage supervisorResponse = supervisorAgent.call(feedback, supervisorConfig);
+            logStageDuration(taskId, "supervisor-resume", supervisorStartedAt);
             if (isCurrentSessionAborted(taskId)) {
                 return sessionService.get(taskId);
             }
@@ -209,16 +302,13 @@ public class SupervisorPlannerService {
             String taskId
     ) {
         try {
+            projectionService.projectStage(session, TaskEventTypeEnum.INTENT_ROUTING, "Understanding user intent");
+            long intentStartedAt = System.nanoTime();
             Optional<OverAllState> state = intentAgent.invoke(prompt, config);
+            logStageDuration(taskId, "intent", intentStartedAt);
             IntentSnapshot intentSnapshot = extractIntentFromState(state)
-                    .orElseGet(() -> {
-                        try {
-                            AssistantMessage response = intentAgent.call(prompt, config);
-                            return qualityService.extractIntentSnapshot(response.getText());
-                        } catch (GraphRunnerException e) {
-                            throw new SupervisorException(e.getMessage());
-                        }
-                    });
+                    .orElseGet(() -> fastPlanBlueprintFactory.buildIntentSnapshot(session.getRawInstruction(), null)
+                            .orElse(null));
             if (intentSnapshot == null) {
                 throw new SupervisorException("Intent understanding returned empty output");
             }
@@ -226,7 +316,7 @@ public class SupervisorPlannerService {
                 throw new SupervisorException("Task was cancelled");
             }
             qualityService.applyIntentReady(session, intentSnapshot);
-            sessionService.save(session);
+            sessionService.saveWithoutVersionChange(session);
             sessionService.publishEvent(taskId, "INTENT_READY");
             return intentSnapshot;
         } catch (Exception e) {
@@ -239,23 +329,16 @@ public class SupervisorPlannerService {
             if (isCurrentSessionAborted(taskId)) {
                 return sessionService.get(taskId);
             }
+            projectionService.projectStage(session, TaskEventTypeEnum.PLANNING_STARTED, "Generating task plan");
+            long planningStartedAt = System.nanoTime();
             Optional<OverAllState> state = planningAgent.invoke(prompt, config);
+            logStageDuration(taskId, "planning", planningStartedAt);
             PlanBlueprint blueprint = extractPlanBlueprintFromState(state, taskId, session.getIntentSnapshot())
-                    .orElseGet(() -> {
-                        try {
-                            return fallbackPlanBlueprintByText(prompt, config, taskId, session.getIntentSnapshot());
-                        } catch (GraphRunnerException e) {
-                            throw new SupervisorException(e.getMessage());
-                        }
-                    });
+                    .orElseGet(() -> fallbackBlueprintWithoutSecondModelCall(taskId, session.getRawInstruction(), session.getIntentSnapshot()));
             if (isCurrentSessionAborted(taskId)) {
                 return sessionService.get(taskId);
             }
-            qualityService.applyPlanReady(session, blueprint);
-            sessionService.save(session);
-            taskRuntimeService.projectPlanReady(session, TaskEventTypeEnum.PLAN_READY);
-            sessionService.publishEvent(taskId, "PLAN_READY");
-            return session;
+            return completePlanReady(session, blueprint, taskId, TaskEventTypeEnum.PLAN_READY, "Checking generated plan");
         } catch (Exception e) {
             return failSession(session, e.getMessage());
         }
@@ -301,14 +384,43 @@ public class SupervisorPlannerService {
         return Optional.empty();
     }
 
-    private PlanBlueprint fallbackPlanBlueprintByText(
-            String prompt,
-            RunnableConfig config,
+    private PlanBlueprint fallbackBlueprintWithoutSecondModelCall(
             String taskId,
+            String rawInstruction,
             IntentSnapshot intentSnapshot
-    ) throws GraphRunnerException {
-        AssistantMessage plannerResponse = planningAgent.call(prompt, config);
-        return qualityService.extractPlanBlueprint(plannerResponse.getText(), taskId, intentSnapshot);
+    ) {
+        log.warn("Planner structured output empty for task {}, using deterministic fallback without a second model call", taskId);
+        return fastPlanBlueprintFactory.buildBlueprint(taskId, rawInstruction, intentSnapshot)
+                .orElseGet(() -> fastPlanBlueprintFactory.fallbackDocBlueprint(taskId, rawInstruction, intentSnapshot));
+    }
+
+    private PlanTaskSession completePlanReady(
+            PlanTaskSession session,
+            PlanBlueprint blueprint,
+            String taskId,
+            TaskEventTypeEnum readyEventType,
+            String gateMessage
+    ) {
+        qualityService.applyPlanReady(session, blueprint);
+        TaskPlanningResult planningResult = taskPlanningService.buildReadyPlan(session);
+        long gateStartedAt = System.nanoTime();
+        projectionService.projectStage(session, TaskEventTypeEnum.PLAN_GATE_CHECKING, gateMessage);
+        PlanGateResult gateResult = planGateService.check(planningResult.graph(), planningResult.executionContract());
+        logStageDuration(taskId, "plan-gate", gateStartedAt);
+        if (!gateResult.passed()) {
+            return failSession(session, String.join("; ", gateResult.reasons()));
+        }
+        long projectionStartedAt = System.nanoTime();
+        sessionService.save(session);
+        taskRuntimeService.projectPlanReady(session, readyEventType);
+        logStageDuration(taskId, "runtime-projection", projectionStartedAt);
+        sessionService.publishEvent(taskId, "PLAN_READY");
+        return session;
+    }
+
+    private void logStageDuration(String taskId, String stage, long startedAtNanos) {
+        long elapsedMillis = (System.nanoTime() - startedAtNanos) / 1_000_000L;
+        log.info("Planner stage task={} stage={} elapsedMs={}", taskId, stage, elapsedMillis);
     }
 
     private void mergePersona(PlanTaskSession session, WorkspaceContext workspaceContext) {
@@ -339,11 +451,9 @@ public class SupervisorPlannerService {
     }
 
     private PlanTaskSession handleAskUser(PlanTaskSession session, List<String> questions) {
-        session.setClarificationQuestions(questions);
-        session.setActivePromptSlots(toPromptSlots(questions));
-        session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
-        session.setTransitionReason("Information insufficient");
+        clarificationService.askUser(session, questions);
         sessionService.save(session);
+        projectionService.projectStage(session, TaskEventTypeEnum.CLARIFICATION_REQUIRED, questions);
 
         RequireInput requireInput = buildRequireInput(questions);
         sessionService.publishEvent(session.getTaskId(), "ASK_USER", requireInput);
@@ -357,6 +467,7 @@ public class SupervisorPlannerService {
         session.setPlanningPhase(PlanningPhaseEnum.FAILED);
         session.setTransitionReason(reason);
         sessionService.save(session);
+        projectionService.projectStage(session, TaskEventTypeEnum.PLAN_FAILED, reason);
         sessionService.publishEvent(session.getTaskId(), "FAILED");
         return session;
     }
@@ -573,6 +684,13 @@ public class SupervisorPlannerService {
         } catch (Exception e) {
             return String.valueOf(value);
         }
+    }
+
+    private String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first.trim();
+        }
+        return second;
     }
 
     private enum OutputPreference {

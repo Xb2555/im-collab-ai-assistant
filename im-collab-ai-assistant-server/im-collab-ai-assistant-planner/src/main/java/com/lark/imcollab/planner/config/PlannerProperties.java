@@ -12,6 +12,8 @@ public class PlannerProperties {
     private Prompt prompt = new Prompt();
     private Quality quality = new Quality();
     private Summarization summarization = new Summarization();
+    private Replan replan = new Replan();
+    private Intent intent = new Intent();
 
     @Data
     public static class Prompt {
@@ -36,5 +38,23 @@ public class PlannerProperties {
     public static class Summarization {
         private int maxTokensBeforeSummary = 6000;
         private int messagesToKeep = 20;
+    }
+
+    @Data
+    public static class Replan {
+        private boolean patchIntentModelEnabled = true;
+        private int patchIntentTimeoutSeconds = 4;
+        private double patchIntentPassThreshold = 0.65d;
+        private double localFallbackThreshold = 0.5d;
+    }
+
+    @Data
+    public static class Intent {
+        private boolean modelEnabled = true;
+        private int timeoutSeconds = 3;
+        private double passThreshold = 0.65d;
+        private boolean fallbackToLocalRules = true;
+        private boolean unknownReplyModelEnabled = true;
+        private int unknownReplyTimeoutSeconds = 2;
     }
 }
