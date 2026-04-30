@@ -58,7 +58,7 @@ public class TaskRuntimeProjectionService {
                 .updatedAt(now)
                 .build();
         stateStore.saveTask(task);
-        appendRuntimeEvent(session.getTaskId(), eventType, payload);
+        appendRuntimeEvent(session.getTaskId(), session.getVersion(), eventType, payload);
     }
 
     public void projectPlanGraph(PlanTaskSession session, TaskPlanGraph graph, TaskEventTypeEnum eventType) {
@@ -91,7 +91,7 @@ public class TaskRuntimeProjectionService {
         if (graph.getSteps() != null) {
             graph.getSteps().forEach(stateStore::saveStep);
         }
-        appendRuntimeEvent(session.getTaskId(), eventType, graph);
+        appendRuntimeEvent(session.getTaskId(), session.getVersion(), eventType, graph);
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
@@ -211,12 +211,13 @@ public class TaskRuntimeProjectionService {
         return String.join("、", items.subList(0, items.size() - 1)) + "和" + items.get(items.size() - 1);
     }
 
-    private void appendRuntimeEvent(String taskId, TaskEventTypeEnum eventType, Object payload) {
+    private void appendRuntimeEvent(String taskId, int version, TaskEventTypeEnum eventType, Object payload) {
         stateStore.appendRuntimeEvent(TaskEventRecord.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
                 .type(eventType)
                 .payloadJson(toJson(payload))
+                .version(version)
                 .createdAt(Instant.now())
                 .build());
     }

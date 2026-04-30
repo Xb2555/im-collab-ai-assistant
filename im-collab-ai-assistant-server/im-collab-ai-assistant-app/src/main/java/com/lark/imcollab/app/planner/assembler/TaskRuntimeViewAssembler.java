@@ -47,6 +47,7 @@ public class TaskRuntimeViewAssembler {
         }
         return new TaskSummaryVO(
                 task.getTaskId(),
+                task.getVersion(),
                 task.getTitle(),
                 task.getGoal(),
                 enumName(task.getStatus()),
@@ -90,6 +91,7 @@ public class TaskRuntimeViewAssembler {
     private TaskEventVO toTaskEvent(TaskEventRecord event) {
         return new TaskEventVO(
                 event.getEventId(),
+                event.getVersion(),
                 enumName(event.getType()),
                 event.getStepId(),
                 resolveEventMessage(event),

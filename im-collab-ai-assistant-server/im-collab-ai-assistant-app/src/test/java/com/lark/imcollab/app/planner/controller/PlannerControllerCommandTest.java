@@ -77,7 +77,7 @@ class PlannerControllerCommandTest {
         session.setTaskId("task-async");
         session.setPlanningPhase(PlanningPhaseEnum.INTAKE);
         PlanPreviewVO preview = new PlanPreviewVO(
-                "task-async", "INTAKE", "写技术方案", "已收到任务，正在生成计划",
+                "task-async", 0, "INTAKE", "写技术方案", "已收到任务，正在生成计划",
                 java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         );
         when(asyncPlannerService.submitPlan(eq("写技术方案"), any(), isNull(), isNull())).thenReturn(session);
@@ -100,7 +100,7 @@ class PlannerControllerCommandTest {
         session.setTaskId("task-sync");
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
         PlanPreviewVO preview = new PlanPreviewVO(
-                "task-sync", "PLAN_READY", "写技术方案", "计划已生成",
+                "task-sync", 0, "PLAN_READY", "写技术方案", "计划已生成",
                 java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         );
         when(plannerPlanFacade.plan(eq("写技术方案"), any(), isNull(), isNull())).thenReturn(session);
@@ -127,7 +127,7 @@ class PlannerControllerCommandTest {
                 .steps(new ArrayList<>()).artifacts(new ArrayList<>())
                 .createdAt(Instant.now()).updatedAt(Instant.now()).build());
         when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
-                "task-1", "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+                "task-1", 1, "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
         PlanCommandRequest request = new PlanCommandRequest();
@@ -159,7 +159,7 @@ class PlannerControllerCommandTest {
         request.setFeedback("change it");
         when(supervisorPlannerService.adjustPlan("task-1", "change it", null)).thenReturn(session);
         when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
-                "task-1", "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+                "task-1", 1, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
         controller.command("task-1", request, AUTHORIZATION);
@@ -179,7 +179,7 @@ class PlannerControllerCommandTest {
         when(repository.findSession("task-1")).thenReturn(Optional.of(session));
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.WAITING_APPROVAL)));
         when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
-                "task-1", "ABORTED", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+                "task-1", 2, "ABORTED", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
         PlanCommandRequest request = new PlanCommandRequest();
@@ -247,7 +247,7 @@ class PlannerControllerCommandTest {
         TaskRecord owned = ownedTask("task-owned", TaskStatusEnum.EXECUTING);
         when(repository.findTasksByOwner("ou-user", java.util.List.of(), 0, 21)).thenReturn(java.util.List.of(owned));
         when(taskRuntimeViewAssembler.toTaskSummary(owned)).thenReturn(new com.lark.imcollab.common.model.vo.TaskSummaryVO(
-                "task-owned", "title", "goal", "EXECUTING", "EXECUTING", 0, false, java.util.List.of(), null, null
+                "task-owned", 0, "title", "goal", "EXECUTING", "EXECUTING", 0, false, java.util.List.of(), null, null
         ));
 
         BaseResponse<TaskListVO> response = controller.listMyTasks(AUTHORIZATION, null, 20, null);

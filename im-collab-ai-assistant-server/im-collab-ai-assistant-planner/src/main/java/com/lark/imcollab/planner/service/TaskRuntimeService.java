@@ -51,13 +51,17 @@ public class TaskRuntimeService {
     }
 
     public void projectPhaseTransition(String taskId, PlanningPhaseEnum phase, TaskEventTypeEnum eventType) {
+        int version = stateStore.findSession(taskId)
+                .map(PlanTaskSession::getVersion)
+                .orElse(0);
         stateStore.findTask(taskId).ifPresent(task -> {
             task.setStatus(mapTaskStatus(phase));
             task.setCurrentStage(phase.name());
+            task.setVersion(version);
             task.setUpdatedAt(Instant.now());
             stateStore.saveTask(task);
         });
-        appendRuntimeEvent(taskId, eventType, null);
+        appendRuntimeEvent(taskId, version, eventType, null);
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
@@ -146,12 +150,13 @@ public class TaskRuntimeService {
         return TaskStatusEnum.PLANNING;
     }
 
-    private void appendRuntimeEvent(String taskId, TaskEventTypeEnum eventType, Object payload) {
+    private void appendRuntimeEvent(String taskId, int version, TaskEventTypeEnum eventType, Object payload) {
         stateStore.appendRuntimeEvent(TaskEventRecord.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
                 .type(eventType)
                 .payloadJson(toJson(payload))
+                .version(version)
                 .createdAt(Instant.now())
                 .build());
     }
