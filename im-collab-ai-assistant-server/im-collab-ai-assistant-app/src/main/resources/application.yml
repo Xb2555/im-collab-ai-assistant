@@ -41,7 +41,7 @@ imcollab:
       open-api-base-url: ${LARK_OPEN_API_BASE_URL:}
     im:
       listener:
-        auto-start-enabled: ${LARK_IM_LISTENER_AUTO_START:true}
+        auto-start-enabled: ${LARK_IM_LISTENER_AUTO_START:false}
       event:
         domain: ${LARK_OPEN_DOMAIN:}
         auto-reconnect-enabled: ${LARK_IM_AUTO_RECONNECT:true}
@@ -59,6 +59,8 @@ imcollab:
       state-ttl: ${LARK_AUTH_STATE_TTL:10m}
 
 planner:
+  auth:
+    enabled: ${PLANNER_AUTH_ENABLED:true}
   prompt:
     profile: ${PLANNER_PROMPT_PROFILE:default}
     version: ${PLANNER_PROMPT_VERSION:v1}
