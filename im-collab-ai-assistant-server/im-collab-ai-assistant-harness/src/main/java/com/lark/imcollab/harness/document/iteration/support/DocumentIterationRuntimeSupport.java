@@ -3,6 +3,8 @@ package com.lark.imcollab.harness.document.iteration.support;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.domain.Artifact;
+import com.lark.imcollab.common.domain.Approval;
+import com.lark.imcollab.common.domain.ApprovalStatus;
 import com.lark.imcollab.common.domain.ArtifactType;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskEvent;
@@ -11,6 +13,8 @@ import com.lark.imcollab.common.domain.TaskStatus;
 import com.lark.imcollab.common.domain.TaskType;
 import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.DocumentEditPlan;
+import com.lark.imcollab.common.model.entity.PendingDocumentIteration;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
@@ -21,6 +25,8 @@ import com.lark.imcollab.common.model.enums.StepTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.port.ArtifactRepository;
+import com.lark.imcollab.common.port.ApprovalRepository;
+import com.lark.imcollab.common.port.PendingDocumentIterationRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.store.planner.PlannerStateStore;
@@ -42,6 +48,8 @@ public class DocumentIterationRuntimeSupport {
     private final TaskRepository taskRepository;
     private final TaskEventRepository eventRepository;
     private final ArtifactRepository artifactRepository;
+    private final ApprovalRepository approvalRepository;
+    private final PendingDocumentIterationRepository pendingRepository;
     private final PlannerStateStore plannerStateStore;
     private final ObjectMapper objectMapper;
 
@@ -49,12 +57,16 @@ public class DocumentIterationRuntimeSupport {
             TaskRepository taskRepository,
             TaskEventRepository eventRepository,
             ArtifactRepository artifactRepository,
+            ApprovalRepository approvalRepository,
+            PendingDocumentIterationRepository pendingRepository,
             PlannerStateStore plannerStateStore,
             ObjectMapper objectMapper
     ) {
         this.taskRepository = taskRepository;
         this.eventRepository = eventRepository;
         this.artifactRepository = artifactRepository;
+        this.approvalRepository = approvalRepository;
+        this.pendingRepository = pendingRepository;
         this.plannerStateStore = plannerStateStore;
         this.objectMapper = objectMapper;
     }
@@ -144,6 +156,7 @@ public class DocumentIterationRuntimeSupport {
             plannerStateStore.saveStep(step);
         });
         publishEvent(context.getTaskId(), context.getStepId(), TaskEventType.TASK_COMPLETED, summary, TaskEventTypeEnum.TASK_COMPLETED);
+        pendingRepository.deleteByTaskId(context.getTaskId());
     }
 
     public void fail(RuntimeContext context, String reason) {
@@ -169,7 +182,113 @@ public class DocumentIterationRuntimeSupport {
             step.setVersion(step.getVersion() + 1);
             plannerStateStore.saveStep(step);
         });
+        approvalRepository.updateStatus(context.getStepId(), ApprovalStatus.FAILED, reason);
         publishEvent(context.getTaskId(), context.getStepId(), TaskEventType.TASK_FAILED, reason, TaskEventTypeEnum.TASK_FAILED);
+        pendingRepository.deleteByTaskId(context.getTaskId());
+    }
+
+    public void waitForApproval(
+            RuntimeContext context,
+            DocumentIterationRequest request,
+            DocumentEditPlan editPlan,
+            Artifact ownedArtifact,
+            String operatorOpenId
+    ) {
+        Instant now = Instant.now();
+        taskRepository.findById(context.getTaskId()).ifPresent(task -> {
+            task.setStatus(TaskStatus.AWAITING_APPROVAL);
+            task.setUpdatedAt(now);
+            taskRepository.save(task);
+        });
+        plannerStateStore.findTask(context.getTaskId()).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.WAITING_APPROVAL);
+            task.setCurrentStage(TaskStatusEnum.WAITING_APPROVAL.name());
+            task.setNeedUserAction(true);
+            task.setVersion(task.getVersion() + 1);
+            task.setUpdatedAt(now);
+            plannerStateStore.saveTask(task);
+        });
+        plannerStateStore.findStep(context.getStepId()).ifPresent(step -> {
+            step.setStatus(StepStatusEnum.WAITING_APPROVAL);
+            step.setOutputSummary("等待用户审批文档编辑计划");
+            step.setVersion(step.getVersion() + 1);
+            plannerStateStore.saveStep(step);
+        });
+        approvalRepository.save(Approval.builder()
+                .approvalId(context.getStepId())
+                .taskId(context.getTaskId())
+                .stepId(context.getStepId())
+                .prompt(editPlan.getReasoningSummary())
+                .status(ApprovalStatus.PENDING)
+                .createdAt(now)
+                .build());
+        pendingRepository.save(PendingDocumentIteration.builder()
+                .taskId(context.getTaskId())
+                .stepId(context.getStepId())
+                .operatorOpenId(operatorOpenId)
+                .docId(ownedArtifact.getDocumentId())
+                .docUrl(ownedArtifact.getExternalUrl())
+                .artifactTaskId(ownedArtifact.getTaskId())
+                .intentType(editPlan.getIntentType())
+                .selector(editPlan.getSelector())
+                .editPlan(editPlan)
+                .originalRequest(request)
+                .createdAt(now)
+                .updatedAt(now)
+                .build());
+        publishEvent(context.getTaskId(), context.getStepId(), TaskEventType.APPROVAL_REQUESTED,
+                editPlan.getReasoningSummary(), TaskEventTypeEnum.PLAN_APPROVAL_REQUIRED);
+    }
+
+    public RuntimeContext resumeWaiting(String taskId, String stepId) {
+        Instant now = Instant.now();
+        taskRepository.findById(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatus.EXECUTING);
+            task.setUpdatedAt(now);
+            taskRepository.save(task);
+        });
+        plannerStateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.EXECUTING);
+            task.setCurrentStage(TaskStatusEnum.EXECUTING.name());
+            task.setNeedUserAction(false);
+            task.setVersion(task.getVersion() + 1);
+            task.setUpdatedAt(now);
+            plannerStateStore.saveTask(task);
+        });
+        plannerStateStore.findStep(stepId).ifPresent(step -> {
+            step.setStatus(StepStatusEnum.RUNNING);
+            step.setVersion(step.getVersion() + 1);
+            plannerStateStore.saveStep(step);
+        });
+        publishEvent(taskId, stepId, TaskEventType.APPROVAL_DECIDED, "resume", TaskEventTypeEnum.PLAN_APPROVED);
+        return new RuntimeContext(taskId, stepId);
+    }
+
+    public void reject(RuntimeContext context, String feedback) {
+        Instant now = Instant.now();
+        taskRepository.findById(context.getTaskId()).ifPresent(task -> {
+            task.setStatus(TaskStatus.ABORTED);
+            task.setFailReason(feedback);
+            task.setUpdatedAt(now);
+            taskRepository.save(task);
+        });
+        plannerStateStore.findTask(context.getTaskId()).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.CANCELLED);
+            task.setCurrentStage(TaskStatusEnum.CANCELLED.name());
+            task.setNeedUserAction(false);
+            task.setVersion(task.getVersion() + 1);
+            task.setUpdatedAt(now);
+            plannerStateStore.saveTask(task);
+        });
+        plannerStateStore.findStep(context.getStepId()).ifPresent(step -> {
+            step.setStatus(StepStatusEnum.SKIPPED);
+            step.setOutputSummary(feedback);
+            step.setEndedAt(now);
+            step.setVersion(step.getVersion() + 1);
+            plannerStateStore.saveStep(step);
+        });
+        publishEvent(context.getTaskId(), context.getStepId(), TaskEventType.TASK_ABORTED, feedback, TaskEventTypeEnum.TASK_CANCELLED);
+        pendingRepository.deleteByTaskId(context.getTaskId());
     }
 
     public Artifact saveSummaryArtifact(
@@ -225,6 +344,14 @@ public class DocumentIterationRuntimeSupport {
         ownedArtifact.setLastEditedBy(lastEditedBy);
         ownedArtifact.setLastEditedAt(Instant.now());
         artifactRepository.save(ownedArtifact);
+    }
+
+    public void recordApprovalDecision(String stepId, ApprovalStatus status, String feedback) {
+        approvalRepository.updateStatus(stepId, status, feedback);
+    }
+
+    public Optional<PendingDocumentIteration> findPending(String taskId) {
+        return pendingRepository.findByTaskId(taskId);
     }
 
     private void publishEvent(

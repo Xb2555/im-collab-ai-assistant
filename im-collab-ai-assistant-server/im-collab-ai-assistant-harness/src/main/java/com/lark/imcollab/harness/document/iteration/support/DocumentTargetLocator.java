@@ -28,17 +28,26 @@ public class DocumentTargetLocator {
         String exactText = structureParser.extractQuotedText(instruction);
         if (hasText(exactText)) {
             String markdown = larkDocTool.fetchDocFullMarkdown(docRef).getContent();
-            if (!hasText(markdown) || !markdown.contains(exactText)) {
+            int occurrences = structureParser.countOccurrences(markdown, exactText);
+            if (occurrences == 0) {
                 throw new AiAssistantException(BusinessCode.NOT_FOUND_ERROR, "未在文档中找到指定原文片段");
+            }
+            if (occurrences > 1) {
+                throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "指定原文片段命中多处内容，请先明确章节或更精确的片段");
+            }
+            LarkDocFetchResult keywordFetch = larkDocTool.fetchDocByKeyword(docRef, exactText, "with-ids");
+            List<String> blockIds = structureParser.parseBlockIds(keywordFetch.getContent());
+            if (blockIds.size() != 1) {
+                throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "原文片段未能唯一收敛到单个 block，请改用章节定位");
             }
             return DocumentTargetSelector.builder()
                     .docId(resolveDocId(artifact))
                     .docUrl(artifact.getExternalUrl())
-                    .targetType(DocumentTargetType.PARAGRAPH)
+                    .targetType(DocumentTargetType.BLOCK)
                     .locatorStrategy(DocumentLocatorStrategy.BY_EXACT_TEXT)
                     .locatorValue(exactText)
                     .matchedExcerpt(exactText)
-                    .matchedBlockIds(List.of())
+                    .matchedBlockIds(blockIds)
                     .build();
         }
 

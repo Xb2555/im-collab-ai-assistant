@@ -1,41 +1,46 @@
 package com.lark.imcollab.harness.document.iteration.support;
 
+import com.lark.imcollab.common.exception.AiAssistantException;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.model.ChatModel;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class DocumentIterationIntentServiceTest {
 
-    private final DocumentIterationIntentService service = new DocumentIterationIntentService();
-
     @Test
-    void resolvesExplainFirst() {
-        assertThat(service.resolve("解释一下这一段是什么意思"))
-                .isEqualTo(DocumentIterationIntentType.EXPLAIN);
-    }
+    void returnsEnumChosenByModel() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("DELETE");
+        DocumentIterationIntentService service = new DocumentIterationIntentService(chatModel);
 
-    @Test
-    void resolvesDelete() {
-        assertThat(service.resolve("把风险与边界这一节删掉"))
+        assertThat(service.resolve("把项目背景与问题这一节删了"))
                 .isEqualTo(DocumentIterationIntentType.DELETE);
     }
 
     @Test
-    void resolvesInsertMedia() {
-        assertThat(service.resolve("在文档里插入图片和附件"))
-                .isEqualTo(DocumentIterationIntentType.INSERT_MEDIA);
+    void rejectsInvalidModelOutput() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("删除这一节");
+        DocumentIterationIntentService service = new DocumentIterationIntentService(chatModel);
+
+        assertThatThrownBy(() -> service.resolve("把项目背景与问题这一节删了"))
+                .isInstanceOf(AiAssistantException.class)
+                .hasMessageContaining("非法枚举值");
     }
 
     @Test
-    void resolvesStyleBeforeGenericUpdate() {
-        assertThat(service.resolve("把项目背景改成面向发布会的语言风格，更正式一些"))
-                .isEqualTo(DocumentIterationIntentType.UPDATE_STYLE);
-    }
+    void rejectsBlankInstruction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        DocumentIterationIntentService service = new DocumentIterationIntentService(chatModel);
 
-    @Test
-    void fallsBackToUpdateContent() {
-        assertThat(service.resolve("把技术方案这部分改一下"))
-                .isEqualTo(DocumentIterationIntentType.UPDATE_CONTENT);
+        assertThatThrownBy(() -> service.resolve(" "))
+                .isInstanceOf(AiAssistantException.class)
+                .hasMessageContaining("instruction must be provided");
     }
 }

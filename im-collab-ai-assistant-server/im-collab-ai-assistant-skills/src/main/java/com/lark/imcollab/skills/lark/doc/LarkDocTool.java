@@ -124,7 +124,8 @@ public class LarkDocTool {
             String content,
             String docFormat,
             String blockId,
-            String pattern
+            String pattern,
+            Long revisionId
     ) {
         requireValue(docIdOrUrl, "docIdOrUrl");
         requireValue(command, "command");
@@ -155,6 +156,10 @@ public class LarkDocTool {
         if (hasText(pattern)) {
             args.add("--pattern");
             args.add(pattern);
+        }
+        if (revisionId != null && revisionId >= 0) {
+            args.add("--revision-id");
+            args.add(String.valueOf(revisionId));
         }
         return parseUpdateResult(executeJson(args), command);
     }

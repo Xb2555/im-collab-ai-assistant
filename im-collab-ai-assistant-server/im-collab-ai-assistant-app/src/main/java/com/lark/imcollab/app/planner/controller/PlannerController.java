@@ -5,6 +5,7 @@ import com.lark.imcollab.app.planner.assembler.TaskRuntimeViewAssembler;
 import com.lark.imcollab.common.facade.HarnessFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
+import com.lark.imcollab.common.model.dto.DocumentIterationApprovalRequest;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
 import com.lark.imcollab.common.model.dto.ResumeRequest;
@@ -277,6 +278,22 @@ public class PlannerController {
         }
         DocumentIterationRequest ownedRequest = withCurrentUser(request, user.get());
         return ResultUtils.success(documentIterationExecutionService.execute(ownedRequest));
+    }
+
+    @PostMapping("/{taskId}/document-iteration/approval")
+    @Operation(summary = "5.2. 审批文档迭代计划", description = "对待审批的文档迭代计划执行批准、拒绝或带反馈修改后继续执行")
+    public BaseResponse<DocumentIterationVO> decideDocumentIteration(
+            @PathVariable String taskId,
+            @RequestBody DocumentIterationApprovalRequest request,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
+        Optional<LarkFrontendUserResponse> user = currentUser(authorization);
+        if (user.isEmpty()) {
+            return error(BusinessCode.NOT_LOGIN_ERROR, "Not logged in");
+        }
+        if (!canAccessTask(taskId, user.get().openId())) {
+            return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
+        }
+        return ResultUtils.success(documentIterationExecutionService.decide(taskId, request, user.get().openId()));
     }
 
     @PostMapping("/{taskId}/commands")

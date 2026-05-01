@@ -10,5 +10,7 @@ public interface ArtifactRepository {
     List<Artifact> findByTaskId(String taskId);
     Optional<Artifact> findByExternalUrl(String externalUrl);
     Optional<Artifact> findByDocumentId(String documentId);
+    Optional<Artifact> findOwnedDocumentRecordByExternalUrl(String externalUrl);
+    Optional<Artifact> findOwnedDocumentRecordByDocumentId(String documentId);
     Optional<Artifact> findLatestDocArtifactByTaskId(String taskId);
 }

@@ -62,6 +62,22 @@ public class DocumentStructureParser {
         return matcher.find() ? matcher.group(1).trim() : null;
     }
 
+    public int countOccurrences(String text, String snippet) {
+        if (!hasText(text) || !hasText(snippet)) {
+            return 0;
+        }
+        int count = 0;
+        int fromIndex = 0;
+        while (true) {
+            int index = text.indexOf(snippet, fromIndex);
+            if (index < 0) {
+                return count;
+            }
+            count++;
+            fromIndex = index + snippet.length();
+        }
+    }
+
     public List<HeadingBlock> matchHeadings(String instruction, List<HeadingBlock> headings) {
         if (!hasText(instruction) || headings == null || headings.isEmpty()) {
             return List.of();

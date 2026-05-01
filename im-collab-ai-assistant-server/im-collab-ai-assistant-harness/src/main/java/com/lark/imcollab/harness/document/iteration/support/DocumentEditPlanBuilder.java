@@ -4,11 +4,13 @@ import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.DocumentPatchOperation;
 import com.lark.imcollab.common.model.entity.DocumentTargetSelector;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
+import com.lark.imcollab.common.model.enums.DocumentLocatorStrategy;
 import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
 import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @Component
@@ -91,43 +93,115 @@ public class DocumentEditPlanBuilder {
             String instruction,
             boolean styleOnly
     ) {
-        String generated = rewrite(selector.getMatchedExcerpt(), instruction, styleOnly);
+        String generated = rewrite(selector, instruction, styleOnly);
+        if (generated.isBlank()) {
+            throw new IllegalStateException("改写结果为空，拒绝生成文档修改计划");
+        }
+        List<String> blockIds = selector.getMatchedBlockIds() == null ? List.of() : selector.getMatchedBlockIds();
+        boolean exactBlock = selector.getLocatorStrategy() == DocumentLocatorStrategy.BY_EXACT_TEXT && blockIds.size() == 1;
+        boolean sectionBlocks = selector.getLocatorStrategy() == DocumentLocatorStrategy.BY_HEADING && !blockIds.isEmpty();
+        List<DocumentPatchOperation> operations = new ArrayList<>();
+        DocumentPatchOperationType commandType;
+        boolean requiresApproval;
+        if (exactBlock) {
+            commandType = DocumentPatchOperationType.BLOCK_REPLACE;
+            requiresApproval = false;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
+                    .blockId(blockIds.get(0))
+                    .oldText(selector.getMatchedExcerpt())
+                    .newContent(generated)
+                    .docFormat("markdown")
+                    .justification("按唯一命中 block 执行替换")
+                    .build());
+        } else if (sectionBlocks) {
+            commandType = DocumentPatchOperationType.BLOCK_INSERT_AFTER;
+            requiresApproval = blockIds.size() > 6;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
+                    .blockId(blockIds.get(0))
+                    .newContent(generated)
+                    .docFormat("markdown")
+                    .justification("在章节标题后插入新的章节正文")
+                    .build());
+            if (blockIds.size() > 1) {
+                operations.add(DocumentPatchOperation.builder()
+                        .operationType(DocumentPatchOperationType.BLOCK_DELETE)
+                        .blockId(String.join(",", blockIds.subList(1, blockIds.size())))
+                        .oldText(selector.getMatchedExcerpt())
+                        .justification("删除旧的章节正文 block，保留章节标题")
+                        .build());
+            }
+        } else {
+            commandType = DocumentPatchOperationType.STR_REPLACE;
+            requiresApproval = true;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.STR_REPLACE)
+                    .oldText(selector.getMatchedExcerpt())
+                    .newContent(generated)
+                    .docFormat("markdown")
+                    .justification("无法稳定收敛到 block，退回文本替换兜底")
+                    .build());
+        }
         return DocumentEditPlan.builder()
                 .taskId(taskId)
                 .intentType(intentType)
                 .selector(selector)
                 .reasoningSummary(styleOnly ? "保持事实不变，按要求调整表达风格" : "基于目标片段执行内容改写")
                 .generatedContent(generated)
-                .toolCommandType(DocumentPatchOperationType.STR_REPLACE)
-                .requiresApproval(false)
-                .riskLevel(DocumentRiskLevel.MEDIUM)
-                .patchOperations(List.of(DocumentPatchOperation.builder()
-                        .operationType(DocumentPatchOperationType.STR_REPLACE)
-                        .oldText(selector.getMatchedExcerpt())
-                        .newContent(generated)
-                        .docFormat("markdown")
-                        .justification("用生成后的片段替换原片段")
-                        .build()))
+                .toolCommandType(commandType)
+                .requiresApproval(requiresApproval)
+                .riskLevel(requiresApproval ? DocumentRiskLevel.HIGH : DocumentRiskLevel.MEDIUM)
+                .patchOperations(operations)
                 .build();
     }
 
     private DocumentEditPlan buildDeletePlan(String taskId, DocumentTargetSelector selector) {
+        List<String> blockIds = selector.getMatchedBlockIds() == null ? List.of() : selector.getMatchedBlockIds();
+        boolean exactBlock = selector.getLocatorStrategy() == DocumentLocatorStrategy.BY_EXACT_TEXT && blockIds.size() == 1;
+        boolean sectionDelete = selector.getLocatorStrategy() == DocumentLocatorStrategy.BY_HEADING && !blockIds.isEmpty();
+        List<DocumentPatchOperation> operations = new ArrayList<>();
+        DocumentPatchOperationType commandType;
+        boolean requiresApproval;
+        if (exactBlock) {
+            commandType = DocumentPatchOperationType.BLOCK_DELETE;
+            requiresApproval = false;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.BLOCK_DELETE)
+                    .blockId(blockIds.get(0))
+                    .oldText(selector.getMatchedExcerpt())
+                    .justification("删除唯一命中的目标 block")
+                    .build());
+        } else if (sectionDelete) {
+            commandType = DocumentPatchOperationType.BLOCK_DELETE;
+            requiresApproval = true;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.BLOCK_DELETE)
+                    .blockId(String.join(",", blockIds))
+                    .oldText(selector.getMatchedExcerpt())
+                    .justification("删除整节内容，需人工确认")
+                    .build());
+        } else {
+            commandType = DocumentPatchOperationType.STR_REPLACE;
+            requiresApproval = true;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.STR_REPLACE)
+                    .oldText(selector.getMatchedExcerpt())
+                    .newContent("")
+                    .docFormat("markdown")
+                    .justification("无法唯一定位 block，退回文本删除兜底")
+                    .build());
+        }
         return DocumentEditPlan.builder()
                 .taskId(taskId)
                 .intentType(DocumentIterationIntentType.DELETE)
                 .selector(selector)
                 .reasoningSummary("删除已定位到的目标片段")
                 .generatedContent("")
-                .toolCommandType(DocumentPatchOperationType.STR_REPLACE)
-                .requiresApproval(false)
-                .riskLevel(DocumentRiskLevel.MEDIUM)
-                .patchOperations(List.of(DocumentPatchOperation.builder()
-                        .operationType(DocumentPatchOperationType.STR_REPLACE)
-                        .oldText(selector.getMatchedExcerpt())
-                        .newContent("")
-                        .docFormat("markdown")
-                        .justification("删除目标片段")
-                        .build()))
+                .toolCommandType(commandType)
+                .requiresApproval(requiresApproval)
+                .riskLevel(requiresApproval ? DocumentRiskLevel.HIGH : DocumentRiskLevel.MEDIUM)
+                .patchOperations(operations)
                 .build();
     }
 
@@ -148,7 +222,8 @@ public class DocumentEditPlanBuilder {
         return trim(chatModel.call(prompt));
     }
 
-    private String rewrite(String excerpt, String instruction, boolean styleOnly) {
+    private String rewrite(DocumentTargetSelector selector, String instruction, boolean styleOnly) {
+        boolean sectionRewrite = selector.getLocatorStrategy() == DocumentLocatorStrategy.BY_HEADING;
         String prompt = """
                 你是企业文档精修助手。
                 请严格基于原文片段和用户指令，输出可直接替换回文档的 Markdown 片段。
@@ -156,6 +231,7 @@ public class DocumentEditPlanBuilder {
                 1. 只返回改写后的 Markdown，不要解释，不要代码块。
                 2. %s
                 3. 保持结构清晰，必要时可使用小标题或列表。
+                4. %s
 
                 用户指令：
                 %s
@@ -164,10 +240,12 @@ public class DocumentEditPlanBuilder {
                 %s
                 """.formatted(
                 styleOnly ? "保持主事实和结论边界，不新增未经原文支持的新事实" : "允许在原文范围内改写、补强和重组，但不要偏离主题",
+                sectionRewrite ? "当前定位是整节正文，不要重复当前 H2 标题本身，只输出该节标题下的正文" : "当前定位是单个 block，可直接输出替换该 block 的完整内容",
                 instruction,
-                excerpt
+                selector.getMatchedExcerpt()
         );
-        return trim(chatModel.call(prompt));
+        String generated = trim(chatModel.call(prompt));
+        return sectionRewrite ? stripLeadingHeading(generated, selector.getLocatorValue()) : generated;
     }
 
     private String insertAfter(String excerpt, String instruction) {
@@ -190,5 +268,34 @@ public class DocumentEditPlanBuilder {
 
     private String trim(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private String stripLeadingHeading(String markdown, String headingText) {
+        String trimmed = trim(markdown);
+        if (trimmed.isEmpty()) {
+            return trimmed;
+        }
+        String[] lines = trimmed.split("\\R", -1);
+        if (lines.length == 0) {
+            return trimmed;
+        }
+        String firstLine = lines[0].trim();
+        if (!firstLine.startsWith("#")) {
+            return trimmed;
+        }
+        String normalizedHeading = normalizeHeadingText(headingText);
+        String normalizedFirstLine = normalizeHeadingText(firstLine.replaceFirst("^#+\\s*", ""));
+        if (!normalizedFirstLine.equals(normalizedHeading)) {
+            return trimmed;
+        }
+        int index = 1;
+        while (index < lines.length && lines[index].isBlank()) {
+            index++;
+        }
+        return trim(String.join("\n", java.util.Arrays.copyOfRange(lines, index, lines.length)));
+    }
+
+    private String normalizeHeadingText(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", "").trim();
     }
 }

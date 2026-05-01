@@ -8,6 +8,7 @@ import com.lark.imcollab.common.domain.TaskType;
 import com.lark.imcollab.common.facade.HarnessFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
+import com.lark.imcollab.common.model.dto.DocumentIterationApprovalRequest;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
 import com.lark.imcollab.common.model.entity.BaseResponse;
@@ -276,6 +277,27 @@ class PlannerControllerCommandTest {
                         && "GUI".equals(value.getWorkspaceContext().getInputSource())
                         && "https://example.feishu.cn/docx/doc123".equals(value.getDocUrl())
         ));
+    }
+
+    @Test
+    void decideDocumentIterationRequiresOwnedTask() {
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.WAITING_APPROVAL)));
+        DocumentIterationVO vo = DocumentIterationVO.builder()
+                .taskId("task-1")
+                .planningPhase("COMPLETED")
+                .recognizedIntent(DocumentIterationIntentType.UPDATE_CONTENT)
+                .summary("done")
+                .build();
+        when(documentIterationExecutionService.decide(eq("task-1"), any(), eq("ou-user"))).thenReturn(vo);
+
+        BaseResponse<DocumentIterationVO> response = controller.decideDocumentIteration(
+                "task-1",
+                new DocumentIterationApprovalRequest("APPROVE", null),
+                AUTHORIZATION
+        );
+
+        assertThat(response.getCode()).isZero();
+        verify(documentIterationExecutionService).decide(eq("task-1"), any(), eq("ou-user"));
     }
 
     @Test

@@ -41,6 +41,7 @@ public class TaskBridgeService {
         ExecutionContract contract = executionContractFactory.build(session);
         return Task.builder()
                 .taskId(session.getTaskId())
+                .userId(session.getInputContext() == null ? null : session.getInputContext().getSenderOpenId())
                 .rawInstruction(contract.getRawInstruction())
                 .clarifiedInstruction(contract.getClarifiedInstruction())
                 .taskBrief(contract.getTaskBrief())

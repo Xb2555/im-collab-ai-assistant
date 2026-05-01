@@ -13,7 +13,7 @@ import java.util.Optional;
 @Repository
 public class RedisApprovalRepository implements ApprovalRepository {
 
-    private static final Duration TTL = Duration.ofHours(24);
+    private static final Duration TTL = Duration.ofDays(3650);
     private static final String PREFIX = "approval:step:";
 
     private final RedisJsonStore store;
