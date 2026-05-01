@@ -7,6 +7,7 @@ import com.lark.imcollab.common.domain.TaskStatus;
 import com.lark.imcollab.common.domain.TaskType;
 import com.lark.imcollab.common.facade.HarnessFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
+import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
 import com.lark.imcollab.common.model.entity.BaseResponse;
@@ -14,12 +15,15 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.model.vo.DocumentIterationVO;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.common.model.vo.TaskDetailVO;
 import com.lark.imcollab.common.model.vo.TaskListVO;
 import com.lark.imcollab.gateway.auth.dto.LarkFrontendUserResponse;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
+import com.lark.imcollab.harness.document.iteration.service.DocumentIterationExecutionService;
 import com.lark.imcollab.planner.service.AsyncPlannerService;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
@@ -62,6 +66,7 @@ class PlannerControllerCommandTest {
     @Mock private TaskRuntimeViewAssembler taskRuntimeViewAssembler;
     @Mock private LarkOAuthService oauthService;
     @Mock private PlannerProperties plannerProperties;
+    @Mock private DocumentIterationExecutionService documentIterationExecutionService;
 
     @InjectMocks
     private PlannerController controller;
@@ -245,6 +250,32 @@ class PlannerControllerCommandTest {
         BaseResponse<TaskListVO> response = controller.listMyTasks(null, null, 20, null);
 
         assertThat(response.getCode()).isEqualTo(40100);
+    }
+
+    @Test
+    void iterateDocumentDelegatesToExecutionServiceWithOwnedContext() {
+        DocumentIterationRequest request = new DocumentIterationRequest();
+        request.setDocUrl("https://example.feishu.cn/docx/doc123");
+        request.setInstruction("解释一下“风险与边界”这段");
+        DocumentIterationVO vo = DocumentIterationVO.builder()
+                .taskId("doc-iter-1")
+                .planningPhase("COMPLETED")
+                .recognizedIntent(DocumentIterationIntentType.EXPLAIN)
+                .summary("解释结果")
+                .build();
+        when(documentIterationExecutionService.execute(any())).thenReturn(vo);
+
+        BaseResponse<DocumentIterationVO> response = controller.iterateDocument(request, AUTHORIZATION);
+
+        assertThat(response.getCode()).isZero();
+        assertThat(response.getData()).isEqualTo(vo);
+        verify(documentIterationExecutionService).execute(argThat(value ->
+                value != null
+                        && value.getWorkspaceContext() != null
+                        && "ou-user".equals(value.getWorkspaceContext().getSenderOpenId())
+                        && "GUI".equals(value.getWorkspaceContext().getInputSource())
+                        && "https://example.feishu.cn/docx/doc123".equals(value.getDocUrl())
+        ));
     }
 
     @Test

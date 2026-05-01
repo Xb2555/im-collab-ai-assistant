@@ -22,5 +22,13 @@ public class LarkDocUpdateResult implements Serializable {
 
     private String message;
 
+    private long revisionId;
+
+    private int updatedBlocksCount;
+
     private List<String> boardTokens;
+
+    private List<String> warnings;
+
+    private List<LarkDocBlockRef> newBlocks;
 }

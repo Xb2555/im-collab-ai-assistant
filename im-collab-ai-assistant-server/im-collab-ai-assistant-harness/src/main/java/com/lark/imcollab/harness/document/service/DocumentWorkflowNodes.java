@@ -260,7 +260,7 @@ public class DocumentWorkflowNodes {
         );
         LarkDocCreateResult result = larkDocTool.createDoc(outline.getTitle(), markdown);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.WRITE_TASK_SUFFIX),
-                ArtifactType.DOC_LINK, outline.getTitle(), null, result.getDocUrl());
+                ArtifactType.DOC_LINK, outline.getTitle(), null, result.getDocId(), result.getDocUrl());
         support.publishEvent(taskId, null, TaskEventType.ARTIFACT_CREATED);
         support.publishEvent(taskId, null, TaskEventType.TASK_COMPLETED);
         return CompletableFuture.completedFuture(Map.of(
