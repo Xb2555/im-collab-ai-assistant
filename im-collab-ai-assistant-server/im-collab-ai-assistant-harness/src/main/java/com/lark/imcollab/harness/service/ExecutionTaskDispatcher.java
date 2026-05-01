@@ -20,18 +20,19 @@ public class ExecutionTaskDispatcher {
     }
 
     public void dispatch(Task task) {
-        switch (task.getType()) {
-            case WRITE_SLIDES -> presentationExecutionService.execute(task.getTaskId());
-            case MIXED -> {
-                documentExecutionService.execute(task.getTaskId());
-                presentationExecutionService.execute(task.getTaskId());
-            }
-            default -> documentExecutionService.execute(task.getTaskId());
+        if (task.getType() == com.lark.imcollab.common.domain.TaskType.WRITE_SLIDES) {
+            presentationExecutionService.execute(task.getTaskId());
+            return;
         }
+        if (task.getType() == com.lark.imcollab.common.domain.TaskType.MIXED) {
+            documentExecutionService.execute(task.getTaskId());
+            presentationExecutionService.execute(task.getTaskId());
+            return;
+        }
+        documentExecutionService.execute(task.getTaskId());
     }
 
     public void resume(String taskId, Approval approval) {
         documentExecutionService.resume(taskId, approval);
     }
 }
-

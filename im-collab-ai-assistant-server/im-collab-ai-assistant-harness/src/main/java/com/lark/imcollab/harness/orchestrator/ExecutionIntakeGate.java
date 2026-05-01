@@ -4,6 +4,8 @@ import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskType;
 import com.lark.imcollab.common.model.entity.DiagramRequirement;
 import com.lark.imcollab.common.model.entity.ExecutionContract;
+import com.lark.imcollab.harness.document.template.DocumentTemplateStrategyResolver;
+import com.lark.imcollab.harness.document.template.DocumentTemplateType;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -11,6 +13,12 @@ import java.util.List;
 
 @Component
 public class ExecutionIntakeGate {
+
+    private final DocumentTemplateStrategyResolver templateStrategyResolver;
+
+    public ExecutionIntakeGate(DocumentTemplateStrategyResolver templateStrategyResolver) {
+        this.templateStrategyResolver = templateStrategyResolver;
+    }
 
     public Task freeze(Task task) {
         if (task == null) {
@@ -42,7 +50,7 @@ public class ExecutionIntakeGate {
             contract.setCrossArtifactPolicy("FORBID_UNLESS_EXPLICIT");
         }
         if (isBlank(contract.getTemplateStrategy())) {
-            contract.setTemplateStrategy("REPORT");
+            contract.setTemplateStrategy(templateStrategyResolver.resolve(task).name());
         }
         if (contract.getDiagramRequirement() == null) {
             contract.setDiagramRequirement(DiagramRequirement.builder()
@@ -92,7 +100,7 @@ public class ExecutionIntakeGate {
                 .allowedArtifacts(allowedArtifacts)
                 .primaryArtifact(allowedArtifacts.get(0))
                 .crossArtifactPolicy("FORBID_UNLESS_EXPLICIT")
-                .templateStrategy("REPORT")
+                .templateStrategy(resolveFallbackTemplate(task).name())
                 .diagramRequirement(DiagramRequirement.builder()
                         .required(false)
                         .types(List.of())
@@ -102,6 +110,10 @@ public class ExecutionIntakeGate {
                         .build())
                 .frozenAt(Instant.now())
                 .build();
+    }
+
+    private DocumentTemplateType resolveFallbackTemplate(Task task) {
+        return templateStrategyResolver.resolve(task);
     }
 
     private TaskType resolveTaskType(ExecutionContract contract) {

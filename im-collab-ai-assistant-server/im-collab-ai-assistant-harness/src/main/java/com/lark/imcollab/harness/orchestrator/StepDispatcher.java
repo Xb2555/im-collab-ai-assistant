@@ -23,20 +23,23 @@ public class StepDispatcher {
     private final PresentationExecutionService presentationExecutionService;
 
     public void dispatch(Task task) {
-        switch (task.getType()) {
-            case WRITE_SLIDES -> presentationExecutionService.execute(task.getTaskId());
-            case MIXED -> {
-                documentExecutionService.execute(task.getTaskId());
-                presentationExecutionService.execute(task.getTaskId());
-            }
-            default -> documentExecutionService.execute(task.getTaskId());
+        if (task.getType() == TaskType.WRITE_SLIDES) {
+            presentationExecutionService.execute(task.getTaskId());
+            return;
         }
+        if (task.getType() == TaskType.MIXED) {
+            documentExecutionService.execute(task.getTaskId());
+            presentationExecutionService.execute(task.getTaskId());
+            return;
+        }
+        documentExecutionService.execute(task.getTaskId());
     }
 
     public void resumeAfterApproval(Task task, Approval approval) {
-        switch (task.getType()) {
-            case WRITE_SLIDES -> presentationExecutionService.resume(task.getTaskId(), approval);
-            default -> documentExecutionService.resume(task.getTaskId(), approval);
+        if (task.getType() == TaskType.WRITE_SLIDES) {
+            presentationExecutionService.resume(task.getTaskId(), approval);
+            return;
         }
+        documentExecutionService.resume(task.getTaskId(), approval);
     }
 }

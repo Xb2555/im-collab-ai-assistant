@@ -5,8 +5,10 @@ import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TermResolution;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.planner.intent.ArtifactIntentResolver;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -18,6 +20,12 @@ import java.util.Set;
 
 @Service
 public class ExecutionContractFactory {
+
+    private final ArtifactIntentResolver artifactIntentResolver;
+
+    public ExecutionContractFactory(ArtifactIntentResolver artifactIntentResolver) {
+        this.artifactIntentResolver = artifactIntentResolver;
+    }
 
     public ExecutionContract build(PlanTaskSession session) {
         String rawInstruction = firstNonBlank(
@@ -58,6 +66,8 @@ public class ExecutionContractFactory {
                 .constraints(resolveConstraints(session))
                 .sourceScope(sourceScope)
                 .contextRefs(resolveContextRefs(sourceScope))
+                .domainContext(resolveDomainContext(session))
+                .termResolutions(defaultList(session.getTermResolutions()))
                 .templateStrategy(resolveTemplateStrategy(rawInstruction, clarifiedInstruction))
                 .diagramRequirement(resolveDiagramRequirement(rawInstruction, clarifiedInstruction, resolveConstraints(session)))
                 .frozenAt(Instant.now())
@@ -108,7 +118,12 @@ public class ExecutionContractFactory {
                     .forEach(artifacts::add);
         }
         if (artifacts.isEmpty()) {
-            artifacts.add("DOC");
+            artifactIntentResolver.resolveArtifacts(firstNonBlank(
+                    session.getClarifiedInstruction(),
+                    session.getRawInstruction(),
+                    session.getPlanBlueprintSummary(),
+                    session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getUserGoal()))
+                    .forEach(artifacts::add);
         }
         return List.copyOf(artifacts);
     }
@@ -123,7 +138,26 @@ public class ExecutionContractFactory {
         if (!constraints.isEmpty()) {
             builder.append("\n执行约束：").append(String.join("；", constraints));
         }
+        List<TermResolution> termResolutions = defaultList(session.getTermResolutions());
+        if (!termResolutions.isEmpty()) {
+            builder.append("\n术语消歧：");
+            builder.append(termResolutions.stream()
+                    .map(item -> item.getTerm() + "=" + item.getResolvedMeaning())
+                    .reduce((left, right) -> left + "；" + right)
+                    .orElse(""));
+        }
         return builder.toString();
+    }
+
+    private String resolveDomainContext(PlanTaskSession session) {
+        List<TermResolution> termResolutions = defaultList(session.getTermResolutions());
+        if (!termResolutions.isEmpty()) {
+            return termResolutions.stream()
+                    .map(TermResolution::getResolvedMeaning)
+                    .reduce((left, right) -> left + "," + right)
+                    .orElse("");
+        }
+        return firstNonBlank(session.getIndustry(), session.getProfession(), "general");
     }
 
     private List<String> resolveConstraints(PlanTaskSession session) {
