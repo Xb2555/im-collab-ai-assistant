@@ -21,6 +21,7 @@ import com.lark.imcollab.common.model.vo.TaskListVO;
 import com.lark.imcollab.gateway.auth.dto.LarkFrontendUserResponse;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
 import com.lark.imcollab.planner.service.AsyncPlannerService;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.SupervisorPlannerService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
@@ -60,6 +61,7 @@ class PlannerControllerCommandTest {
     @Mock private PlannerViewAssembler plannerViewAssembler;
     @Mock private TaskRuntimeViewAssembler taskRuntimeViewAssembler;
     @Mock private LarkOAuthService oauthService;
+    @Mock private PlannerProperties plannerProperties;
 
     @InjectMocks
     private PlannerController controller;
@@ -67,6 +69,9 @@ class PlannerControllerCommandTest {
     @BeforeEach
     void setUp() {
         lenient().when(oauthService.findCurrentUserByBusinessToken("token")).thenReturn(Optional.of(USER));
+        PlannerProperties.Auth auth = new PlannerProperties.Auth();
+        auth.setEnabled(true);
+        lenient().when(plannerProperties.getAuth()).thenReturn(auth);
     }
 
     @Test

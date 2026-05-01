@@ -4,6 +4,8 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 @Data
 @Component
 @ConfigurationProperties(prefix = "planner")
@@ -14,6 +16,8 @@ public class PlannerProperties {
     private Summarization summarization = new Summarization();
     private Replan replan = new Replan();
     private Intent intent = new Intent();
+    private Disambiguation disambiguation = new Disambiguation();
+    private Auth auth = new Auth();
 
     @Data
     public static class Prompt {
@@ -56,5 +60,33 @@ public class PlannerProperties {
         private boolean fallbackToLocalRules = true;
         private boolean unknownReplyModelEnabled = true;
         private int unknownReplyTimeoutSeconds = 2;
+    }
+
+    @Data
+    public static class Disambiguation {
+        private List<TermPolicyDefinition> termPolicies = List.of();
+    }
+
+    @Data
+    public static class Auth {
+        private boolean enabled = true;
+    }
+
+    @Data
+    public static class TermPolicyDefinition {
+        private String term;
+        private String clarificationPrompt = "";
+        private int minimumScore = 2;
+        private int decisiveGap = 2;
+        private int highConfidenceScore = 6;
+        private List<TermMeaningDefinition> meanings = List.of();
+    }
+
+    @Data
+    public static class TermMeaningDefinition {
+        private String meaningCode;
+        private String userLabel;
+        private List<String> signals = List.of();
+        private List<String> strongSignals = List.of();
     }
 }

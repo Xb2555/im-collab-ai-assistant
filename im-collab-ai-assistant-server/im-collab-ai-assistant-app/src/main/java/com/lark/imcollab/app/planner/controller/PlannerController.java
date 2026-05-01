@@ -35,6 +35,7 @@ import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import io.swagger.v3.oas.annotations.Hidden;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -71,6 +72,7 @@ public class PlannerController {
     private final PlannerViewAssembler plannerViewAssembler;
     private final TaskRuntimeViewAssembler taskRuntimeViewAssembler;
     private final LarkOAuthService oauthService;
+    private final PlannerProperties plannerProperties;
 
     @PostMapping("/plan")
     @Operation(summary = "1. 创建任务规划", description = "快速接收任务并在后台生成可执行计划")
@@ -347,8 +349,15 @@ public class PlannerController {
     }
 
     private Optional<LarkFrontendUserResponse> currentUser(String authorization) {
+        if (!plannerProperties.getAuth().isEnabled()) {
+            return Optional.of(testUser());
+        }
         return oauthService.findCurrentUserByBusinessToken(extractBearerToken(authorization))
                 .filter(user -> hasText(user.openId()));
+    }
+
+    private LarkFrontendUserResponse testUser() {
+        return new LarkFrontendUserResponse("apifox-test-user", "Apifox Test User", null);
     }
 
     private String extractBearerToken(String authorization) {
@@ -375,6 +384,9 @@ public class PlannerController {
     }
 
     private boolean canAccessTask(String taskId, String ownerOpenId) {
+        if (!plannerProperties.getAuth().isEnabled()) {
+            return true;
+        }
         if (!hasText(taskId) || !hasText(ownerOpenId)) {
             return false;
         }
