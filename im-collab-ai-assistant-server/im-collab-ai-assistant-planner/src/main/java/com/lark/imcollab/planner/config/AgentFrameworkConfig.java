@@ -69,6 +69,19 @@ public class AgentFrameworkConfig {
                 .build();
     }
 
+    @Bean(name = "unknownIntentReplyAgent")
+    public ReactAgent unknownIntentReplyAgent(ChatModel chatModel) {
+        return ReactAgent.builder()
+                .name("unknown-intent-reply-agent")
+                .description("无法安全路由用户消息时生成自然、简短的 IM 回复")
+                .systemPrompt("你是飞书 IM 里的协作型任务 Agent。"
+                        + "当用户消息无法安全映射到当前支持的任务意图时，"
+                        + "你只生成一句自然、简短、贴合上下文的中文回复。"
+                        + "不要输出 JSON，不要解释内部路由，不要假装已经执行动作。")
+                .model(chatModel)
+                .build();
+    }
+
     @Bean(name = "planningAgent")
     public ReactAgent planningAgent(
             ChatModel chatModel,

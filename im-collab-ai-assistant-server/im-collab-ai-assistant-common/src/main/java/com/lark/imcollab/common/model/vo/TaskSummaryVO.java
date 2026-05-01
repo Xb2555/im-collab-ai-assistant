@@ -5,6 +5,7 @@ import java.util.List;
 
 public record TaskSummaryVO(
         String taskId,
+        int version,
         String title,
         String goal,
         String status,

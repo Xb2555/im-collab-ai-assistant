@@ -32,7 +32,7 @@ public class PlannerPromptFacade {
     }
 
     public String supervisorPrompt(PlanTaskSession session) {
-        return renderComposedPrompt("supervisor-system.md", "supervisor-examples.md", session, Map.of());
+        return renderRoleAware("supervisor-system.md", session);
     }
 
     public String supervisorInstruction(PlanTaskSession session) {
@@ -48,7 +48,7 @@ public class PlannerPromptFacade {
     }
 
     public String intentPrompt(PlanTaskSession session) {
-        return renderComposedPrompt("intent-system.md", "intent-examples.md", session, Map.of());
+        return renderRoleAware("intent-system.md", session);
     }
 
     public String intentInstruction(PlanTaskSession session) {
@@ -56,7 +56,7 @@ public class PlannerPromptFacade {
     }
 
     public String planningPrompt(PlanTaskSession session) {
-        return renderComposedPrompt("planning-system.md", "planning-examples.md", session, Map.of());
+        return renderRoleAware("planning-system.md", session);
     }
 
     public String planningInstruction(PlanTaskSession session) {

@@ -40,6 +40,20 @@ class LarkOAuthServiceTests {
     );
 
     @Test
+    void shouldBuildConsentAuthorizationUrlWithCurrentFeishuParameters() {
+        appProperties.setAppId("cli_test");
+        oauthProperties.setRedirectUri("http://localhost:8078/api/auth/callback");
+
+        String uri = service.startLogin().authorizationUri().toString();
+
+        assertThat(uri).startsWith("https://accounts.feishu.cn/open-apis/authen/v1/authorize?");
+        assertThat(uri).contains("client_id=cli_test");
+        assertThat(uri).contains("response_type=code");
+        assertThat(uri).contains("redirect_uri=http%3A%2F%2Flocalhost%3A8078%2Fapi%2Fauth%2Fcallback");
+        assertThat(uri).doesNotContain("app_id=");
+    }
+
+    @Test
     void shouldReturnOpenIdAfterCallbackAndMeLookup() {
         appProperties.setAppSecret("app-secret");
         oauthProperties.setJwtSecret("0123456789abcdef0123456789abcdef");

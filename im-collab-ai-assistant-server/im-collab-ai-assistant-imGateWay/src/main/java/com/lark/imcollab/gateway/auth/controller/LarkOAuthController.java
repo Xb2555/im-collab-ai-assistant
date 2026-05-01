@@ -12,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -31,14 +32,36 @@ public class LarkOAuthController {
 
     @GetMapping("/lark/login")
     public ResponseEntity<Void> login() {
-        LarkOAuthLoginResult result = oauthService.startLogin();
+        LarkOAuthLoginResult result = oauthService.startLoginForWebRedirect();
         return redirect(result.authorizationUri()).build();
+    }
+
+    @GetMapping("/login-url")
+    public ResponseEntity<BaseResponse<?>> loginUrl() {
+        LarkOAuthLoginResult result = oauthService.startLoginForQrEmbed();
+        return ResponseEntity.ok(ResultUtils.success(result));
     }
 
     @PostMapping("/callback")
     public ResponseEntity<BaseResponse<?>> callback(@RequestBody LarkOAuthCallbackRequest request) {
         try {
             return ResponseEntity.ok(ResultUtils.success(oauthService.completeLogin(request.code(), request.state())));
+        } catch (RuntimeException exception) {
+            return ResponseEntity.badRequest().body(ResultUtils.error(BusinessCode.PARAMS_ERROR, exception.getMessage()));
+        }
+    }
+
+    @GetMapping("/callback")
+    public ResponseEntity<BaseResponse<?>> callback(
+            @RequestParam(value = "code", required = false) String code,
+            @RequestParam(value = "state", required = false) String state,
+            @RequestParam(value = "error", required = false) String error
+    ) {
+        if (error != null && !error.isBlank()) {
+            return ResponseEntity.badRequest().body(ResultUtils.error(BusinessCode.PARAMS_ERROR, error));
+        }
+        try {
+            return ResponseEntity.ok(ResultUtils.success(oauthService.completeLogin(code, state)));
         } catch (RuntimeException exception) {
             return ResponseEntity.badRequest().body(ResultUtils.error(BusinessCode.PARAMS_ERROR, exception.getMessage()));
         }

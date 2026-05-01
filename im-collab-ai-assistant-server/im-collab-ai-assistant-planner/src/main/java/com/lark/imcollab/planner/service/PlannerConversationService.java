@@ -39,11 +39,13 @@ public class PlannerConversationService {
         );
 
         updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution);
-        sessionService.save(session);
+        sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(session.getTaskId(), "INTAKE_ACCEPTED");
 
         PlanTaskSession result = switch (intakeDecision.intakeType()) {
+            case UNKNOWN -> sessionService.get(session.getTaskId());
             case STATUS_QUERY -> sessionService.get(session.getTaskId());
+            case CONFIRM_ACTION -> sessionService.get(session.getTaskId());
             case CANCEL_TASK -> {
                 sessionService.markAborted(session.getTaskId(), "User cancelled from conversation: " + intakeDecision.effectiveInput());
                 yield sessionService.get(session.getTaskId());
@@ -87,6 +89,8 @@ public class PlannerConversationService {
                 .continuedConversation(resolution.existingSession())
                 .continuationKey(resolution.continuationKey())
                 .lastUserMessage(intakeDecision.effectiveInput())
+                .routingReason(intakeDecision.routingReason())
+                .assistantReply(intakeDecision.assistantReply())
                 .lastInputAt(workspaceContext == null ? null : workspaceContext.getTimeRange())
                 .build());
         if (session.getScenarioPath() == null || session.getScenarioPath().isEmpty()) {

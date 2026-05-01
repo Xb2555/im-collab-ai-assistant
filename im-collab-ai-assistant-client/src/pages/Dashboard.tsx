@@ -12,67 +12,39 @@ import { InviteMemberModal } from '@/components/chat/InviteMemberModal';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 
 // ✨ 飞书消息内容智能解析器
-// ✨ 飞书消息内容智能解析器 (增强版)
 const parseFeishuContent = (rawContent: string | null | undefined, msgType?: string) => {
   if (!rawContent) return '';
   try {
+    // 尝试解析普通文本消息的 {"text": "你好"}
     const json = JSON.parse(rawContent);
-
-    // 1. 常规文本消息
     if (json.text) return json.text;
-
-    // 2. 飞书系统通知消息 (System)
-    if (msgType === 'system' || json.template) {
-      let tpl = json.template || '';
-
-      // --- A. 替换常见变量占位符为可读的中文 ---
-      tpl = tpl
-        .replace(/\{botName\}/g, '机器人')
-        .replace(/\{name\}/g, '某人') // 实际开发中，这里需要根据 from_user 等字段映射真实名字，目前做兜底
-        .replace(/\{users\}/g, '新成员')
-        .replace(/\{GroupOwner\}/g, '群主')
-        .replace(/\{NewGroupAdministrators\}/g, '新管理员')
-        .replace(/\{group_type\}/g, '群聊')
-        .replace(/\{to_chatters\}/g, '成员');
-
-      // --- B. 翻译常见的英文核心句式 ---
-      // 匹配: {botName} started the group chat, assigned {name} as the group owner, and invited {users} to the group.
-      if (tpl.includes('started the group chat')) {
-        tpl = tpl
-          .replace('started the group chat, assigned', '创建了群聊，指定')
-          .replace('as the group owner, and invited', '为群主，并邀请')
-          .replace('to the group.', '入群。');
-      }
-      
-      // 匹配: {GroupOwner} added {NewGroupAdministrators} to group administrators.
-      if (tpl.includes('added') && tpl.includes('to group administrators')) {
-        tpl = tpl.replace('added', '将').replace('to group administrators.', '设为了群管理员。');
-      }
-
-      // 匹配: Welcome to {group_type}
-      if (tpl.includes('Welcome to')) {
-        tpl = tpl.replace('Welcome to', '欢迎来到');
-      }
-      
-      // 匹配: {from_user} invited {to_chatters} to the group.
-      if (tpl.includes('invited') && tpl.includes('to the group')) {
-        tpl = tpl.replace('invited', '邀请了').replace('to the group.', '加入群聊。');
-      }
-
-      return `[系统消息] ${tpl}`;
-    }
-
-    // 3. 富文本或其他暂不支持的格式
-    if (msgType === 'post') {
-      // 飞书的 post 富文本是一个深层嵌套数组，MVP 阶段为了防止报错，简单提示
-      return '[长图文消息，请在飞书原生客户端查看]'; 
-    }
-    if (msgType === 'interactive') return '[交互式卡片消息]';
     
-    return '[未知或加密消息格式]';
+    // 如果师兄后续又把系统消息改回 JSON 了，这里留个兼容兜底
+    if (json.template) return `[系统消息] ${json.template.replace(/\{.*?\}/g, '某人')}`;
+    
+    return '[未知 JSON 格式]';
   } catch (e) {
-    // 纯文本或其他非 JSON 格式
-    return rawContent;
+    // 走到这里说明 rawContent 是纯字符串（比如师兄处理过的 system 消息）
+    let text = rawContent;
+    
+    if (msgType === 'system') {
+      // 帮师兄把英文做一下前端的汉化替换
+      if (text.includes('started the group chat')) {
+        text = text.replace('started the group chat, assigned', '创建了群聊，指定')
+                   .replace('as the group owner, and invited', '为群主，并邀请')
+                   .replace('to the group.', '入群。');
+      }
+      if (text.includes('added') && text.includes('to group administrators')) {
+        text = text.replace('added', '将').replace('to group administrators.', '设为了群管理员。');
+      }
+      if (text.includes('Welcome to')) {
+        text = text.replace('Welcome to', '欢迎来到');
+      }
+      return `[系统] ${text}`;
+    }
+    
+    // 纯文本直接返回
+    return text;
   }
 };
 
@@ -123,10 +95,13 @@ export default function Dashboard() {
         // 飞书返回的是倒序（最新在前），需要 reverse 让旧消息在上面
         const formattedHistory = historyRes.items.reverse().map((item: any) => {
           return {
-            eventId: item.messageId, // 用作去重 Key
+            eventId: item.messageId, 
             senderOpenId: item.senderId,
             senderType: item.senderType,
-            //  使用专门的解析器处理 content 和 msgType
+            // ✨ 核心修复 1：必须把后端传来的头像和名字“接住”！
+            senderName: item.senderName,
+            senderAvatar: item.senderAvatar,
+            // 使用专门的解析器处理 content 和 msgType
             content: parseFeishuContent(item.content, item.msgType),
             createTime: item.createTime
           };
@@ -298,7 +273,7 @@ export default function Dashboard() {
               </>
             ) : chatData?.items && chatData.items.length > 0 ? (
               <>
-                {/* 🚀 核心 UX 优化：如果正在后台同步，在最上面显示一个专属的 Loading 条 */}
+                {/*  核心 UX 优化：如果正在后台同步，在最上面显示一个专属的 Loading 条 */}
                 {syncingChatId && (
                   <div className="flex animate-pulse cursor-wait items-center space-x-3 rounded-lg p-2 bg-blue-50/50 border border-blue-100">
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-blue-200 text-blue-600">
@@ -375,7 +350,7 @@ export default function Dashboard() {
           </div>
           
           <div className="z-10 flex-1 overflow-y-auto p-6 space-y-4 flex flex-col">
-{/* 🚀 动态渲染消息流 🚀 */}
+{/* 动态渲染消息流 */}
             {!activeChatId ? (
               <div className="m-auto text-zinc-400 text-sm">请在左侧选择一个协作群聊以加载消息流</div>
             ) : isLoadingHistory ? (
@@ -385,38 +360,35 @@ export default function Dashboard() {
             ) : messages.length === 0 ? (
               <div className="m-auto text-zinc-400 text-sm">暂无消息记录</div>
             ) : (
-              messages.map((msg, index) => {
-                // ✨ 1. 智能判断发送者类型
+messages.map((msg, index) => {
                 const isBot = msg.senderType === 'app' || msg.senderOpenId?.includes('bot');
                 
-                // ⚠️ 理想情况：等后端在登录接口返回了你的 openId，应该用 msg.senderOpenId === user?.openId 来判断。
-                // 现在的临时兜底：只要不是机器人发的消息，我们就暂时当成是你发的（仅限你单人测试阶段）
-                const isMe = msg.senderOpenId && !isBot; 
-
-                // ✨ 2. 动态获取头像和名字
-                // 如果是我，优先用 store 里的头像；否则用消息自带的（等后端传）；最后兜底空值
-                const avatarUrl = isMe ? user?.avatarUrl : msg.senderAvatar;
-                // 如果是机器人就显示 Agent，如果是我显示 store 里的名字，否则显示群成员
-                const displayName = isBot ? 'Agent Pilot' : (isMe ? user?.name : (msg.senderName || '群成员'));
+                //  核心修复 2：准确判断“哪句话是我说的”
+                // 终极方案应该是 msg.senderOpenId === user?.openId，但在后端还没给 openId 前，
+                // 我们临时用名字判断（如果这条消息的发送者名字和当前登录用户的名字一样，就是我）
+                const isMe = msg.senderName ? msg.senderName === user?.name : false; 
+                
+                // 判断最终显示的名称
+                const displayName = isBot ? 'Agent Pilot' : (msg.senderName || '系统通知');
                 
                 return (
                   <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'}`}>
                     <div className={`flex max-w-[85%] gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
                       
-                      {/* ✨ 3. 头像渲染区域优化 */}
+                      {/* 头像区域 */}
                       <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm overflow-hidden ${
                         isBot ? 'bg-blue-600 text-white' : 'bg-zinc-200 text-zinc-600'
                       }`}>
                         {isBot ? (
                           <Bot className="h-4 w-4" />
-                        ) : avatarUrl ? (
-                          <img src={avatarUrl} alt="avatar" className="h-full w-full object-cover" />
+                        ) : msg.senderAvatar ? (
+                          <img src={msg.senderAvatar} alt="avatar" className="h-full w-full object-cover" />
                         ) : (
                           <User className="h-4 w-4" />
                         )}
                       </div>
 
-                      {/* ✨ 4. 气泡与名字渲染区域 */}
+                      {/* 气泡与名字区域 */}
                       <div className={`flex flex-col space-y-1 ${isMe ? 'items-end' : 'items-start'}`}>
                         <span className="text-[11px] font-medium text-zinc-400 px-1">
                           {displayName}
@@ -489,7 +461,7 @@ export default function Dashboard() {
 
       </main>
 
-      {/* 🚀 挂载建群弹窗 🚀 */}
+      {/* 挂载建群弹窗 */}
       <CreateChatModal 
         isOpen={isModalOpen} 
         // onClose={() => setIsModalOpen(false)} // 之前是直接关
@@ -504,7 +476,7 @@ export default function Dashboard() {
               const isSyncCompleted = freshData?.items.some(chat => chat.chatId === newChatId);
               if (isSyncCompleted) {
                 setActiveChatId(newChatId); // 选中新群
-                setIsModalOpen(false); // ✨ 核心优化：查到数据了，再关闭弹窗！
+                setIsModalOpen(false); // 核心优化：查到数据了，再关闭弹窗！
                 break; 
               }
             } catch (e) {
@@ -517,7 +489,7 @@ export default function Dashboard() {
         }} 
       />
 
-      {/* ✨ 新增：挂载邀请弹窗 */}
+      {/* 新增：挂载邀请弹窗 */}
       {activeChatId && (
         <InviteMemberModal 
           isOpen={isInviteModalOpen}

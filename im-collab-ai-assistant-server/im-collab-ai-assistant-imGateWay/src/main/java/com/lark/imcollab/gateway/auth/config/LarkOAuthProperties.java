@@ -11,7 +11,11 @@ public class LarkOAuthProperties {
 
     private String redirectUri;
 
-    private String authorizeUrl = "https://open.feishu.cn/open-apis/authen/v1/authorize";
+    private String authorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
+
+    private String qrAuthorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
+
+    private String qrClientIdParam = "client_id";
 
     private List<String> scopes = new ArrayList<>(List.of(
             "auth:user.id:read",
@@ -51,6 +55,22 @@ public class LarkOAuthProperties {
 
     public void setAuthorizeUrl(String authorizeUrl) {
         this.authorizeUrl = authorizeUrl;
+    }
+
+    public String getQrAuthorizeUrl() {
+        return qrAuthorizeUrl;
+    }
+
+    public void setQrAuthorizeUrl(String qrAuthorizeUrl) {
+        this.qrAuthorizeUrl = qrAuthorizeUrl;
+    }
+
+    public String getQrClientIdParam() {
+        return qrClientIdParam;
+    }
+
+    public void setQrClientIdParam(String qrClientIdParam) {
+        this.qrClientIdParam = qrClientIdParam;
     }
 
     public List<String> getScopes() {

@@ -1,0 +1,110 @@
+package com.lark.imcollab.planner.service;
+
+import cn.hutool.core.util.StrUtil;
+import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.planner.config.PlannerAsyncProperties;
+import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
+
+@Slf4j
+@Service
+public class AsyncPlannerService {
+
+    private final PlannerConversationService plannerConversationService;
+    private final PlannerSessionService sessionService;
+    private final TaskRuntimeProjectionService projectionService;
+    private final PlannerAsyncProperties asyncProperties;
+    private final Executor plannerTaskExecutor;
+    private final Set<String> inFlightTasks = ConcurrentHashMap.newKeySet();
+
+    public AsyncPlannerService(
+            PlannerConversationService plannerConversationService,
+            PlannerSessionService sessionService,
+            TaskRuntimeProjectionService projectionService,
+            PlannerAsyncProperties asyncProperties,
+            @Qualifier("plannerTaskExecutor") Executor plannerTaskExecutor
+    ) {
+        this.plannerConversationService = plannerConversationService;
+        this.sessionService = sessionService;
+        this.projectionService = projectionService;
+        this.asyncProperties = asyncProperties;
+        this.plannerTaskExecutor = plannerTaskExecutor;
+    }
+
+    public PlanTaskSession submitPlan(
+            String rawInstruction,
+            WorkspaceContext workspaceContext,
+            String taskId,
+            String userFeedback
+    ) {
+        String resolvedTaskId = StrUtil.isBlank(taskId) ? UUID.randomUUID().toString() : taskId.trim();
+        if (inFlightTasks.contains(resolvedTaskId)) {
+            return sessionService.getOrCreate(resolvedTaskId);
+        }
+        PlanTaskSession session = initializeAcceptedSession(resolvedTaskId, rawInstruction);
+        if (!asyncProperties.isEnabled()) {
+            return plannerConversationService.handlePlanRequest(rawInstruction, workspaceContext, resolvedTaskId, userFeedback);
+        }
+        if (!inFlightTasks.add(resolvedTaskId)) {
+            return sessionService.get(resolvedTaskId);
+        }
+        try {
+            plannerTaskExecutor.execute(() -> runPlanning(resolvedTaskId, rawInstruction, workspaceContext, userFeedback));
+        } catch (RejectedExecutionException exception) {
+            inFlightTasks.remove(resolvedTaskId);
+            return failAcceptedSession(resolvedTaskId, "Planner queue is full: " + exception.getMessage());
+        }
+        return session;
+    }
+
+    private PlanTaskSession initializeAcceptedSession(String taskId, String rawInstruction) {
+        PlanTaskSession session = sessionService.getOrCreate(taskId);
+        if (session.getRawInstruction() == null && rawInstruction != null && !rawInstruction.isBlank()) {
+            session.setRawInstruction(rawInstruction.trim());
+        }
+        if (session.getPlanningPhase() == null || session.getPlanningPhase() == PlanningPhaseEnum.INTAKE) {
+            session.setPlanningPhase(PlanningPhaseEnum.INTAKE);
+            session.setTransitionReason("Planner accepted async task");
+            sessionService.saveWithoutVersionChange(session);
+            projectionService.projectStage(session, TaskEventTypeEnum.INTAKE_ACCEPTED, "Planner accepted async task");
+        }
+        return session;
+    }
+
+    private void runPlanning(
+            String taskId,
+            String rawInstruction,
+            WorkspaceContext workspaceContext,
+            String userFeedback
+    ) {
+        try {
+            plannerConversationService.handlePlanRequest(rawInstruction, workspaceContext, taskId, userFeedback);
+        } catch (Exception exception) {
+            log.error("Async planner failed for task {}: {}", taskId, exception.getMessage(), exception);
+            failAcceptedSession(taskId, exception.getMessage());
+        } finally {
+            inFlightTasks.remove(taskId);
+        }
+    }
+
+    private PlanTaskSession failAcceptedSession(String taskId, String reason) {
+        PlanTaskSession session = sessionService.get(taskId);
+        session.setPlanningPhase(PlanningPhaseEnum.FAILED);
+        session.setTransitionReason(reason);
+        sessionService.save(session);
+        projectionService.projectStage(session, TaskEventTypeEnum.PLAN_FAILED, reason);
+        sessionService.publishEvent(taskId, "FAILED");
+        return session;
+    }
+}

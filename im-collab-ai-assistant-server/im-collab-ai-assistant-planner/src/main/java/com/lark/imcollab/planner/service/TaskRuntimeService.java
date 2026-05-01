@@ -18,6 +18,7 @@ import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -38,39 +39,33 @@ public class TaskRuntimeService {
     private final ObjectMapper objectMapper;
     private final TaskRepository taskRepository;
     private final ExecutionContractFactory executionContractFactory;
+    private final TaskRuntimeProjectionService projectionService;
 
     public void projectPlanReady(PlanTaskSession session, TaskEventTypeEnum eventType) {
         if (session == null || session.getPlanBlueprint() == null) {
             return;
         }
         TaskPlanGraph graph = planGraphBuilder.build(session.getTaskId(), session.getPlanBlueprint());
-        TaskRecord task = buildTaskRecord(session, graph);
-        stateStore.saveTask(task);
-        markMissingStepsSuperseded(session.getTaskId(), graph.getSteps());
-        for (TaskStepRecord step : graph.getSteps()) {
-            stateStore.saveStep(step);
-        }
-        appendRuntimeEvent(session.getTaskId(), eventType, graph);
+        projectionService.projectPlanGraph(session, graph, eventType);
         syncDomainTask(session, graph);
     }
 
     public void projectPhaseTransition(String taskId, PlanningPhaseEnum phase, TaskEventTypeEnum eventType) {
+        int version = stateStore.findSession(taskId)
+                .map(PlanTaskSession::getVersion)
+                .orElse(0);
         stateStore.findTask(taskId).ifPresent(task -> {
             task.setStatus(mapTaskStatus(phase));
             task.setCurrentStage(phase.name());
+            task.setVersion(version);
             task.setUpdatedAt(Instant.now());
             stateStore.saveTask(task);
         });
-        appendRuntimeEvent(taskId, eventType, null);
+        appendRuntimeEvent(taskId, version, eventType, null);
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
-        return TaskRuntimeSnapshot.builder()
-                .task(stateStore.findTask(taskId).orElse(null))
-                .steps(stateStore.findStepsByTaskId(taskId))
-                .artifacts(stateStore.findArtifactsByTaskId(taskId))
-                .events(stateStore.findRuntimeEventsByTaskId(taskId))
-                .build();
+        return projectionService.getSnapshot(taskId);
     }
 
     private TaskRecord buildTaskRecord(PlanTaskSession session, TaskPlanGraph graph) {
@@ -79,6 +74,10 @@ public class TaskRuntimeService {
         return TaskRecord.builder()
                 .taskId(session.getTaskId())
                 .conversationKey(session.getIntakeState() == null ? null : session.getIntakeState().getContinuationKey())
+                .ownerOpenId(firstNonBlank(inputSenderOpenId(session), existing == null ? null : existing.getOwnerOpenId()))
+                .source(firstNonBlank(inputSource(session), existing == null ? null : existing.getSource()))
+                .chatId(firstNonBlank(inputChatId(session), existing == null ? null : existing.getChatId()))
+                .threadId(firstNonBlank(inputThreadId(session), existing == null ? null : existing.getThreadId()))
                 .title(firstNonBlank(graph.getGoal(), session.getPlanBlueprintSummary(), session.getTaskId()))
                 .goal(firstNonBlank(graph.getGoal(), session.getPlanBlueprintSummary()))
                 .status(mapTaskStatus(session.getPlanningPhase()))
@@ -151,12 +150,13 @@ public class TaskRuntimeService {
         return TaskStatusEnum.PLANNING;
     }
 
-    private void appendRuntimeEvent(String taskId, TaskEventTypeEnum eventType, Object payload) {
+    private void appendRuntimeEvent(String taskId, int version, TaskEventTypeEnum eventType, Object payload) {
         stateStore.appendRuntimeEvent(TaskEventRecord.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
                 .type(eventType)
                 .payloadJson(toJson(payload))
+                .version(version)
                 .createdAt(Instant.now())
                 .build());
     }
@@ -212,5 +212,21 @@ public class TaskRuntimeService {
             }
         }
         return null;
+    }
+
+    private String inputSenderOpenId(PlanTaskSession session) {
+        return session == null || session.getInputContext() == null ? null : session.getInputContext().getSenderOpenId();
+    }
+
+    private String inputSource(PlanTaskSession session) {
+        return session == null || session.getInputContext() == null ? null : session.getInputContext().getInputSource();
+    }
+
+    private String inputChatId(PlanTaskSession session) {
+        return session == null || session.getInputContext() == null ? null : session.getInputContext().getChatId();
+    }
+
+    private String inputThreadId(PlanTaskSession session) {
+        return session == null || session.getInputContext() == null ? null : session.getInputContext().getThreadId();
     }
 }

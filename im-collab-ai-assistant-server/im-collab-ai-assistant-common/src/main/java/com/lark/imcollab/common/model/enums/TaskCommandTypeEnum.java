@@ -6,5 +6,6 @@ public enum TaskCommandTypeEnum {
     ADJUST_PLAN,
     QUERY_STATUS,
     CONFIRM_ACTION,
-    CANCEL_TASK
+    CANCEL_TASK,
+    UNKNOWN
 }

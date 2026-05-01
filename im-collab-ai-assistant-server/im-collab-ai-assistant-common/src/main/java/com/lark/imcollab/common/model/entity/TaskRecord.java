@@ -18,6 +18,10 @@ public class TaskRecord implements Serializable {
 
     private String taskId;
     private String conversationKey;
+    private String ownerOpenId;
+    private String source;
+    private String chatId;
+    private String threadId;
     private String title;
     private String goal;
     private TaskStatusEnum status;

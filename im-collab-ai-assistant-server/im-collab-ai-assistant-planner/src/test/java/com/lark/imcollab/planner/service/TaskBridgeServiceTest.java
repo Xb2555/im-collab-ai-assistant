@@ -43,15 +43,15 @@ class TaskBridgeServiceTest {
         when(taskRepository.findById("task-1")).thenReturn(Optional.of(existing));
         when(executionContractFactory.build(session)).thenReturn(ExecutionContract.builder()
                 .taskId("task-1")
-                .rawInstruction("raw")
-                .clarifiedInstruction("clarified")
-                .taskBrief("brief")
+                .rawInstruction("写文档")
+                .clarifiedInstruction("写文档")
                 .allowedArtifacts(java.util.List.of("DOC"))
                 .build());
 
         Task result = taskBridgeService.ensureTask(session);
 
         assertThat(result.getTaskId()).isEqualTo("task-1");
+        assertThat(result.getExecutionContract()).isNotNull();
         verify(taskRepository).findById("task-1");
         verify(taskRepository).save(any());
         verifyNoInteractions(eventRepository);
@@ -65,9 +65,8 @@ class TaskBridgeServiceTest {
         when(taskRepository.findById("task-2")).thenReturn(Optional.empty());
         when(executionContractFactory.build(session)).thenReturn(ExecutionContract.builder()
                 .taskId("task-2")
-                .rawInstruction("raw")
-                .clarifiedInstruction("clarified")
-                .taskBrief("brief")
+                .rawInstruction("写文档")
+                .clarifiedInstruction("写文档")
                 .allowedArtifacts(java.util.List.of("DOC"))
                 .build());
 
@@ -75,6 +74,7 @@ class TaskBridgeServiceTest {
 
         assertThat(result.getTaskId()).isEqualTo("task-2");
         assertThat(result.getStatus()).isEqualTo(TaskStatus.PLAN_READY);
+        assertThat(result.getExecutionContract()).isNotNull();
         verify(taskRepository).save(any());
         verify(eventRepository).save(any());
     }

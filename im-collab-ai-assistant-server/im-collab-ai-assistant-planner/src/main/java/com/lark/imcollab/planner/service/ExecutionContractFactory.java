@@ -101,15 +101,17 @@ public class ExecutionContractFactory {
         if (intentSnapshot != null && intentSnapshot.getDeliverableTargets() != null) {
             intentSnapshot.getDeliverableTargets().stream()
                     .map(this::normalizeArtifact)
+                    .filter(value -> value != null && !value.isBlank())
                     .forEach(artifacts::add);
         }
         PlanBlueprint blueprint = session.getPlanBlueprint();
-        if (artifacts.isEmpty() && blueprint != null && blueprint.getDeliverables() != null) {
+        if (blueprint != null && blueprint.getDeliverables() != null) {
             blueprint.getDeliverables().stream()
                     .map(this::normalizeArtifact)
+                    .filter(value -> value != null && !value.isBlank())
                     .forEach(artifacts::add);
         }
-        if (artifacts.isEmpty() && blueprint != null && blueprint.getPlanCards() != null) {
+        if (blueprint != null && blueprint.getPlanCards() != null) {
             blueprint.getPlanCards().stream()
                     .map(card -> card.getType() == null ? null : normalizeArtifact(card.getType().name()))
                     .filter(value -> value != null && !value.isBlank())
