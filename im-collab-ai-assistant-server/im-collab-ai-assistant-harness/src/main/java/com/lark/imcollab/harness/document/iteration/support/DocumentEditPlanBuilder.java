@@ -6,6 +6,7 @@ import com.lark.imcollab.common.model.entity.DocumentTargetSelector;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.enums.DocumentLocatorStrategy;
 import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
+import com.lark.imcollab.common.model.enums.DocumentRelativePosition;
 import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
@@ -63,26 +64,57 @@ public class DocumentEditPlanBuilder {
             DocumentTargetSelector selector,
             String instruction
     ) {
-        String generated = insertAfter(selector.getMatchedExcerpt(), instruction);
-        String anchorBlockId = selector.getMatchedBlockIds() == null || selector.getMatchedBlockIds().isEmpty()
-                ? null
-                : selector.getMatchedBlockIds().get(selector.getMatchedBlockIds().size() - 1);
+        String generated = normalizeInsertedHeadingLevel(insertAfter(selector.getMatchedExcerpt(), instruction), selector.getMatchedExcerpt());
+        if (generated.isBlank()) {
+            throw new IllegalStateException("新增内容为空，拒绝生成插入计划");
+        }
+        List<String> blockIds = selector.getMatchedBlockIds() == null ? List.of() : selector.getMatchedBlockIds();
+        String anchorBlockId = blockIds.isEmpty() ? null : blockIds.get(blockIds.size() - 1);
+        DocumentRelativePosition relativePosition = selector.getRelativePosition();
+        List<DocumentPatchOperation> operations = new ArrayList<>();
+        DocumentPatchOperationType commandType;
+        boolean requiresApproval;
+        if (selector.getLocatorStrategy() == DocumentLocatorStrategy.DOC_END) {
+            commandType = DocumentPatchOperationType.APPEND;
+            requiresApproval = false;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.APPEND)
+                    .newContent(generated)
+                    .docFormat("markdown")
+                    .justification("在文档末尾新增内容")
+                    .build());
+        } else if (relativePosition == DocumentRelativePosition.BEFORE) {
+            commandType = DocumentPatchOperationType.BLOCK_REPLACE;
+            requiresApproval = selector.getMatchedExcerpt() == null || selector.getMatchedExcerpt().isBlank() || anchorBlockId == null;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
+                    .blockId(anchorBlockId)
+                    .oldText(selector.getMatchedExcerpt())
+                    .newContent(generated + "\n\n" + selector.getMatchedExcerpt())
+                    .docFormat("markdown")
+                    .justification("通过重写锚点 block 模拟前插")
+                    .build());
+        } else {
+            commandType = DocumentPatchOperationType.BLOCK_INSERT_AFTER;
+            requiresApproval = anchorBlockId == null;
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
+                    .blockId(anchorBlockId)
+                    .newContent(generated)
+                    .docFormat("markdown")
+                    .justification("在目标锚点后新增内容")
+                    .build());
+        }
         return DocumentEditPlan.builder()
                 .taskId(taskId)
                 .intentType(DocumentIterationIntentType.INSERT)
                 .selector(selector)
-                .reasoningSummary("基于定位到的章节末尾追加新增内容")
+                .reasoningSummary("基于定位到的锚点新增内容")
                 .generatedContent(generated)
-                .toolCommandType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
-                .requiresApproval(anchorBlockId == null)
+                .toolCommandType(commandType)
+                .requiresApproval(requiresApproval)
                 .riskLevel(DocumentRiskLevel.MEDIUM)
-                .patchOperations(List.of(DocumentPatchOperation.builder()
-                        .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
-                        .blockId(anchorBlockId)
-                        .newContent(generated)
-                        .docFormat("markdown")
-                        .justification("在目标章节末尾新增内容")
-                        .build()))
+                .patchOperations(operations)
                 .build();
     }
 
@@ -255,7 +287,8 @@ public class DocumentEditPlanBuilder {
                 规则：
                 1. 只返回新增内容本身，不要解释，不要代码块。
                 2. 新内容必须与上下文衔接自然，不要重复原文。
-                3. 如果用户要求新增一个小节，可以输出以 ### 开头的小标题。
+                3. 如果是在现有章节前后新增同级章节，新标题要与锚点标题保持同级。
+                4. 如果用户要求新增一个小节，再使用更低一级的小标题。
 
                 用户指令：
                 %s
@@ -264,6 +297,44 @@ public class DocumentEditPlanBuilder {
                 %s
                 """.formatted(instruction, excerpt);
         return trim(chatModel.call(prompt));
+    }
+
+    private String normalizeInsertedHeadingLevel(String generated, String anchorExcerpt) {
+        String trimmed = trim(generated);
+        if (trimmed.isEmpty()) {
+            return trimmed;
+        }
+        int anchorLevel = extractHeadingLevel(anchorExcerpt);
+        if (anchorLevel <= 0) {
+            return trimmed;
+        }
+        String[] lines = trimmed.split("\\R", -1);
+        if (lines.length == 0) {
+            return trimmed;
+        }
+        String firstLine = lines[0].trim();
+        if (!firstLine.startsWith("#")) {
+            return trimmed;
+        }
+        String headingText = firstLine.replaceFirst("^#+\\s*", "");
+        lines[0] = "#".repeat(anchorLevel) + " " + headingText;
+        return trim(String.join("\n", lines));
+    }
+
+    private int extractHeadingLevel(String markdown) {
+        String trimmed = trim(markdown);
+        if (trimmed.isEmpty()) {
+            return -1;
+        }
+        String firstLine = trimmed.split("\\R", 2)[0].trim();
+        if (!firstLine.startsWith("#")) {
+            return -1;
+        }
+        int level = 0;
+        while (level < firstLine.length() && firstLine.charAt(level) == '#') {
+            level++;
+        }
+        return level;
     }
 
     private String trim(String value) {

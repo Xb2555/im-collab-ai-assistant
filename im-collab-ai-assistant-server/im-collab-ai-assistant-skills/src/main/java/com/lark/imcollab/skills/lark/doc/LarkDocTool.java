@@ -114,6 +114,12 @@ public class LarkDocTool {
         return fetchDoc(docIdOrUrl, "section", "markdown", "simple", startBlockId, null, null);
     }
 
+    public LarkDocFetchResult fetchDocRangeMarkdown(String docIdOrUrl, String startBlockId, String endBlockId) {
+        requireValue(startBlockId, "startBlockId");
+        requireValue(endBlockId, "endBlockId");
+        return fetchDoc(docIdOrUrl, "range", "markdown", "simple", startBlockId, endBlockId, null);
+    }
+
     public LarkDocFetchResult fetchDocFullMarkdown(String docIdOrUrl) {
         return fetchDoc(docIdOrUrl, null, "markdown", "simple", null, null, null);
     }

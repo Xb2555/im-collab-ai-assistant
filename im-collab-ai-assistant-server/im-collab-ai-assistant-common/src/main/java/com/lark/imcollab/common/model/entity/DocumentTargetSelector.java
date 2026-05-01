@@ -1,6 +1,7 @@
 package com.lark.imcollab.common.model.entity;
 
 import com.lark.imcollab.common.model.enums.DocumentLocatorStrategy;
+import com.lark.imcollab.common.model.enums.DocumentRelativePosition;
 import com.lark.imcollab.common.model.enums.DocumentTargetType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -19,6 +20,7 @@ public class DocumentTargetSelector implements Serializable {
     private String docUrl;
     private DocumentTargetType targetType;
     private DocumentLocatorStrategy locatorStrategy;
+    private DocumentRelativePosition relativePosition;
     private String locatorValue;
     private List<String> matchedBlockIds;
     private String matchedExcerpt;

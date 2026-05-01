@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
 public class DocumentStructureParser {
 
     private static final Pattern HEADING_PATTERN = Pattern.compile(
-            "<h[1-6]\\b[^>]*id=\"([^\"]+)\"[^>]*>(.*?)</h[1-6]>",
+            "<h([1-6])\\b[^>]*id=\"([^\"]+)\"[^>]*>(.*?)</h[1-6]>",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL
     );
     private static final Pattern BLOCK_ID_PATTERN = Pattern.compile("id=\"([^\"]+)\"");
@@ -30,10 +30,11 @@ public class DocumentStructureParser {
         List<HeadingBlock> headings = new ArrayList<>();
         Matcher matcher = HEADING_PATTERN.matcher(xml);
         while (matcher.find()) {
-            String blockId = matcher.group(1);
-            String text = stripTags(matcher.group(2));
+            int level = Integer.parseInt(matcher.group(1));
+            String blockId = matcher.group(2);
+            String text = stripTags(matcher.group(3));
             if (hasText(blockId) && hasText(text)) {
-                headings.add(new HeadingBlock(blockId.trim(), text.trim()));
+                headings.add(new HeadingBlock(blockId.trim(), text.trim(), level));
             }
         }
         return headings;
@@ -89,7 +90,7 @@ public class DocumentStructureParser {
             if (normalizedHeading.isEmpty()) {
                 continue;
             }
-            if (normalizedInstruction.contains(normalizedHeading)) {
+            if (normalizedInstruction.contains(normalizedHeading) || normalizedHeading.contains(normalizedInstruction)) {
                 matches.add(heading);
             }
         }
@@ -152,5 +153,6 @@ public class DocumentStructureParser {
     public static class HeadingBlock {
         private final String blockId;
         private final String text;
+        private final int level;
     }
 }

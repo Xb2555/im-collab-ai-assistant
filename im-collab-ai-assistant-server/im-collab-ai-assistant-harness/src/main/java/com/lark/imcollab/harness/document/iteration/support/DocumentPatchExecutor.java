@@ -72,6 +72,15 @@ public class DocumentPatchExecutor {
                         operation.getBlockId(),
                         null,
                         beforeMarkdown.getRevisionId()
+                    );
+                case APPEND -> larkDocTool.updateByCommand(
+                        docRef,
+                        "append",
+                        operation.getNewContent(),
+                        operation.getDocFormat(),
+                        null,
+                        null,
+                        beforeMarkdown.getRevisionId()
                 );
                 default -> throw new IllegalStateException("Unsupported patch operation: " + operation.getOperationType());
             };
@@ -100,6 +109,7 @@ public class DocumentPatchExecutor {
             case BLOCK_REPLACE -> verifyBlockReplace(operation, afterMarkdown.getContent(), afterXml.getContent());
             case BLOCK_INSERT_AFTER -> verifyBlockInsert(result, operation, afterMarkdown.getContent(), afterXml.getContent());
             case BLOCK_DELETE -> verifyBlockDelete(operation, beforeXml.getContent(), afterXml.getContent(), afterMarkdown.getContent());
+            case APPEND -> verifyAppend(operation, afterMarkdown.getContent());
             default -> {
             }
         }
@@ -123,10 +133,23 @@ public class DocumentPatchExecutor {
         if (!afterXml.contains("id=\"" + operation.getBlockId() + "\"")) {
             throw new IllegalStateException("block_replace 后目标 block 丢失，校验失败");
         }
-        if (operation.getNewContent() != null && !operation.getNewContent().isBlank()
-                && !normalize(afterMarkdown).contains(normalize(operation.getNewContent()))) {
-            throw new IllegalStateException("block_replace 后未找到新内容，校验失败");
+        if (operation.getNewContent() == null || operation.getNewContent().isBlank()) {
+            return;
         }
+        String normalizedAfter = normalize(afterMarkdown);
+        String normalizedNew = normalize(operation.getNewContent());
+        if (normalizedAfter.contains(normalizedNew)) {
+            return;
+        }
+        String normalizedOld = normalize(operation.getOldText());
+        if (normalizedOld != null && !normalizedOld.isBlank() && normalizedNew.contains(normalizedOld)) {
+            int splitIndex = normalizedNew.indexOf(normalizedOld);
+            String insertedPrefix = normalizedNew.substring(0, splitIndex);
+            if (!insertedPrefix.isBlank() && normalizedAfter.contains(insertedPrefix) && normalizedAfter.contains(normalizedOld)) {
+                return;
+            }
+        }
+        throw new IllegalStateException("block_replace 后未找到新内容，校验失败");
     }
 
     private void verifyBlockInsert(LarkDocUpdateResult result, DocumentPatchOperation operation, String afterMarkdown, String afterXml) {
@@ -164,12 +187,20 @@ public class DocumentPatchExecutor {
         }
     }
 
+    private void verifyAppend(DocumentPatchOperation operation, String afterMarkdown) {
+        if (operation.getNewContent() != null && !operation.getNewContent().isBlank()
+                && !normalize(afterMarkdown).contains(normalize(operation.getNewContent()))) {
+            throw new IllegalStateException("append 后未找到新增内容，校验失败");
+        }
+    }
+
     private void collectModifiedBlocks(
             List<String> modifiedBlocks,
             DocumentPatchOperation operation,
             LarkDocUpdateResult result
     ) {
-        if (operation.getOperationType() == DocumentPatchOperationType.BLOCK_INSERT_AFTER
+        if ((operation.getOperationType() == DocumentPatchOperationType.BLOCK_INSERT_AFTER
+                || operation.getOperationType() == DocumentPatchOperationType.APPEND)
                 && result.getNewBlocks() != null
                 && !result.getNewBlocks().isEmpty()) {
             for (LarkDocBlockRef block : result.getNewBlocks()) {
@@ -181,6 +212,8 @@ public class DocumentPatchExecutor {
         }
         if (operation.getOperationType() == DocumentPatchOperationType.BLOCK_INSERT_AFTER) {
             modifiedBlocks.add("insert-after:" + operation.getBlockId());
+        } else if (operation.getOperationType() == DocumentPatchOperationType.APPEND) {
+            modifiedBlocks.add("append");
         } else if (operation.getBlockId() != null && !operation.getBlockId().isBlank()) {
             modifiedBlocks.add(operation.getBlockId());
         } else if (operation.getOldText() != null && !operation.getOldText().isBlank()) {

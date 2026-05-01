@@ -74,4 +74,33 @@ class DocumentPatchExecutorTest {
         assertThat(result.getAfterRevision()).isEqualTo(2L);
         assertThat(result.getModifiedBlocks()).containsExactly("insert-after:heading-block");
     }
+
+    @Test
+    void blockReplacePrependSimulationPassesWhenInsertedPrefixAndAnchorRemain() {
+        LarkDocTool tool = mock(LarkDocTool.class);
+        when(tool.fetchDocFullMarkdown("doc123"))
+                .thenReturn(LarkDocFetchResult.builder().revisionId(1L).content("## 一、项目背景").build())
+                .thenReturn(LarkDocFetchResult.builder().revisionId(2L).content("## 前言\n\n新增内容\n\n## 一、项目背景").build());
+        when(tool.fetchDocFull("doc123", "with-ids"))
+                .thenReturn(LarkDocFetchResult.builder().revisionId(1L).content("<doc><h2 id=\"blk1\">一、项目背景</h2></doc>").build())
+                .thenReturn(LarkDocFetchResult.builder().revisionId(2L).content("<doc><h2 id=\"blk1\">一、项目背景</h2><p id=\"blk2\">新增内容</p></doc>").build());
+        when(tool.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), anyLong()))
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(2L).updatedBlocksCount(2).build());
+
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .patchOperations(List.of(DocumentPatchOperation.builder()
+                        .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
+                        .blockId("blk1")
+                        .oldText("## 一、项目背景")
+                        .newContent("## 前言\n\n新增内容\n\n## 一、项目背景")
+                        .docFormat("markdown")
+                        .build()))
+                .build();
+
+        DocumentPatchExecutor.PatchExecutionResult result = executor.execute("doc123", plan);
+
+        assertThat(result.getAfterRevision()).isEqualTo(2L);
+        assertThat(result.getModifiedBlocks()).containsExactly("blk1");
+    }
 }

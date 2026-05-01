@@ -81,7 +81,7 @@ class DefaultDocumentIterationExecutionServiceTest {
         when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
         when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
         when(intentService.resolve(anyString())).thenReturn(DocumentIterationIntentType.EXPLAIN);
-        when(targetLocator.locate(any(), anyString())).thenReturn(selector);
+        when(targetLocator.locate(any(), eq(DocumentIterationIntentType.EXPLAIN), anyString())).thenReturn(selector);
         when(editPlanBuilder.build(anyString(), any(), any(), anyString())).thenReturn(plan);
 
         DocumentIterationVO response = service.execute(request);
@@ -114,7 +114,7 @@ class DefaultDocumentIterationExecutionServiceTest {
         when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
         when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
         when(intentService.resolve(anyString())).thenReturn(DocumentIterationIntentType.UPDATE_CONTENT);
-        when(targetLocator.locate(any(), anyString())).thenReturn(selector);
+        when(targetLocator.locate(any(), eq(DocumentIterationIntentType.UPDATE_CONTENT), anyString())).thenReturn(selector);
         when(editPlanBuilder.build(anyString(), any(), any(), anyString())).thenReturn(plan);
         when(patchExecutor.execute(anyString(), any()))
                 .thenReturn(new DocumentPatchExecutor.PatchExecutionResult(List.of("text-match"), 1L, 2L));
@@ -147,7 +147,7 @@ class DefaultDocumentIterationExecutionServiceTest {
         when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
         when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
         when(intentService.resolve(anyString())).thenReturn(DocumentIterationIntentType.DELETE);
-        when(targetLocator.locate(any(), anyString())).thenReturn(selector);
+        when(targetLocator.locate(any(), eq(DocumentIterationIntentType.DELETE), anyString())).thenReturn(selector);
         when(editPlanBuilder.build(anyString(), any(), any(), anyString())).thenReturn(plan);
 
         DocumentIterationVO response = service.execute(request);
@@ -216,7 +216,7 @@ class DefaultDocumentIterationExecutionServiceTest {
                 .build();
         when(runtimeSupport.findPending("doc-iter-1")).thenReturn(java.util.Optional.of(pending));
         when(ownershipGuard.assertEditable(anyString(), anyString(), eq("task-1"))).thenReturn(ownedArtifact());
-        when(targetLocator.locate(any(), eq("请改成整章重写"))).thenReturn(selector);
+        when(targetLocator.locate(any(), eq(DocumentIterationIntentType.UPDATE_CONTENT), eq("请改成整章重写"))).thenReturn(selector);
         when(editPlanBuilder.build(eq("doc-iter-1"), eq(DocumentIterationIntentType.UPDATE_CONTENT), eq(selector), eq("请改成整章重写")))
                 .thenReturn(replanned);
 
@@ -289,6 +289,7 @@ class DefaultDocumentIterationExecutionServiceTest {
                 .docUrl("https://example.feishu.cn/docx/doc123")
                 .targetType(DocumentTargetType.SECTION)
                 .locatorStrategy(DocumentLocatorStrategy.BY_HEADING)
+                .relativePosition(com.lark.imcollab.common.model.enums.DocumentRelativePosition.REPLACE)
                 .locatorValue("项目背景")
                 .matchedExcerpt("旧内容")
                 .matchedBlockIds(List.of("blk1"))

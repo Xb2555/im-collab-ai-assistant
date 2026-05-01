@@ -57,7 +57,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             String operator = context == null ? null : context.getSenderOpenId();
             Artifact ownedArtifact = ownershipGuard.assertEditable(request.getDocUrl(), operator, request.getTaskId());
             DocumentIterationIntentType intentType = intentService.resolve(request.getInstruction());
-            DocumentTargetSelector selector = targetLocator.locate(ownedArtifact, request.getInstruction());
+            DocumentTargetSelector selector = targetLocator.locate(ownedArtifact, intentType, request.getInstruction());
             DocumentEditPlan editPlan = editPlanBuilder.build(runtime.getTaskId(), intentType, selector, request.getInstruction());
             if (editPlan.isRequiresApproval()) {
                 runtimeSupport.waitForApproval(runtime, request, editPlan, ownedArtifact, operator);
@@ -106,7 +106,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentEditPlan plan = pending.getEditPlan();
             if (status == ApprovalStatus.MODIFIED) {
                 String revisedInstruction = defaultIfBlank(request == null ? null : request.getFeedback(), pending.getOriginalRequest().getInstruction());
-                DocumentTargetSelector selector = targetLocator.locate(ownedArtifact, revisedInstruction);
+                DocumentTargetSelector selector = targetLocator.locate(ownedArtifact, pending.getIntentType(), revisedInstruction);
                 plan = editPlanBuilder.build(taskId, pending.getIntentType(), selector, revisedInstruction);
                 if (plan.isRequiresApproval()) {
                     DocumentIterationRequest revisedRequest = copyRequest(pending.getOriginalRequest(), revisedInstruction);
