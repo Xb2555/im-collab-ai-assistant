@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.runtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
@@ -10,10 +11,12 @@ import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.StepTypeEnum;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -48,6 +51,9 @@ class TaskRuntimeProjectionServiceTest {
         assertThat(store.task.getStatus().name()).isEqualTo("PLANNING");
         assertThat(store.events).hasSize(1);
         assertThat(store.events.get(0).getType()).isEqualTo(TaskEventTypeEnum.INTAKE_ACCEPTED);
+        assertThat(store.streamEvents)
+                .extracting(com.lark.imcollab.common.model.entity.TaskEvent::getStatus)
+                .containsExactly(TaskEventTypeEnum.INTAKE_ACCEPTED.name());
     }
 
     @Test
@@ -81,6 +87,9 @@ class TaskRuntimeProjectionServiceTest {
         assertThat(store.events).singleElement()
                 .extracting(TaskEventRecord::getType)
                 .isEqualTo(TaskEventTypeEnum.PLAN_READY);
+        assertThat(store.streamEvents)
+                .extracting(com.lark.imcollab.common.model.entity.TaskEvent::getStatus)
+                .containsExactly(TaskEventTypeEnum.PLAN_READY.name());
     }
 
     @Test
@@ -225,10 +234,38 @@ class TaskRuntimeProjectionServiceTest {
                 .contains("old-summary");
     }
 
+    @Test
+    void snapshotPrefersFinalArtifactUrlOverPreviewDraftWithSameTitle() {
+        InMemoryPlannerStateStore store = new InMemoryPlannerStateStore();
+        TaskRuntimeProjectionService service = new TaskRuntimeProjectionService(store, new ObjectMapper());
+        store.saveArtifact(ArtifactRecord.builder()
+                .artifactId("draft")
+                .taskId("task-artifact")
+                .type(ArtifactTypeEnum.DOC)
+                .title("项目进展文档")
+                .preview("{\"title\":\"项目进展文档\"}")
+                .createdAt(Instant.now())
+                .build());
+        store.saveArtifact(ArtifactRecord.builder()
+                .artifactId("final")
+                .taskId("task-artifact")
+                .type(ArtifactTypeEnum.DOC)
+                .title("项目进展文档")
+                .url("https://example.feishu.cn/docx/final")
+                .createdAt(Instant.now())
+                .build());
+
+        assertThat(service.getSnapshot("task-artifact").getArtifacts())
+                .extracting(ArtifactRecord::getArtifactId)
+                .containsExactly("final");
+    }
+
     private static class InMemoryPlannerStateStore implements PlannerStateStore {
         private TaskRecord task;
         private final List<TaskStepRecord> steps = new ArrayList<>();
         private final List<TaskEventRecord> events = new ArrayList<>();
+        private final List<com.lark.imcollab.common.model.entity.TaskEvent> streamEvents = new ArrayList<>();
+        private final List<ArtifactRecord> artifacts = new ArrayList<>();
 
         @Override public void saveTask(TaskRecord task) { this.task = task; }
         @Override public Optional<TaskRecord> findTask(String taskId) { return Optional.ofNullable(task); }
@@ -242,11 +279,11 @@ class TaskRuntimeProjectionServiceTest {
         @Override public Optional<PlanTaskSession> findSession(String taskId) { return Optional.empty(); }
         @Override public Optional<String> findConversationTaskId(String conversationKey) { return Optional.empty(); }
         @Override public void saveConversationTaskBinding(String conversationKey, String taskId) { }
-        @Override public void appendEvent(com.lark.imcollab.common.model.entity.TaskEvent event) { }
+        @Override public void appendEvent(com.lark.imcollab.common.model.entity.TaskEvent event) { streamEvents.add(event); }
         @Override public List<String> getEventJsonList(String taskId) { return List.of(); }
         @Override public Optional<TaskStepRecord> findStep(String stepId) { return steps.stream().filter(step -> step.getStepId().equals(stepId)).findFirst(); }
-        @Override public void saveArtifact(com.lark.imcollab.common.model.entity.ArtifactRecord artifact) { }
-        @Override public List<com.lark.imcollab.common.model.entity.ArtifactRecord> findArtifactsByTaskId(String taskId) { return List.of(); }
+        @Override public void saveArtifact(com.lark.imcollab.common.model.entity.ArtifactRecord artifact) { artifacts.add(artifact); }
+        @Override public List<com.lark.imcollab.common.model.entity.ArtifactRecord> findArtifactsByTaskId(String taskId) { return artifacts; }
         @Override public void saveSubmission(com.lark.imcollab.common.model.entity.TaskSubmissionResult submission) { }
         @Override public Optional<com.lark.imcollab.common.model.entity.TaskSubmissionResult> findSubmission(String taskId, String agentTaskId) { return Optional.empty(); }
         @Override public void saveEvaluation(com.lark.imcollab.common.model.entity.TaskResultEvaluation evaluation) { }

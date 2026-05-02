@@ -6,20 +6,39 @@ import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
-import lombok.RequiredArgsConstructor;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
+import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.UUID;
 
 @Service
-@RequiredArgsConstructor
 public class PlannerConversationService {
 
     private final TaskSessionResolver sessionResolver;
     private final TaskIntakeService intakeService;
     private final PlannerSessionService sessionService;
-    private final SupervisorPlannerService supervisorPlannerService;
     private final TaskBridgeService taskBridgeService;
+    private final PlannerConversationMemoryService memoryService;
+    private final PlannerSupervisorGraphRunner graphRunner;
+
+    public PlannerConversationService(
+            TaskSessionResolver sessionResolver,
+            TaskIntakeService intakeService,
+            PlannerSessionService sessionService,
+            TaskBridgeService taskBridgeService,
+            PlannerConversationMemoryService memoryService,
+            PlannerSupervisorGraphRunner graphRunner
+    ) {
+        this.sessionResolver = sessionResolver;
+        this.intakeService = intakeService;
+        this.sessionService = sessionService;
+        this.taskBridgeService = taskBridgeService;
+        this.memoryService = memoryService;
+        this.graphRunner = graphRunner;
+    }
 
     public PlanTaskSession handlePlanRequest(
             String rawInstruction,
@@ -28,8 +47,9 @@ public class PlannerConversationService {
             String userFeedback
     ) {
         TaskSessionResolution resolution = sessionResolver.resolve(taskId, workspaceContext);
-        PlanTaskSession session = sessionService.getOrCreate(resolution.taskId());
-        sessionResolver.bindConversation(resolution);
+        PlanTaskSession session = resolution.existingSession()
+                ? sessionService.get(resolution.taskId())
+                : transientSession(resolution.taskId(), workspaceContext);
 
         TaskIntakeDecision intakeDecision = intakeService.decide(
                 session,
@@ -37,44 +57,126 @@ public class PlannerConversationService {
                 userFeedback,
                 resolution.existingSession()
         );
+        intakeDecision = absorbDocLinksDuringClarification(session, resolution, workspaceContext, intakeDecision, userFeedback, rawInstruction);
+        if (shouldStartFreshTask(taskId, resolution, intakeDecision)) {
+            resolution = new TaskSessionResolution(UUID.randomUUID().toString(), false, resolution.continuationKey());
+            session = transientSession(resolution.taskId(), workspaceContext);
+        }
+        String userInput = firstText(userFeedback, rawInstruction);
+        String graphInstruction = userInput.isBlank() ? intakeDecision.effectiveInput() : userInput;
+        if (shouldShortCircuitWithoutTask(resolution, intakeDecision)) {
+            updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution, graphInstruction);
+            return session;
+        }
+        if (!resolution.existingSession()) {
+            session = sessionService.getOrCreate(resolution.taskId());
+        }
+        if (shouldBindConversation(resolution, intakeDecision)) {
+            sessionResolver.bindConversation(resolution);
+        }
 
-        updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution);
+        updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution, graphInstruction);
+        memoryService.appendUserTurn(
+                session,
+                graphInstruction,
+                intakeDecision.intakeType(),
+                workspaceContext == null ? null : workspaceContext.getInputSource());
+        if (intakeDecision.assistantReply() != null && !intakeDecision.assistantReply().isBlank()) {
+            memoryService.appendAssistantTurn(session, intakeDecision.assistantReply());
+        }
         sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(session.getTaskId(), "INTAKE_ACCEPTED");
 
-        PlanTaskSession result = switch (intakeDecision.intakeType()) {
-            case UNKNOWN -> sessionService.get(session.getTaskId());
-            case STATUS_QUERY -> sessionService.get(session.getTaskId());
-            case CONFIRM_ACTION -> sessionService.get(session.getTaskId());
-            case CANCEL_TASK -> {
-                sessionService.markAborted(session.getTaskId(), "User cancelled from conversation: " + intakeDecision.effectiveInput());
-                yield sessionService.get(session.getTaskId());
-            }
-            case CLARIFICATION_REPLY -> supervisorPlannerService.resume(session.getTaskId(), intakeDecision.effectiveInput(), false);
-            case NEW_TASK -> supervisorPlannerService.plan(
-                    intakeDecision.effectiveInput(),
-                    workspaceContext,
-                    session.getTaskId(),
-                    userFeedback
-            );
-            case PLAN_ADJUSTMENT -> supervisorPlannerService.adjustPlan(
-                    session.getTaskId(),
-                    intakeDecision.effectiveInput(),
-                    workspaceContext
-            );
-        };
+        PlanTaskSession result = graphRunner.run(
+                PlannerSupervisorDecision.fromIntake(intakeDecision.intakeType(), intakeDecision.routingReason()),
+                session.getTaskId(),
+                graphInstruction,
+                workspaceContext,
+                userFeedback
+        );
         taskBridgeService.ensureTask(result);
         return result;
+    }
+
+    private boolean shouldShortCircuitWithoutTask(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
+        if (resolution == null || resolution.existingSession() || intakeDecision == null) {
+            return false;
+        }
+        TaskIntakeTypeEnum type = intakeDecision.intakeType();
+        return type == TaskIntakeTypeEnum.UNKNOWN
+                || type == TaskIntakeTypeEnum.STATUS_QUERY
+                || type == TaskIntakeTypeEnum.CANCEL_TASK
+                || type == TaskIntakeTypeEnum.CONFIRM_ACTION;
+    }
+
+    private boolean shouldStartFreshTask(String explicitTaskId, TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
+        return resolution != null
+                && !hasText(explicitTaskId)
+                && resolution.existingSession()
+                && intakeDecision != null
+                && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK;
+    }
+
+    private boolean shouldBindConversation(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
+        if (resolution == null || intakeDecision == null) {
+            return false;
+        }
+        if (resolution.existingSession()) {
+            return true;
+        }
+        return switch (intakeDecision.intakeType()) {
+            case STATUS_QUERY, UNKNOWN, CANCEL_TASK, CONFIRM_ACTION -> false;
+            default -> true;
+        };
+    }
+
+    private PlanTaskSession transientSession(String taskId, WorkspaceContext workspaceContext) {
+        return PlanTaskSession.builder()
+                .taskId(taskId)
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .planScore(0)
+                .aborted(false)
+                .turnCount(0)
+                .scenarioPath(List.of(ScenarioCodeEnum.A_IM, ScenarioCodeEnum.B_PLANNING))
+                .build();
+    }
+
+    private TaskIntakeDecision absorbDocLinksDuringClarification(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision current,
+            String userFeedback,
+            String rawInstruction
+    ) {
+        if (session == null
+                || resolution == null
+                || !resolution.existingSession()
+                || session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
+                || workspaceContext == null
+                || workspaceContext.getDocRefs() == null
+                || workspaceContext.getDocRefs().isEmpty()) {
+            return current;
+        }
+        String effectiveInput = firstText(userFeedback, rawInstruction);
+        return new TaskIntakeDecision(
+                TaskIntakeTypeEnum.CLARIFICATION_REPLY,
+                effectiveInput,
+                "guard clarification reply from extracted doc refs",
+                null,
+                null
+        );
     }
 
     private void updateSessionEnvelope(
             PlanTaskSession session,
             WorkspaceContext workspaceContext,
             TaskIntakeDecision intakeDecision,
-            TaskSessionResolution resolution
+            TaskSessionResolution resolution,
+            String userInput
     ) {
         if (!resolution.existingSession() && session.getRawInstruction() == null) {
-            session.setRawInstruction(intakeDecision.effectiveInput());
+            session.setRawInstruction(firstText(userInput, intakeDecision.effectiveInput()));
         }
         session.setInputContext(TaskInputContext.builder()
                 .inputSource(workspaceContext == null ? null : workspaceContext.getInputSource())
@@ -88,9 +190,10 @@ public class PlannerConversationService {
                 .intakeType(intakeDecision.intakeType())
                 .continuedConversation(resolution.existingSession())
                 .continuationKey(resolution.continuationKey())
-                .lastUserMessage(intakeDecision.effectiveInput())
+                .lastUserMessage(firstText(userInput, intakeDecision.effectiveInput()))
                 .routingReason(intakeDecision.routingReason())
                 .assistantReply(intakeDecision.assistantReply())
+                .readOnlyView(intakeDecision.readOnlyView())
                 .lastInputAt(workspaceContext == null ? null : workspaceContext.getTimeRange())
                 .build());
         if (session.getScenarioPath() == null || session.getScenarioPath().isEmpty()) {
@@ -100,5 +203,16 @@ public class PlannerConversationService {
             session.setPlanningPhase(PlanningPhaseEnum.INTAKE);
         }
         session.setTransitionReason("Scenario A intake accepted");
+    }
+
+    private String firstText(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first.trim();
+        }
+        return second == null ? "" : second.trim();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

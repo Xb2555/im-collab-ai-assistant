@@ -36,7 +36,7 @@ public class TaskIntakeService {
         String assistantReply = intakeType == TaskIntakeTypeEnum.UNKNOWN
                 ? unknownIntentReplyService.reply(session, effectiveInput, result.reason())
                 : null;
-        return new TaskIntakeDecision(intakeType, result.normalizedInput(), result.reason(), assistantReply);
+        return new TaskIntakeDecision(intakeType, result.normalizedInput(), result.reason(), assistantReply, result.readOnlyView());
     }
 
     public TaskIntakeService(IntentRouterService intentRouterService) {

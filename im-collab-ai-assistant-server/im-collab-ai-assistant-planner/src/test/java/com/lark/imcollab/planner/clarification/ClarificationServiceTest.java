@@ -17,7 +17,7 @@ class ClarificationServiceTest {
     void askingUserLimitsQuestionsToThreeAndCreatesPromptSlots() {
         PlanTaskSession session = PlanTaskSession.builder().taskId("task-1").build();
 
-        service.askUser(session, List.of("目标受众是谁？", "输出文档还是 PPT？", "时间范围？", "语气？"));
+        service.askUser(session, List.of("我还需要确认一下：目标受众是谁？", "输出文档还是 PPT？", "时间范围？", "语气？"));
 
         assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
         assertThat(session.getClarificationQuestions()).containsExactly("目标受众是谁？", "输出文档还是 PPT？", "时间范围？");

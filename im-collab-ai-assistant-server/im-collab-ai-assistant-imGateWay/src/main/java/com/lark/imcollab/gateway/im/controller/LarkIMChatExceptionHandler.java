@@ -7,6 +7,7 @@ import com.lark.imcollab.gateway.im.client.LarkOpenApiException;
 import com.lark.imcollab.gateway.im.service.LarkIMUnauthorizedException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -19,6 +20,11 @@ public class LarkIMChatExceptionHandler {
     @ExceptionHandler(LarkIMUnauthorizedException.class)
     public ResponseEntity<BaseResponse<?>> unauthorized() {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ResultUtils.error(BusinessCode.NOT_LOGIN_ERROR));
+    }
+
+    @ExceptionHandler(AsyncRequestTimeoutException.class)
+    public ResponseEntity<Void> asyncRequestTimeout() {
+        return ResponseEntity.noContent().build();
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

@@ -64,7 +64,7 @@ public class IntentRouterService {
                 ? Optional.empty()
                 : llmIntentClassifier.classify(session, normalized, existingSession)
                 .map(result -> decisionGuard.guard(session, normalized, existingSession, result));
-        if (model.isPresent() && !model.get().needsClarification()) {
+        if (model.isPresent()) {
             return model.get();
         }
         if (plannerProperties.getIntent().isFallbackToLocalRules()) {

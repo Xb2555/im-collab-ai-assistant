@@ -29,6 +29,7 @@ class LarkIMMessageProjectionServiceTests {
                 "group",
                 "text",
                 "hello",
+                "hello",
                 "ou_sender",
                 "1608594809",
                 false
@@ -52,6 +53,7 @@ class LarkIMMessageProjectionServiceTests {
                 null,
                 "group",
                 "system",
+                "{\"template\":\"{from_user} 创建了群聊，并邀请了 {members}\",\"from_user\":{\"id\":\"ou_zhang\"},\"members\":[{\"id\":\"ou_li\"}]}",
                 "{\"template\":\"{from_user} 创建了群聊，并邀请了 {members}\",\"from_user\":{\"id\":\"ou_zhang\"},\"members\":[{\"id\":\"ou_li\"}]}",
                 null,
                 "1608594809",

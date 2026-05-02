@@ -9,16 +9,16 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
-import java.text.Normalizer;
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,125 +27,54 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class PlanAdjustmentInterpreter {
 
-    private final ReactAgent planningAgent;
+    private final ReactAgent replanAgent;
     private final ObjectMapper objectMapper;
     private final PlannerProperties plannerProperties;
+    private final PlannerConversationMemoryService memoryService;
     private final ExecutorService executorService = Executors.newCachedThreadPool();
 
     public PlanAdjustmentInterpreter(
-            @Qualifier("planningAgent") ReactAgent planningAgent,
+            @Qualifier("replanAgent") ReactAgent replanAgent,
             ObjectMapper objectMapper,
-            PlannerProperties plannerProperties
+            PlannerProperties plannerProperties,
+            PlannerConversationMemoryService memoryService
     ) {
-        this.planningAgent = planningAgent;
+        this.replanAgent = replanAgent;
         this.objectMapper = objectMapper;
         this.plannerProperties = plannerProperties;
+        this.memoryService = memoryService;
     }
 
     public PlanPatchIntent interpret(PlanTaskSession session, String instruction, WorkspaceContext workspaceContext) {
         List<UserPlanCard> cards = activeCards(session);
-        Optional<PlanPatchIntent> local = interpretLocally(cards, instruction);
-        if (local.isPresent() && shouldUseLocalImmediately(local.get())) {
-            return local.get();
+        if (!hasText(instruction)) {
+            return clarify("我没收到具体修改内容，你想新增、删除、修改还是调整哪一步？");
         }
         Optional<PlanPatchIntent> model = interpretWithModel(session, cards, instruction)
                 .flatMap(intent -> normalizeModelIntent(intent, cards, instruction));
-        if (local.isPresent()
-                && conflictsWithLocalAdd(local.get(), model.orElse(null), instruction)) {
-            model = Optional.empty();
-        }
         if (model.isPresent()) {
             return model.get();
         }
-        if (local.isPresent() && isUsableFallback(local.get())) {
-            return local.get();
-        }
-        PlanPatchIntent fallback = local.orElseGet(() -> clarify("我没完全判断清楚，你想修改哪一个步骤？"));
-        if (fallback.getOperation() == null || !isUsableFallback(fallback)) {
-            String question = fallback.getClarificationQuestion();
-            return clarify(hasText(question) ? question : "我没完全判断清楚，你想修改哪一个步骤？");
-        }
-        return fallback;
-    }
-
-    private Optional<PlanPatchIntent> interpretLocally(List<UserPlanCard> cards, String instruction) {
-        String normalized = normalize(instruction);
-        if (normalized.isBlank()) {
-            return Optional.of(clarify("我没收到具体修改内容，你想调整哪个步骤？"));
-        }
-        if (containsAny(normalized, "全部重做", "重新规划", "从头规划", "整体重做", "regenerate all")) {
-            return Optional.of(PlanPatchIntent.builder()
-                    .operation(PlanPatchOperation.REGENERATE_ALL)
-                    .confidence(0.95d)
-                    .reason("explicit full replan")
-                    .build());
-        }
-        if (containsAny(normalized, "不想", "不要", "去掉", "删除", "删掉", "移除", "不用")) {
-            List<String> targets = matchTargets(cards, normalized);
-            if (!targets.isEmpty()) {
-                return Optional.of(PlanPatchIntent.builder()
-                        .operation(PlanPatchOperation.REMOVE_STEP)
-                        .targetCardIds(targets)
-                        .confidence(0.9d)
-                        .reason("local remove patch")
-                        .build());
-            }
-            return Optional.of(clarify("你想去掉计划里的哪一步？"));
-        }
-        if (containsAny(normalized, "改成", "换成", "调整为", "改为")) {
-            List<String> targets = targetByOrdinal(cards, normalized);
-            if (targets.isEmpty()) {
-                targets = matchTargets(cards, normalized);
-            }
-            if (!targets.isEmpty()) {
-                return Optional.of(PlanPatchIntent.builder()
-                        .operation(PlanPatchOperation.UPDATE_STEP)
-                        .targetCardIds(targets)
-                        .newCardDrafts(List.of(draftFromInstruction(normalized)))
-                        .confidence(0.55d)
-                        .reason("local update patch")
-                        .build());
-            }
-            return Optional.of(clarify("你想把哪一步改掉？"));
-        }
-        if (looksLikeReorder(normalized)) {
-            List<String> ordered = inferOrder(cards, normalized);
-            if (ordered.size() == cards.size()) {
-                return Optional.of(PlanPatchIntent.builder()
-                        .operation(PlanPatchOperation.REORDER_STEP)
-                        .orderedCardIds(ordered)
-                        .confidence(0.55d)
-                        .reason("local reorder patch")
-                        .build());
-            }
-        }
-        if (containsAny(normalized, "再加", "加上", "加个", "新增", "补一", "补个", "补一下", "补充", "追加", "还要", "来一份", "也来")) {
-            return Optional.of(PlanPatchIntent.builder()
-                    .operation(PlanPatchOperation.ADD_STEP)
-                    .newCardDrafts(List.of(draftFromInstruction(normalized)))
-                    .confidence(0.55d)
-                    .reason("local add patch")
-                    .build());
-        }
-        return Optional.empty();
+        return clarify("我先不改当前计划。你可以告诉我想新增哪项、去掉哪项，或把哪一步改成什么。");
     }
 
     private Optional<PlanPatchIntent> interpretWithModel(PlanTaskSession session, List<UserPlanCard> cards, String instruction) {
-        if (planningAgent == null) {
+        if (replanAgent == null) {
             return Optional.empty();
         }
         if (!plannerProperties.getReplan().isPatchIntentModelEnabled()) {
             return Optional.empty();
         }
-        String prompt = buildPrompt(cards, instruction);
+        String prompt = buildPrompt(session, cards, instruction);
+        String taskId = session == null || !hasText(session.getTaskId()) ? "unknown" : session.getTaskId();
         RunnableConfig config = RunnableConfig.builder()
-                .threadId((session == null ? "unknown" : session.getTaskId()) + "-patch-intent")
+                .threadId(taskId + ":planner:replan")
                 .build();
         try {
             return CompletableFuture
                     .supplyAsync(() -> {
                         try {
-                            return planningAgent.call(prompt, config).getText();
+                            return replanAgent.call(prompt, config).getText();
                         } catch (Exception exception) {
                             throw new IllegalStateException(exception);
                         }
@@ -164,7 +93,10 @@ public class PlanAdjustmentInterpreter {
         }
         try {
             JsonNode root = objectMapper.readTree(extractJson(text));
-            PlanPatchOperation operation = PlanPatchOperation.valueOf(root.path("operation").asText("CLARIFY_REQUIRED"));
+            PlanPatchOperation operation = parseOperation(root.path("operation").asText(null));
+            if (operation == null) {
+                return Optional.empty();
+            }
             List<String> targets = strings(root.path("targetCardIds"));
             List<String> ordered = strings(root.path("orderedCardIds"));
             List<PlanPatchCardDraft> drafts = new ArrayList<>();
@@ -188,42 +120,81 @@ public class PlanAdjustmentInterpreter {
     }
 
     private Optional<PlanPatchIntent> normalizeModelIntent(PlanPatchIntent intent, List<UserPlanCard> cards, String instruction) {
-        if (intent == null || intent.getOperation() == null || !passesModelThreshold(intent)) {
+        if (intent == null || intent.getOperation() == null) {
             return Optional.empty();
         }
-        if (intent.getOperation() == PlanPatchOperation.REGENERATE_ALL || intent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED) {
+        if (!passesModelThreshold(intent)) {
+            return Optional.of(clarify(hasText(intent.getClarificationQuestion())
+                    ? intent.getClarificationQuestion()
+                    : "我先不动当前计划。你可以再说清楚想改哪一步、改成什么吗？"));
+        }
+        if (intent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED) {
+            return Optional.of(clarify(hasText(intent.getClarificationQuestion())
+                    ? intent.getClarificationQuestion()
+                    : "我先不动当前计划。你想新增、删除、改写，还是调整顺序？"));
+        }
+        if (intent.getOperation() == PlanPatchOperation.REGENERATE_ALL) {
             return Optional.of(intent);
         }
-        if ((intent.getOperation() == PlanPatchOperation.REMOVE_STEP || intent.getOperation() == PlanPatchOperation.UPDATE_STEP)
+        if ((intent.getOperation() == PlanPatchOperation.REMOVE_STEP
+                || intent.getOperation() == PlanPatchOperation.UPDATE_STEP
+                || intent.getOperation() == PlanPatchOperation.MERGE_STEP)
                 && (intent.getTargetCardIds() == null || intent.getTargetCardIds().isEmpty())) {
-            List<String> targets = matchTargets(cards, normalize(instruction));
+            return Optional.of(clarify("我先不动当前计划。你想改的是哪一个步骤？"));
+        }
+        if (intent.getOperation() == PlanPatchOperation.REMOVE_STEP
+                || intent.getOperation() == PlanPatchOperation.UPDATE_STEP
+                || intent.getOperation() == PlanPatchOperation.MERGE_STEP) {
+            List<String> targets = validCardIds(cards, intent.getTargetCardIds());
             if (targets.isEmpty()) {
-                return Optional.empty();
+                return Optional.of(clarify("我先保留当前计划。你要改的那一步我没有对上，可以换个说法指出具体步骤吗？"));
             }
             intent.setTargetCardIds(targets);
         }
+        if (intent.getOperation() == PlanPatchOperation.MERGE_STEP
+                && (intent.getTargetCardIds() == null || intent.getTargetCardIds().size() < 2)) {
+            return Optional.of(clarify("我先不合并步骤。你想把哪一步放进哪一个已有步骤里？"));
+        }
         if (intent.getOperation() == PlanPatchOperation.ADD_STEP
-                && (intent.getNewCardDrafts() == null || intent.getNewCardDrafts().isEmpty())) {
-            intent.setNewCardDrafts(List.of(draftFromInstruction(normalize(instruction))));
+                || intent.getOperation() == PlanPatchOperation.UPDATE_STEP
+                || intent.getOperation() == PlanPatchOperation.MERGE_STEP) {
+            List<PlanPatchCardDraft> drafts = validDrafts(intent.getNewCardDrafts());
+            if (drafts.isEmpty()) {
+                return Optional.of(clarify("我先不改当前计划。你想把这一步改成什么产物或内容？"));
+            }
+            intent.setNewCardDrafts(drafts);
         }
-        if (intent.getOperation() == PlanPatchOperation.UPDATE_STEP
-                && (intent.getNewCardDrafts() == null || intent.getNewCardDrafts().isEmpty())) {
-            intent.setNewCardDrafts(List.of(draftFromInstruction(normalize(instruction))));
-        }
-        if (intent.getOperation() == PlanPatchOperation.REORDER_STEP
-                && (intent.getOrderedCardIds() == null || intent.getOrderedCardIds().isEmpty())) {
-            return Optional.empty();
+        if (intent.getOperation() == PlanPatchOperation.REORDER_STEP) {
+            List<String> ordered = validFullOrder(cards, intent.getOrderedCardIds());
+            if (ordered.isEmpty()) {
+                return Optional.of(clarify("我先不改顺序。你可以按 1、2、3 说一下新的步骤顺序。"));
+            }
+            intent.setOrderedCardIds(ordered);
         }
         return Optional.of(intent);
     }
 
-    private String buildPrompt(List<UserPlanCard> cards, String instruction) {
+    private String buildPrompt(PlanTaskSession session, List<UserPlanCard> cards, String instruction) {
         StringBuilder builder = new StringBuilder();
-        builder.append("You classify one user plan adjustment into a JSON patch intent. ");
-        builder.append("Do not rewrite the whole plan unless the user explicitly asks to regenerate everything.\n");
-        builder.append("Allowed operations: ADD_STEP, REMOVE_STEP, UPDATE_STEP, REORDER_STEP, REGENERATE_ALL, CLARIFY_REQUIRED.\n");
+        builder.append("You are the replan sub-agent inside a Spring AI Alibaba StateGraph planner. ");
+        builder.append("Follow a Claude-Code-like boundary: you decide the semantic patch, while Java tools validate and merge it. ");
+        builder.append("Do not rely on hidden rules, do not rewrite untouched steps, and do not claim execution happened.\n");
+        builder.append("Allowed operations: ADD_STEP, REMOVE_STEP, UPDATE_STEP, MERGE_STEP, REORDER_STEP, REGENERATE_ALL, CLARIFY_REQUIRED.\n");
         builder.append("Return JSON only: {\"operation\":\"...\",\"targetCardIds\":[],\"orderedCardIds\":[],\"newCardDrafts\":[{\"title\":\"\",\"description\":\"\",\"type\":\"DOC|PPT|SUMMARY\"}],\"confidence\":0.0,\"reason\":\"\",\"clarificationQuestion\":\"\"}\n");
-        builder.append("Important: additive phrases such as 顺手补一个, 再加, 追加, also include, add one more should be ADD_STEP with empty targetCardIds. Do not overwrite an existing card for additive requests.\n");
+        builder.append("Rules:\n");
+        builder.append("- Use only these existing cardIds when targeting steps. Never invent targetCardIds.\n");
+        builder.append("- ADD_STEP must include at least one complete newCardDraft and empty targetCardIds.\n");
+        builder.append("- When the user asks for an extra/final/additional deliverable, prefer ADD_STEP. Do not rewrite or replace existing cards.\n");
+        builder.append("- Infer the new draft type from the requested output form: document/table/report as DOC, slides/presentation as PPT, short message/summary/conclusion as SUMMARY.\n");
+        builder.append("- REMOVE_STEP and UPDATE_STEP must target existing cardIds.\n");
+        builder.append("- When the user says to change X into Y, replace wording, remove a phrase from a step, or says '把/将 X 改成 Y' / '不要提 Z', prefer UPDATE_STEP if one existing card semantically matches X. Include the rewritten card draft.\n");
+        builder.append("- Use MERGE_STEP when the user wants one existing step not to be separate anymore, but included/folded/placed inside another existing step. targetCardIds must put the destination card first, then the source card(s) to remove. newCardDrafts must contain the rewritten destination card.\n");
+        builder.append("- If the user mentions 'last step' or describes a unique existing card by meaning, target that existing card id. Do not ask clarification when the target is clear from current cards.\n");
+        builder.append("- If the user says keep A and do not do B, remove only the matching B step and preserve the other steps.\n");
+        builder.append("- REORDER_STEP must return orderedCardIds containing every current cardId exactly once.\n");
+        builder.append("- REGENERATE_ALL only when the user explicitly asks to redo the whole plan.\n");
+        builder.append("- If the request is ambiguous or unsupported, return CLARIFY_REQUIRED with one natural question.\n");
+        builder.append("- Stable deliverables are only DOC, PPT, SUMMARY. Mermaid is a DOC content requirement, not a separate artifact.\n");
         builder.append("Current cards:\n");
         for (UserPlanCard card : cards) {
             builder.append("- ")
@@ -233,132 +204,14 @@ public class PlanAdjustmentInterpreter {
                     .append(card.getDescription() == null ? "" : card.getDescription())
                     .append("\n");
         }
+        String memoryContext = memoryService == null ? "" : memoryService.renderContext(session);
+        if (memoryContext != null && !memoryContext.isBlank()) {
+            builder.append("Conversation memory:\n")
+                    .append(memoryContext)
+                    .append("\n");
+        }
         builder.append("User adjustment: ").append(instruction == null ? "" : instruction.trim());
         return builder.toString();
-    }
-
-    private List<String> matchTargets(List<UserPlanCard> cards, String normalizedInstruction) {
-        List<ScoredCard> scored = new ArrayList<>();
-        for (UserPlanCard card : cards) {
-            String cardText = normalize(card.getTitle() + " " + card.getDescription() + " " + card.getType());
-            int score = overlapScore(normalizedInstruction, cardText);
-            if (card.getType() == PlanCardTypeEnum.SUMMARY && containsAny(normalizedInstruction, "摘要", "总结", "进展", "summary")) {
-                score += 5;
-            }
-            if (card.getType() == PlanCardTypeEnum.PPT && containsAny(normalizedInstruction, "ppt", "演示", "汇报")) {
-                score += 3;
-            }
-            if (card.getType() == PlanCardTypeEnum.DOC && containsAny(normalizedInstruction, "文档", "doc")) {
-                score += 3;
-            }
-            if (score > 2 && hasText(card.getCardId())) {
-                scored.add(new ScoredCard(card.getCardId(), score));
-            }
-        }
-        if (scored.isEmpty()) {
-            return List.of();
-        }
-        int bestScore = scored.stream().mapToInt(ScoredCard::score).max().orElse(0);
-        return scored.stream()
-                .filter(card -> card.score() == bestScore)
-                .sorted(Comparator.comparing(ScoredCard::cardId))
-                .map(ScoredCard::cardId)
-                .toList();
-    }
-
-    private List<String> targetByOrdinal(List<UserPlanCard> cards, String normalizedInstruction) {
-        if (cards.isEmpty()) {
-            return List.of();
-        }
-        if (containsAny(normalizedInstruction, "最后一步", "最后一个")) {
-            return List.of(cards.get(cards.size() - 1).getCardId());
-        }
-        if (containsAny(normalizedInstruction, "第一步", "第一个")) {
-            return List.of(cards.get(0).getCardId());
-        }
-        if (containsAny(normalizedInstruction, "第二步", "第二个") && cards.size() > 1) {
-            return List.of(cards.get(1).getCardId());
-        }
-        return List.of();
-    }
-
-    private PlanPatchCardDraft draftFromInstruction(String normalizedInstruction) {
-        PlanCardTypeEnum type = inferType(normalizedInstruction);
-        return PlanPatchCardDraft.builder()
-                .type(type)
-                .title(titleFor(type, normalizedInstruction))
-                .description(descriptionFor(type, normalizedInstruction))
-                .build();
-    }
-
-    private PlanCardTypeEnum inferType(String normalizedInstruction) {
-        if (containsAny(normalizedInstruction, "ppt", "演示稿", "汇报")) {
-            return PlanCardTypeEnum.PPT;
-        }
-        if (containsAny(normalizedInstruction, "文档", "doc", "风险", "评估", "表", "清单")) {
-            return PlanCardTypeEnum.DOC;
-        }
-        return PlanCardTypeEnum.SUMMARY;
-    }
-
-    private String titleFor(PlanCardTypeEnum type, String normalizedInstruction) {
-        if (type == PlanCardTypeEnum.PPT && containsAny(normalizedInstruction, "老板", "领导", "管理层", "boss")) {
-            return "生成老板汇报 PPT";
-        }
-        if (type == PlanCardTypeEnum.PPT) {
-            return "生成补充 PPT";
-        }
-        if (type == PlanCardTypeEnum.DOC && containsAny(normalizedInstruction, "风险", "评估", "表")) {
-            return "生成项目风险评估表";
-        }
-        if (type == PlanCardTypeEnum.DOC) {
-            return "生成补充文档";
-        }
-        if (containsAny(normalizedInstruction, "一句话", "一句", "结论")) {
-            return "生成一句话总结";
-        }
-        if (containsAny(normalizedInstruction, "群", "进展")) {
-            return "生成群内项目进展摘要";
-        }
-        String content = conciseAdjustmentContent(normalizedInstruction);
-        return hasText(content) ? "补充：" + content : "生成补充摘要";
-    }
-
-    private String descriptionFor(PlanCardTypeEnum type, String normalizedInstruction) {
-        if (type == PlanCardTypeEnum.PPT) {
-            return "基于已有文档和计划内容生成补充汇报 PPT";
-        }
-        if (type == PlanCardTypeEnum.DOC) {
-            if (containsAny(normalizedInstruction, "风险", "评估", "表")) {
-                return "基于当前方案补充风险、影响和应对措施表";
-            }
-            return "基于当前任务上下文生成补充文档";
-        }
-        return "基于已有文档和汇报材料生成补充摘要";
-    }
-
-    private boolean looksLikeReorder(String normalizedInstruction) {
-        return containsAny(normalizedInstruction, "先做", "放到前", "提前", "最后做", "顺序");
-    }
-
-    private List<String> inferOrder(List<UserPlanCard> cards, String normalizedInstruction) {
-        if (cards.size() < 2 || !containsAny(normalizedInstruction, "先做")) {
-            return List.of();
-        }
-        List<UserPlanCard> ordered = new ArrayList<>(cards);
-        if (normalizedInstruction.indexOf("ppt") >= 0 && normalizedInstruction.indexOf("文档") > normalizedInstruction.indexOf("ppt")) {
-            ordered.sort((left, right) -> {
-                if (left.getType() == PlanCardTypeEnum.PPT && right.getType() != PlanCardTypeEnum.PPT) {
-                    return -1;
-                }
-                if (left.getType() != PlanCardTypeEnum.PPT && right.getType() == PlanCardTypeEnum.PPT) {
-                    return 1;
-                }
-                return 0;
-            });
-            return ordered.stream().map(UserPlanCard::getCardId).toList();
-        }
-        return List.of();
     }
 
     private PlanPatchIntent clarify(String question) {
@@ -383,85 +236,12 @@ public class PlanAdjustmentInterpreter {
                 .toList();
     }
 
-    private int overlapScore(String input, String candidate) {
-        LinkedHashSet<Integer> chars = new LinkedHashSet<>();
-        input.codePoints()
-                .filter(Character::isLetterOrDigit)
-                .forEach(chars::add);
-        int score = 0;
-        for (Integer codePoint : chars) {
-            if (candidate.indexOf(new String(Character.toChars(codePoint))) >= 0) {
-                score++;
-            }
-        }
-        return score;
-    }
-
-    private String normalize(String input) {
-        if (input == null) {
-            return "";
-        }
-        return Normalizer.normalize(input, Normalizer.Form.NFKC)
-                .trim()
-                .toLowerCase(Locale.ROOT)
-                .replaceAll("\\s+", "");
-    }
-
-    private boolean containsAny(String input, String... needles) {
-        if (input == null || needles == null) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (needle != null && !needle.isBlank() && input.contains(normalize(needle))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
 
-    private boolean shouldUseLocalImmediately(PlanPatchIntent intent) {
-        return intent.getOperation() == PlanPatchOperation.REGENERATE_ALL
-                || intent.getOperation() == PlanPatchOperation.REMOVE_STEP
-                || intent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED;
-    }
-
-    private boolean conflictsWithLocalAdd(PlanPatchIntent local, PlanPatchIntent model, String instruction) {
-        if (local == null || model == null) {
-            return false;
-        }
-        if (local.getOperation() != PlanPatchOperation.ADD_STEP) {
-            return false;
-        }
-        if (model.getOperation() == PlanPatchOperation.ADD_STEP) {
-            return false;
-        }
-        String normalized = normalize(instruction);
-        return containsAny(normalized,
-                "再加", "加上", "加个", "新增", "补一", "补个", "补一下", "补充", "追加",
-                "还要", "来一份", "也来", "顺手补", "再帮我补", "add", "alsoinclude");
-    }
-
     private boolean passesModelThreshold(PlanPatchIntent intent) {
         return intent.getConfidence() >= plannerProperties.getReplan().getPatchIntentPassThreshold();
-    }
-
-    private boolean isUsableFallback(PlanPatchIntent intent) {
-        return intent.getConfidence() >= plannerProperties.getReplan().getLocalFallbackThreshold();
-    }
-
-    private String conciseAdjustmentContent(String normalizedInstruction) {
-        String content = normalizedInstruction == null ? "" : normalizedInstruction;
-        for (String prefix : List.of("再加一条", "再加上", "再加", "加上", "新增", "补充", "追加", "还要", "最后", "输出", "生成")) {
-            content = content.replace(normalize(prefix), "");
-        }
-        if (content.length() > 24) {
-            return content.substring(0, 24);
-        }
-        return content;
     }
 
     private String extractJson(String text) {
@@ -487,21 +267,86 @@ public class PlanAdjustmentInterpreter {
         return values;
     }
 
+    private PlanPatchOperation parseOperation(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return PlanPatchOperation.valueOf(value.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
     private PlanCardTypeEnum parseType(String value) {
         if (!hasText(value)) {
-            return PlanCardTypeEnum.SUMMARY;
+            return null;
         }
         try {
             return PlanCardTypeEnum.valueOf(value.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException ignored) {
-            return PlanCardTypeEnum.SUMMARY;
+            return null;
         }
+    }
+
+    private List<String> validCardIds(List<UserPlanCard> cards, List<String> candidates) {
+        Set<String> allowed = cardIds(cards);
+        if (allowed.isEmpty() || candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        List<String> valid = new ArrayList<>();
+        for (String candidate : candidates) {
+            if (hasText(candidate) && allowed.contains(candidate.trim()) && !valid.contains(candidate.trim())) {
+                valid.add(candidate.trim());
+            }
+        }
+        return valid;
+    }
+
+    private List<String> validFullOrder(List<UserPlanCard> cards, List<String> orderedCardIds) {
+        Set<String> allowed = cardIds(cards);
+        if (allowed.isEmpty() || orderedCardIds == null || orderedCardIds.size() != allowed.size()) {
+            return List.of();
+        }
+        List<String> valid = validCardIds(cards, orderedCardIds);
+        if (valid.size() != allowed.size() || new HashSet<>(valid).size() != valid.size()) {
+            return List.of();
+        }
+        return valid;
+    }
+
+    private Set<String> cardIds(List<UserPlanCard> cards) {
+        Set<String> ids = new HashSet<>();
+        if (cards == null) {
+            return ids;
+        }
+        for (UserPlanCard card : cards) {
+            if (card != null && hasText(card.getCardId())) {
+                ids.add(card.getCardId());
+            }
+        }
+        return ids;
+    }
+
+    private List<PlanPatchCardDraft> validDrafts(List<PlanPatchCardDraft> drafts) {
+        if (drafts == null || drafts.isEmpty()) {
+            return List.of();
+        }
+        List<PlanPatchCardDraft> valid = new ArrayList<>();
+        for (PlanPatchCardDraft draft : drafts) {
+            if (draft == null || !hasText(draft.getTitle()) || draft.getType() == null) {
+                continue;
+            }
+            valid.add(PlanPatchCardDraft.builder()
+                    .title(draft.getTitle().trim())
+                    .description(hasText(draft.getDescription()) ? draft.getDescription().trim() : draft.getTitle().trim())
+                    .type(draft.getType())
+                    .build());
+        }
+        return valid;
     }
 
     private int timeoutSeconds() {
         return Math.max(1, plannerProperties.getReplan().getPatchIntentTimeoutSeconds());
-    }
-
-    private record ScoredCard(String cardId, int score) {
     }
 }

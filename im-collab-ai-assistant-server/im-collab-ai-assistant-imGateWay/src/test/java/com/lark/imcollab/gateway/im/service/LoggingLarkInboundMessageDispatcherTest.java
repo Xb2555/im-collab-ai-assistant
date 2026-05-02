@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -17,6 +18,7 @@ import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -40,7 +42,8 @@ class LoggingLarkInboundMessageDispatcherTest {
             replyTool,
             null,
             null,
-            new LarkIMTaskReplyFormatter()
+            new LarkIMTaskReplyFormatter(),
+            new DocRefExtractionService(new ObjectMapper())
     );
 
     @Test
@@ -58,6 +61,24 @@ class LoggingLarkInboundMessageDispatcherTest {
         ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
         verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
         assertThat(textCaptor.getValue()).contains("好的，开始执行");
+    }
+
+    @Test
+    void confirmActionRetriesFailedTaskFromIm() {
+        PlanTaskSession failed = session(TaskIntakeTypeEnum.CONFIRM_ACTION, PlanningPhaseEnum.FAILED);
+        PlanTaskSession retrying = session(TaskIntakeTypeEnum.CONFIRM_ACTION, PlanningPhaseEnum.EXECUTING);
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(failed);
+        when(taskCommandFacade.retryExecution("task-1")).thenReturn(retrying);
+        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshot(TaskStatusEnum.EXECUTING));
+
+        dispatcher.dispatch(message("再试一次"));
+
+        verify(taskCommandFacade).retryExecution("task-1");
+        verify(taskCommandFacade, never()).confirmExecution(anyString());
+        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
+        assertThat(textCaptor.getValue()).contains("重新试一次");
     }
 
     @Test
@@ -88,6 +109,64 @@ class LoggingLarkInboundMessageDispatcherTest {
         verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
         assertThat(textCaptor.getValue()).contains("计划已更新", "开始执行");
         assertThat(textCaptor.getValue()).doesNotContain("成功标准", "风险关注");
+    }
+
+    @Test
+    void imRawInstructionIsNotPassedAsSelectedWorkspaceMaterial() {
+        PlanTaskSession clarification = session(TaskIntakeTypeEnum.NEW_TASK, PlanningPhaseEnum.ASK_USER);
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(clarification);
+
+        dispatcher.dispatch(message("帮我总结群里消息并生成一个总结文档"));
+
+        ArgumentCaptor<WorkspaceContext> contextCaptor = ArgumentCaptor.forClass(WorkspaceContext.class);
+        verify(plannerPlanFacade).plan(
+                org.mockito.ArgumentMatchers.eq("帮我总结群里消息并生成一个总结文档"),
+                contextCaptor.capture(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull());
+        WorkspaceContext context = contextCaptor.getValue();
+        assertThat(context.getSelectedMessages()).isEmpty();
+        assertThat(context.getTimeRange()).isNull();
+        assertThat(context.getSelectionType()).isNull();
+        assertThat(context.getMessageId()).isEqualTo("message-1");
+    }
+
+    @Test
+    void docLinkMessagePopulatesWorkspaceDocRefs() {
+        PlanTaskSession clarification = session(TaskIntakeTypeEnum.CLARIFICATION_REPLY, PlanningPhaseEnum.PLAN_READY);
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(clarification);
+
+        dispatcher.dispatch(message(
+                "这个是文档链接：https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph",
+                "{\"text\":\"这个是文档链接\",\"share_link\":\"https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph\"}"
+        ));
+
+        ArgumentCaptor<WorkspaceContext> contextCaptor = ArgumentCaptor.forClass(WorkspaceContext.class);
+        verify(plannerPlanFacade).plan(
+                org.mockito.ArgumentMatchers.eq("这个是文档链接：https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph"),
+                contextCaptor.capture(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull());
+        assertThat(contextCaptor.getValue().getDocRefs())
+                .containsExactly("https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph");
+        assertThat(contextCaptor.getValue().getSelectionType()).isEqualTo("DOCUMENT");
+    }
+
+    @Test
+    void planAdjustmentClarificationDoesNotPretendPlanUpdated() {
+        PlanTaskSession unchanged = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.PLAN_READY);
+        unchanged.getIntakeState().setAssistantReply("我还没完全判断清楚要怎么改这份计划。");
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(unchanged);
+
+        dispatcher.dispatch(message("顺手处理一下"));
+
+        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
+        assertThat(textCaptor.getValue()).contains("我还没完全判断清楚");
+        assertThat(textCaptor.getValue()).doesNotContain("计划已更新");
     }
 
     @Test
@@ -124,6 +203,7 @@ class LoggingLarkInboundMessageDispatcherTest {
     @Test
     void detailedPlanExpandsCardsOnlyWhenAsked() {
         PlanTaskSession detailed = session(TaskIntakeTypeEnum.STATUS_QUERY, PlanningPhaseEnum.PLAN_READY);
+        detailed.getIntakeState().setAssistantReply(new LarkIMTaskReplyFormatter().fullPlan(detailed));
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(detailed);
 
@@ -137,6 +217,7 @@ class LoggingLarkInboundMessageDispatcherTest {
     @Test
     void naturalPlanQuestionExpandsFullPlan() {
         PlanTaskSession detailed = session(TaskIntakeTypeEnum.STATUS_QUERY, PlanningPhaseEnum.PLAN_READY);
+        detailed.getIntakeState().setAssistantReply(new LarkIMTaskReplyFormatter().fullPlan(detailed));
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(detailed);
 
@@ -152,6 +233,7 @@ class LoggingLarkInboundMessageDispatcherTest {
     @Test
     void completePlanWithParticleExpandsFullPlan() {
         PlanTaskSession detailed = session(TaskIntakeTypeEnum.STATUS_QUERY, PlanningPhaseEnum.PLAN_READY);
+        detailed.getIntakeState().setAssistantReply(new LarkIMTaskReplyFormatter().fullPlan(detailed));
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(detailed);
 
@@ -201,6 +283,10 @@ class LoggingLarkInboundMessageDispatcherTest {
     }
 
     private static LarkInboundMessage message(String content) {
+        return message(content, content);
+    }
+
+    private static LarkInboundMessage message(String content, String rawContent) {
         return new LarkInboundMessage(
                 "event-1",
                 "message-1",
@@ -209,6 +295,7 @@ class LoggingLarkInboundMessageDispatcherTest {
                 "p2p",
                 "text",
                 content,
+                rawContent,
                 "ou-user",
                 "2026-04-30T00:00:00Z",
                 InputSourceEnum.LARK_PRIVATE_CHAT

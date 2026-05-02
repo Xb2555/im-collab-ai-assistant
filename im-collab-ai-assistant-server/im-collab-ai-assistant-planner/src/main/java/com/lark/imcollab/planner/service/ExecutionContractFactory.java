@@ -6,9 +6,11 @@ import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TermResolution;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.planner.intent.ArtifactIntentResolver;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -23,6 +25,11 @@ public class ExecutionContractFactory {
 
     private final ArtifactIntentResolver artifactIntentResolver;
 
+    public ExecutionContractFactory() {
+        this(new ArtifactIntentResolver((instruction, allowedChoices, systemPrompt) -> "DOC"));
+    }
+
+    @Autowired
     public ExecutionContractFactory(ArtifactIntentResolver artifactIntentResolver) {
         this.artifactIntentResolver = artifactIntentResolver;
     }
@@ -131,20 +138,20 @@ public class ExecutionContractFactory {
     private String buildClarifiedInstruction(PlanTaskSession session, String rawInstruction) {
         List<String> answers = defaultList(session.getClarificationAnswers());
         List<String> constraints = resolveConstraints(session);
-        StringBuilder builder = new StringBuilder(firstNonBlank(session.getClarifiedInstruction(), rawInstruction));
-        if (!answers.isEmpty()) {
-            builder.append("\n补充说明：").append(String.join("；", answers));
-        }
-        if (!constraints.isEmpty()) {
-            builder.append("\n执行约束：").append(String.join("；", constraints));
-        }
+        List<String> planRequirements = resolvePlanRequirements(session);
+        StringBuilder builder = new StringBuilder(safe(firstNonBlank(
+                rawInstruction,
+                session.getRawInstruction(),
+                session.getClarifiedInstruction()
+        )));
+        appendUniqueSection(builder, "补充说明：", answers);
+        appendUniqueSection(builder, "当前计划要求：", planRequirements);
+        appendUniqueSection(builder, "执行约束：", constraints);
         List<TermResolution> termResolutions = defaultList(session.getTermResolutions());
         if (!termResolutions.isEmpty()) {
-            builder.append("\n术语消歧：");
-            builder.append(termResolutions.stream()
+            appendUniqueSection(builder, "术语消歧：", termResolutions.stream()
                     .map(item -> item.getTerm() + "=" + item.getResolvedMeaning())
-                    .reduce((left, right) -> left + "；" + right)
-                    .orElse(""));
+                    .toList());
         }
         return builder.toString();
     }
@@ -158,6 +165,38 @@ public class ExecutionContractFactory {
                     .orElse("");
         }
         return firstNonBlank(session.getIndustry(), session.getProfession(), "general");
+    }
+
+    private List<String> resolvePlanRequirements(PlanTaskSession session) {
+        List<UserPlanCard> cards = session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getPlanCards();
+        if (cards == null || cards.isEmpty()) {
+            cards = session.getPlanCards();
+        }
+        return defaultList(cards).stream()
+                .filter(card -> card != null)
+                .filter(card -> !"SUPERSEDED".equalsIgnoreCase(card.getStatus()))
+                .map(card -> {
+                    String title = firstNonBlank(card.getTitle(), "未命名步骤");
+                    String description = firstNonBlank(card.getDescription(), card.getType() == null ? null : card.getType().name());
+                    if (description == null) {
+                        return title;
+                    }
+                    return title + " - " + description;
+                })
+                .distinct()
+                .toList();
+    }
+
+    private void appendUniqueSection(StringBuilder builder, String label, List<String> values) {
+        List<String> uniqueValues = defaultList(values).stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .distinct()
+                .filter(value -> !builder.toString().contains(value))
+                .toList();
+        if (!uniqueValues.isEmpty()) {
+            builder.append("\n").append(label).append(String.join("；", uniqueValues));
+        }
     }
 
     private List<String> resolveConstraints(PlanTaskSession session) {
@@ -183,65 +222,16 @@ public class ExecutionContractFactory {
     }
 
     private DiagramRequirement resolveDiagramRequirement(String rawInstruction, String clarifiedInstruction, List<String> constraints) {
-        String text = (safe(rawInstruction) + "\n" + safe(clarifiedInstruction) + "\n" + String.join("\n", defaultList(constraints)))
-                .toLowerCase(Locale.ROOT);
-        boolean requiresDiagram = text.contains("mermaid")
-                || text.contains("流程图")
-                || text.contains("时序图")
-                || text.contains("状态图")
-                || text.contains("架构图")
-                || text.contains("数据流图");
-        if (!requiresDiagram) {
-            return DiagramRequirement.builder()
-                    .required(false)
-                    .types(List.of())
-                    .format("MERMAID")
-                    .placement("INLINE_DOC")
-                    .count(0)
-                    .build();
-        }
-        Set<String> types = new LinkedHashSet<>();
-        if (text.contains("时序")) {
-            types.add("SEQUENCE");
-        }
-        if (text.contains("状态")) {
-            types.add("STATE");
-        }
-        if (text.contains("上下文") || text.contains("context")) {
-            types.add("CONTEXT");
-        }
-        if (text.contains("数据流") || text.contains("流程")) {
-            types.add("DATA_FLOW");
-        }
-        if (types.isEmpty()) {
-            types.add("DATA_FLOW");
-        }
         return DiagramRequirement.builder()
-                .required(true)
-                .types(List.copyOf(types))
+                .required(false)
+                .types(List.of())
                 .format("MERMAID")
                 .placement("INLINE_DOC")
-                .count(1)
+                .count(0)
                 .build();
     }
 
     private String resolveTemplateStrategy(String rawInstruction, String clarifiedInstruction) {
-        String text = (safe(rawInstruction) + "\n" + safe(clarifiedInstruction)).toLowerCase(Locale.ROOT);
-        if (text.contains("架构评审") || text.contains("architecture review")) {
-            return "ARCHITECTURE_REVIEW";
-        }
-        if (text.contains("技术介绍") || text.contains("spring ai") || text.contains("介绍")) {
-            return "TECHNICAL_INTRODUCTION";
-        }
-        if (text.contains("架构") || text.contains("harness")) {
-            return "TECHNICAL_ARCHITECTURE";
-        }
-        if (text.contains("需求") || text.contains("prd")) {
-            return "REQUIREMENTS";
-        }
-        if (text.contains("会议") || text.contains("纪要")) {
-            return "MEETING_SUMMARY";
-        }
         return "REPORT";
     }
 
@@ -250,19 +240,13 @@ public class ExecutionContractFactory {
             return null;
         }
         String upper = value.trim().toUpperCase(Locale.ROOT);
-        if (upper.contains("PPT") || upper.contains("SLIDE")) {
-            return "PPT";
-        }
-        if (upper.contains("WHITEBOARD") || upper.contains("BOARD")) {
-            return "WHITEBOARD";
-        }
-        if (upper.contains("DOC")) {
-            return "DOC";
-        }
-        if (upper.contains(PlanCardTypeEnum.SUMMARY.name())) {
-            return "SUMMARY";
-        }
-        return upper;
+        return switch (upper) {
+            case "PPT", "SLIDE", "SLIDES", "PRESENTATION" -> "PPT";
+            case "WHITEBOARD", "BOARD" -> "WHITEBOARD";
+            case "DOC", "DOCUMENT" -> "DOC";
+            case "SUMMARY" -> "SUMMARY";
+            default -> upper;
+        };
     }
 
     private String firstNonBlank(String... values) {

@@ -6,6 +6,7 @@ import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,7 @@ public class CardPlanPatchMerger {
             case ADD_STEP -> addCards(cards, intent, taskId);
             case REMOVE_STEP -> removeCards(cards, intent);
             case UPDATE_STEP -> updateCards(cards, intent);
+            case MERGE_STEP -> mergeCards(cards, intent);
             case REORDER_STEP -> cards = reorderCards(cards, intent);
             default -> {
             }
@@ -80,10 +82,13 @@ public class CardPlanPatchMerger {
         if (draft == null) {
             return;
         }
+        Map<String, CardTextChange> textChanges = new LinkedHashMap<>();
         for (UserPlanCard card : cards) {
             if (card == null || !targets.contains(card.getCardId())) {
                 continue;
             }
+            String oldTitle = card.getTitle();
+            String oldDescription = card.getDescription();
             if (hasText(draft.getTitle())) {
                 card.setTitle(draft.getTitle().trim());
             }
@@ -94,7 +99,53 @@ public class CardPlanPatchMerger {
                 card.setType(draft.getType());
             }
             card.setVersion(card.getVersion() + 1);
+            textChanges.put(card.getCardId(), new CardTextChange(oldTitle, oldDescription, card.getTitle(), card.getDescription()));
         }
+        refreshDependentReferences(cards, textChanges);
+    }
+
+    private void mergeCards(List<UserPlanCard> cards, PlanPatchIntent intent) {
+        LinkedHashSet<String> targets = ids(intent.getTargetCardIds());
+        if (targets.size() < 2) {
+            return;
+        }
+        String destinationId = targets.iterator().next();
+        PlanPatchCardDraft draft = intent.getNewCardDrafts() == null || intent.getNewCardDrafts().isEmpty()
+                ? null
+                : intent.getNewCardDrafts().get(0);
+        if (draft == null) {
+            return;
+        }
+        Map<String, CardTextChange> textChanges = new LinkedHashMap<>();
+        for (UserPlanCard card : cards) {
+            if (card == null || !destinationId.equals(card.getCardId())) {
+                continue;
+            }
+            String oldTitle = card.getTitle();
+            String oldDescription = card.getDescription();
+            if (hasText(draft.getTitle())) {
+                card.setTitle(draft.getTitle().trim());
+            }
+            if (hasText(draft.getDescription())) {
+                card.setDescription(draft.getDescription().trim());
+            }
+            if (draft.getType() != null) {
+                card.setType(draft.getType());
+            }
+            card.setVersion(card.getVersion() + 1);
+            textChanges.put(card.getCardId(), new CardTextChange(oldTitle, oldDescription, card.getTitle(), card.getDescription()));
+            break;
+        }
+        targets.remove(destinationId);
+        cards.removeIf(card -> card != null
+                && targets.contains(card.getCardId())
+                && !"COMPLETED".equalsIgnoreCase(card.getStatus()));
+        for (UserPlanCard card : cards) {
+            if (card != null && targets.contains(card.getCardId()) && "COMPLETED".equalsIgnoreCase(card.getStatus())) {
+                card.setStatus("SUPERSEDED");
+            }
+        }
+        refreshDependentReferences(cards, textChanges);
     }
 
     private List<UserPlanCard> reorderCards(List<UserPlanCard> cards, PlanPatchIntent intent) {
@@ -191,6 +242,97 @@ public class CardPlanPatchMerger {
             card.setDependsOn(fixed);
             previousActiveId = card.getCardId();
         }
+    }
+
+    private void refreshDependentReferences(List<UserPlanCard> cards, Map<String, CardTextChange> textChanges) {
+        if (textChanges == null || textChanges.isEmpty()) {
+            return;
+        }
+        for (UserPlanCard card : cards) {
+            if (card == null || card.getDependsOn() == null || card.getDependsOn().isEmpty()) {
+                continue;
+            }
+            String refreshedTitle = card.getTitle();
+            String refreshedDescription = card.getDescription();
+            boolean changed = false;
+            for (String dependency : card.getDependsOn()) {
+                CardTextChange textChange = textChanges.get(dependency);
+                if (textChange == null) {
+                    continue;
+                }
+                String nextTitle = replaceCardReference(refreshedTitle, textChange);
+                String nextDescription = replaceCardReference(refreshedDescription, textChange);
+                changed = changed
+                        || !safe(nextTitle).equals(safe(refreshedTitle))
+                        || !safe(nextDescription).equals(safe(refreshedDescription));
+                refreshedTitle = nextTitle;
+                refreshedDescription = nextDescription;
+            }
+            if (changed) {
+                card.setTitle(refreshedTitle);
+                card.setDescription(refreshedDescription);
+                card.setVersion(card.getVersion() + 1);
+            }
+        }
+    }
+
+    private String replaceCardReference(String text, CardTextChange textChange) {
+        if (!hasText(text) || textChange == null || !hasText(textChange.newTitle())) {
+            return text;
+        }
+        String result = text;
+        String newTitle = textChange.newTitle().trim();
+        String newCoreTitle = coreTitle(newTitle);
+        for (String oldReference : referenceVariants(textChange.oldTitle(), textChange.oldDescription())) {
+            if (!hasText(oldReference)) {
+                continue;
+            }
+            String replacement = oldReference.equals(coreTitle(oldReference)) ? newCoreTitle : newTitle;
+            if (hasText(replacement)) {
+                result = result.replace(oldReference, replacement);
+            }
+        }
+        return result;
+    }
+
+    private List<String> referenceVariants(String title, String description) {
+        LinkedHashSet<String> variants = new LinkedHashSet<>();
+        if (hasText(title)) {
+            variants.add(title.trim());
+            variants.add(coreTitle(title));
+        }
+        if (hasText(description)) {
+            variants.add(description.trim());
+            variants.add(coreTitle(description));
+        }
+        variants.removeIf(value -> !hasText(value));
+        return new ArrayList<>(variants);
+    }
+
+    private String coreTitle(String value) {
+        if (!hasText(value)) {
+            return value;
+        }
+        String result = value.trim();
+        String[] prefixes = {"生成", "提炼", "输出", "撰写", "整理", "制作", "基于"};
+        boolean changed;
+        do {
+            changed = false;
+            for (String prefix : prefixes) {
+                if (result.startsWith(prefix) && result.length() > prefix.length() + 1) {
+                    result = result.substring(prefix.length()).trim();
+                    changed = true;
+                }
+            }
+        } while (changed);
+        return result;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    private record CardTextChange(String oldTitle, String oldDescription, String newTitle, String newDescription) {
     }
 
     private List<String> defaultDependsOn(List<UserPlanCard> cards) {

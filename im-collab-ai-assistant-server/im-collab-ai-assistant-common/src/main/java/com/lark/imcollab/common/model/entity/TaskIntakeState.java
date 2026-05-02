@@ -34,6 +34,9 @@ public class TaskIntakeState implements Serializable {
     @Schema(description = "无法处理当前意图时面向用户的自然回复")
     private String assistantReply;
 
+    @Schema(description = "只读查询视图，由 LLM 在固定枚举意图内细分，例如 PLAN/STATUS/ARTIFACTS")
+    private String readOnlyView;
+
     @Schema(description = "最近一次输入时间")
     private String lastInputAt;
 }

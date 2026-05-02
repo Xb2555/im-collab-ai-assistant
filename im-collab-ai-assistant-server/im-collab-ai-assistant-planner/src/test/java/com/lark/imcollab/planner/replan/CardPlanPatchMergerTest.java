@@ -71,6 +71,58 @@ class CardPlanPatchMergerTest {
                 .doesNotHaveDuplicates();
     }
 
+    @Test
+    void mergeStepUpdatesDestinationAndRemovesSeparateSourceStep() {
+        PlanBlueprint result = merger.merge(blueprint(), PlanPatchIntent.builder()
+                .operation(PlanPatchOperation.MERGE_STEP)
+                .targetCardIds(List.of("card-001", "card-003"))
+                .newCardDrafts(List.of(PlanPatchCardDraft.builder()
+                        .title("生成技术方案文档（含项目进展摘要）")
+                        .description("生成技术方案文档，并把项目进展摘要放在文档最后，不再单独输出摘要")
+                        .type(PlanCardTypeEnum.DOC)
+                        .build()))
+                .confidence(0.9d)
+                .build(), "task-1");
+
+        assertThat(result.getPlanCards())
+                .extracting(UserPlanCard::getTitle)
+                .containsExactly("生成技术方案文档（含项目进展摘要）", "生成配套 PPT", "生成老板汇报 PPT");
+        assertThat(result.getDeliverables()).containsExactly("DOC", "PPT");
+        assertThat(result.getPlanCards().get(2).getDependsOn()).containsExactly("card-002");
+    }
+
+    @Test
+    void updateStepRefreshesDependentDescriptionReferences() {
+        PlanBlueprint source = PlanBlueprint.builder()
+                .planCards(List.of(
+                        card("card-001", "生成竞品分析与销售应答话术文档", PlanCardTypeEnum.DOC, List.of()),
+                        UserPlanCard.builder()
+                                .cardId("card-002")
+                                .title("提炼销售群摘要")
+                                .description("基于竞品分析与销售应答话术文档，提炼一段销售群摘要")
+                                .type(PlanCardTypeEnum.SUMMARY)
+                                .status("PENDING")
+                                .dependsOn(List.of("card-001"))
+                                .build()
+                ))
+                .build();
+
+        PlanBlueprint result = merger.merge(source, PlanPatchIntent.builder()
+                .operation(PlanPatchOperation.UPDATE_STEP)
+                .targetCardIds(List.of("card-001"))
+                .newCardDrafts(List.of(PlanPatchCardDraft.builder()
+                        .title("生成销售应答话术文档")
+                        .description("基于客户反馈生成销售应答话术文档，不包含竞品分析")
+                        .type(PlanCardTypeEnum.DOC)
+                        .build()))
+                .confidence(0.9d)
+                .build(), "task-1");
+
+        assertThat(result.getPlanCards().get(1).getDescription())
+                .contains("基于销售应答话术文档")
+                .doesNotContain("基于竞品分析与销售应答话术文档");
+    }
+
     private static PlanBlueprint blueprint() {
         return PlanBlueprint.builder()
                 .planCards(List.of(

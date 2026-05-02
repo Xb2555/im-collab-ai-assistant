@@ -40,9 +40,9 @@
 
 ### 2.2 交付物类型判断不严谨
 
-这部分不是“感觉像 contains”，而是代码里确实存在粗粒度 `contains` 路由：
+这部分记录的是旧 planner 规则链路的问题。当前主路径已经移除旧 `IntentRouter`，交付物类型应通过受约束 Agent 输出和 PlanGate 校验决定：
 
-1. `IntentRouter` 直接通过 `msg.contains("ppt") / contains("文档") / contains("方案")` 进行类型判断。见 [IntentRouter.java](/Users/linrunxinnnn/Desktop/lark_im/im-collab-ai-assistant/im-collab-ai-assistant-server/im-collab-ai-assistant-planner/src/main/java/com/lark/imcollab/planner/intent/IntentRouter.java:16)。
+1. 旧 `IntentRouter` 的 `contains` 判断已经退出代码主路径，不应重新引入。
 2. 这类规则天然是“命中即路由”，缺少显式的排他语义。例如“技术方案文档”里包含“方案”，却不代表“要 PPT”。
 3. `TaskBridgeService.resolveType()` 又会根据卡片集合判断 runtime task 是 `WRITE_DOC / WRITE_SLIDES / MIXED`，如果上游 plan 多拆了一张 PPT 卡片，就会直接升级成混合任务。见 [TaskBridgeService.java](/Users/linrunxinnnn/Desktop/lark_im/im-collab-ai-assistant/im-collab-ai-assistant-server/im-collab-ai-assistant-planner/src/main/java/com/lark/imcollab/planner/service/TaskBridgeService.java:52)。
 
@@ -234,7 +234,7 @@
 
 ### 6.1 当前问题
 
-`IntentRouter` 的 `contains` 逻辑只适合作为兜底，不适合作为主判定。
+旧 `IntentRouter` 的 `contains` 逻辑已经被移除。后续不得把它作为主判定或兜底重新加回来。
 
 原因：
 
@@ -584,7 +584,7 @@ harness 的每个节点都不应自己再“猜任务是什么”。
 
 1. `TaskBridgeService` 改为保存真实 `rawInstruction`
 2. `PlannerViewAssembler` 不再优先使用第一张卡片标题作为任务标题
-3. `IntentRouter` 的 `contains` 逻辑降级为兜底
+3. 移除旧 `IntentRouter` 的 `contains` 逻辑，改由受约束 Agent + PlanGate 判定
 4. `dispatchDocTask` 不再默认 `REPORT`
 5. 修改澄清 few-shot，去掉固定三问模式
 6. 技术架构模板先补 Mermaid 槽位

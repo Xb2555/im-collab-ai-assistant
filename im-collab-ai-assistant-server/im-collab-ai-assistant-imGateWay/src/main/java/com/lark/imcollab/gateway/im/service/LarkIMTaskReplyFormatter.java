@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -23,14 +24,19 @@ public class LarkIMTaskReplyFormatter {
         List<UserPlanCard> cards = cards(session);
         StringBuilder builder = new StringBuilder("我准备这样推进：");
         appendCardSummary(builder, cards);
-        builder.append("\n\n没问题的话回复“开始执行”。要改的话直接说，比如“加一段群内摘要”。");
+        builder.append("\n\n没问题的话回复“开始执行”。要改的话直接说");
+        appendEditHint(builder, cards);
+        builder.append("。");
         return builder.toString();
     }
 
     public String planAdjusted(PlanTaskSession session) {
         StringBuilder builder = new StringBuilder("计划已更新，我会按这个顺序推进：");
-        appendCardSummary(builder, cards(session));
-        builder.append("\n\n没问题的话回复“开始执行”。");
+        List<UserPlanCard> cards = cards(session);
+        appendCardSummary(builder, cards);
+        builder.append("\n\n没问题的话回复“开始执行”。要继续改的话也可以直接说");
+        appendEditHint(builder, cards);
+        builder.append("。");
         return builder.toString();
     }
 
@@ -40,11 +46,11 @@ public class LarkIMTaskReplyFormatter {
             return null;
         }
         if (questions.size() == 1) {
-            return "我还需要确认一下：" + questions.get(0);
+            return stripClarificationPrefix(questions.get(0));
         }
-        StringBuilder builder = new StringBuilder("我还需要确认一下：");
+        StringBuilder builder = new StringBuilder("我先确认两点：");
         for (int index = 0; index < Math.min(MAX_CLARIFICATION_QUESTIONS, questions.size()); index++) {
-            builder.append("\n").append(index + 1).append(". ").append(questions.get(index));
+            builder.append("\n").append(index + 1).append(". ").append(stripClarificationPrefix(questions.get(index)));
         }
         return builder.toString();
     }
@@ -55,6 +61,22 @@ public class LarkIMTaskReplyFormatter {
             return "好的，开始执行。我会先处理：" + nextStep + "。完成后继续推进后续步骤。";
         }
         return "好的，开始执行。我会按计划推进，并持续更新任务进度。";
+    }
+
+    public String retryStarted(TaskRuntimeSnapshot snapshot) {
+        String nextStep = nextStepName(snapshot);
+        if (hasText(nextStep)) {
+            return "好的，我会从失败的步骤重新试一次。当前先处理：" + nextStep + "。";
+        }
+        return "好的，我会从失败的步骤重新试一次。";
+    }
+
+    public String retryUnavailable(TaskRuntimeSnapshot snapshot) {
+        TaskStatusEnum status = snapshot == null || snapshot.getTask() == null ? null : snapshot.getTask().getStatus();
+        if (status == TaskStatusEnum.FAILED) {
+            return "这个任务现在可以重试，但我还没能成功提交执行。你可以稍后再试一次。";
+        }
+        return "当前任务不是失败状态，不需要重试。你可以查看进度或继续调整计划。";
     }
 
     public String status(TaskRuntimeSnapshot snapshot) {
@@ -74,11 +96,19 @@ public class LarkIMTaskReplyFormatter {
             if (hasText(currentStep)) {
                 builder.append("\n确认后下一步：").append(currentStep);
             }
+        } else if (task.getStatus() == TaskStatusEnum.COMPLETED) {
+            if (!steps.isEmpty() && completed < steps.size()) {
+                builder.append("\n主执行链路已完成，部分计划步骤可能已合并到同一产物中。");
+            }
         } else if (hasText(currentStep)) {
             builder.append("\n当前步骤：").append(currentStep);
         }
         if (!steps.isEmpty()) {
-            builder.append("\n步骤进度：").append(completed).append("/").append(steps.size());
+            if (task.getStatus() == TaskStatusEnum.COMPLETED && completed < steps.size()) {
+                builder.append("\n计划项：").append(steps.size()).append(" 个");
+            } else {
+                builder.append("\n步骤进度：").append(completed).append("/").append(steps.size());
+            }
         }
         int artifactCount = defaultList(snapshot.getArtifacts()).size();
         if (artifactCount > 0) {
@@ -136,7 +166,7 @@ public class LarkIMTaskReplyFormatter {
     }
 
     public String uncertainIntent() {
-        return "我先保留当前计划。你可以继续补充想改的点；不用改的话回复“开始执行”就行。";
+        return "我先按当前计划停在确认这一步。想看细节、调整步骤，或开始执行，都可以直接说。";
     }
 
     public String uncertainIntent(PlanTaskSession session) {
@@ -164,10 +194,59 @@ public class LarkIMTaskReplyFormatter {
         }
     }
 
+    private void appendEditHint(StringBuilder builder, List<UserPlanCard> cards) {
+        List<String> suggestions = suggestEdits(cards);
+        if (suggestions.isEmpty()) {
+            return;
+        }
+        builder.append("，比如");
+        if (suggestions.size() == 1) {
+            builder.append("“").append(suggestions.get(0)).append("”");
+            return;
+        }
+        builder.append("“").append(suggestions.get(0)).append("”或“").append(suggestions.get(1)).append("”");
+    }
+
+    private List<String> suggestEdits(List<UserPlanCard> cards) {
+        List<String> suggestions = new ArrayList<>();
+        boolean hasDoc = hasType(cards, "DOC");
+        boolean hasPpt = hasType(cards, "PPT");
+        boolean hasSummary = hasType(cards, "SUMMARY");
+        boolean mentionsRisk = containsKeyword(cards, "风险");
+        boolean mentionsMermaid = containsKeyword(cards, "mermaid") || containsKeyword(cards, "架构图");
+        boolean mentionsBoss = containsKeyword(cards, "老板") || containsKeyword(cards, "汇报");
+
+        if (hasDoc && !mentionsRisk) {
+            suggestions.add("补一段风险清单");
+        }
+        if (hasDoc && !hasPpt && mentionsBoss) {
+            suggestions.add("再加一份汇报PPT初稿");
+        }
+        if (hasDoc && !hasSummary) {
+            suggestions.add("最后补一段项目进展摘要");
+        }
+        if (hasDoc && !mentionsMermaid) {
+            suggestions.add("文档里加一张Mermaid架构图");
+        }
+        if (hasPpt && !hasDoc) {
+            suggestions.add("先补一份配套文档");
+        }
+        if (hasSummary && !hasDoc) {
+            suggestions.add("再整理成一份文档");
+        }
+        if (suggestions.isEmpty()) {
+            suggestions.add("补一段风险清单");
+        }
+        return suggestions.stream().distinct().limit(2).toList();
+    }
+
     private String toNaturalStep(UserPlanCard card, int index) {
-        String title = firstNonBlank(card.getTitle(), "处理下一步");
+        String title = normalizeActionTitle(card);
+        if (startsWithSequenceWord(title)) {
+            return title;
+        }
         String lowerTitle = title.toLowerCase();
-        if (index == 0 && (lowerTitle.contains("文档") || lowerTitle.contains("doc"))) {
+        if (index == 0) {
             return "先" + title;
         }
         if (lowerTitle.contains("ppt") || lowerTitle.contains("汇报")) {
@@ -177,6 +256,48 @@ public class LarkIMTaskReplyFormatter {
             return "最后" + title;
         }
         return title;
+    }
+
+    private boolean startsWithSequenceWord(String title) {
+        if (!hasText(title)) {
+            return false;
+        }
+        String trimmed = title.trim();
+        return trimmed.startsWith("先")
+                || trimmed.startsWith("再")
+                || trimmed.startsWith("然后")
+                || trimmed.startsWith("最后");
+    }
+
+    private String normalizeActionTitle(UserPlanCard card) {
+        String title = firstNonBlank(card == null ? null : card.getTitle(), "处理下一步");
+        if (startsWithActionVerb(title)) {
+            return title;
+        }
+        if (card == null || card.getType() == null) {
+            return "处理" + title;
+        }
+        return switch (card.getType()) {
+            case DOC -> "生成" + title;
+            case PPT -> "生成" + title;
+            case SUMMARY -> "生成" + title;
+        };
+    }
+
+    private boolean startsWithActionVerb(String title) {
+        if (!hasText(title)) {
+            return false;
+        }
+        String trimmed = title.trim();
+        return trimmed.startsWith("生成")
+                || trimmed.startsWith("整理")
+                || trimmed.startsWith("提炼")
+                || trimmed.startsWith("转换")
+                || trimmed.startsWith("更新")
+                || trimmed.startsWith("补充")
+                || trimmed.startsWith("撰写")
+                || trimmed.startsWith("基于")
+                || trimmed.startsWith("输出");
     }
 
     private String currentStepName(List<TaskStepRecord> steps) {
@@ -267,6 +388,45 @@ public class LarkIMTaskReplyFormatter {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean hasType(List<UserPlanCard> cards, String typeName) {
+        if (cards == null || cards.isEmpty() || !hasText(typeName)) {
+            return false;
+        }
+        return cards.stream()
+                .anyMatch(card -> card != null
+                        && card.getType() != null
+                        && typeName.equalsIgnoreCase(card.getType().name()));
+    }
+
+    private boolean containsKeyword(List<UserPlanCard> cards, String keyword) {
+        if (cards == null || cards.isEmpty() || !hasText(keyword)) {
+            return false;
+        }
+        String normalizedKeyword = keyword.trim().toLowerCase();
+        return cards.stream().anyMatch(card -> containsText(card, normalizedKeyword));
+    }
+
+    private boolean containsText(UserPlanCard card, String keyword) {
+        if (card == null || !hasText(keyword)) {
+            return false;
+        }
+        return lower(card.getTitle()).contains(keyword)
+                || lower(card.getDescription()).contains(keyword);
+    }
+
+    private String lower(String value) {
+        return value == null ? "" : value.toLowerCase();
+    }
+
+    private String stripClarificationPrefix(String question) {
+        if (!hasText(question)) {
+            return "";
+        }
+        return question.trim()
+                .replaceFirst("^(我还需要确认一下|我需要确认一下|还需要确认一下|请确认一下)[:：，,\\s]*", "")
+                .trim();
     }
 
     private <T> List<T> defaultList(List<T> values) {

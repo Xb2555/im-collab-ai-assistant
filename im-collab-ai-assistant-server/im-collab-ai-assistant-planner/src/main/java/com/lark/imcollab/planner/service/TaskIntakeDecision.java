@@ -6,10 +6,20 @@ public record TaskIntakeDecision(
         TaskIntakeTypeEnum intakeType,
         String effectiveInput,
         String routingReason,
-        String assistantReply
+        String assistantReply,
+        String readOnlyView
 ) {
 
     public TaskIntakeDecision(TaskIntakeTypeEnum intakeType, String effectiveInput) {
-        this(intakeType, effectiveInput, null, null);
+        this(intakeType, effectiveInput, null, null, null);
+    }
+
+    public TaskIntakeDecision(
+            TaskIntakeTypeEnum intakeType,
+            String effectiveInput,
+            String routingReason,
+            String assistantReply
+    ) {
+        this(intakeType, effectiveInput, routingReason, assistantReply, null);
     }
 }

@@ -7,6 +7,17 @@ public record IntentRoutingResult(
         double confidence,
         String reason,
         String normalizedInput,
-        boolean needsClarification
+        boolean needsClarification,
+        String readOnlyView
 ) {
+
+    public IntentRoutingResult(
+            TaskCommandTypeEnum type,
+            double confidence,
+            String reason,
+            String normalizedInput,
+            boolean needsClarification
+    ) {
+        this(type, confidence, reason, normalizedInput, needsClarification, null);
+    }
 }

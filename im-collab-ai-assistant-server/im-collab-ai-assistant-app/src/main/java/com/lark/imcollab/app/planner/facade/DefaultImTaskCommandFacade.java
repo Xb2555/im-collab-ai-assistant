@@ -7,16 +7,25 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.planner.config.PlannerExecutionProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
+import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
@@ -25,28 +34,38 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
 
     private final PlannerSessionService sessionService;
     private final TaskBridgeService taskBridgeService;
+    private final PlannerRetryService plannerRetryService;
     private final TaskRuntimeService taskRuntimeService;
     private final HarnessFacade harnessFacade;
     private final PlannerExecutionReviewService reviewService;
     private final List<TaskUserNotificationFacade> notificationFacades;
-    private final Executor executionExecutor;
+    private final AsyncTaskExecutor executionExecutor;
+    private final ScheduledExecutorService executionTimeoutScheduler;
+    private final PlannerExecutionProperties executionProperties;
+    private final ConcurrentHashMap<String, ActiveExecution> activeExecutions = new ConcurrentHashMap<>();
 
     public DefaultImTaskCommandFacade(
             PlannerSessionService sessionService,
             TaskBridgeService taskBridgeService,
+            PlannerRetryService plannerRetryService,
             TaskRuntimeService taskRuntimeService,
             HarnessFacade harnessFacade,
             PlannerExecutionReviewService reviewService,
             List<TaskUserNotificationFacade> notificationFacades,
-            @Qualifier("plannerTaskExecutor") Executor executionExecutor
+            @Qualifier("executionTaskExecutor") AsyncTaskExecutor executionExecutor,
+            ScheduledExecutorService executionTimeoutScheduler,
+            PlannerExecutionProperties executionProperties
     ) {
         this.sessionService = sessionService;
         this.taskBridgeService = taskBridgeService;
+        this.plannerRetryService = plannerRetryService;
         this.taskRuntimeService = taskRuntimeService;
         this.harnessFacade = harnessFacade;
         this.reviewService = reviewService;
         this.notificationFacades = notificationFacades == null ? List.of() : List.copyOf(notificationFacades);
         this.executionExecutor = executionExecutor;
+        this.executionTimeoutScheduler = executionTimeoutScheduler;
+        this.executionProperties = executionProperties;
     }
 
     @Override
@@ -66,13 +85,45 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     }
 
     @Override
+    public PlanTaskSession retryExecution(String taskId) {
+        PlanTaskSession session = sessionService.get(taskId);
+        if (!plannerRetryService.isRetryable(taskId, session)) {
+            return session;
+        }
+        taskBridgeService.ensureTask(session);
+        PlanTaskSession retrying = plannerRetryService.prepareRetry(taskId);
+        submitExecution(taskId);
+        return retrying;
+    }
+
+    @Override
     public TaskRuntimeSnapshot getRuntimeSnapshot(String taskId) {
         return taskRuntimeService.getSnapshot(taskId);
     }
 
     private void submitExecution(String taskId) {
+        if (activeExecutions.containsKey(taskId)) {
+            log.info("Execution already in flight, skipping duplicate submit: taskId={}", taskId);
+            return;
+        }
         try {
-            executionExecutor.execute(() -> startHarness(taskId));
+            FutureTask<Void> future = new FutureTask<>(() -> {
+                startHarness(taskId);
+                return null;
+            });
+            ScheduledFuture<?> timeoutFuture = executionTimeoutScheduler.schedule(
+                    () -> handleExecutionTimeout(taskId),
+                    Math.max(1, executionProperties.getTimeoutSeconds()),
+                    TimeUnit.SECONDS
+            );
+            ActiveExecution previous = activeExecutions.putIfAbsent(taskId, new ActiveExecution(future, timeoutFuture));
+            if (previous != null) {
+                timeoutFuture.cancel(false);
+                future.cancel(true);
+                log.info("Execution already tracked, cancelled duplicate future: taskId={}", taskId);
+                return;
+            }
+            executionExecutor.execute(future);
         } catch (RuntimeException exception) {
             markExecutionFailed(taskId, "Failed to submit IM execution task", exception);
         }
@@ -81,33 +132,61 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     private void startHarness(String taskId) {
         try {
             harnessFacade.startExecution(taskId);
-            reviewService.reviewAndNotify(taskId);
+            if (activeExecutions.containsKey(taskId)) {
+                reviewService.reviewAndNotify(taskId);
+            } else {
+                log.warn("Skip execution review because task already timed out or finalized: taskId={}", taskId);
+            }
         } catch (RuntimeException exception) {
             markExecutionFailed(taskId, "Harness execution failed after IM confirmation", exception);
+        } finally {
+            clearActiveExecution(taskId);
         }
     }
 
     private void markExecutionFailed(String taskId, String message, RuntimeException exception) {
+        clearActiveExecution(taskId);
         log.warn("{}: taskId={}, error={}", message, taskId, exception.getMessage(), exception);
-        PlanTaskSession failed = sessionService.get(taskId);
-        failed.setPlanningPhase(PlanningPhaseEnum.FAILED);
-        failed.setTransitionReason(message + ": " + exception.getMessage());
-        sessionService.save(failed);
-        sessionService.publishEvent(taskId, "FAILED");
-        taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.FAILED, TaskEventTypeEnum.TASK_FAILED);
-        notifyExecutionFailed(failed, taskId, failed.getTransitionReason());
+        markFailedState(taskId, message + ": " + exception.getMessage());
     }
 
-    private void notifyExecutionFailed(PlanTaskSession session, String taskId, String reason) {
-        if (notificationFacades.isEmpty()) {
+    private void handleExecutionTimeout(String taskId) {
+        ActiveExecution execution = activeExecutions.remove(taskId);
+        if (execution == null) {
             return;
         }
-        TaskRuntimeSnapshot snapshot = null;
-        try {
-            snapshot = taskRuntimeService.getSnapshot(taskId);
-        } catch (RuntimeException snapshotException) {
-            log.warn("Failed to load runtime snapshot for execution failure notification: taskId={}",
-                    taskId, snapshotException);
+        execution.future.cancel(true);
+        execution.timeoutFuture.cancel(false);
+        String reason = "Execution timed out after " + Math.max(1, executionProperties.getTimeoutSeconds()) + " seconds";
+        log.warn("{}", reason + ", taskId=" + taskId);
+        markFailedState(taskId, reason);
+    }
+
+    private void markFailedState(String taskId, String reason) {
+        PlanTaskSession failed = sessionService.get(taskId);
+        failed.setPlanningPhase(PlanningPhaseEnum.FAILED);
+        failed.setTransitionReason(reason);
+        sessionService.save(failed);
+        sessionService.publishEvent(taskId, "FAILED");
+        TaskRuntimeSnapshot snapshot = loadRuntimeSnapshot(taskId);
+        if (!runtimeAlreadyFailed(snapshot)) {
+            taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.FAILED, TaskEventTypeEnum.TASK_FAILED);
+            snapshot = loadRuntimeSnapshot(taskId);
+        }
+        notifyExecutionFailed(failed, snapshot, taskId, reason);
+    }
+
+    private void clearActiveExecution(String taskId) {
+        ActiveExecution execution = activeExecutions.remove(taskId);
+        if (execution == null) {
+            return;
+        }
+        execution.timeoutFuture.cancel(false);
+    }
+
+    private void notifyExecutionFailed(PlanTaskSession session, TaskRuntimeSnapshot snapshot, String taskId, String reason) {
+        if (notificationFacades.isEmpty()) {
+            return;
         }
         for (TaskUserNotificationFacade notificationFacade : notificationFacades) {
             try {
@@ -116,5 +195,24 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
                 log.warn("Failed to notify user about execution failure: taskId={}", taskId, notificationException);
             }
         }
+    }
+
+    private TaskRuntimeSnapshot loadRuntimeSnapshot(String taskId) {
+        try {
+            return taskRuntimeService.getSnapshot(taskId);
+        } catch (RuntimeException snapshotException) {
+            log.warn("Failed to load runtime snapshot for execution failure notification: taskId={}",
+                    taskId, snapshotException);
+            return null;
+        }
+    }
+
+    private boolean runtimeAlreadyFailed(TaskRuntimeSnapshot snapshot) {
+        return snapshot != null
+                && snapshot.getTask() != null
+                && snapshot.getTask().getStatus() == TaskStatusEnum.FAILED;
+    }
+
+    private record ActiveExecution(Future<?> future, ScheduledFuture<?> timeoutFuture) {
     }
 }

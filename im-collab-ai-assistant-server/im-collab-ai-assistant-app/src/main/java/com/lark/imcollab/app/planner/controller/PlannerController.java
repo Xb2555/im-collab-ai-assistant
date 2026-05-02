@@ -2,7 +2,7 @@ package com.lark.imcollab.app.planner.controller;
 
 import com.lark.imcollab.app.planner.assembler.PlannerViewAssembler;
 import com.lark.imcollab.app.planner.assembler.TaskRuntimeViewAssembler;
-import com.lark.imcollab.common.facade.HarnessFacade;
+import com.lark.imcollab.app.planner.service.PlannerCommandApplicationService;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
 import com.lark.imcollab.common.model.dto.DocumentIterationApprovalRequest;
@@ -19,8 +19,6 @@ import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
-import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
-import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.PlanCardVO;
 import com.lark.imcollab.common.model.vo.DocumentIterationVO;
@@ -34,8 +32,6 @@ import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
 import com.lark.imcollab.harness.document.iteration.service.DocumentIterationExecutionService;
 import com.lark.imcollab.planner.service.AsyncPlannerService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
-import com.lark.imcollab.planner.service.SupervisorPlannerService;
-import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
@@ -55,6 +51,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @RestController
 @RequestMapping("/planner/tasks")
@@ -62,16 +59,26 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class PlannerController {
 
-    private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "CANCEL");
+    private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "CANCEL", "RETRY_FAILED");
+    private static final List<TaskStatusEnum> GUI_RECOVERABLE_TASK_STATUSES = List.of(
+            TaskStatusEnum.RECEIVED,
+            TaskStatusEnum.CLARIFYING,
+            TaskStatusEnum.PLANNING,
+            TaskStatusEnum.WAITING_APPROVAL,
+            TaskStatusEnum.EXECUTING,
+            TaskStatusEnum.REPLANNING,
+            TaskStatusEnum.REVIEWING,
+            TaskStatusEnum.PUBLISHING,
+            TaskStatusEnum.FAILED,
+            TaskStatusEnum.COMPLETED
+    );
 
     private final PlannerPlanFacade plannerPlanFacade;
-    private final SupervisorPlannerService supervisorPlannerService;
+    private final PlannerCommandApplicationService plannerCommandApplicationService;
     private final PlannerSessionService sessionService;
     private final TaskRuntimeService taskRuntimeService;
     private final TaskResultEvaluationService evaluationService;
     private final PlannerStateStore repository;
-    private final HarnessFacade harnessFacade;
-    private final TaskBridgeService taskBridgeService;
     private final AsyncPlannerService asyncPlannerService;
     private final PlannerViewAssembler plannerViewAssembler;
     private final TaskRuntimeViewAssembler taskRuntimeViewAssembler;
@@ -142,7 +149,7 @@ public class PlannerController {
     }
 
     @GetMapping("/active")
-    @Operation(summary = "0.1. 查询我的活跃任务", description = "查询当前用户仍在规划、待确认或执行中的任务")
+    @Operation(summary = "0.1. 查询我的可恢复任务", description = "查询当前用户刷新页面后应恢复到工作台的任务，包含进行中、失败和已完成任务")
     public BaseResponse<TaskListVO> listMyActiveTasks(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
             @RequestParam(value = "limit", required = false, defaultValue = "20") int limit,
@@ -156,11 +163,37 @@ public class PlannerController {
         int offset = parseCursor(cursor);
         List<TaskRecord> tasks = repository.findTasksByOwner(
                 user.get().openId(),
-                List.of(TaskStatusEnum.PLANNING, TaskStatusEnum.CLARIFYING, TaskStatusEnum.WAITING_APPROVAL, TaskStatusEnum.EXECUTING),
+                GUI_RECOVERABLE_TASK_STATUSES,
                 offset,
                 normalizedLimit + 1
         );
         return ResultUtils.success(toTaskList(tasks, offset, normalizedLimit));
+    }
+
+    @GetMapping(value = "/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @Operation(summary = "0.2. 订阅我的任务事件流", description = "SSE 推送当前登录用户所有任务的状态事件，适合 GUI 工作台全局监听")
+    public Flux<String> streamMyTaskEvents(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @RequestParam(value = "activeOnly", required = false, defaultValue = "true") boolean activeOnly) {
+        Optional<LarkFrontendUserResponse> user = currentUser(authorization);
+        if (user.isEmpty()) {
+            return Flux.just(errorJson(BusinessCode.NOT_LOGIN_ERROR, "Not logged in"));
+        }
+        Set<String> emittedEventIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        return Flux.interval(Duration.ZERO, Duration.ofSeconds(1))
+                .flatMap(tick -> {
+                    List<TaskRecord> tasks = repository.findTasksByOwner(
+                            user.get().openId(),
+                            activeOnly
+                                    ? GUI_RECOVERABLE_TASK_STATUSES
+                                    : List.of(),
+                            0,
+                            100
+                    );
+                    return Flux.fromIterable(tasks)
+                            .flatMap(task -> Flux.fromIterable(newEvents(task.getTaskId(), emittedEventIds)));
+                })
+                .take(Duration.ofMinutes(10));
     }
 
     @GetMapping(value = "/{taskId}/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -175,13 +208,14 @@ public class PlannerController {
         if (!canAccessTask(taskId, user.get().openId())) {
             return Flux.just(errorJson(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId));
         }
-        return Flux.interval(Duration.ofSeconds(1))
+        AtomicInteger lastIndex = new AtomicInteger(0);
+        return Flux.interval(Duration.ZERO, Duration.ofSeconds(1))
                 .flatMap(tick -> {
                     List<String> events = sessionService.getEventJsonList(taskId);
-                    int lastIndex = sessionService.getLastEventIndex(taskId);
-                    if (events.size() > lastIndex) {
-                        sessionService.setLastEventIndex(taskId, events.size());
-                        return Flux.fromIterable(events.subList(lastIndex, events.size()));
+                    int index = lastIndex.get();
+                    if (events.size() > index) {
+                        lastIndex.set(events.size());
+                        return Flux.fromIterable(events.subList(index, events.size()));
                     }
                     return Flux.empty();
                 })
@@ -191,8 +225,16 @@ public class PlannerController {
     @PostMapping("/{taskId}/interrupt")
     @Operation(summary = "2. 中断任务", description = "中断正在执行的任务")
     public BaseResponse<PlanPreviewVO> interrupt(
-            @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId) {
-        PlanTaskSession session = supervisorPlannerService.interrupt(taskId);
+            @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
+        Optional<LarkFrontendUserResponse> user = currentUser(authorization);
+        if (user.isEmpty()) {
+            return error(BusinessCode.NOT_LOGIN_ERROR, "Not logged in");
+        }
+        if (!canAccessTask(taskId, user.get().openId())) {
+            return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
+        }
+        PlanTaskSession session = plannerCommandApplicationService.cancel(taskId);
         return ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
     }
 
@@ -200,8 +242,16 @@ public class PlannerController {
     @Operation(summary = "3. 恢复任务（回答 LLM 的反问）", description = "根据用户反馈恢复被中断的任务")
     public BaseResponse<PlanPreviewVO> resume(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId,
-            @RequestBody ResumeRequest request) {
-        PlanTaskSession session = supervisorPlannerService.resume(
+            @RequestBody ResumeRequest request,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
+        Optional<LarkFrontendUserResponse> user = currentUser(authorization);
+        if (user.isEmpty()) {
+            return error(BusinessCode.NOT_LOGIN_ERROR, "Not logged in");
+        }
+        if (!canAccessTask(taskId, user.get().openId())) {
+            return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
+        }
+        PlanTaskSession session = plannerCommandApplicationService.resume(
                 taskId,
                 request.getFeedback(),
                 request.isReplanFromRoot()
@@ -297,7 +347,7 @@ public class PlannerController {
     }
 
     @PostMapping("/{taskId}/commands")
-    @Operation(summary = "6. 执行任务指令（确认执行/重新规划/取消规划）", description = "用户确认执行、重规划或取消任务")
+    @Operation(summary = "6. 执行任务指令（确认执行/重新规划/取消规划/失败重试）", description = "用户确认执行、重规划、取消任务或重试失败任务")
     public BaseResponse<PlanPreviewVO> command(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId,
             @RequestBody PlanCommandRequest request,
@@ -322,28 +372,20 @@ public class PlannerController {
 
         return switch (request.getAction()) {
             case "CONFIRM_EXECUTE" -> {
-                taskBridgeService.ensureTask(session);
-                session.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
-                session.setTransitionReason("User confirmed execution");
-                sessionService.save(session);
-                sessionService.publishEvent(taskId, "EXECUTING");
-                taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.EXECUTING, TaskEventTypeEnum.PLAN_APPROVED);
-                harnessFacade.startExecution(taskId);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
+                PlanTaskSession updated = plannerCommandApplicationService.confirmExecution(taskId, session);
+                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
             }
             case "REPLAN" -> {
-                PlanTaskSession updated = supervisorPlannerService.adjustPlan(taskId, request.getFeedback(), null);
-                taskBridgeService.ensureTask(updated);
+                PlanTaskSession updated = plannerCommandApplicationService.replan(taskId, request.getFeedback());
                 yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
             }
             case "CANCEL" -> {
-                session.setPlanningPhase(PlanningPhaseEnum.ABORTED);
-                session.setAborted(true);
-                session.setTransitionReason("User cancelled");
-                sessionService.save(session);
-                sessionService.publishEvent(taskId, "ABORTED");
-                taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.ABORTED, TaskEventTypeEnum.TASK_CANCELLED);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
+                PlanTaskSession updated = plannerCommandApplicationService.cancel(taskId);
+                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+            }
+            case "RETRY_FAILED" -> {
+                PlanTaskSession updated = plannerCommandApplicationService.retryFailed(taskId, session);
+                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
             }
             default -> error(BusinessCode.PARAMS_ERROR, "Unsupported planner command: " + request.getAction());
         };
@@ -504,6 +546,36 @@ public class PlannerController {
 
     private String errorJson(BusinessCode code, String message) {
         return "{\"code\":" + code.getCode() + ",\"data\":null,\"message\":\"" + message.replace("\"", "\\\"") + "\"}";
+    }
+
+    private List<String> newEvents(String taskId, Set<String> emittedEventIds) {
+        if (!hasText(taskId)) {
+            return List.of();
+        }
+        List<String> events = sessionService.getEventJsonList(taskId);
+        if (events.isEmpty()) {
+            return List.of();
+        }
+        return events.stream()
+                .filter(event -> emittedEventIds.add(extractEventId(event)))
+                .toList();
+    }
+
+    private String extractEventId(String eventJson) {
+        if (!hasText(eventJson)) {
+            return "";
+        }
+        String marker = "\"eventId\":\"";
+        int start = eventJson.indexOf(marker);
+        if (start < 0) {
+            return eventJson;
+        }
+        int valueStart = start + marker.length();
+        int end = eventJson.indexOf('"', valueStart);
+        if (end < 0) {
+            return eventJson;
+        }
+        return eventJson.substring(valueStart, end);
     }
 
     private boolean hasText(String value) {

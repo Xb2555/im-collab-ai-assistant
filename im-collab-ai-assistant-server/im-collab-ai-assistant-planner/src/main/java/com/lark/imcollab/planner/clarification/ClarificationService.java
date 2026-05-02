@@ -16,7 +16,7 @@ public class ClarificationService {
                 ? List.of()
                 : questions.stream()
                 .filter(question -> question != null && !question.isBlank())
-                .map(String::trim)
+                .map(this::normalizeQuestion)
                 .distinct()
                 .limit(3)
                 .toList();
@@ -69,6 +69,14 @@ public class ClarificationService {
                     .build());
         }
         return slots;
+    }
+
+    private String normalizeQuestion(String question) {
+        String normalized = question == null ? "" : question.trim();
+        while (normalized.startsWith("我还需要确认一下：") || normalized.startsWith("我还需要确认一下:")) {
+            normalized = normalized.substring("我还需要确认一下：".length()).trim();
+        }
+        return normalized;
     }
 
     private String firstNonBlank(String... values) {

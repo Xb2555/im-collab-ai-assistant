@@ -2,9 +2,11 @@ package com.lark.imcollab.planner.service;
 
 import cn.hutool.core.util.StrUtil;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.config.PlannerAsyncProperties;
 import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
 import lombok.extern.slf4j.Slf4j;
@@ -26,6 +28,7 @@ public class AsyncPlannerService {
     private final TaskRuntimeProjectionService projectionService;
     private final PlannerAsyncProperties asyncProperties;
     private final Executor plannerTaskExecutor;
+    private final TaskIntakeService intakeService;
     private final Set<String> inFlightTasks = ConcurrentHashMap.newKeySet();
 
     public AsyncPlannerService(
@@ -33,13 +36,15 @@ public class AsyncPlannerService {
             PlannerSessionService sessionService,
             TaskRuntimeProjectionService projectionService,
             PlannerAsyncProperties asyncProperties,
-            @Qualifier("plannerTaskExecutor") Executor plannerTaskExecutor
+            @Qualifier("plannerTaskExecutor") Executor plannerTaskExecutor,
+            TaskIntakeService intakeService
     ) {
         this.plannerConversationService = plannerConversationService;
         this.sessionService = sessionService;
         this.projectionService = projectionService;
         this.asyncProperties = asyncProperties;
         this.plannerTaskExecutor = plannerTaskExecutor;
+        this.intakeService = intakeService;
     }
 
     public PlanTaskSession submitPlan(
@@ -49,6 +54,12 @@ public class AsyncPlannerService {
             String userFeedback
     ) {
         String resolvedTaskId = StrUtil.isBlank(taskId) ? UUID.randomUUID().toString() : taskId.trim();
+        TaskIntakeDecision earlyDecision = !StrUtil.isBlank(taskId) || intakeService == null
+                ? null
+                : intakeService.decide(null, rawInstruction, userFeedback, false);
+        if (StrUtil.isBlank(taskId) && shouldShortCircuitWithoutTask(earlyDecision)) {
+            return transientReplySession(resolvedTaskId, rawInstruction, earlyDecision);
+        }
         if (inFlightTasks.contains(resolvedTaskId)) {
             return sessionService.getOrCreate(resolvedTaskId);
         }
@@ -66,6 +77,32 @@ public class AsyncPlannerService {
             return failAcceptedSession(resolvedTaskId, "Planner queue is full: " + exception.getMessage());
         }
         return session;
+    }
+
+    private boolean shouldShortCircuitWithoutTask(TaskIntakeDecision decision) {
+        if (decision == null) {
+            return false;
+        }
+        TaskIntakeTypeEnum type = decision.intakeType();
+        return type == TaskIntakeTypeEnum.UNKNOWN
+                || type == TaskIntakeTypeEnum.STATUS_QUERY
+                || type == TaskIntakeTypeEnum.CANCEL_TASK
+                || type == TaskIntakeTypeEnum.CONFIRM_ACTION;
+    }
+
+    private PlanTaskSession transientReplySession(String taskId, String rawInstruction, TaskIntakeDecision decision) {
+        return PlanTaskSession.builder()
+                .taskId(taskId)
+                .rawInstruction(rawInstruction == null ? null : rawInstruction.trim())
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(decision.intakeType())
+                        .lastUserMessage(decision.effectiveInput())
+                        .routingReason(decision.routingReason())
+                        .assistantReply(decision.assistantReply())
+                        .readOnlyView(decision.readOnlyView())
+                        .build())
+                .build();
     }
 
     private PlanTaskSession initializeAcceptedSession(String taskId, String rawInstruction) {
@@ -91,7 +128,17 @@ public class AsyncPlannerService {
         try {
             plannerConversationService.handlePlanRequest(rawInstruction, workspaceContext, taskId, userFeedback);
         } catch (Exception exception) {
-            log.error("Async planner failed for task {}: {}", taskId, exception.getMessage(), exception);
+            PlanTaskSession current = sessionService.get(taskId);
+            TaskIntakeTypeEnum intakeType = current.getIntakeState() == null ? null : current.getIntakeState().getIntakeType();
+            log.error(
+                    "Async planner failed: taskId={}, thread={}, intakeType={}, rawInstruction={}, error={}",
+                    taskId,
+                    Thread.currentThread().getName(),
+                    intakeType,
+                    rawInstruction,
+                    exception.getMessage(),
+                    exception
+            );
             failAcceptedSession(taskId, exception.getMessage());
         } finally {
             inFlightTasks.remove(taskId);

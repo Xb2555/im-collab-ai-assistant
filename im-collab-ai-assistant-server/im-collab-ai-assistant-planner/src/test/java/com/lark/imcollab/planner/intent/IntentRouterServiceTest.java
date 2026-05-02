@@ -17,8 +17,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class IntentRouterServiceTest {
@@ -40,15 +40,18 @@ class IntentRouterServiceTest {
     }
 
     @Test
-    void statusQueryDoesNotBecomePlanAdjustment() {
+    void statusQueryUsesHardRuleBeforeModel() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-2")
                 .planningPhase(PlanningPhaseEnum.EXECUTING)
                 .build();
 
-        TaskCommand command = router.route(session, "现在进度怎么样了", null, true);
+        TaskCommand command = service.route(session, "现在进度怎么样了", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
+        verifyNoInteractions(model);
     }
 
     @Test
@@ -73,7 +76,45 @@ class IntentRouterServiceTest {
     }
 
     @Test
-    void hardRuleStatusQueryDoesNotCallModel() {
+    void genericApprovalDoesNotUseHardConfirmRule() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        PlanTaskSession session = plannedSession();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.UNKNOWN,
+                0.7d,
+                "generic approval without execute request",
+                "这个方案还行",
+                true
+        )));
+
+        TaskCommand command = service.route(session, "这个方案还行", null, true);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.UNKNOWN);
+        verify(model).classify(session, "这个方案还行", true);
+    }
+
+    @Test
+    void quotedStartExecutionInstructionDoesNotUseHardConfirmRule() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        PlanTaskSession session = plannedSession();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.QUERY_STATUS,
+                0.86d,
+                "user asks about confirmation instruction",
+                "为什么要回复开始执行",
+                false
+        )));
+
+        TaskCommand command = service.route(session, "为什么要回复“开始执行”？", null, true);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
+        verify(model).classify(session, "为什么要回复“开始执行”？", true);
+    }
+
+    @Test
+    void taskOverviewUsesHardRuleBeforeModel() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         IntentRouterService service = router(model, new PlannerProperties());
         PlanTaskSession session = PlanTaskSession.builder()
@@ -84,11 +125,11 @@ class IntentRouterServiceTest {
         TaskCommand command = service.route(session, "任务概况", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
-        verify(model, never()).classify(any(), anyString(), anyBoolean());
+        verifyNoInteractions(model);
     }
 
     @Test
-    void shortTaskOverviewDoesNotBecomePlanAdjustment() {
+    void modelUnavailableTaskOverviewStaysReadOnly() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-2")
                 .planningPhase(PlanningPhaseEnum.PLAN_READY)
@@ -100,22 +141,87 @@ class IntentRouterServiceTest {
     }
 
     @Test
-    void naturalFullPlanQueryRoutesToStatusQuery() {
+    void naturalFullPlanQueryRoutesToStatusQueryByModel() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
         PlanTaskSession session = plannedSession();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.QUERY_STATUS,
+                0.92d,
+                "user asks full plan",
+                "完整的计划给我看看",
+                false
+        )));
 
-        TaskCommand command = router.route(session, "完整的计划给我看看", null, true);
+        TaskCommand command = service.route(session, "完整的计划给我看看", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
     }
 
     @Test
-    void taskOverviewWithMutationVerbStillAdjustsPlan() {
+    void noSessionFullPlanQueryCanStayReadOnly() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+
+        TaskCommand command = service.route(null, "完整计划给我看看", null, false);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
+        verifyNoInteractions(model);
+    }
+
+    @Test
+    void newTaskMentioningStatusDoesNotUseReadOnlyKeywordRule() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.92d,
+                "user asks to create a document whose title contains status",
+                "帮我写一份标题叫状态回归文档的测试文档",
+                false
+        )));
+
+        TaskCommand command = service.route(null, "帮我写一份标题叫状态回归文档的测试文档", null, false);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+        verify(model).classify(null, "帮我写一份标题叫状态回归文档的测试文档", false);
+    }
+
+    @Test
+    void newTaskMentioningQueryDoesNotUseReadOnlyKeywordRule() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.9d,
+                "user asks to create a query report",
+                "帮我生成一个查询性能分析文档",
+                false
+        )));
+
+        TaskCommand command = service.route(null, "帮我生成一个查询性能分析文档", null, false);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+        verify(model).classify(null, "帮我生成一个查询性能分析文档", false);
+    }
+
+    @Test
+    void taskOverviewWithMutationIntentUsesModelClassification() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-2")
                 .planningPhase(PlanningPhaseEnum.PLAN_READY)
                 .build();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.ADJUST_PLAN,
+                0.88d,
+                "user asks to add overview step",
+                "最后加一个任务概况",
+                false
+        )));
 
-        TaskCommand command = router.route(session, "最后加一个任务概况", null, true);
+        TaskCommand command = service.route(session, "最后加一个任务概况", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.ADJUST_PLAN);
     }
@@ -160,7 +266,7 @@ class IntentRouterServiceTest {
     }
 
     @Test
-    void modelStartTaskInsideExistingPlanIsRejectedByGuard() {
+    void modelStartTaskInsideExistingPlanCanOpenFreshTask() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         PlannerProperties properties = new PlannerProperties();
         properties.getIntent().setFallbackToLocalRules(false);
@@ -176,7 +282,7 @@ class IntentRouterServiceTest {
 
         TaskCommand command = service.route(session, "重新描述一下", null, true);
 
-        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.UNKNOWN);
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
     }
 
     @Test
@@ -193,19 +299,69 @@ class IntentRouterServiceTest {
     }
 
     @Test
-    void existingConversationDefaultsToPlanAdjustmentForNaturalEdit() {
+    void readOnlyQueryCanOverrideClarificationFallbackWhenSessionIsAskingUser() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-3")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .build();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.QUERY_STATUS,
+                0.93d,
+                "user asks to inspect current plan",
+                "完整计划给我看看",
+                false,
+                "PLAN"
+        )));
+
+        TaskCommand command = service.route(session, "完整计划给我看看", null, true);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
+        verifyNoInteractions(model);
+    }
+
+    @Test
+    void naturalEditUsesModelClassification() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-4")
                 .planningPhase(PlanningPhaseEnum.PLAN_READY)
                 .build();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.ADJUST_PLAN,
+                0.9d,
+                "user asks to add risk analysis",
+                "再加一条风险分析",
+                false
+        )));
 
-        TaskCommand command = router.route(session, "再加一条风险分析", null, true);
+        TaskCommand command = service.route(session, "再加一条风险分析", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.ADJUST_PLAN);
     }
 
     @Test
-    void colloquialSupplementFallsBackToPlanAdjustmentWhenModelIsUnavailable() {
+    void standaloneNewTaskInsideActiveConversationStaysStartTask() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        PlanTaskSession session = plannedSession();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.92d,
+                "standalone new deliverable request",
+                "帮我总结群里消息并生成一个总结文档",
+                false
+        )));
+
+        TaskCommand command = service.route(session, "帮我总结群里消息并生成一个总结文档", null, true);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+    }
+
+    @Test
+    void colloquialSupplementWithoutModelBecomesUnknown() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-4")
                 .planningPhase(PlanningPhaseEnum.PLAN_READY)
@@ -213,7 +369,16 @@ class IntentRouterServiceTest {
 
         TaskCommand command = router.route(session, "顺手补一个风险表", null, true);
 
-        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.ADJUST_PLAN);
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.UNKNOWN);
+    }
+
+    @Test
+    void colloquialAlsoNeedDeliverableWithoutModelBecomesUnknown() {
+        PlanTaskSession session = plannedSession();
+
+        TaskCommand command = router.route(session, "还要一个给老板汇报的ppt", null, true);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.UNKNOWN);
     }
 
     @Test

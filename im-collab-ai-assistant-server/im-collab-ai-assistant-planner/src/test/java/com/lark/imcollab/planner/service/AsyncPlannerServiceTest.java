@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.config.PlannerAsyncProperties;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
@@ -23,6 +24,9 @@ import java.util.Optional;
 import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -41,7 +45,8 @@ class AsyncPlannerServiceTest {
                 sessionService,
                 projectionService,
                 new PlannerAsyncProperties(),
-                executor
+                executor,
+                newTaskIntakeService()
         );
 
         PlanTaskSession accepted = service.submitPlan("写技术方案", null, "task-1", null);
@@ -52,7 +57,9 @@ class AsyncPlannerServiceTest {
         assertThat(store.runtimeEvents)
                 .extracting(TaskEventRecord::getType)
                 .containsExactly(TaskEventTypeEnum.INTAKE_ACCEPTED);
-        assertThat(store.events).isEmpty();
+        assertThat(store.events)
+                .extracting(TaskEvent::getStatus)
+                .containsExactly(TaskEventTypeEnum.INTAKE_ACCEPTED.name());
         assertThat(executor.submitted).hasSize(1);
     }
 
@@ -68,7 +75,8 @@ class AsyncPlannerServiceTest {
                 sessionService,
                 projectionService,
                 new PlannerAsyncProperties(),
-                executor
+                executor,
+                newTaskIntakeService()
         );
 
         service.submitPlan("写技术方案", null, "task-1", null);
@@ -91,7 +99,8 @@ class AsyncPlannerServiceTest {
                 sessionService,
                 projectionService,
                 new PlannerAsyncProperties(),
-                executor
+                executor,
+                newTaskIntakeService()
         );
 
         service.submitPlan("写技术方案", null, "task-1", null);
@@ -103,6 +112,46 @@ class AsyncPlannerServiceTest {
                 .extracting(TaskEventRecord::getType)
                 .contains(TaskEventTypeEnum.PLAN_FAILED);
         verify(conversationService).handlePlanRequest("写技术方案", null, "task-1", null);
+    }
+
+    @Test
+    void nonTaskChatWithoutTaskIdDoesNotCreateAcceptedRuntimeTask() {
+        InMemoryPlannerStateStore store = new InMemoryPlannerStateStore();
+        PlannerSessionService sessionService = new PlannerSessionService(store, new PlannerProperties());
+        TaskRuntimeProjectionService projectionService = new TaskRuntimeProjectionService(store, new ObjectMapper());
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        when(intakeService.decide(null, "哈哈哈", null, false))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.UNKNOWN,
+                        "哈哈哈",
+                        "small talk",
+                        "我在。你把想整理的材料或目标发我就行。"
+                ));
+        HoldingExecutor executor = new HoldingExecutor();
+        AsyncPlannerService service = new AsyncPlannerService(
+                conversationService,
+                sessionService,
+                projectionService,
+                new PlannerAsyncProperties(),
+                executor,
+                intakeService
+        );
+
+        PlanTaskSession reply = service.submitPlan("哈哈哈", null, null, null);
+
+        assertThat(reply.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.UNKNOWN);
+        assertThat(reply.getIntakeState().getAssistantReply()).contains("我在");
+        assertThat(store.session).isNull();
+        assertThat(store.task).isNull();
+        assertThat(executor.submitted).isEmpty();
+    }
+
+    private static TaskIntakeService newTaskIntakeService() {
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        when(intakeService.decide(any(), anyString(), any(), anyBoolean()))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.NEW_TASK, "写技术方案", "test new task", null));
+        return intakeService;
     }
 
     private static class HoldingExecutor implements Executor {

@@ -33,20 +33,24 @@ public class IntentDecisionGuard {
             return unknown(normalized, "intent confidence below threshold: " + candidate.reason());
         }
         if (!existingSession || session == null) {
-            if (candidate.type() == TaskCommandTypeEnum.CANCEL_TASK || candidate.type() == TaskCommandTypeEnum.UNKNOWN) {
+            if (candidate.type() == TaskCommandTypeEnum.CANCEL_TASK
+                    || candidate.type() == TaskCommandTypeEnum.QUERY_STATUS
+                    || candidate.type() == TaskCommandTypeEnum.UNKNOWN) {
                 return candidate;
+            }
+            if (candidate.type() == TaskCommandTypeEnum.CONFIRM_ACTION) {
+                return unknown(normalized, "guard rejected confirm without existing task");
             }
             return rewrite(candidate, TaskCommandTypeEnum.START_TASK, "guard new conversation starts task", normalized, false);
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER
-                && candidate.type() != TaskCommandTypeEnum.CANCEL_TASK
-                && candidate.type() != TaskCommandTypeEnum.QUERY_STATUS
-                && candidate.type() != TaskCommandTypeEnum.CONFIRM_ACTION) {
+                && candidate.type() == TaskCommandTypeEnum.ANSWER_CLARIFICATION) {
             return rewrite(candidate, TaskCommandTypeEnum.ANSWER_CLARIFICATION,
-                    "guard session waiting clarification", normalized, false);
+                    "guard accepted explicit clarification answer", normalized, false);
         }
         if (candidate.type() == TaskCommandTypeEnum.START_TASK && hasExistingPlan(session)) {
-            return unknown(normalized, "guard rejected start task inside existing planned session");
+            return rewrite(candidate, TaskCommandTypeEnum.START_TASK,
+                    "guard accepted standalone new task inside active conversation", normalized, false);
         }
         if (candidate.type() == TaskCommandTypeEnum.ADJUST_PLAN && !canAdjust(session)) {
             return unknown(normalized, "guard rejected plan adjustment before plan is available");
@@ -81,7 +85,7 @@ public class IntentDecisionGuard {
             String normalizedInput,
             boolean needsClarification
     ) {
-        return new IntentRoutingResult(type, source.confidence(), reason, normalizedInput, needsClarification);
+        return new IntentRoutingResult(type, source.confidence(), reason, normalizedInput, needsClarification, source.readOnlyView());
     }
 
     private IntentRoutingResult unknown(String normalizedInput, String reason) {

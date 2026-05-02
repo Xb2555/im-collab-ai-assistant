@@ -20,11 +20,20 @@ public class AgentTaskPlanCard implements Serializable {
     @Schema(description = "任务ID")
     private String taskId;
 
+    @Schema(description = "前端步骤ID（默认与 taskId 相同）")
+    private String id;
+
     @Schema(description = "父卡片ID")
     private String parentCardId;
 
     @Schema(description = "任务类型（INTENT_PARSING/FETCH_CONTEXT/SEARCH_WEB/WRITE_DOC/WRITE_SLIDES/GENERATE_SUMMARY/WRITE_FLYSHEET）")
     private AgentTaskTypeEnum taskType;
+
+    @Schema(description = "前端步骤类型（默认与 taskType 相同）")
+    private String type;
+
+    @Schema(description = "前端步骤标题")
+    private String title;
 
     @Schema(description = "状态（PENDING/RUNNING/COMPLETED/FAILED）")
     @Builder.Default

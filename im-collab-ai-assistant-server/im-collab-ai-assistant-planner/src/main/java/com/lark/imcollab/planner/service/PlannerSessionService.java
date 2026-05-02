@@ -1,8 +1,11 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
 import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.TaskEvent;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
@@ -12,7 +15,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -35,7 +41,7 @@ public class PlannerSessionService {
     }
 
     public PlanTaskSession getOrCreate(String taskId) {
-        return stateRepository.findSession(taskId).orElseGet(() -> {
+        return stateRepository.findSession(taskId).map(this::normalizeSession).orElseGet(() -> {
             PlanTaskSession session = PlanTaskSession.builder()
                     .taskId(taskId)
                     .planningPhase(PlanningPhaseEnum.INTAKE)
@@ -57,12 +63,14 @@ public class PlannerSessionService {
     }
 
     public PlanTaskSession save(PlanTaskSession session) {
+        normalizeSession(session);
         session.setVersion(session.getVersion() + 1);
         stateRepository.saveSession(session);
         return session;
     }
 
     public PlanTaskSession saveWithoutVersionChange(PlanTaskSession session) {
+        normalizeSession(session);
         stateRepository.saveSession(session);
         return session;
     }
@@ -76,6 +84,7 @@ public class PlannerSessionService {
 
     public PlanTaskSession get(String taskId) {
         return stateRepository.findSession(taskId)
+                .map(this::normalizeSession)
                 .orElseThrow(() -> new IllegalArgumentException("Session not found: " + taskId));
     }
 
@@ -88,13 +97,63 @@ public class PlannerSessionService {
         publishEvent(taskId, "ABORTED");
     }
 
+    private PlanTaskSession normalizeSession(PlanTaskSession session) {
+        if (session == null) {
+            return null;
+        }
+        session.setScenarioPath(normalizeScenarioPath(session.getScenarioPath()));
+        if (session.getIntentSnapshot() != null) {
+            session.getIntentSnapshot().setScenarioPath(normalizeScenarioPath(session.getIntentSnapshot().getScenarioPath()));
+        }
+        if (session.getPlanBlueprint() != null) {
+            session.getPlanBlueprint().setScenarioPath(normalizeScenarioPath(session.getPlanBlueprint().getScenarioPath()));
+        }
+        return session;
+    }
+
+    private List<ScenarioCodeEnum> normalizeScenarioPath(List<?> rawPath) {
+        if (rawPath == null || rawPath.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<ScenarioCodeEnum> normalized = new LinkedHashSet<>();
+        for (Object item : rawPath) {
+            ScenarioCodeEnum code = toScenarioCode(item);
+            if (code != null) {
+                normalized.add(code);
+            }
+        }
+        return new ArrayList<>(normalized);
+    }
+
+    private ScenarioCodeEnum toScenarioCode(Object item) {
+        if (item instanceof ScenarioCodeEnum code) {
+            return code;
+        }
+        if (item instanceof String text) {
+            String normalized = text.trim();
+            if (normalized.isBlank()) {
+                return null;
+            }
+            try {
+                return ScenarioCodeEnum.valueOf(normalized.toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                log.debug("Ignoring unsupported scenario path item from session storage: {}", text);
+            }
+        }
+        return null;
+    }
+
     public void publishEvent(String taskId, String status, RequireInput requireInput) {
         PlanTaskSession session = stateRepository.findSession(taskId).orElse(null);
         int version = session != null ? session.getVersion() : 0;
-        java.util.List<com.lark.imcollab.common.model.entity.AgentTaskPlanCard> subtasks =
+        if (alreadyPublished(taskId, status, version)) {
+            log.debug("[{}] Event already published: {} v{}", taskId, status, version);
+            return;
+        }
+        java.util.List<AgentTaskPlanCard> subtasks =
                 session != null && session.getPlanCards() != null
                         ? session.getPlanCards().stream()
-                            .flatMap(c -> c.getAgentTaskPlanCards() != null ? c.getAgentTaskPlanCards().stream() : java.util.stream.Stream.empty())
+                            .flatMap(card -> normalizeSubtasks(card).stream())
                             .toList()
                         : java.util.List.of();
 
@@ -111,11 +170,87 @@ public class PlannerSessionService {
         log.info("[{}] Event: {} v{}", taskId, status, version);
     }
 
+    private boolean alreadyPublished(String taskId, String status, int version) {
+        if (taskId == null || taskId.isBlank() || status == null || status.isBlank()) {
+            return false;
+        }
+        String statusMarker = "\"status\":\"" + status.replace("\"", "\\\"") + "\"";
+        String versionMarker = "\"version\":" + version;
+        return stateRepository.getEventJsonList(taskId).stream()
+                .anyMatch(eventJson -> eventJson != null
+                        && eventJson.contains(statusMarker)
+                        && eventJson.contains(versionMarker));
+    }
+
     public void publishEvent(String taskId, String status) {
         publishEvent(taskId, status, null);
     }
 
     public List<String> getEventJsonList(String taskId) {
         return stateRepository.getEventJsonList(taskId);
+    }
+
+    private List<AgentTaskPlanCard> normalizeSubtasks(UserPlanCard card) {
+        if (card == null) {
+            return List.of();
+        }
+        if (card.getAgentTaskPlanCards() == null || card.getAgentTaskPlanCards().isEmpty()) {
+            return List.of(synthesizeSubtask(card));
+        }
+        return card.getAgentTaskPlanCards().stream()
+                .map(subtask -> normalizeSubtask(card, subtask))
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
+    private AgentTaskPlanCard synthesizeSubtask(UserPlanCard card) {
+        AgentTaskTypeEnum taskType = null;
+        if (card.getType() != null) {
+            taskType = switch (card.getType()) {
+                case PPT -> AgentTaskTypeEnum.WRITE_SLIDES;
+                case SUMMARY -> AgentTaskTypeEnum.GENERATE_SUMMARY;
+                case DOC -> AgentTaskTypeEnum.WRITE_DOC;
+            };
+        }
+        return AgentTaskPlanCard.builder()
+                .taskId(firstNonBlank(card.getCardId(), card.getTaskId()))
+                .id(firstNonBlank(card.getCardId(), card.getTaskId()))
+                .parentCardId(card.getCardId())
+                .taskType(taskType)
+                .type(taskType == null ? null : taskType.name())
+                .title(firstNonBlank(card.getTitle(), card.getDescription(), card.getCardId()))
+                .status(card.getStatus())
+                .input(card.getDescription())
+                .context(card.getDescription())
+                .tools(List.of())
+                .build();
+    }
+
+    private AgentTaskPlanCard normalizeSubtask(UserPlanCard card, AgentTaskPlanCard subtask) {
+        if (subtask == null) {
+            return null;
+        }
+        if (subtask.getId() == null || subtask.getId().isBlank()) {
+            subtask.setId(firstNonBlank(subtask.getTaskId(), card.getCardId()));
+        }
+        if (subtask.getType() == null || subtask.getType().isBlank()) {
+            subtask.setType(subtask.getTaskType() == null ? null : subtask.getTaskType().name());
+        }
+        if (subtask.getTitle() == null || subtask.getTitle().isBlank()) {
+            subtask.setTitle(firstNonBlank(card.getTitle(), subtask.getContext(), subtask.getInput()));
+        }
+        return subtask;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 }

@@ -50,7 +50,7 @@ public class PlannerViewAssembler {
 
     private TaskActionVO resolveActions(PlanningPhaseEnum phase, boolean aborted) {
         if (aborted || phase == PlanningPhaseEnum.ABORTED || phase == PlanningPhaseEnum.COMPLETED) {
-            return new TaskActionVO(false, false, false, false, false);
+            return new TaskActionVO(false, false, false, false, false, false);
         }
         boolean canConfirm = phase == PlanningPhaseEnum.PLAN_READY;
         boolean canReplan = phase == PlanningPhaseEnum.PLAN_READY
@@ -59,10 +59,15 @@ public class PlannerViewAssembler {
         boolean canCancel = phase != PlanningPhaseEnum.COMPLETED && phase != PlanningPhaseEnum.ABORTED;
         boolean canResume = phase == PlanningPhaseEnum.ASK_USER || phase == PlanningPhaseEnum.FAILED;
         boolean canInterrupt = phase == PlanningPhaseEnum.EXECUTING;
-        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt);
+        boolean canRetry = phase == PlanningPhaseEnum.FAILED;
+        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry);
     }
 
     private String resolveTitle(PlanTaskSession session) {
+        String planTitle = buildPlanTitle(session.getPlanCards());
+        if (planTitle != null) {
+            return planTitle;
+        }
         if (session.getExecutionContract() != null && session.getExecutionContract().getTaskBrief() != null) {
             return session.getExecutionContract().getTaskBrief();
         }
@@ -73,6 +78,45 @@ public class PlannerViewAssembler {
             return session.getIntentSnapshot().getUserGoal();
         }
         return session.getPlanBlueprintSummary();
+    }
+
+    private String buildPlanTitle(List<UserPlanCard> cards) {
+        List<String> items = defaultList(cards).stream()
+                .filter(card -> card != null && !"SUPERSEDED".equalsIgnoreCase(card.getStatus()))
+                .map(this::cardTitleItem)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .toList();
+        if (items.isEmpty()) {
+            return null;
+        }
+        int maxItems = Math.min(items.size(), 4);
+        String suffix = items.size() > maxItems ? "等" + items.size() + "项任务" : "";
+        return "生成" + joinChinese(items.subList(0, maxItems)) + suffix;
+    }
+
+    private String cardTitleItem(UserPlanCard card) {
+        String title = card == null ? null : card.getTitle();
+        if (title == null || title.isBlank()) {
+            return null;
+        }
+        String normalized = title.trim()
+                .replaceFirst("^(先|再|然后|最后|并)?\\s*(生成|创建|撰写|输出|整理|补充|制作|准备)", "")
+                .trim();
+        return normalized.isBlank() ? title.trim() : normalized;
+    }
+
+    private String joinChinese(List<String> items) {
+        if (items == null || items.isEmpty()) {
+            return "";
+        }
+        if (items.size() == 1) {
+            return items.get(0);
+        }
+        if (items.size() == 2) {
+            return items.get(0) + "和" + items.get(1);
+        }
+        return String.join("、", items.subList(0, items.size() - 1)) + "和" + items.get(items.size() - 1);
     }
 
     private String enumName(Enum<?> value) {

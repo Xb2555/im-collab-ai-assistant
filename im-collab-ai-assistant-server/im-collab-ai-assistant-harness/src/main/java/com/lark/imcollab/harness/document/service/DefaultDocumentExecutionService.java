@@ -74,7 +74,6 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
     private void runSafely(String taskId, String userFeedback, String stepId) {
         try {
             runWorkflow(taskId, userFeedback);
-            executionSupport.publishEvent(taskId, stepId, TaskEventType.STEP_COMPLETED);
         } catch (Exception exception) {
             executionSupport.publishEvent(taskId, stepId, TaskEventType.TASK_FAILED, exception.getMessage());
             throw exception;

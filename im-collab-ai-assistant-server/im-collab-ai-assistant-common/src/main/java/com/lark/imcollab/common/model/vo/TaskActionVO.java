@@ -5,6 +5,7 @@ public record TaskActionVO(
         boolean canReplan,
         boolean canCancel,
         boolean canResume,
-        boolean canInterrupt
+        boolean canInterrupt,
+        boolean canRetry
 ) {
 }

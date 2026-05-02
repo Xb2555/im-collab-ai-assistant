@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -26,16 +27,19 @@ public class LlmIntentClassifier {
     private final ReactAgent intentAgent;
     private final ObjectMapper objectMapper;
     private final PlannerProperties plannerProperties;
+    private final PlannerConversationMemoryService memoryService;
     private final ExecutorService executorService = Executors.newCachedThreadPool();
 
     public LlmIntentClassifier(
-            @Qualifier("intentAgent") ReactAgent intentAgent,
+            @Qualifier("intentClassifierAgent") ReactAgent intentAgent,
             ObjectMapper objectMapper,
-            PlannerProperties plannerProperties
+            PlannerProperties plannerProperties,
+            PlannerConversationMemoryService memoryService
     ) {
         this.intentAgent = intentAgent;
         this.objectMapper = objectMapper;
         this.plannerProperties = plannerProperties;
+        this.memoryService = memoryService;
     }
 
     public Optional<IntentRoutingResult> classify(PlanTaskSession session, String rawInput, boolean existingSession) {
@@ -80,7 +84,13 @@ public class LlmIntentClassifier {
                     root.path("reason").asText("llm intent classification"),
                     normalizedInput,
                     root.path("needsClarification").asBoolean(false)
-                            || root.path("needs_clarification").asBoolean(false)
+                            || root.path("needs_clarification").asBoolean(false),
+                    normalizeReadOnlyView(firstNonBlank(
+                            root.path("readOnlyView").asText(null),
+                            root.path("read_only_view").asText(null),
+                            root.path("queryView").asText(null),
+                            root.path("query_view").asText(null)
+                    ))
             ));
         } catch (Exception ignored) {
             return Optional.empty();
@@ -92,13 +102,19 @@ public class LlmIntentClassifier {
         builder.append("You classify one user message into a fixed task command intent.\n");
         builder.append("Return JSON only. Do not plan steps, do not execute actions, do not answer the user.\n");
         builder.append("Allowed intents: START_TASK, ANSWER_CLARIFICATION, ADJUST_PLAN, QUERY_STATUS, CONFIRM_ACTION, CANCEL_TASK, UNKNOWN.\n");
-        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false}\n");
+        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false,\"readOnlyView\":\"PLAN|STATUS|ARTIFACTS|\"}\n");
         builder.append("Decision hints:\n");
-        builder.append("- QUERY_STATUS means the user asks progress, status, task overview, current plan summary, or what is being done.\n");
+        builder.append("- QUERY_STATUS means the user asks progress, status, task overview, current plan summary, full plan, existing artifacts, or what is being done.\n");
+        builder.append("- For QUERY_STATUS, set readOnlyView=PLAN when the user wants the stored plan/steps; STATUS when they want progress/current status; ARTIFACTS when they want outputs/links/artifacts.\n");
         builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, or regenerate plan steps.\n");
-        builder.append("- CONFIRM_ACTION means the user approves the current plan, asks to execute it, retry it, or says phrases like 没问题，执行 / 就按这个来 / 开始吧.\n");
+        builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
         builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
-        builder.append("- UNKNOWN means the message cannot be safely mapped to one fixed intent.\n\n");
+        builder.append("- In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material. Meta questions, identity/capability questions, greetings, or a standalone new task request are not clarification answers.\n");
+        builder.append("- START_TASK requires a real task request with a work goal or deliverable. Casual chat, greetings, mood sharing, jokes, and meta questions are UNKNOWN.\n");
+        builder.append("- Even when existingSession=true and hasPlan=true, choose START_TASK for a standalone new work request with a concrete deliverable; choose ADJUST_PLAN only when the user explicitly modifies the current plan.\n");
+        builder.append("- Do not classify a concrete deliverable request as UNKNOWN just because another task is already active in the chat.\n");
+        builder.append("- Identity or capability questions like 你是谁 / 你能做什么 are UNKNOWN unless the user also asks for a concrete deliverable.\n");
+        builder.append("- UNKNOWN means the message cannot be safely mapped to one fixed intent, including small talk or non-task chat.\n\n");
         builder.append("Session:\n");
         builder.append("- existingSession: ").append(existingSession).append("\n");
         builder.append("- phase: ").append(session == null || session.getPlanningPhase() == null
@@ -106,6 +122,10 @@ public class LlmIntentClassifier {
                 : session.getPlanningPhase()).append("\n");
         builder.append("- hasPlan: ").append(hasPlan(session)).append("\n");
         builder.append("- recentCards: ").append(cardSummary(session)).append("\n");
+        String memoryContext = memoryService == null ? "" : memoryService.renderContext(session);
+        if (memoryContext != null && !memoryContext.isBlank()) {
+            builder.append("Conversation memory:\n").append(memoryContext).append("\n");
+        }
         builder.append("User message: ").append(rawInput == null ? "" : rawInput.trim());
         return builder.toString();
     }
@@ -147,6 +167,29 @@ public class LlmIntentClassifier {
             return trimmed.substring(start, end + 1);
         }
         return trimmed.toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeReadOnlyView(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "PLAN", "STATUS", "ARTIFACTS" -> normalized;
+            default -> null;
+        };
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     private long timeoutSeconds() {

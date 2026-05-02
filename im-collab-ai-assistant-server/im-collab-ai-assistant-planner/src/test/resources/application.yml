@@ -7,6 +7,17 @@ spring:
     dashscope:
       api-key: test-key
 planner:
+  async:
+    enabled: true
+    core-pool-size: 1
+    max-pool-size: 1
+    queue-capacity: 10
+    task-timeout-seconds: 30
+  execution:
+    core-pool-size: 1
+    max-pool-size: 1
+    queue-capacity: 10
+    timeout-seconds: 30
   prompt:
     profile: default
     version: v1

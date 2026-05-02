@@ -4,6 +4,7 @@
 - 用户原始指令：{{rawInstruction}}
 - 补充上下文：{{context}}
 - 历史澄清回答：{{clarificationAnswers}}
+- 任务级对话记忆：{{conversationMemory}}
 
 执行要求：
 1. 输出必须是有效 JSON。

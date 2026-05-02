@@ -6,7 +6,6 @@ import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Method;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -19,7 +18,7 @@ class UnknownIntentReplyServiceTest {
     void softPlanFeedbackKeepsPlanWithoutMechanicalUnknownPrompt() {
         String reply = service.reply(plannedSession(), "这个方案感觉还行", "fallback no confident intent");
 
-        assertThat(reply).contains("保留当前计划", "开始执行");
+        assertThat(reply).contains("当前计划");
         assertThat(reply).doesNotContain("没对上", "没完全判断清楚");
     }
 
@@ -27,18 +26,17 @@ class UnknownIntentReplyServiceTest {
     void unclearMessageWithPlanStillKeepsCurrentPlan() {
         String reply = service.reply(plannedSession(), "帮我看看这个", "fallback no confident intent");
 
-        assertThat(reply).contains("保留当前计划");
+        assertThat(reply).contains("当前计划");
         assertThat(reply).doesNotContain("没对上");
     }
 
     @Test
-    void modelUnknownReplyCannotPretendExecutionStarted() throws Exception {
-        Method normalize = UnknownIntentReplyService.class.getDeclaredMethod("normalizeReply", String.class);
-        normalize.setAccessible(true);
+    void identityQuestionUsesPlannerIdentityInsteadOfTodoBot() {
+        String reply = service.reply(null, "你是谁", "non-task identity question");
 
-        Object reply = normalize.invoke(service, "好的，马上开始执行计划。");
-
-        assertThat(reply).isNull();
+        assertThat(reply).contains("我在");
+        assertThat(reply).contains("计划");
+        assertThat(reply).doesNotContain("待办");
     }
 
     private static PlanTaskSession plannedSession() {

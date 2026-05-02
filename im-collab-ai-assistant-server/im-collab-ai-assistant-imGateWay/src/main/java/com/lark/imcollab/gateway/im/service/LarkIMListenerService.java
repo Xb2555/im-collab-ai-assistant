@@ -3,6 +3,7 @@ package com.lark.imcollab.gateway.im.service;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
 import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
@@ -92,6 +93,9 @@ public class LarkIMListenerService {
     }
 
     private void handleMessage(LarkMessageEvent event) {
+        if (shouldIgnoreBotSender(event)) {
+            return;
+        }
         if (!shouldTriggerAgent(event)) {
             return;
         }
@@ -157,6 +161,24 @@ public class LarkIMListenerService {
 
     private boolean shouldTriggerAgent(LarkMessageEvent event) {
         return isP2P(event) || event.mentionDetected();
+    }
+
+    private boolean shouldIgnoreBotSender(LarkMessageEvent event) {
+        if (event == null) {
+            return true;
+        }
+        String senderType = event.senderType();
+        if ("bot".equalsIgnoreCase(senderType) || "app".equalsIgnoreCase(senderType)) {
+            log.info("Ignoring bot-authored Lark message: eventId={}, messageId={}, senderType={}",
+                    event.eventId(), event.messageId(), senderType);
+            return true;
+        }
+        if ("bot".equalsIgnoreCase(event.senderOpenId())) {
+            log.info("Ignoring local bot Lark message projection: eventId={}, messageId={}",
+                    event.eventId(), event.messageId());
+            return true;
+        }
+        return false;
     }
 
     private boolean shouldIgnoreDuplicateInbound(LarkMessageEvent event) {
@@ -283,6 +305,7 @@ public class LarkIMListenerService {
                 event.chatType(),
                 event.messageType(),
                 event.content(),
+                event.rawContent(),
                 event.senderOpenId(),
                 event.createTime(),
                 mapInputSource(event.chatType())
@@ -301,6 +324,21 @@ public class LarkIMListenerService {
     }
 
     private boolean shouldSendReceipt(PlanTaskSession session) {
+        if (session != null
+                && session.getIntakeState() != null
+                && hasText(session.getIntakeState().getAssistantReply())) {
+            return false;
+        }
+        TaskIntakeTypeEnum intakeType = session == null || session.getIntakeState() == null
+                ? null
+                : session.getIntakeState().getIntakeType();
+        if (intakeType == TaskIntakeTypeEnum.STATUS_QUERY
+                || intakeType == TaskIntakeTypeEnum.UNKNOWN
+                || intakeType == TaskIntakeTypeEnum.CANCEL_TASK
+                || intakeType == TaskIntakeTypeEnum.CONFIRM_ACTION
+                || intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
+            return false;
+        }
         return session == null
                 || (session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
                 && session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY

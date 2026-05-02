@@ -7,7 +7,7 @@ import lombok.Data;
 @Schema(description = "任务指令请求")
 public class PlanCommandRequest {
 
-    @Schema(description = "执行动作（CONFIRM_EXECUTE/REPLAN/CANCEL）", example = "CONFIRM_EXECUTE")
+    @Schema(description = "执行动作（CONFIRM_EXECUTE/REPLAN/CANCEL/RETRY_FAILED）", example = "CONFIRM_EXECUTE")
     private String action;
 
     @Schema(description = "用户反馈（如需重规划）")

@@ -2,9 +2,13 @@ package com.lark.imcollab.common.model.enums;
 
 public enum TaskEventTypeEnum {
     INTAKE_ACCEPTED,
+    CONTEXT_CHECKING,
+    CONTEXT_COLLECTING,
+    CONTEXT_COLLECTED,
     INTENT_ROUTING,
     CLARIFICATION_REQUIRED,
     PLANNING_STARTED,
+    PLAN_REVIEWING,
     PLAN_GATE_CHECKING,
     PLAN_FAILED,
     TASK_RECEIVED,
