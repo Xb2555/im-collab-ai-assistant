@@ -8,6 +8,12 @@ import type {
   ApiResponse 
 } from '@/types/api';
 
+
+export interface TaskListResponse {
+  tasks: any[]; 
+  nextCursor: string | null;
+}
+
 export const plannerApi = {
   // 1. 发起任务规划 (抛入自然语言指令)
   // ✨ 修复：加上 /api 前缀
@@ -56,4 +62,29 @@ export const plannerApi = {
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
   },
+
+ /**
+   * [新增] 获取我的活跃任务 (用于刷新后恢复工作台)
+   * 后端等价于查询: PLANNING, CLARIFYING, WAITING_APPROVAL, EXECUTING
+   */
+  getActiveTasks: async (limit = 20, cursor = '0'): Promise<TaskListResponse> => {
+    const response = await apiClient.get('/api/planner/tasks/active', {
+      params: { limit, cursor }
+    });
+    // 拦截业务错码
+    if (response.data.code !== 0) throw new Error(response.data.message);
+    return response.data.data;
+  },
+
+  /**
+   * [新增] 获取我的历史任务列表 (用于侧边栏展示)
+   */
+  getTasks: async (status?: string, limit = 20, cursor = '0'): Promise<TaskListResponse> => {
+    const response = await apiClient.get('/api/planner/tasks', {
+      params: { status, limit, cursor } // 若 status 不传，Axios 会自动忽略
+    });
+    if (response.data.code !== 0) throw new Error(response.data.message);
+    return response.data.data;
+  }, 
+
 };

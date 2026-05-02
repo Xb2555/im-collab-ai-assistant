@@ -1,7 +1,7 @@
 // src/components/chat/DocPreviewCard.tsx
 import { FileText, ExternalLink, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-
+import { browserLauncher } from '@/services/os/launcher/browser';
 interface DocPreviewCardProps {
   status: 'GENERATING' | 'COMPLETED' | 'ABORTED';
   docUrl?: string;
@@ -9,6 +9,16 @@ interface DocPreviewCardProps {
 }
 
 export function DocPreviewCard({ status, docUrl, docTitle = '飞书云文档生成中...' }: DocPreviewCardProps) {
+  // ✨ 架构优化：给飞书 URL 追加 embed 参数，隐藏不必要的顶导菜单，减轻 Iframe 轮询压力
+  const embedUrl = docUrl ? (docUrl.includes('?') ? `${docUrl}&from=embed` : `${docUrl}?from=embed`) : '';
+
+// ✨ 修改点：替换为适配器调用
+  const handleOpenFeishu = async () => {
+    if (docUrl) {
+      await browserLauncher.openUrl(docUrl);
+    }
+  };
+
   return (
     <div className="mt-4 border border-zinc-200 rounded-xl overflow-hidden bg-white shadow-sm flex flex-col animate-in fade-in zoom-in-95 duration-300">
       
@@ -25,7 +35,13 @@ export function DocPreviewCard({ status, docUrl, docTitle = '飞书云文档生�
         </div>
         
         {/* 在新标签页打开按钮 */}
-        <Button variant="ghost" size="sm" className="h-7 text-xs text-zinc-500 hover:text-blue-600" disabled={!docUrl}>
+        <Button 
+          variant="ghost" 
+          size="sm" 
+          className="h-7 text-xs text-zinc-500 hover:text-blue-600" 
+          disabled={!docUrl}
+          onClick={handleOpenFeishu}
+        >
           <ExternalLink className="h-3.5 w-3.5 mr-1" /> 在飞书中打开
         </Button>
       </div>
@@ -45,7 +61,7 @@ export function DocPreviewCard({ status, docUrl, docTitle = '飞书云文档生�
           </div>
         ) : (
           <iframe 
-            src={docUrl || 'about:blank'} 
+            src={embedUrl || 'about:blank'} 
             className="w-full h-full border-none"
             title="Feishu Doc Preview"
           />

@@ -81,6 +81,7 @@ export interface TaskActionVO {
   canCancel?: boolean;
   canResume?: boolean;
   canInterrupt?: boolean;
+  canRetry?: boolean;
 }
 
 /**
@@ -88,6 +89,7 @@ export interface TaskActionVO {
  */
 export interface PlanPreviewVO {
   taskId?: string;
+  version?: number;
   planningPhase?: string;
   title?: string;
   summary?: string;
@@ -95,6 +97,61 @@ export interface PlanPreviewVO {
   clarificationQuestions?: string[];
   clarificationAnswers?: string[];
   actions?: TaskActionVO;
+}
+
+export interface RuntimeTaskVO {
+  taskId: string;
+  version: number;
+  title: string;
+  goal: string;
+  status: string;
+  currentStage: string;
+  progress: number;
+  needUserAction: boolean;
+  riskFlags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeStepVO {
+  stepId: string;
+  name: string;
+  type: string;
+  status: string;
+  inputSummary: string | null;
+  outputSummary: string | null;
+  progress: number;
+  retryCount: number;
+  assignedWorker: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+}
+
+export interface RuntimeArtifactVO {
+  artifactId: string;
+  type: string;
+  title: string;
+  url: string;
+  preview: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export interface RuntimeEventVO {
+  eventId: string;
+  version: number;
+  type: string;
+  stepId: string | null;
+  message: string;
+  createdAt: string;
+}
+
+export interface TaskRuntimeVO {
+  task: RuntimeTaskVO;
+  steps: RuntimeStepVO[];
+  artifacts: RuntimeArtifactVO[];
+  events: RuntimeEventVO[];
+  actions: TaskActionVO;
 }
 
 /**

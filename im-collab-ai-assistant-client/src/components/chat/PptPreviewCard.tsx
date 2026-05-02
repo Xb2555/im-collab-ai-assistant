@@ -1,6 +1,7 @@
 // src/components/chat/PptPreviewCard.tsx
 import { Presentation, ExternalLink, Loader2, PlayCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { browserLauncher } from '@/services/os/launcher/browser';
 
 interface PptPreviewCardProps {
   status: 'PENDING' | 'EXECUTING' | 'COMPLETED' | 'FAILED' | 'ABORTED';
@@ -19,6 +20,13 @@ export function PptPreviewCard({
 }: PptPreviewCardProps) {
   
   if (status === 'PENDING') return null;
+
+  // ✨ 修改点：新增处理函数
+  const handleOpenFeishu = async () => {
+    if (pptUrl) {
+      await browserLauncher.openUrl(pptUrl);
+    }
+  };
 
   return (
     <div className="mt-4 border border-zinc-200 rounded-xl overflow-hidden bg-white shadow-sm flex flex-col animate-in fade-in zoom-in-95 duration-300">
@@ -77,7 +85,14 @@ export function PptPreviewCard({
       {/* 底部飞书外链 */}
       {status === 'COMPLETED' && (
         <div className="bg-zinc-50 px-3 py-2 border-t border-zinc-200 flex justify-end">
-          <Button variant="ghost" size="sm" className="h-7 text-xs text-zinc-500 hover:text-indigo-600" disabled={!pptUrl} onClick={() => window.open(pptUrl, '_blank')}>
+          {/* ✨ 修改点：将 onClick={...} 替换为 handleOpenFeishu */}
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="h-7 text-xs text-zinc-500 hover:text-indigo-600" 
+            disabled={!pptUrl} 
+            onClick={handleOpenFeishu}
+          >
             <ExternalLink className="h-3.5 w-3.5 mr-1" /> 在飞书幻灯片中打开
           </Button>
         </div>

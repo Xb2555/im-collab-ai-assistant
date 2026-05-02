@@ -4,12 +4,12 @@ import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { useThrottleFn } from 'ahooks';
 import { useTaskStore } from '@/store/useTaskStore';
 import { useAuthStore } from '@/store/useAuthStore';
-import { plannerApi } from '@/services/api/planner'; // ✨ 引入 API
+import { plannerApi } from '@/services/api/planner';
 
 export function useAgentStream() {
-  const { activeTaskId, setPlanPreview, appendThinkingText, setIsStreaming } = useTaskStore();
+  const { activeTaskId, setTaskRuntime, appendThinkingText, setIsStreaming } = useTaskStore();
   const token = useAuthStore((state) => state.accessToken);
-  
+
   const textBufferRef = useRef('');
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -17,21 +17,27 @@ export function useAgentStream() {
     () => {
       if (textBufferRef.current) {
         appendThinkingText(textBufferRef.current);
-        textBufferRef.current = ''; 
+        textBufferRef.current = '';
       }
     },
     { wait: 100 }
   );
 
-  // ✨ 新增：拉取最新事实源数据的函数
   const fetchRuntimeData = async (taskId: string) => {
     try {
       const runtimeData = await plannerApi.getTaskRuntime(taskId);
-      setPlanPreview(runtimeData); // 用最新的 runtime 数据覆盖 Zustand
+      setTaskRuntime(runtimeData);
     } catch (e) {
       console.error('拉取 Runtime 快照失败:', e);
     }
   };
+
+  const { run: throttledRefreshRuntime } = useThrottleFn(
+    (taskId: string) => {
+      fetchRuntimeData(taskId);
+    },
+    { wait: 400 }
+  );
 
   useEffect(() => {
     if (!activeTaskId || !token) return;
@@ -42,7 +48,6 @@ export function useAgentStream() {
     abortControllerRef.current = new AbortController();
     const ctrl = abortControllerRef.current;
 
-    // 🌟🌟 新任务刚建立时，主动拉取一次初始状态
     fetchRuntimeData(activeTaskId);
 
     const connectSSE = async () => {
@@ -51,35 +56,41 @@ export function useAgentStream() {
         await fetchEventSource(`/api/planner/tasks/${activeTaskId}/events/stream`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'text/event-stream',
+            Authorization: `Bearer ${token}`,
+            Accept: 'text/event-stream',
           },
           signal: ctrl.signal,
           async onopen(response) {
             if (!response.ok) throw new Error(`SSE 连接失败: ${response.status}`);
           },
           onmessage(event) {
-            // 1. 过滤心跳包
             if (event.event === 'heartbeat') return;
+            if (!event.data) return;
 
-            // 2. 如果是文字流，继续打字机效果
-            if (event.event === 'TEXT_CHUNK' || !event.event) { 
-              try {
-                const data = JSON.parse(event.data);
-                if (data.content) {
-                  textBufferRef.current += data.content;
-                  flushTextBuffer();
-                }
-              } catch (e) {
-                textBufferRef.current += event.data;
+            let parsed: any = null;
+            try {
+              parsed = JSON.parse(event.data);
+            } catch {
+              parsed = null;
+            }
+
+            if (event.event === 'TEXT_CHUNK') {
+              if (parsed?.content) {
+                textBufferRef.current += parsed.content;
                 flushTextBuffer();
               }
               return;
             }
 
-            // 3. ✨ 核心变更：只要收到除文字流以外的任何有效事件（状态更新/步骤完成），立刻去拉取 /runtime！
-            if (event.event === 'STATE_UPDATE' || event.event === 'STEP_COMPLETED' || event.event === 'ARTIFACT_CREATED') {
-              fetchRuntimeData(activeTaskId);
+            if (parsed?.content && !parsed?.status && !parsed?.taskId) {
+              textBufferRef.current += parsed.content;
+              flushTextBuffer();
+              return;
+            }
+
+            const targetTaskId = parsed?.taskId || activeTaskId;
+            if (parsed?.status || parsed?.taskId || parsed?.version !== undefined) {
+              throttledRefreshRuntime(targetTaskId);
             }
           },
           onclose() {
@@ -89,8 +100,8 @@ export function useAgentStream() {
           onerror(err) {
             console.error('SSE 流异常:', err);
             setIsStreaming(false);
-            throw err; 
-          }
+            throw err;
+          },
         });
       } catch (err: any) {
         if (err.name !== 'AbortError') console.error('SSE 意外断开:', err);
@@ -104,5 +115,5 @@ export function useAgentStream() {
       flushTextBuffer();
       setIsStreaming(false);
     };
-  }, [activeTaskId, token]); 
+  }, [activeTaskId, token]);
 }
