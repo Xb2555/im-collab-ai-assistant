@@ -277,4 +277,48 @@ class PlannerConversationCancelTests {
                 resolution != null && !resolution.existingSession() && !"old-task".equals(resolution.taskId())));
         verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq(result.getTaskId()), eq(input), eq(workspaceContext), eq(null));
     }
+
+    @Test
+    void explicitTaskIdKeepsAsyncAcceptedTaskInsteadOfForkingNewOne() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .inputSource("GUI")
+                .build();
+        PlanTaskSession accepted = PlanTaskSession.builder()
+                .taskId("accepted-task")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("accepted-task")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        String input = "根据飞书项目协作方案生成一份技术方案文档，包含Mermaid架构图，再生成一份汇报PPT初稿";
+
+        when(resolver.resolve("accepted-task", workspaceContext))
+                .thenReturn(new TaskSessionResolution("accepted-task", true, null));
+        when(sessionService.get("accepted-task")).thenReturn(accepted);
+        when(intakeService.decide(accepted, input, null, true))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.NEW_TASK, input, "async accepted task should continue", null));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("accepted-task"), eq(input), eq(workspaceContext), eq(null)))
+                .thenReturn(ready);
+
+        PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, "accepted-task", null);
+
+        assertThat(result.getTaskId()).isEqualTo("accepted-task");
+        verify(sessionService, org.mockito.Mockito.never()).getOrCreate(org.mockito.ArgumentMatchers.argThat(taskId -> !"accepted-task".equals(taskId)));
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("accepted-task"), eq(input), eq(workspaceContext), eq(null));
+    }
 }

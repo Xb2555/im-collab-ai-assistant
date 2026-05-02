@@ -128,7 +128,17 @@ public class AsyncPlannerService {
         try {
             plannerConversationService.handlePlanRequest(rawInstruction, workspaceContext, taskId, userFeedback);
         } catch (Exception exception) {
-            log.error("Async planner failed for task {}: {}", taskId, exception.getMessage(), exception);
+            PlanTaskSession current = sessionService.get(taskId);
+            TaskIntakeTypeEnum intakeType = current.getIntakeState() == null ? null : current.getIntakeState().getIntakeType();
+            log.error(
+                    "Async planner failed: taskId={}, thread={}, intakeType={}, rawInstruction={}, error={}",
+                    taskId,
+                    Thread.currentThread().getName(),
+                    intakeType,
+                    rawInstruction,
+                    exception.getMessage(),
+                    exception
+            );
             failAcceptedSession(taskId, exception.getMessage());
         } finally {
             inFlightTasks.remove(taskId);

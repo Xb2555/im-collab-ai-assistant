@@ -58,7 +58,7 @@ public class PlannerConversationService {
                 resolution.existingSession()
         );
         intakeDecision = absorbDocLinksDuringClarification(session, resolution, workspaceContext, intakeDecision, userFeedback, rawInstruction);
-        if (shouldStartFreshTask(resolution, intakeDecision)) {
+        if (shouldStartFreshTask(taskId, resolution, intakeDecision)) {
             resolution = new TaskSessionResolution(UUID.randomUUID().toString(), false, resolution.continuationKey());
             session = transientSession(resolution.taskId(), workspaceContext);
         }
@@ -109,8 +109,9 @@ public class PlannerConversationService {
                 || type == TaskIntakeTypeEnum.CONFIRM_ACTION;
     }
 
-    private boolean shouldStartFreshTask(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
+    private boolean shouldStartFreshTask(String explicitTaskId, TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
         return resolution != null
+                && !hasText(explicitTaskId)
                 && resolution.existingSession()
                 && intakeDecision != null
                 && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK;
@@ -209,5 +210,9 @@ public class PlannerConversationService {
             return first.trim();
         }
         return second == null ? "" : second.trim();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

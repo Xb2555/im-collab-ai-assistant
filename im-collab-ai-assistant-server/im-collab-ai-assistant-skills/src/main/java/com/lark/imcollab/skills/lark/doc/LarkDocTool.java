@@ -4,10 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -17,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+@Slf4j
 @Component
 public class LarkDocTool {
 
@@ -43,23 +46,8 @@ public class LarkDocTool {
         requireValue(markdown, "markdown");
 
         Set<String> supportedFlags = supportedFlags("+create");
-        List<String> args = new ArrayList<>();
-        args.add("docs");
-        args.add("+create");
-        appendIfSupported(args, supportedFlags, "--as", resolveDocIdentity());
-        appendIfSupported(args, supportedFlags, "--api-version", "v2");
-        appendIfSupported(args, supportedFlags, "--title", title.trim());
-
         String normalizedMarkdown = normalizeMarkdown(title, markdown);
-        if (supportedFlags.contains("--markdown")) {
-            appendIfSupported(args, supportedFlags, "--markdown", normalizedMarkdown);
-        } else if (supportedFlags.contains("--content")) {
-            appendIfSupported(args, supportedFlags, "--doc-format", "markdown");
-            appendIfSupported(args, supportedFlags, "--content", normalizedMarkdown);
-        } else {
-            throw new IllegalStateException("当前 lark-cli docs +create 不支持文档内容输入参数，请升级 lark-cli 后重试。");
-        }
-        JsonNode root = executeJson(args);
+        JsonNode root = executeJsonWithCompat("+create", createDocAttempts(title.trim(), normalizedMarkdown, supportedFlags));
         JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
         JsonNode document = data.path("document").isMissingNode() ? data : data.path("document");
         return LarkDocCreateResult.builder()
@@ -88,24 +76,11 @@ public class LarkDocTool {
     @Tool(description = "Scenario B/C: fetch readable content from a Lark doc by URL or token.")
     public LarkDocFetchResult fetchDoc(String docRef, String scope, String detail) {
         requireValue(docRef, "docRef");
-        List<String> args = new ArrayList<>();
         Set<String> supportedFlags = supportedFlags("+fetch");
-        args.add("docs");
-        args.add("+fetch");
-        appendIfSupported(args, supportedFlags, "--as", resolveDocIdentity());
-        appendIfSupported(args, supportedFlags, "--api-version", "v2");
         if (!supportedFlags.contains("--doc")) {
             throw new IllegalStateException("当前 lark-cli docs +fetch 不支持 --doc 参数，请升级 lark-cli 后重试。");
         }
-        appendIfSupported(args, supportedFlags, "--doc", docRef.trim());
-        if (scope != null && !scope.isBlank()) {
-            appendIfSupported(args, supportedFlags, "--scope", scope.trim());
-        }
-        if (detail != null && !detail.isBlank()) {
-            appendIfSupported(args, supportedFlags, "--detail", detail.trim());
-        }
-
-        JsonNode root = executeJson(args);
+        JsonNode root = executeJsonWithCompat("+fetch", fetchDocAttempts(docRef.trim(), scope, detail, supportedFlags));
         JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
         JsonNode document = data.path("document").isMissingNode() ? data : data.path("document");
         return LarkDocFetchResult.builder()
@@ -171,7 +146,7 @@ public class LarkDocTool {
     }
 
     private JsonNode executeJson(List<String> args) {
-        CliCommandResult result = larkCliClient.execute(args);
+        CliCommandResult result = larkCliClient.execute(args, null, commandTimeoutMillis());
         if (!result.isSuccess()) {
             throw new IllegalStateException(readableCliError(result.output()));
         }
@@ -180,6 +155,38 @@ public class LarkDocTool {
         } catch (Exception exception) {
             throw new IllegalStateException("Failed to parse lark doc response", exception);
         }
+    }
+
+    private JsonNode executeJsonWithCompat(String docsCommand, List<List<String>> attempts) {
+        IllegalStateException lastError = null;
+        for (int index = 0; index < attempts.size(); index++) {
+            List<String> args = attempts.get(index);
+            CliCommandResult result = larkCliClient.execute(args, null, commandTimeoutMillis());
+            if (result.isSuccess()) {
+                try {
+                    return larkCliClient.readJsonOutput(result.output());
+                } catch (Exception exception) {
+                    throw new IllegalStateException("Failed to parse lark doc response", exception);
+                }
+            }
+            String output = result.output();
+            String message = readableCliError(output);
+            lastError = new IllegalStateException(message);
+            if (!isUnknownFlagError(output) || index == attempts.size() - 1) {
+                throw lastError;
+            }
+            supportedFlagCache.remove(docsCommand);
+            log.warn(
+                    "Lark docs command hit flag incompatibility, retrying with fallback: command={}, attempt={}, executable={}, cliVersion={}, args={}, error={}",
+                    docsCommand,
+                    index + 1,
+                    properties.getExecutable(),
+                    cliVersionSafe(),
+                    args,
+                    message
+            );
+        }
+        throw lastError == null ? new IllegalStateException("飞书文档工具调用失败，请稍后重试。") : lastError;
     }
 
     private Set<String> supportedFlags(String docsCommand) {
@@ -226,6 +233,105 @@ public class LarkDocTool {
         return Set.of("--as", "--profile");
     }
 
+    private List<List<String>> createDocAttempts(String title, String markdown, Set<String> supportedFlags) {
+        Map<String, List<String>> attempts = new LinkedHashMap<>();
+        attempts.put("preferred", createDocArgs(title, markdown, supportedFlags, true, false));
+        attempts.put("no-api-version", createDocArgs(title, markdown, supportedFlags, false, false));
+        attempts.put("classic-v1", classicCreateDocArgs(title, markdown));
+        return distinctAttempts(attempts);
+    }
+
+    private List<List<String>> fetchDocAttempts(String docRef, String scope, String detail, Set<String> supportedFlags) {
+        Map<String, List<String>> attempts = new LinkedHashMap<>();
+        attempts.put("preferred", fetchDocArgs(docRef, scope, detail, supportedFlags, true, true));
+        attempts.put("no-api-version", fetchDocArgs(docRef, scope, detail, supportedFlags, false, true));
+        attempts.put("basic", fetchDocArgs(docRef, null, null, Set.of("--as", "--doc"), false, false));
+        return distinctAttempts(attempts);
+    }
+
+    private List<String> createDocArgs(
+            String title,
+            String markdown,
+            Set<String> supportedFlags,
+            boolean withApiVersion,
+            boolean strictContentCheck
+    ) {
+        List<String> args = new ArrayList<>();
+        args.add("docs");
+        args.add("+create");
+        appendIfSupported(args, supportedFlags, "--as", resolveDocIdentity());
+        if (withApiVersion) {
+            appendIfSupported(args, supportedFlags, "--api-version", "v2");
+        }
+        appendIfSupported(args, supportedFlags, "--title", title);
+        if (supportedFlags.contains("--markdown")) {
+            appendIfSupported(args, supportedFlags, "--markdown", markdown);
+            return args;
+        }
+        if (supportedFlags.contains("--content")) {
+            appendIfSupported(args, supportedFlags, "--doc-format", "markdown");
+            appendIfSupported(args, supportedFlags, "--content", markdown);
+            return args;
+        }
+        if (strictContentCheck) {
+            throw new IllegalStateException("当前 lark-cli docs +create 不支持文档内容输入参数，请升级 lark-cli 后重试。");
+        }
+        return args;
+    }
+
+    private List<String> classicCreateDocArgs(String title, String markdown) {
+        List<String> args = new ArrayList<>();
+        args.add("docs");
+        args.add("+create");
+        args.add("--as");
+        args.add(resolveDocIdentity());
+        args.add("--title");
+        args.add(title);
+        args.add("--markdown");
+        args.add(markdown);
+        return args;
+    }
+
+    private List<String> fetchDocArgs(
+            String docRef,
+            String scope,
+            String detail,
+            Set<String> supportedFlags,
+            boolean withApiVersion,
+            boolean includeContextFlags
+    ) {
+        List<String> args = new ArrayList<>();
+        args.add("docs");
+        args.add("+fetch");
+        appendIfSupported(args, supportedFlags, "--as", resolveDocIdentity());
+        if (withApiVersion) {
+            appendIfSupported(args, supportedFlags, "--api-version", "v2");
+        }
+        appendIfSupported(args, supportedFlags, "--doc", docRef);
+        if (includeContextFlags && scope != null && !scope.isBlank()) {
+            appendIfSupported(args, supportedFlags, "--scope", scope.trim());
+        }
+        if (includeContextFlags && detail != null && !detail.isBlank()) {
+            appendIfSupported(args, supportedFlags, "--detail", detail.trim());
+        }
+        return args;
+    }
+
+    private List<List<String>> distinctAttempts(Map<String, List<String>> attempts) {
+        List<List<String>> result = new ArrayList<>();
+        Set<String> fingerprints = new LinkedHashSet<>();
+        for (List<String> args : attempts.values()) {
+            if (args == null || args.isEmpty()) {
+                continue;
+            }
+            String fingerprint = String.join("\u0000", args);
+            if (fingerprints.add(fingerprint)) {
+                result.add(args);
+            }
+        }
+        return result;
+    }
+
     private void appendIfSupported(List<String> args, Set<String> supportedFlags, String flag, String value) {
         if (!supportedFlags.contains(flag) || value == null || value.isBlank()) {
             return;
@@ -260,6 +366,25 @@ public class LarkDocTool {
         }
         Matcher matcher = FLAG_PATTERN.matcher(message);
         return matcher.find() ? matcher.group() : "";
+    }
+
+    private boolean isUnknownFlagError(String output) {
+        String extracted = larkCliClient.extractErrorMessage(output);
+        return extracted != null && extracted.toLowerCase(Locale.ROOT).contains("unknown flag");
+    }
+
+    private String cliVersionSafe() {
+        try {
+            CliCommandResult result = larkCliClient.execute(List.of("--version"));
+            return result.output();
+        } catch (RuntimeException exception) {
+            return "unavailable:" + exception.getMessage();
+        }
+    }
+
+    private long commandTimeoutMillis() {
+        int timeoutSeconds = properties.getTimeoutSeconds();
+        return timeoutSeconds <= 0 ? 0 : timeoutSeconds * 1000L;
     }
 
     private String text(JsonNode node, String fieldName) {
