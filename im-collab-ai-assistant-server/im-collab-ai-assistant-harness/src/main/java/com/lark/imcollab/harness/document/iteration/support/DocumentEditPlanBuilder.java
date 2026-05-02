@@ -13,9 +13,14 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 @Component
 public class DocumentEditPlanBuilder {
+
+    private static final Pattern STRUCTURED_HEADING_PATTERN = Pattern.compile(
+            "^(?:[一二三四五六七八九十百千万0-9]+[、.．]|[0-9]+(?:\\.[0-9]+)+)\\s*\\S+.*$"
+    );
 
     private final ChatModel chatModel;
 
@@ -87,17 +92,32 @@ public class DocumentEditPlanBuilder {
                     .justification("在文档末尾新增内容")
                     .build());
         } else if (relativePosition == DocumentRelativePosition.BEFORE) {
-            String anchorTitle = firstHeadingText(selector.getMatchedExcerpt(), selector.getLocatorValue());
-            String inlineReplaceContent = buildInlineHeadingPrependContent(generated, selector.getMatchedExcerpt(), anchorTitle);
-            commandType = DocumentPatchOperationType.STR_REPLACE;
-            requiresApproval = anchorTitle == null || anchorTitle.isBlank() || inlineReplaceContent.isBlank();
-            operations.add(DocumentPatchOperation.builder()
-                    .operationType(DocumentPatchOperationType.STR_REPLACE)
-                    .oldText(anchorTitle)
-                    .newContent(inlineReplaceContent)
-                    .docFormat("markdown")
-                    .justification("通过标题文本精确替换在锚点标题前插入新章节，避免 block_replace 改写标题层级")
-                    .build());
+            String anchorExcerpt = trim(selector.getMatchedExcerpt());
+            if (anchorBlockId != null && !anchorBlockId.isBlank() && !anchorExcerpt.isBlank()) {
+                String replacementContent = buildBlockReplacePrependContent(generated, anchorExcerpt);
+                commandType = DocumentPatchOperationType.BLOCK_REPLACE;
+                requiresApproval = replacementContent.isBlank();
+                operations.add(DocumentPatchOperation.builder()
+                        .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
+                        .blockId(anchorBlockId)
+                        .oldText(anchorExcerpt)
+                        .newContent(replacementContent)
+                        .docFormat("markdown")
+                        .justification("用 block_replace 重写锚点 block，在目标标题前插入新章节并保留原始标题结构")
+                        .build());
+            } else {
+                String anchorTitle = firstHeadingText(selector.getMatchedExcerpt(), selector.getLocatorValue());
+                String inlineReplaceContent = buildInlineHeadingPrependContent(generated, selector.getMatchedExcerpt(), anchorTitle);
+                commandType = DocumentPatchOperationType.STR_REPLACE;
+                requiresApproval = anchorTitle == null || anchorTitle.isBlank() || inlineReplaceContent.isBlank();
+                operations.add(DocumentPatchOperation.builder()
+                        .operationType(DocumentPatchOperationType.STR_REPLACE)
+                        .oldText(anchorTitle)
+                        .newContent(inlineReplaceContent)
+                        .docFormat("markdown")
+                        .justification("缺少稳定 block 锚点，退回标题文本替换兜底")
+                        .build());
+            }
         } else {
             commandType = DocumentPatchOperationType.BLOCK_INSERT_AFTER;
             requiresApproval = anchorBlockId == null;
@@ -320,6 +340,10 @@ public class DocumentEditPlanBuilder {
         }
         String firstLine = lines[0].trim();
         if (!firstLine.startsWith("#")) {
+            if (looksLikeStructuredHeading(firstLine) && hasNonBlankBody(lines)) {
+                lines[0] = "#".repeat(anchorLevel) + " " + firstLine;
+                return trim(String.join("\n", lines));
+            }
             return trimmed;
         }
         String headingText = firstLine.replaceFirst("^#+\\s*", "");
@@ -421,6 +445,18 @@ public class DocumentEditPlanBuilder {
         return trim(builder.toString());
     }
 
+    private String buildBlockReplacePrependContent(String generated, String anchorExcerpt) {
+        String trimmedGenerated = trim(generated);
+        String trimmedAnchor = trim(anchorExcerpt);
+        if (trimmedGenerated.isEmpty()) {
+            return trimmedAnchor;
+        }
+        if (trimmedAnchor.isEmpty()) {
+            return trimmedGenerated;
+        }
+        return trim(trimmedGenerated + "\n\n" + trimmedAnchor);
+    }
+
     private boolean looksLikeHeadingOnly(String markdown) {
         String trimmed = trim(markdown);
         if (trimmed.isEmpty()) {
@@ -439,5 +475,19 @@ public class DocumentEditPlanBuilder {
             }
         }
         return true;
+    }
+
+    private boolean looksLikeStructuredHeading(String line) {
+        String trimmed = trim(line);
+        return !trimmed.isEmpty() && STRUCTURED_HEADING_PATTERN.matcher(trimmed).matches();
+    }
+
+    private boolean hasNonBlankBody(String[] lines) {
+        for (int i = 1; i < lines.length; i++) {
+            if (!lines[i].isBlank()) {
+                return true;
+            }
+        }
+        return false;
     }
 }

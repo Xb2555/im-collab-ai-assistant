@@ -72,6 +72,35 @@ class DocumentTargetLocatorTest {
     }
 
     @Test
+    void docStartInsertUnwrapsFragmentMarkdown() {
+        DocumentAnchorIntentService anchorIntentService = mock(DocumentAnchorIntentService.class);
+        LarkDocTool tool = mock(LarkDocTool.class);
+        when(anchorIntentService.decide(DocumentIterationIntentType.INSERT, "在文档开头新增章节"))
+                .thenReturn(new DocumentAnchorIntentService.AnchorDecision(
+                        DocumentLocatorStrategy.DOC_START,
+                        DocumentRelativePosition.BEFORE,
+                        ""
+                ));
+        when(tool.fetchDocOutline("https://example.feishu.cn/docx/doc123"))
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("<h1 id=\"heading-1\">二、项目目标</h1>")
+                        .build());
+        when(tool.fetchDocRangeMarkdown("https://example.feishu.cn/docx/doc123", "heading-1", "heading-1"))
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("""
+                                <fragment mode="range" requested-end="heading-1" requested-start="heading-1">
+                                # 二、项目目标
+                                </fragment>
+                                """)
+                        .build());
+        DocumentTargetLocator locator = new DocumentTargetLocator(anchorIntentService, tool, new DocumentStructureParser());
+
+        DocumentTargetSelector selector = locator.locate(artifact(), DocumentIterationIntentType.INSERT, "在文档开头新增章节");
+
+        assertThat(selector.getMatchedExcerpt()).isEqualTo("# 二、项目目标");
+    }
+
+    @Test
     void docStartInsertPrefersFirstTopLevelHeadingInsteadOfFirstNestedHeading() {
         DocumentAnchorIntentService anchorIntentService = mock(DocumentAnchorIntentService.class);
         LarkDocTool tool = mock(LarkDocTool.class);

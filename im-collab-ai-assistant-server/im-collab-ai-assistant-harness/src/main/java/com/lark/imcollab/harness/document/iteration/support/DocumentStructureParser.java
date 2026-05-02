@@ -21,6 +21,10 @@ public class DocumentStructureParser {
     private static final Pattern BLOCK_ID_PATTERN = Pattern.compile("id=\"([^\"]+)\"");
     private static final Pattern QUOTED_TEXT_PATTERN = Pattern.compile("[\"“「『]([^\"”」』]{2,})[\"”」』]");
     private static final Pattern TAG_PATTERN = Pattern.compile("<[^>]+>");
+    private static final Pattern FRAGMENT_WRAPPER_PATTERN = Pattern.compile(
+            "^\\s*<fragment\\b[^>]*>\\s*(.*?)\\s*</fragment>\\s*$",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+    );
     private static final Pattern HEADING_INDEX_PATTERN = Pattern.compile("^[一二三四五六七八九十0-9]+[、.．]\\s*");
 
     public List<HeadingBlock> parseHeadings(String xml) {
@@ -120,6 +124,17 @@ public class DocumentStructureParser {
                 .replace("&gt;", ">")
                 .replace("&amp;", "&")
                 .trim();
+    }
+
+    public String unwrapMarkdownFragment(String markdown) {
+        if (!hasText(markdown)) {
+            return "";
+        }
+        Matcher matcher = FRAGMENT_WRAPPER_PATTERN.matcher(markdown);
+        if (!matcher.matches()) {
+            return markdown.trim();
+        }
+        return matcher.group(1).trim();
     }
 
     private List<HeadingBlock> preferLongest(List<HeadingBlock> matches) {

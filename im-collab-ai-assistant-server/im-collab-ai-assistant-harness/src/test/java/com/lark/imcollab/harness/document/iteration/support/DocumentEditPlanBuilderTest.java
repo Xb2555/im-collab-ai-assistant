@@ -47,7 +47,7 @@ class DocumentEditPlanBuilderTest {
     }
 
     @Test
-    void insertBeforeHeadingUsesStringReplaceToPreserveHeadingHierarchy() {
+    void insertBeforeHeadingUsesBlockReplaceToPreserveDocumentStructure() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("## 前言\n\n这是新增章节");
         DocumentEditPlanBuilder builder = new DocumentEditPlanBuilder(chatModel);
@@ -63,12 +63,11 @@ class DocumentEditPlanBuilderTest {
         DocumentEditPlan plan = builder.build("task-1", DocumentIterationIntentType.INSERT, selector, "在项目背景前新增前言");
         DocumentPatchOperation operation = plan.getPatchOperations().get(0);
 
-        assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.STR_REPLACE);
-        assertThat(operation.getOperationType()).isEqualTo(DocumentPatchOperationType.STR_REPLACE);
-        assertThat(operation.getBlockId()).isNull();
-        assertThat(operation.getOldText()).isEqualTo("一、项目背景");
-        assertThat(operation.getNewContent()).startsWith("前言");
-        assertThat(operation.getNewContent()).doesNotStartWith("## 前言");
+        assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);
+        assertThat(operation.getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);
+        assertThat(operation.getBlockId()).isEqualTo("heading-block");
+        assertThat(operation.getOldText()).isEqualTo("## 一、项目背景");
+        assertThat(operation.getNewContent()).startsWith("## 前言");
         assertThat(operation.getNewContent()).contains("## 一、项目背景");
     }
 
@@ -88,6 +87,29 @@ class DocumentEditPlanBuilderTest {
         DocumentEditPlan plan = builder.build("task-1", DocumentIterationIntentType.INSERT, selector, "在文档开头新增前言");
 
         assertThat(plan.getGeneratedContent()).startsWith("## 前言");
+    }
+
+    @Test
+    void insertBeforeHeadingPromotesStructuredPlainTextTitleToMarkdownHeading() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                一、项目背景
+
+                这是新增章节
+                """);
+        DocumentEditPlanBuilder builder = new DocumentEditPlanBuilder(chatModel);
+        DocumentTargetSelector selector = DocumentTargetSelector.builder()
+                .targetType(DocumentTargetType.TITLE)
+                .locatorStrategy(DocumentLocatorStrategy.DOC_START)
+                .relativePosition(DocumentRelativePosition.BEFORE)
+                .matchedExcerpt("## 二、项目目标")
+                .matchedBlockIds(List.of("heading-block"))
+                .build();
+
+        DocumentEditPlan plan = builder.build("task-1", DocumentIterationIntentType.INSERT, selector, "在文档开头新增章节：一、项目背景");
+
+        assertThat(plan.getGeneratedContent()).startsWith("## 一、项目背景");
+        assertThat(plan.getGeneratedContent()).contains("这是新增章节");
     }
 
     @Test

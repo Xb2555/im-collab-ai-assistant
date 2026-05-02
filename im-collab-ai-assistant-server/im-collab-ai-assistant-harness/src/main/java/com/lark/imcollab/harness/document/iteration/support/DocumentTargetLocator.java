@@ -49,7 +49,9 @@ public class DocumentTargetLocator {
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(larkDocTool.fetchDocOutline(docRef).getContent());
         if (!headings.isEmpty()) {
             DocumentStructureParser.HeadingBlock firstHeading = structureParser.findFirstTopLevelHeading(headings);
-            String headingMarkdown = larkDocTool.fetchDocRangeMarkdown(docRef, firstHeading.getBlockId(), firstHeading.getBlockId()).getContent();
+            String headingMarkdown = structureParser.unwrapMarkdownFragment(
+                    larkDocTool.fetchDocRangeMarkdown(docRef, firstHeading.getBlockId(), firstHeading.getBlockId()).getContent()
+            );
             return DocumentTargetSelector.builder()
                     .docId(resolveDocId(artifact))
                     .docUrl(artifact.getExternalUrl())
@@ -67,7 +69,9 @@ public class DocumentTargetLocator {
             throw new AiAssistantException(BusinessCode.NOT_FOUND_ERROR, "文档为空，无法定位文档开头");
         }
         String firstBlockId = blockIds.get(0);
-        String firstBlockMarkdown = larkDocTool.fetchDocRangeMarkdown(docRef, firstBlockId, firstBlockId).getContent();
+        String firstBlockMarkdown = structureParser.unwrapMarkdownFragment(
+                larkDocTool.fetchDocRangeMarkdown(docRef, firstBlockId, firstBlockId).getContent()
+        );
         return DocumentTargetSelector.builder()
                 .docId(resolveDocId(artifact))
                 .docUrl(artifact.getExternalUrl())
@@ -151,7 +155,9 @@ public class DocumentTargetLocator {
         }
         DocumentStructureParser.HeadingBlock heading = matches.get(0);
         if (intentType == DocumentIterationIntentType.INSERT && decision.relativePosition() == DocumentRelativePosition.BEFORE) {
-            String headingMarkdown = larkDocTool.fetchDocRangeMarkdown(docRef, heading.getBlockId(), heading.getBlockId()).getContent();
+            String headingMarkdown = structureParser.unwrapMarkdownFragment(
+                    larkDocTool.fetchDocRangeMarkdown(docRef, heading.getBlockId(), heading.getBlockId()).getContent()
+            );
             return DocumentTargetSelector.builder()
                     .docId(resolveDocId(artifact))
                     .docUrl(artifact.getExternalUrl())
@@ -172,7 +178,7 @@ public class DocumentTargetLocator {
                 .locatorStrategy(DocumentLocatorStrategy.BY_HEADING)
                 .relativePosition(decision.relativePosition())
                 .locatorValue(heading.getText())
-                .matchedExcerpt(sectionMarkdown.getContent())
+                .matchedExcerpt(structureParser.unwrapMarkdownFragment(sectionMarkdown.getContent()))
                 .matchedBlockIds(structureParser.parseBlockIds(sectionXml.getContent()))
                 .build();
     }
