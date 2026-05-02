@@ -19,23 +19,20 @@ public class PlannerContextTool {
     ) {
         String instruction = rawInstruction == null ? "" : rawInstruction.trim();
         List<String> contextParts = new ArrayList<>();
-        boolean hasExternalContext = false;
+        boolean hasCollectedContext = false;
         if (workspaceContext != null) {
             if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
                 contextParts.add("selectedMessages=" + workspaceContext.getSelectedMessages().size());
-                hasExternalContext = hasExternalContext || !containsOnlyLatestInstruction(workspaceContext, instruction);
+                hasCollectedContext = hasCollectedContext || !containsOnlyLatestInstruction(workspaceContext, instruction);
             }
             if (workspaceContext.getSelectedMessageIds() != null && !workspaceContext.getSelectedMessageIds().isEmpty()) {
                 contextParts.add("selectedMessageIds=" + workspaceContext.getSelectedMessageIds().size());
-                hasExternalContext = true;
             }
             if (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty()) {
                 contextParts.add("docRefs=" + workspaceContext.getDocRefs().size());
-                hasExternalContext = true;
             }
             if (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty()) {
                 contextParts.add("attachments=" + workspaceContext.getAttachmentRefs().size());
-                hasExternalContext = true;
             }
             if (workspaceContext.getTimeRange() != null && !workspaceContext.getTimeRange().isBlank()) {
                 contextParts.add("timeRange=" + workspaceContext.getTimeRange());
@@ -48,8 +45,15 @@ public class PlannerContextTool {
                     "empty instruction"
             );
         }
+        if (mentionsUnavailableSource(instruction)) {
+            return ContextSufficiencyResult.insufficient(
+                    List.of("source_context"),
+                    "你提到的材料我现在还没拿到。请把对应的文档链接、关键内容，或可查看的聊天范围发给我，我再继续整理。",
+                    "source explicitly unavailable"
+            );
+        }
         boolean hasEmbeddedContext = hasEmbeddedTaskMaterial(instruction);
-        if (!hasExternalContext && !hasEmbeddedContext && instruction.length() < 24) {
+        if (!hasCollectedContext && !hasEmbeddedContext && instruction.length() < 24) {
             return ContextSufficiencyResult.insufficient(
                     List.of("source_context"),
                     "你希望我基于哪些内容来整理？可以直接贴材料、文档链接，或说明要整理的消息范围；如果有偏好的产物形式也可以一起说。",
@@ -62,7 +66,7 @@ public class PlannerContextTool {
             summary += "\nclarifiedInstruction=" + session.getClarifiedInstruction();
         }
         String reason;
-        if (hasExternalContext) {
+        if (hasCollectedContext) {
             reason = "external workspace context accepted for planner";
         } else if (hasEmbeddedContext) {
             reason = "embedded instruction context accepted for planner";
@@ -84,6 +88,18 @@ public class PlannerContextTool {
         return normalized.contains("\n") && normalized.length() >= 40;
     }
 
+    private boolean mentionsUnavailableSource(String instruction) {
+        String normalized = normalize(instruction);
+        return normalized.contains("没发给你")
+                || normalized.contains("没有发给你")
+                || normalized.contains("还没发给你")
+                || normalized.contains("没提供")
+                || normalized.contains("没有提供")
+                || normalized.contains("未提供")
+                || normalized.contains("没给你")
+                || normalized.contains("没有给你");
+    }
+
     private boolean containsOnlyLatestInstruction(WorkspaceContext workspaceContext, String instruction) {
         if (workspaceContext == null
                 || workspaceContext.getSelectedMessages() == null
@@ -91,7 +107,11 @@ public class PlannerContextTool {
             return false;
         }
         String onlyMessage = workspaceContext.getSelectedMessages().get(0);
-        return normalize(onlyMessage).equals(normalize(instruction))
+        String normalizedMessage = normalize(onlyMessage);
+        String normalizedInstruction = normalize(instruction);
+        return (normalizedMessage.equals(normalizedInstruction)
+                || normalizedMessage.contains(normalizedInstruction)
+                || normalizedInstruction.contains(normalizedMessage))
                 && (workspaceContext.getDocRefs() == null || workspaceContext.getDocRefs().isEmpty())
                 && (workspaceContext.getAttachmentRefs() == null || workspaceContext.getAttachmentRefs().isEmpty())
                 && (workspaceContext.getSelectedMessageIds() == null || workspaceContext.getSelectedMessageIds().isEmpty());

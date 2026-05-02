@@ -26,10 +26,6 @@ public class PlannerRuntimeTool {
 
     @Tool(description = "Scenario B/E: append a planner stage event to the runtime timeline.")
     public PlannerToolResult projectStage(String taskId, TaskEventTypeEnum eventType, String message) {
-        TaskRuntimeSnapshot snapshot = projectionService.getSnapshot(taskId);
-        if (snapshot == null || snapshot.getTask() == null) {
-            return PlannerToolResult.failure(taskId, null, "任务不存在，无法更新状态。");
-        }
         projectionService.projectStage(sessionService.get(taskId), eventType, message);
         TaskRuntimeSnapshot updated = projectionService.getSnapshot(taskId);
         return PlannerToolResult.success(taskId,

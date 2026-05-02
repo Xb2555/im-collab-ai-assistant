@@ -140,6 +140,8 @@ public class TaskRuntimeViewAssembler {
             case INTENT_ROUTING -> "正在理解用户意图";
             case CLARIFICATION_REQUIRED -> "需要补充关键信息";
             case CONTEXT_CHECKING -> "正在检查任务上下文";
+            case CONTEXT_COLLECTING -> "正在读取相关上下文";
+            case CONTEXT_COLLECTED -> "已读取相关上下文";
             case PLANNING_STARTED -> "正在生成任务计划";
             case PLAN_REVIEWING -> "正在审查任务计划";
             case PLAN_GATE_CHECKING -> "正在检查计划可执行性";

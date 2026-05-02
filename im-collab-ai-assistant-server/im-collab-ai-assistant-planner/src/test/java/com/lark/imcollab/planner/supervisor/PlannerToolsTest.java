@@ -1,15 +1,34 @@
 package com.lark.imcollab.planner.supervisor;
 
+import com.alibaba.cloud.ai.graph.OverAllState;
+import com.alibaba.cloud.ai.graph.RunnableConfig;
+import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.facade.PlannerContextAcquisitionFacade;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionPlan;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionResult;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.gate.PlannerCapabilityPolicy;
+import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
+import com.lark.imcollab.planner.service.PlannerSessionService;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class PlannerToolsTest {
 
@@ -55,6 +74,86 @@ class PlannerToolsTest {
     }
 
     @Test
+    void contextToolTreatsDocRefsAsHintsNotCollectedMaterial() {
+        PlannerContextTool tool = new PlannerContextTool();
+        WorkspaceContext context = WorkspaceContext.builder()
+                .docRefs(List.of("https://example.feishu.cn/docx/doc_token"))
+                .build();
+
+        ContextSufficiencyResult result = tool.evaluateContext(null, "整理一下", context);
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.contextSummary()).isBlank();
+    }
+
+    @Test
+    void contextToolDoesNotTreatPrefixedCurrentMessageAsCollectedMaterial() {
+        PlannerContextTool tool = new PlannerContextTool();
+        WorkspaceContext context = WorkspaceContext.builder()
+                .selectedMessages(List.of("【IM闭环】把刚才讨论的内容整理成项目摘要"))
+                .chatId("chat-1")
+                .timeRange("1777707108031")
+                .build();
+
+        ContextSufficiencyResult result = tool.evaluateContext(null, "把刚才讨论的内容整理成项目摘要", context);
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("instruction too short");
+    }
+
+    @Test
+    void contextToolAsksWhenUserSaysSourceWasNotProvided() {
+        PlannerContextTool tool = new PlannerContextTool();
+
+        ContextSufficiencyResult result = tool.evaluateContext(
+                null,
+                "根据我没发给你的那份客户合同，整理一份风险摘要给法务看",
+                WorkspaceContext.builder().chatId("chat-1").build()
+        );
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("source explicitly unavailable");
+        assertThat(result.clarificationQuestion()).contains("材料");
+    }
+
+    @Test
+    void contextNodeUsesAcquisitionClarificationWhenNoSourceRefIsAvailable() throws Exception {
+        ReactAgent contextCollectorAgent = mock(ReactAgent.class);
+        ReactAgent contextAcquisitionAgent = mock(ReactAgent.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerProperties properties = new PlannerProperties();
+        PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(contextAcquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"needCollection":false,"sources":[],"reason":"the referenced document was not provided","clarificationQuestion":"请把客户合同链接或关键条款发给我，我再整理风险摘要。"}
+                        """)
+        ))));
+        ContextNodeService service = new ContextNodeService(
+                contextCollectorAgent,
+                contextAcquisitionAgent,
+                new PlannerContextTool(),
+                runtimeTool,
+                memoryService,
+                properties,
+                new ObjectMapper()
+        );
+
+        ContextSufficiencyResult result = service.check(
+                session,
+                "task-ctx",
+                "根据我没发给你的那份客户合同，整理一份风险摘要给法务看",
+                WorkspaceContext.builder().build()
+        );
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.collectionRequired()).isFalse();
+        assertThat(result.clarificationQuestion()).contains("客户合同");
+    }
+
+    @Test
     void reviewToolRejectsUnsupportedCardTypeAndPassesSupportedCards() {
         PlannerReviewTool tool = new PlannerReviewTool(new PlannerCapabilityPolicy());
         PlanTaskSession supported = PlanTaskSession.builder()
@@ -80,5 +179,47 @@ class PlannerToolsTest {
 
         assertThat(result.passed()).isFalse();
         assertThat(result.issues()).anySatisfy(issue -> assertThat(issue).contains("unsupported"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void contextAcquisitionToolMergesCollectedMessagesAndDocs() {
+        PlannerContextAcquisitionFacade facade = mock(PlannerContextAcquisitionFacade.class);
+        ObjectProvider<PlannerContextAcquisitionFacade> provider = mock(ObjectProvider.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        PlanTaskSession session = PlanTaskSession.builder().taskId("task-1").build();
+        when(provider.getIfAvailable()).thenReturn(facade);
+        when(sessionService.get("task-1")).thenReturn(session);
+        when(facade.acquire(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(ContextAcquisitionResult.builder()
+                        .success(true)
+                        .sufficient(true)
+                        .contextSummary("已读取 2 条聊天记录和 1 份文档摘录")
+                        .selectedMessages(List.of("A：目标是生成技术方案", "B：需要给老板看"))
+                        .selectedMessageIds(List.of("om_1", "om_2"))
+                        .docFragments(List.of("文档《方案》摘录：背景和目标"))
+                        .build());
+        PlannerContextAcquisitionTool tool = new PlannerContextAcquisitionTool(
+                provider,
+                sessionService,
+                memoryService,
+                runtimeTool
+        );
+        WorkspaceContext original = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .selectedMessages(List.of("原始材料"))
+                .build();
+
+        ContextAcquisitionResult result = tool.acquireContext("task-1", "整理刚才讨论", original,
+                ContextAcquisitionPlan.builder().needCollection(true).build());
+        WorkspaceContext merged = tool.mergeWorkspaceContext(original, result);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(merged.getSelectedMessages())
+                .contains("原始材料", "A：目标是生成技术方案", "文档《方案》摘录：背景和目标");
+        assertThat(merged.getSelectedMessageIds()).containsExactly("om_1", "om_2");
+        verify(memoryService).appendAssistantTurn(session, "已收集上下文：已读取 2 条聊天记录和 1 份文档摘录");
     }
 }

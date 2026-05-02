@@ -59,6 +59,55 @@ public class LarkDocTool {
         return updateDoc(docIdOrUrl, "append", markdown);
     }
 
+    @Tool(description = "Scenario B/C: fetch readable content from a Lark doc by URL or token.")
+    public LarkDocFetchResult fetchDoc(String docRef, String scope, String detail) {
+        requireValue(docRef, "docRef");
+        List<String> args = new ArrayList<>();
+        args.add("docs");
+        args.add("+fetch");
+        args.add("--as");
+        args.add(resolveDocIdentity());
+        args.add("--api-version");
+        args.add("v2");
+        args.add("--doc");
+        args.add(docRef.trim());
+        if (scope != null && !scope.isBlank()) {
+            args.add("--scope");
+            args.add(scope.trim());
+        }
+        if (detail != null && !detail.isBlank()) {
+            args.add("--detail");
+            args.add(detail.trim());
+        }
+
+        JsonNode root = executeJson(args);
+        JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
+        JsonNode document = data.path("document").isMissingNode() ? data : data.path("document");
+        return LarkDocFetchResult.builder()
+                .success(root.path("success").asBoolean(data.path("success").asBoolean(true)))
+                .docRef(docRef.trim())
+                .title(firstNonBlank(
+                        text(data, "title"),
+                        text(document, "title"),
+                        text(root, "title")
+                ))
+                .content(firstNonBlank(
+                        text(data, "content"),
+                        text(document, "content"),
+                        text(data, "markdown"),
+                        text(document, "markdown"),
+                        text(data, "xml"),
+                        text(document, "xml"),
+                        text(data, "text"),
+                        text(document, "text"),
+                        text(data, "raw_content"),
+                        text(document, "raw_content"),
+                        data.toString()
+                ))
+                .message(firstNonBlank(text(data, "message"), text(root, "message")))
+                .build();
+    }
+
     public LarkDocUpdateResult updateDoc(String docIdOrUrl, String mode, String markdown) {
         requireValue(docIdOrUrl, "docIdOrUrl");
         requireValue(mode, "mode");

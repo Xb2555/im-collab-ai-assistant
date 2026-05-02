@@ -31,6 +31,7 @@ public class PlannerSupervisorGraphConfig {
         graph.addNode("append_memory", nodes::appendMemory);
         graph.addNode("supervisor_decide", nodes::supervisorDecide);
         graph.addNode("context_check", nodes::contextCheck);
+        graph.addNode("collect_context", nodes::collectContext);
         graph.addNode("clarify", nodes::clarify);
         graph.addNode("plan", nodes::plan);
         graph.addNode("resume", nodes::resume);
@@ -55,6 +56,12 @@ public class PlannerSupervisorGraphConfig {
         ));
         graph.addConditionalEdges("context_check", nodes::routeContext, Map.of(
                 "CLARIFY", "clarify",
+                "COLLECT", "collect_context",
+                "PLAN", "plan"
+        ));
+        graph.addConditionalEdges("collect_context", nodes::routeContext, Map.of(
+                "CLARIFY", "clarify",
+                "COLLECT", "clarify",
                 "PLAN", "plan"
         ));
         graph.addEdge("plan", "review");

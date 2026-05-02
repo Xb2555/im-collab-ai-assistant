@@ -13,25 +13,26 @@ public final class ExecutionCommandGuard {
             return false;
         }
         String compact = compact(normalized);
+        String command = compact(stripLeadingDecorations(normalized));
         if (compact.contains("回复开始执行") || compact.contains("回复确认执行")) {
             return false;
         }
-        return compact.equals("执行")
-                || compact.equals("开始执行")
-                || compact.equals("确认执行")
-                || compact.equals("执行吧")
-                || compact.equals("开始吧")
-                || compact.equals("重试")
-                || compact.equals("重试一下")
-                || compact.equals("再试一次")
-                || compact.equals("继续执行")
-                || compact.equals("重新执行")
-                || compact.contains("没问题执行")
-                || compact.contains("可以执行")
-                || compact.contains("好的执行")
-                || compact.contains("按这个执行")
-                || compact.contains("按计划执行")
-                || compact.contains("就按这个执行")
+        return command.equals("执行")
+                || command.equals("开始执行")
+                || command.equals("确认执行")
+                || command.equals("执行吧")
+                || command.equals("开始吧")
+                || command.equals("重试")
+                || command.equals("重试一下")
+                || command.equals("再试一次")
+                || command.equals("继续执行")
+                || command.equals("重新执行")
+                || command.contains("没问题执行")
+                || command.contains("可以执行")
+                || command.contains("好的执行")
+                || command.contains("按这个执行")
+                || command.contains("按计划执行")
+                || command.contains("就按这个执行")
                 || normalized.contains("confirm execution")
                 || normalized.contains("execute plan")
                 || "execute".equals(normalized)
@@ -69,5 +70,16 @@ public final class ExecutionCommandGuard {
                 .replace(",", "")
                 .replace("！", "")
                 .replace("!", "");
+    }
+
+    private static String stripLeadingDecorations(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
+        }
+        return input
+                .replaceAll("^(【[^】]{1,40}】)+", "")
+                .replaceAll("^(@[^\\s:：，,]+\\s*)+", "")
+                .replaceAll("^[：:,，]+", "")
+                .trim();
     }
 }

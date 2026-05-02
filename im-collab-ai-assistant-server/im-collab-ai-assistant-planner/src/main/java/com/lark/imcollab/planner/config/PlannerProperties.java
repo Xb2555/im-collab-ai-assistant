@@ -21,6 +21,7 @@ public class PlannerProperties {
     private Clarification clarification = new Clarification();
     private Memory memory = new Memory();
     private Graph graph = new Graph();
+    private ContextCollection contextCollection = new ContextCollection();
 
     public void initDefaults() {
         if (disambiguation.getTermPolicies() != null && !disambiguation.getTermPolicies().isEmpty()) {
@@ -146,5 +147,14 @@ public class PlannerProperties {
         private boolean enabled = true;
         private int supervisorDecisionTimeoutSeconds = 3;
         private double supervisorDecisionPassThreshold = 0.6d;
+    }
+
+    @Data
+    public static class ContextCollection {
+        private boolean enabled = true;
+        private int timeoutSeconds = 6;
+        private int maxImMessages = 30;
+        private int maxDocChars = 8000;
+        private int defaultLookbackMinutes = 120;
     }
 }
