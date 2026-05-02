@@ -279,6 +279,28 @@ class PlannerControllerCommandTest {
     }
 
     @Test
+    void activeTasksIncludesCompletedTasksForGuiRefreshRecovery() {
+        TaskRecord completed = ownedTask("task-completed", TaskStatusEnum.COMPLETED);
+        when(repository.findTasksByOwner(eq("ou-user"), argThat(statuses ->
+                statuses != null
+                        && statuses.contains(TaskStatusEnum.EXECUTING)
+                        && statuses.contains(TaskStatusEnum.FAILED)
+                        && statuses.contains(TaskStatusEnum.COMPLETED)
+                        && !statuses.contains(TaskStatusEnum.CANCELLED)
+        ), eq(0), eq(21))).thenReturn(java.util.List.of(completed));
+        when(taskRuntimeViewAssembler.toTaskSummary(completed)).thenReturn(new com.lark.imcollab.common.model.vo.TaskSummaryVO(
+                "task-completed", 0, "done", "goal", "COMPLETED", "COMPLETED", 100, false, java.util.List.of(), null, null
+        ));
+
+        BaseResponse<TaskListVO> response = controller.listMyActiveTasks(AUTHORIZATION, 20, null);
+
+        assertThat(response.getCode()).isZero();
+        assertThat(response.getData().tasks()).singleElement()
+                .extracting(com.lark.imcollab.common.model.vo.TaskSummaryVO::taskId)
+                .isEqualTo("task-completed");
+    }
+
+    @Test
     void otherUsersTaskIsHidden() {
         when(repository.findTask("task-other")).thenReturn(Optional.of(TaskRecord.builder()
                 .taskId("task-other")

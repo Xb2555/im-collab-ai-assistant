@@ -56,6 +56,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class PlannerController {
 
     private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "CANCEL", "RETRY_FAILED");
+    private static final List<TaskStatusEnum> GUI_RECOVERABLE_TASK_STATUSES = List.of(
+            TaskStatusEnum.RECEIVED,
+            TaskStatusEnum.CLARIFYING,
+            TaskStatusEnum.PLANNING,
+            TaskStatusEnum.WAITING_APPROVAL,
+            TaskStatusEnum.EXECUTING,
+            TaskStatusEnum.REPLANNING,
+            TaskStatusEnum.REVIEWING,
+            TaskStatusEnum.PUBLISHING,
+            TaskStatusEnum.FAILED,
+            TaskStatusEnum.COMPLETED
+    );
 
     private final PlannerPlanFacade plannerPlanFacade;
     private final PlannerCommandApplicationService plannerCommandApplicationService;
@@ -132,7 +144,7 @@ public class PlannerController {
     }
 
     @GetMapping("/active")
-    @Operation(summary = "0.1. 查询我的活跃任务", description = "查询当前用户仍在规划、待确认或执行中的任务")
+    @Operation(summary = "0.1. 查询我的可恢复任务", description = "查询当前用户刷新页面后应恢复到工作台的任务，包含进行中、失败和已完成任务")
     public BaseResponse<TaskListVO> listMyActiveTasks(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
             @RequestParam(value = "limit", required = false, defaultValue = "20") int limit,
@@ -146,7 +158,7 @@ public class PlannerController {
         int offset = parseCursor(cursor);
         List<TaskRecord> tasks = repository.findTasksByOwner(
                 user.get().openId(),
-                List.of(TaskStatusEnum.PLANNING, TaskStatusEnum.CLARIFYING, TaskStatusEnum.WAITING_APPROVAL, TaskStatusEnum.EXECUTING),
+                GUI_RECOVERABLE_TASK_STATUSES,
                 offset,
                 normalizedLimit + 1
         );
@@ -168,7 +180,7 @@ public class PlannerController {
                     List<TaskRecord> tasks = repository.findTasksByOwner(
                             user.get().openId(),
                             activeOnly
-                                    ? List.of(TaskStatusEnum.PLANNING, TaskStatusEnum.CLARIFYING, TaskStatusEnum.WAITING_APPROVAL, TaskStatusEnum.EXECUTING)
+                                    ? GUI_RECOVERABLE_TASK_STATUSES
                                     : List.of(),
                             0,
                             100
