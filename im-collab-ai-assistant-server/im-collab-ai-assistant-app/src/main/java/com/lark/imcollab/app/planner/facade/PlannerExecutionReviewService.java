@@ -102,6 +102,7 @@ public class PlannerExecutionReviewService {
                 : "Planner reviewed harness execution result: "
                 + (evaluation == null ? "UNKNOWN" : evaluation.getVerdict()));
         sessionService.save(session);
+        taskRuntimeService.syncTaskState(session.getTaskId(), nextPhase);
         sessionService.publishEvent(session.getTaskId(), nextPhase.name());
     }
 

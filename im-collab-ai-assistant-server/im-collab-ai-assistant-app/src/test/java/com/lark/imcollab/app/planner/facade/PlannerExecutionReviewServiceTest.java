@@ -76,6 +76,7 @@ class PlannerExecutionReviewServiceTest {
         assertThat(submissionCaptor.getValue().getArtifactRefs()).containsExactly("artifact-1");
         assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
         verify(sessionService).save(session);
+        verify(taskRuntimeService).syncTaskState("task-1", PlanningPhaseEnum.COMPLETED);
         verify(sessionService).publishEvent("task-1", "COMPLETED");
         verify(notificationFacade).notifyExecutionReviewed(session, snapshot, evaluation);
     }
@@ -124,6 +125,7 @@ class PlannerExecutionReviewServiceTest {
         assertThat(task.getProgress()).isEqualTo(50);
         verify(stateStore, never()).saveSubmission(org.mockito.ArgumentMatchers.any());
         verify(evaluationService, never()).evaluate(org.mockito.ArgumentMatchers.any());
+        verify(taskRuntimeService).syncTaskState("task-1", PlanningPhaseEnum.FAILED);
         verify(sessionService).publishEvent("task-1", "FAILED");
         verify(notificationFacade).notifyExecutionReviewed(session, snapshot, null);
     }
