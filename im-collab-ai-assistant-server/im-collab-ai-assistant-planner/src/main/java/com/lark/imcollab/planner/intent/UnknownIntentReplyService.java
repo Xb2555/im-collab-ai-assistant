@@ -118,6 +118,9 @@ public class UnknownIntentReplyService {
         if (looksLikeExecutionClaim(normalized)) {
             return null;
         }
+        if (looksLikePlanMutationClaim(normalized)) {
+            return null;
+        }
         if (looksLikeTodoBotIdentity(normalized)) {
             return null;
         }
@@ -153,6 +156,23 @@ public class UnknownIntentReplyService {
                 || compact.contains("按计划执行")
                 || compact.contains("我会执行")
                 || compact.contains("我来执行");
+    }
+
+    private boolean looksLikePlanMutationClaim(String text) {
+        String compact = text == null ? "" : text
+                .replaceAll("\\s+", "")
+                .replace("。", "")
+                .replace(".", "");
+        return compact.contains("计划已更新")
+                || compact.contains("已更新计划")
+                || compact.contains("已加入计划")
+                || compact.contains("已添加到计划")
+                || compact.contains("我记下了")
+                || compact.contains("已收到你的新需求")
+                || compact.contains("会按这个计划")
+                || compact.contains("会按当前计划")
+                || compact.contains("按这个方向继续推进")
+                || (compact.contains("会按") && compact.contains("推进"));
     }
 
     private boolean looksLikeTodoBotIdentity(String text) {

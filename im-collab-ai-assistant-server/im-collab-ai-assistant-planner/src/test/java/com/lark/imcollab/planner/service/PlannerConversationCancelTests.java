@@ -55,6 +55,41 @@ class PlannerConversationCancelTests {
     }
 
     @Test
+    void shouldReplyToFullPlanQueryWithoutCreatingTaskOrRunningGraphWhenNoTaskExists() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-readonly", false, "LARK:chat-1"));
+        when(intakeService.decide(any(PlanTaskSession.class), eq("\u5b8c\u6574\u8ba1\u5212"), eq(null), eq(false)))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.STATUS_QUERY,
+                        "\u5b8c\u6574\u8ba1\u5212",
+                        "read full plan without existing task",
+                        "\u6211\u8fd8\u6ca1\u6709\u627e\u5230\u8fd9\u4e2a\u4f1a\u8bdd\u91cc\u7684\u4efb\u52a1\u8fdb\u5ea6\u3002\u4f60\u53ef\u4ee5\u5148\u53d1\u4e00\u4e2a\u4efb\u52a1\u7ed9\u6211\u3002"
+                ));
+
+        PlanTaskSession result = service.handlePlanRequest("\u5b8c\u6574\u8ba1\u5212", workspaceContext, null, null);
+
+        assertThat(result.getTaskId()).isEqualTo("task-readonly");
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTAKE);
+        assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.STATUS_QUERY);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("\u8fd8\u6ca1\u6709\u627e\u5230");
+        verifyNoInteractions(sessionService, graphRunner, taskBridgeService);
+    }
+
+    @Test
     void shouldRouteCancelTaskToAbortSession() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
@@ -135,5 +170,52 @@ class PlannerConversationCancelTests {
         assertThat(session.getRawInstruction()).isEqualTo(original);
         assertThat(session.getIntakeState().getLastUserMessage()).isEqualTo(original);
         verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-raw"), eq(original), eq(workspaceContext), eq(null));
+    }
+
+    @Test
+    void standaloneNewTaskInBoundConversationGetsFreshTaskId() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
+        PlanTaskSession existing = PlanTaskSession.builder()
+                .taskId("old-task")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        String input = "帮我总结群里消息并生成一个总结文档";
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("old-task", true, "LARK:chat-1"));
+        when(sessionService.get("old-task")).thenReturn(existing);
+        when(intakeService.decide(existing, input, null, true))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.NEW_TASK, input, "standalone new task", null));
+        when(sessionService.getOrCreate(org.mockito.ArgumentMatchers.argThat(taskId -> !"old-task".equals(taskId))))
+                .thenAnswer(invocation -> PlanTaskSession.builder()
+                        .taskId(invocation.getArgument(0))
+                        .planningPhase(PlanningPhaseEnum.INTAKE)
+                        .build());
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), org.mockito.ArgumentMatchers.argThat(taskId -> !"old-task".equals(taskId)), eq(input), eq(workspaceContext), eq(null)))
+                .thenAnswer(invocation -> PlanTaskSession.builder()
+                        .taskId(invocation.getArgument(1))
+                        .planningPhase(PlanningPhaseEnum.ASK_USER)
+                        .build());
+
+        PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
+
+        assertThat(result.getTaskId()).isNotEqualTo("old-task");
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
+        verify(resolver).bindConversation(org.mockito.ArgumentMatchers.argThat(resolution ->
+                resolution != null && !resolution.existingSession() && !"old-task".equals(resolution.taskId())));
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq(result.getTaskId()), eq(input), eq(workspaceContext), eq(null));
     }
 }

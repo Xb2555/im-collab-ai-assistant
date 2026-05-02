@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -106,6 +107,27 @@ class LoggingLarkInboundMessageDispatcherTest {
         verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
         assertThat(textCaptor.getValue()).contains("计划已更新", "开始执行");
         assertThat(textCaptor.getValue()).doesNotContain("成功标准", "风险关注");
+    }
+
+    @Test
+    void imRawInstructionIsNotPassedAsSelectedWorkspaceMaterial() {
+        PlanTaskSession clarification = session(TaskIntakeTypeEnum.NEW_TASK, PlanningPhaseEnum.ASK_USER);
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(clarification);
+
+        dispatcher.dispatch(message("帮我总结群里消息并生成一个总结文档"));
+
+        ArgumentCaptor<WorkspaceContext> contextCaptor = ArgumentCaptor.forClass(WorkspaceContext.class);
+        verify(plannerPlanFacade).plan(
+                org.mockito.ArgumentMatchers.eq("帮我总结群里消息并生成一个总结文档"),
+                contextCaptor.capture(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull());
+        WorkspaceContext context = contextCaptor.getValue();
+        assertThat(context.getSelectedMessages()).isEmpty();
+        assertThat(context.getTimeRange()).isNull();
+        assertThat(context.getSelectionType()).isNull();
+        assertThat(context.getMessageId()).isEqualTo("message-1");
     }
 
     @Test

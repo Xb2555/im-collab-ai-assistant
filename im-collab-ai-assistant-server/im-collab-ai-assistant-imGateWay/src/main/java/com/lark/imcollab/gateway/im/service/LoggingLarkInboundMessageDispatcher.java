@@ -22,8 +22,6 @@ import java.util.UUID;
 public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(LoggingLarkInboundMessageDispatcher.class);
-    private static final String WORKSPACE_SELECTION_TYPE = "MESSAGE";
-
     private final PlannerPlanFacade plannerPlanFacade;
     private final ImTaskCommandFacade taskCommandFacade;
     private final LarkMessageReplyTool replyTool;
@@ -166,17 +164,15 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
 
     private WorkspaceContext buildWorkspaceContext(LarkInboundMessage message) {
         return WorkspaceContext.builder()
-                .selectionType(WORKSPACE_SELECTION_TYPE)
-                .timeRange(message.createTime())
+                .selectionType(null)
+                .timeRange(null)
                 .chatId(message.chatId())
                 .threadId(message.threadId())
                 .messageId(message.messageId())
                 .senderOpenId(message.senderOpenId())
                 .chatType(message.chatType())
                 .inputSource(message.inputSource() == null ? null : message.inputSource().name())
-                .selectedMessages(message.content() == null || message.content().isBlank()
-                        ? java.util.List.of()
-                        : java.util.List.of(message.content()))
+                .selectedMessages(java.util.List.of())
                 .build();
     }
 

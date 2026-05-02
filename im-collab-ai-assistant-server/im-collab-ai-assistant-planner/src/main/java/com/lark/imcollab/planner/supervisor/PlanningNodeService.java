@@ -71,7 +71,7 @@ public class PlanningNodeService {
         if (!hasText(session.getRawInstruction()) && hasText(rawInstruction)) {
             session.setRawInstruction(rawInstruction.trim());
         }
-        String workspacePromptContext = renderWorkspaceContext(workspaceContext);
+        String workspacePromptContext = renderWorkspaceContext(workspaceContext, rawInstruction);
         String conversationMemory = memoryService.renderContext(session);
         String planningInput = buildPlanningInput(session, rawInstruction, workspaceContext, userFeedback, conversationMemory);
         projectionService.projectStage(session, TaskEventTypeEnum.INTENT_ROUTING, "Understanding user intent");
@@ -250,6 +250,10 @@ public class PlanningNodeService {
             }
         }
         String text = normalize(planningInput + " " + (intentSnapshot == null ? "" : intentSnapshot.getUserGoal()));
+        if (asksForSummaryDocument(text)) {
+            resolved.remove(PlanCardTypeEnum.SUMMARY);
+            resolved.add(PlanCardTypeEnum.DOC);
+        }
         if (resolved.isEmpty()) {
             if (text.contains("文档") || text.contains("方案") || text.contains("doc")) {
                 resolved.add(PlanCardTypeEnum.DOC);
@@ -262,6 +266,15 @@ public class PlanningNodeService {
             }
         }
         return new ArrayList<>(resolved);
+    }
+
+    private boolean asksForSummaryDocument(String normalizedText) {
+        return hasText(normalizedText)
+                && (normalizedText.contains("总结文档")
+                || normalizedText.contains("总结成文档")
+                || normalizedText.contains("总结为文档")
+                || normalizedText.contains("总结并生成文档")
+                || normalizedText.contains("生成总结文档"));
     }
 
     private boolean hasMissingSlots(IntentSnapshot intentSnapshot) {
@@ -421,10 +434,7 @@ public class PlanningNodeService {
             return false;
         }
         String normalized = planningInput.toLowerCase(Locale.ROOT);
-        return normalized.contains("selected messages:")
-                || normalized.contains("time range:")
-                || normalized.contains("doc refs:")
-                || normalized.contains("attachments:");
+        return normalized.contains("selected messages:");
     }
 
     private List<String> defaultTools(PlanCardTypeEnum type) {
@@ -575,7 +585,7 @@ public class PlanningNodeService {
         if (hasText(userFeedback)) {
             builder.append("\nUser feedback: ").append(userFeedback);
         }
-        String workspacePromptContext = renderWorkspaceContext(workspaceContext);
+        String workspacePromptContext = renderWorkspaceContext(workspaceContext, rawInstruction);
         if (hasText(workspacePromptContext)) {
             builder.append("\nWorkspace context:\n").append(workspacePromptContext);
         }
@@ -585,41 +595,50 @@ public class PlanningNodeService {
         return builder.toString();
     }
 
-    private String renderWorkspaceContext(WorkspaceContext workspaceContext) {
+    private String renderWorkspaceContext(WorkspaceContext workspaceContext, String rawInstruction) {
         if (workspaceContext == null) {
             return "";
         }
         StringBuilder builder = new StringBuilder();
-        if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
+        List<String> selectedMessages = realSelectedMessages(workspaceContext, rawInstruction);
+        if (!selectedMessages.isEmpty()) {
             builder.append("Selected messages:\n")
-                    .append(String.join("\n", workspaceContext.getSelectedMessages()))
+                    .append(String.join("\n", selectedMessages))
                     .append("\n");
         }
-        if (workspaceContext.getSelectedMessageIds() != null && !workspaceContext.getSelectedMessageIds().isEmpty()) {
+        if (workspaceContext.getSelectedMessageIds() != null
+                && !workspaceContext.getSelectedMessageIds().isEmpty()
+                && !selectedMessages.isEmpty()) {
             builder.append("Selected message ids: ")
                     .append(String.join(", ", workspaceContext.getSelectedMessageIds()))
                     .append("\n");
         }
-        if (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty()) {
-            builder.append("Document refs: ")
-                    .append(String.join(", ", workspaceContext.getDocRefs()))
-                    .append("\n");
-        }
-        if (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty()) {
-            builder.append("Attachment refs: ")
-                    .append(String.join(", ", workspaceContext.getAttachmentRefs()))
-                    .append("\n");
-        }
-        if (hasText(workspaceContext.getTimeRange())) {
-            builder.append("Time range: ").append(workspaceContext.getTimeRange()).append("\n");
-        }
-        if (hasText(workspaceContext.getChatId())) {
-            builder.append("Chat id: ").append(workspaceContext.getChatId()).append("\n");
-        }
-        if (hasText(workspaceContext.getThreadId())) {
-            builder.append("Thread id: ").append(workspaceContext.getThreadId()).append("\n");
-        }
         return builder.toString().trim();
+    }
+
+    private List<String> realSelectedMessages(WorkspaceContext workspaceContext, String rawInstruction) {
+        if (workspaceContext == null
+                || workspaceContext.getSelectedMessages() == null
+                || workspaceContext.getSelectedMessages().isEmpty()) {
+            return List.of();
+        }
+        List<String> messages = workspaceContext.getSelectedMessages().stream()
+                .filter(this::hasText)
+                .toList();
+        if (messages.size() == 1 && isSameAsInstruction(messages.get(0), rawInstruction)) {
+            return List.of();
+        }
+        return messages;
+    }
+
+    private boolean isSameAsInstruction(String message, String rawInstruction) {
+        String normalizedMessage = normalize(message);
+        String normalizedInstruction = normalize(rawInstruction);
+        return hasText(normalizedMessage)
+                && hasText(normalizedInstruction)
+                && (normalizedMessage.equals(normalizedInstruction)
+                || normalizedMessage.contains(normalizedInstruction)
+                || normalizedInstruction.contains(normalizedMessage));
     }
 
     private String extractJson(String text) {

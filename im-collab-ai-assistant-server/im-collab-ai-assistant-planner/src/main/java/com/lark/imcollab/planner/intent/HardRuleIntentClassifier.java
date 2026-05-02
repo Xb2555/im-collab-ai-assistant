@@ -27,6 +27,10 @@ public class HardRuleIntentClassifier {
         if (isConfirmCommand(normalized)) {
             return Optional.of(result(TaskCommandTypeEnum.CONFIRM_ACTION, 1.0d, "hard rule confirm", normalized, false));
         }
+        Optional<IntentRoutingResult> readOnlyQuery = classifyReadOnlyQuery(normalized);
+        if (readOnlyQuery.isPresent()) {
+            return readOnlyQuery;
+        }
         if (!existingSession || session == null) {
             return Optional.empty();
         }
@@ -73,6 +77,50 @@ public class HardRuleIntentClassifier {
         return ExecutionCommandGuard.isExplicitExecutionRequest(input);
     }
 
+    private Optional<IntentRoutingResult> classifyReadOnlyQuery(String input) {
+        String normalized = normalize(input);
+        if (containsMutationCue(normalized)) {
+            return Optional.empty();
+        }
+        if (normalized.contains("完整计划")
+                || normalized.contains("详细计划")
+                || normalized.contains("计划给我看看")
+                || normalized.contains("看看计划")
+                || normalized.equals("计划")) {
+            return Optional.of(result(TaskCommandTypeEnum.QUERY_STATUS, 1.0d,
+                    "hard rule read-only plan query", input, false, "PLAN"));
+        }
+        if (normalized.contains("已有产物")
+                || normalized.contains("产物链接")
+                || normalized.contains("文档链接")
+                || normalized.contains("输出物")) {
+            return Optional.of(result(TaskCommandTypeEnum.QUERY_STATUS, 1.0d,
+                    "hard rule read-only artifact query", input, false, "ARTIFACTS"));
+        }
+        if (normalized.contains("进度")
+                || normalized.contains("状态")
+                || normalized.contains("任务概况")
+                || normalized.contains("现在做到哪")
+                || normalized.contains("做到哪了")) {
+            return Optional.of(result(TaskCommandTypeEnum.QUERY_STATUS, 1.0d,
+                    "hard rule read-only status query", input, false, "STATUS"));
+        }
+        return Optional.empty();
+    }
+
+    private boolean containsMutationCue(String normalized) {
+        return normalized.contains("加")
+                || normalized.contains("新增")
+                || normalized.contains("补")
+                || normalized.contains("删")
+                || normalized.contains("去掉")
+                || normalized.contains("不要")
+                || normalized.contains("改")
+                || normalized.contains("换")
+                || normalized.contains("重排")
+                || normalized.contains("重新规划");
+    }
+
     private IntentRoutingResult result(
             TaskCommandTypeEnum type,
             double confidence,
@@ -81,6 +129,17 @@ public class HardRuleIntentClassifier {
             boolean needsClarification
     ) {
         return new IntentRoutingResult(type, confidence, reason, input, needsClarification);
+    }
+
+    private IntentRoutingResult result(
+            TaskCommandTypeEnum type,
+            double confidence,
+            String reason,
+            String input,
+            boolean needsClarification,
+            String readOnlyView
+    ) {
+        return new IntentRoutingResult(type, confidence, reason, input, needsClarification, readOnlyView);
     }
 
     private String normalize(String input) {

@@ -119,6 +119,25 @@ class PlanningNodeServiceTest {
     }
 
     @Test
+    void summaryDocumentIsPlannedAsDocNotSummary() {
+        IntentSnapshot intent = IntentSnapshot.builder()
+                .userGoal("帮我总结群里消息并生成一个总结文档")
+                .deliverableTargets(List.of("SUMMARY"))
+                .build();
+
+        PlanBlueprint result = service.buildBoundedExecutablePlan(
+                "task-1",
+                "User instruction: 帮我总结群里消息并生成一个总结文档",
+                intent
+        ).orElseThrow();
+
+        assertThat(result.getPlanCards()).hasSize(1);
+        assertThat(result.getPlanCards().get(0).getType()).isEqualTo(PlanCardTypeEnum.DOC);
+        assertThat(result.getPlanCards().get(0).getAgentTaskPlanCards().get(0).getTaskType())
+                .isEqualTo(AgentTaskTypeEnum.WRITE_DOC);
+    }
+
+    @Test
     void persistsPlanBeforeGraphReviewReloadsSession() throws Exception {
         ReactAgent intentAgent = mock(ReactAgent.class);
         ReactAgent planningAgent = mock(ReactAgent.class);

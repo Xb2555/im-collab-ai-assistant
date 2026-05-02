@@ -61,6 +61,16 @@ class UnknownIntentReplyServiceTest {
     }
 
     @Test
+    void modelUnknownReplyCannotPretendPlanWasUpdated() throws Exception {
+        Method normalize = UnknownIntentReplyService.class.getDeclaredMethod("normalizeReply", String.class);
+        normalize.setAccessible(true);
+
+        Object reply = normalize.invoke(service, "好的，我记下了，会按“生成群消息总结文档”这个计划来推进。");
+
+        assertThat(reply).isNull();
+    }
+
+    @Test
     void modelUnknownReplyMayMentionExecutionAsAnInstruction() throws Exception {
         Method normalize = UnknownIntentReplyService.class.getDeclaredMethod("normalizeReply", String.class);
         normalize.setAccessible(true);

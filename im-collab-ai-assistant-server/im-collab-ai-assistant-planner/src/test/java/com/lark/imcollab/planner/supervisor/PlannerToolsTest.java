@@ -154,6 +154,68 @@ class PlannerToolsTest {
     }
 
     @Test
+    void contextNodeDoesNotUsePrivateChatHistoryForGroupMessageRequest() {
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        ContextNodeService service = new ContextNodeService(
+                mock(ReactAgent.class),
+                mock(ReactAgent.class),
+                new PlannerContextTool(),
+                runtimeTool,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                new PlannerProperties(),
+                new ObjectMapper()
+        );
+
+        ContextSufficiencyResult result = service.check(
+                session,
+                "task-ctx",
+                "帮我总结群里消息并生成一个总结文档",
+                WorkspaceContext.builder()
+                        .chatId("chat-private")
+                        .threadId("thread-private")
+                        .chatType("p2p")
+                        .inputSource("LARK_PRIVATE_CHAT")
+                        .build()
+        );
+
+        assertThat(result.collectionRequired()).isFalse();
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.clarificationQuestion()).contains("哪个群");
+    }
+
+    @Test
+    void contextNodeCollectsGroupHistoryForGroupMessageRequest() {
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        ContextNodeService service = new ContextNodeService(
+                mock(ReactAgent.class),
+                mock(ReactAgent.class),
+                new PlannerContextTool(),
+                runtimeTool,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                new PlannerProperties(),
+                new ObjectMapper()
+        );
+
+        ContextSufficiencyResult result = service.check(
+                session,
+                "task-ctx",
+                "帮我总结群里消息并生成一个总结文档",
+                WorkspaceContext.builder()
+                        .chatId("chat-group")
+                        .chatType("group")
+                        .inputSource("LARK_GROUP")
+                        .build()
+        );
+
+        assertThat(result.collectionRequired()).isTrue();
+        assertThat(result.acquisitionPlan()).isNotNull();
+        assertThat(result.acquisitionPlan().getSources()).hasSize(1);
+        assertThat(result.acquisitionPlan().getSources().get(0).getChatId()).isEqualTo("chat-group");
+    }
+
+    @Test
     void reviewToolRejectsUnsupportedCardTypeAndPassesSupportedCards() {
         PlannerReviewTool tool = new PlannerReviewTool(new PlannerCapabilityPolicy());
         PlanTaskSession supported = PlanTaskSession.builder()

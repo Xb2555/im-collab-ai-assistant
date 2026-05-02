@@ -12,6 +12,7 @@ import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.UUID;
 
 @Service
 public class PlannerConversationService {
@@ -56,6 +57,10 @@ public class PlannerConversationService {
                 userFeedback,
                 resolution.existingSession()
         );
+        if (shouldStartFreshTask(resolution, intakeDecision)) {
+            resolution = new TaskSessionResolution(UUID.randomUUID().toString(), false, resolution.continuationKey());
+            session = transientSession(resolution.taskId(), workspaceContext);
+        }
         String userInput = firstText(userFeedback, rawInstruction);
         String graphInstruction = userInput.isBlank() ? intakeDecision.effectiveInput() : userInput;
         if (shouldShortCircuitWithoutTask(resolution, intakeDecision)) {
@@ -101,6 +106,13 @@ public class PlannerConversationService {
                 || type == TaskIntakeTypeEnum.STATUS_QUERY
                 || type == TaskIntakeTypeEnum.CANCEL_TASK
                 || type == TaskIntakeTypeEnum.CONFIRM_ACTION;
+    }
+
+    private boolean shouldStartFreshTask(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
+        return resolution != null
+                && resolution.existingSession()
+                && intakeDecision != null
+                && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK;
     }
 
     private boolean shouldBindConversation(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {

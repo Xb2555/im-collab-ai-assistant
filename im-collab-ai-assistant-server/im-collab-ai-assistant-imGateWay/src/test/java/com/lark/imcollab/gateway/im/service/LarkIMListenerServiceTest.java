@@ -1,7 +1,9 @@
 package com.lark.imcollab.gateway.im.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
 import com.lark.imcollab.gateway.im.event.LarkMessageEventSubscriptionService;
@@ -32,6 +34,34 @@ class LarkIMListenerServiceTest {
         when(dispatcher.dispatch(any())).thenReturn(PlanTaskSession.builder()
                 .taskId("task-1")
                 .planningPhase(PlanningPhaseEnum.FAILED)
+                .build());
+
+        LarkIMListenerService listener = new LarkIMListenerService(subscriptionService, replyTool, dispatcher);
+        listener.start();
+        consumerCaptor.getValue().accept(event());
+
+        verify(dispatcher).dispatch(any());
+        verify(replyTool, never()).sendPrivateText(anyString(), anyString(), anyString());
+        verify(replyTool, never()).replyText(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void statusQueryDoesNotSendGenericReceiptAfterReadOnlyReply() {
+        LarkMessageEventSubscriptionService subscriptionService = mock(LarkMessageEventSubscriptionService.class);
+        LarkMessageReplyTool replyTool = mock(LarkMessageReplyTool.class);
+        LarkInboundMessageDispatcher dispatcher = mock(LarkInboundMessageDispatcher.class);
+        ArgumentCaptor<Consumer<LarkMessageEvent>> consumerCaptor = ArgumentCaptor.forClass(Consumer.class);
+
+        when(subscriptionService.startMessageSubscription(anyString(), consumerCaptor.capture()))
+                .thenReturn(new LarkEventSubscriptionStatus(true, "running", "now", null));
+        when(dispatcher.dispatch(any())).thenReturn(PlanTaskSession.builder()
+                .taskId("transient-status")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .lastUserMessage("完整计划")
+                        .readOnlyView("PLAN")
+                        .build())
                 .build());
 
         LarkIMListenerService listener = new LarkIMListenerService(subscriptionService, replyTool, dispatcher);
