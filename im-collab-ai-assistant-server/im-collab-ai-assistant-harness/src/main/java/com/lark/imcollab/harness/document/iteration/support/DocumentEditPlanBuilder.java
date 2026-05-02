@@ -68,6 +68,9 @@ public class DocumentEditPlanBuilder {
         if (generated.isBlank()) {
             throw new IllegalStateException("新增内容为空，拒绝生成插入计划");
         }
+        if (looksLikeHeadingOnly(generated)) {
+            throw new IllegalStateException("新增章节只生成了标题、没有正文，拒绝直接写入文档");
+        }
         List<String> blockIds = selector.getMatchedBlockIds() == null ? List.of() : selector.getMatchedBlockIds();
         String anchorBlockId = blockIds.isEmpty() ? null : blockIds.get(blockIds.size() - 1);
         DocumentRelativePosition relativePosition = selector.getRelativePosition();
@@ -84,15 +87,16 @@ public class DocumentEditPlanBuilder {
                     .justification("在文档末尾新增内容")
                     .build());
         } else if (relativePosition == DocumentRelativePosition.BEFORE) {
-            commandType = DocumentPatchOperationType.BLOCK_REPLACE;
-            requiresApproval = selector.getMatchedExcerpt() == null || selector.getMatchedExcerpt().isBlank() || anchorBlockId == null;
+            String anchorTitle = firstHeadingText(selector.getMatchedExcerpt(), selector.getLocatorValue());
+            String inlineReplaceContent = buildInlineHeadingPrependContent(generated, selector.getMatchedExcerpt(), anchorTitle);
+            commandType = DocumentPatchOperationType.STR_REPLACE;
+            requiresApproval = anchorTitle == null || anchorTitle.isBlank() || inlineReplaceContent.isBlank();
             operations.add(DocumentPatchOperation.builder()
-                    .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
-                    .blockId(anchorBlockId)
-                    .oldText(selector.getMatchedExcerpt())
-                    .newContent(generated + "\n\n" + selector.getMatchedExcerpt())
+                    .operationType(DocumentPatchOperationType.STR_REPLACE)
+                    .oldText(anchorTitle)
+                    .newContent(inlineReplaceContent)
                     .docFormat("markdown")
-                    .justification("通过重写锚点 block 模拟前插")
+                    .justification("通过标题文本精确替换在锚点标题前插入新章节，避免 block_replace 改写标题层级")
                     .build());
         } else {
             commandType = DocumentPatchOperationType.BLOCK_INSERT_AFTER;
@@ -289,6 +293,8 @@ public class DocumentEditPlanBuilder {
                 2. 新内容必须与上下文衔接自然，不要重复原文。
                 3. 如果是在现有章节前后新增同级章节，新标题要与锚点标题保持同级。
                 4. 如果用户要求新增一个小节，再使用更低一级的小标题。
+                5. 如果用户要求新增“章节/一节/一个部分”，输出必须包含标题和正文，不能只给空标题。
+                6. 如果新增的是完整章节，标题后至少补一段正文，必要时可继续补 H3 小节。
 
                 用户指令：
                 %s
@@ -368,5 +374,70 @@ public class DocumentEditPlanBuilder {
 
     private String normalizeHeadingText(String value) {
         return value == null ? "" : value.replaceAll("\\s+", "").trim();
+    }
+
+    private String firstHeadingText(String markdown, String fallback) {
+        String trimmed = trim(markdown);
+        if (!trimmed.isEmpty()) {
+            String firstLine = trimmed.split("\\R", 2)[0].trim();
+            if (firstLine.startsWith("#")) {
+                String heading = trim(firstLine.replaceFirst("^#+\\s*", ""));
+                if (!heading.isEmpty()) {
+                    return heading;
+                }
+            }
+        }
+        return trim(fallback);
+    }
+
+    private String buildInlineHeadingPrependContent(String generated, String anchorExcerpt, String anchorTitle) {
+        String trimmedGenerated = trim(generated);
+        if (trimmedGenerated.isEmpty()) {
+            return "";
+        }
+        String[] lines = trimmedGenerated.split("\\R", -1);
+        if (lines.length == 0) {
+            return trimmedGenerated;
+        }
+        String firstLine = lines[0].trim();
+        if (!firstLine.startsWith("#")) {
+            return trimmedGenerated + "\n\n" + anchorExcerpt;
+        }
+        String generatedHeadingText = trim(firstLine.replaceFirst("^#+\\s*", ""));
+        int bodyStart = 1;
+        while (bodyStart < lines.length && lines[bodyStart].isBlank()) {
+            bodyStart++;
+        }
+        String body = bodyStart >= lines.length ? "" : trim(String.join("\n", java.util.Arrays.copyOfRange(lines, bodyStart, lines.length)));
+        StringBuilder builder = new StringBuilder(generatedHeadingText);
+        if (!body.isEmpty()) {
+            builder.append("\n\n").append(body);
+        }
+        if (anchorExcerpt != null && !anchorExcerpt.isBlank()) {
+            builder.append("\n\n").append(anchorExcerpt);
+        } else if (anchorTitle != null && !anchorTitle.isBlank()) {
+            builder.append("\n\n## ").append(anchorTitle);
+        }
+        return trim(builder.toString());
+    }
+
+    private boolean looksLikeHeadingOnly(String markdown) {
+        String trimmed = trim(markdown);
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        String[] lines = trimmed.split("\\R");
+        if (lines.length == 0) {
+            return false;
+        }
+        if (!lines[0].trim().startsWith("#")) {
+            return false;
+        }
+        for (int i = 1; i < lines.length; i++) {
+            if (!lines[i].isBlank()) {
+                return false;
+            }
+        }
+        return true;
     }
 }

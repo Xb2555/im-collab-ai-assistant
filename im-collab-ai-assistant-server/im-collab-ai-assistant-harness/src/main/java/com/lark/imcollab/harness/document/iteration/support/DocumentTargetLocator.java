@@ -48,7 +48,7 @@ public class DocumentTargetLocator {
     private DocumentTargetSelector resolveDocStart(Artifact artifact, String docRef, DocumentRelativePosition relativePosition) {
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(larkDocTool.fetchDocOutline(docRef).getContent());
         if (!headings.isEmpty()) {
-            DocumentStructureParser.HeadingBlock firstHeading = headings.get(0);
+            DocumentStructureParser.HeadingBlock firstHeading = structureParser.findFirstTopLevelHeading(headings);
             String headingMarkdown = larkDocTool.fetchDocRangeMarkdown(docRef, firstHeading.getBlockId(), firstHeading.getBlockId()).getContent();
             return DocumentTargetSelector.builder()
                     .docId(resolveDocId(artifact))

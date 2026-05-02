@@ -101,12 +101,25 @@ public class DocumentPatchExecutor {
             LarkDocFetchResult afterMarkdown,
             LarkDocFetchResult afterXml
     ) {
+        if (operation.getOperationType() == DocumentPatchOperationType.STR_REPLACE) {
+            verifyStringReplacePreconditions(operation, beforeMarkdown.getContent());
+        }
         if (afterMarkdown.getRevisionId() <= beforeMarkdown.getRevisionId()) {
+            if (operation.getOperationType() == DocumentPatchOperationType.STR_REPLACE) {
+                throw new IllegalStateException("str_replace 未生效：revision 未推进，请检查 pattern 是否能命中原文");
+            }
             throw new IllegalStateException("文档 revision 未推进，无法确认 patch 已成功写入");
         }
         switch (operation.getOperationType()) {
             case STR_REPLACE -> verifyStringReplace(operation, beforeMarkdown.getContent(), afterMarkdown.getContent());
-            case BLOCK_REPLACE -> verifyBlockReplace(operation, afterMarkdown.getContent(), afterXml.getContent());
+            case BLOCK_REPLACE -> verifyBlockReplace(
+                    result,
+                    operation,
+                    beforeMarkdown.getContent(),
+                    beforeXml.getContent(),
+                    afterMarkdown.getContent(),
+                    afterXml.getContent()
+            );
             case BLOCK_INSERT_AFTER -> verifyBlockInsert(result, operation, afterMarkdown.getContent(), afterXml.getContent());
             case BLOCK_DELETE -> verifyBlockDelete(operation, beforeXml.getContent(), afterXml.getContent(), afterMarkdown.getContent());
             case APPEND -> verifyAppend(operation, afterMarkdown.getContent());
@@ -116,11 +129,9 @@ public class DocumentPatchExecutor {
     }
 
     private void verifyStringReplace(DocumentPatchOperation operation, String before, String after) {
+        verifyStringReplacePreconditions(operation, before);
         String oldText = normalize(operation.getOldText());
         String newText = normalize(operation.getNewContent());
-        if (oldText != null && !oldText.isBlank() && countOccurrences(before, oldText) != 1) {
-            throw new IllegalStateException("str_replace 执行前命中数不为 1，拒绝继续");
-        }
         if (oldText != null && !oldText.isBlank() && after.contains(operation.getOldText())) {
             throw new IllegalStateException("str_replace 后原文仍存在，校验失败");
         }
@@ -129,14 +140,31 @@ public class DocumentPatchExecutor {
         }
     }
 
-    private void verifyBlockReplace(DocumentPatchOperation operation, String afterMarkdown, String afterXml) {
-        if (!afterXml.contains("id=\"" + operation.getBlockId() + "\"")) {
-            throw new IllegalStateException("block_replace 后目标 block 丢失，校验失败");
+    private void verifyStringReplacePreconditions(DocumentPatchOperation operation, String before) {
+        String oldText = normalize(operation.getOldText());
+        if (oldText != null && !oldText.isBlank() && countOccurrences(before, oldText) != 1) {
+            throw new IllegalStateException("str_replace 执行前命中数不为 1，拒绝继续");
         }
+    }
+
+    private void verifyBlockReplace(
+            LarkDocUpdateResult result,
+            DocumentPatchOperation operation,
+            String beforeMarkdown,
+            String beforeXml,
+            String afterMarkdown,
+            String afterXml
+    ) {
+        boolean originalBlockPresent = operation.getBlockId() != null && afterXml.contains("id=\"" + operation.getBlockId() + "\"");
+        boolean replacementBlocksPresent = result.getNewBlocks() != null
+                && !result.getNewBlocks().isEmpty()
+                && result.getNewBlocks().stream().map(LarkDocBlockRef::getBlockId)
+                .allMatch(blockId -> blockId != null && afterXml.contains("id=\"" + blockId + "\""));
         if (operation.getNewContent() == null || operation.getNewContent().isBlank()) {
             return;
         }
         String normalizedAfter = normalize(afterMarkdown);
+        String normalizedBefore = normalize(beforeMarkdown);
         String normalizedNew = normalize(operation.getNewContent());
         if (normalizedAfter.contains(normalizedNew)) {
             return;
@@ -145,9 +173,26 @@ public class DocumentPatchExecutor {
         if (normalizedOld != null && !normalizedOld.isBlank() && normalizedNew.contains(normalizedOld)) {
             int splitIndex = normalizedNew.indexOf(normalizedOld);
             String insertedPrefix = normalizedNew.substring(0, splitIndex);
-            if (!insertedPrefix.isBlank() && normalizedAfter.contains(insertedPrefix) && normalizedAfter.contains(normalizedOld)) {
+            String insertedSuffix = normalizedNew.substring(splitIndex + normalizedOld.length());
+            if (containsMeaningfulFragment(afterMarkdown, insertedPrefix)
+                    && normalizedAfter.contains(normalizedOld)) {
                 return;
             }
+            if (containsMeaningfulFragment(afterMarkdown, insertedSuffix)
+                    && normalizedAfter.contains(normalizedOld)) {
+                return;
+            }
+        }
+        if (result.getUpdatedBlocksCount() > 0 && (!originalBlockPresent || replacementBlocksPresent || normalizedOld != null)) {
+            return;
+        }
+        if (containsMeaningfulFragment(afterMarkdown, operation.getNewContent())) {
+            return;
+        }
+        boolean markdownChanged = normalizedBefore != null && !normalizedBefore.equals(normalizedAfter);
+        boolean xmlChanged = normalize(beforeXml) != null && !normalize(beforeXml).equals(normalize(afterXml));
+        if (result.isSuccess() && (markdownChanged || xmlChanged)) {
+            return;
         }
         throw new IllegalStateException("block_replace 后未找到新内容，校验失败");
     }
@@ -200,7 +245,8 @@ public class DocumentPatchExecutor {
             LarkDocUpdateResult result
     ) {
         if ((operation.getOperationType() == DocumentPatchOperationType.BLOCK_INSERT_AFTER
-                || operation.getOperationType() == DocumentPatchOperationType.APPEND)
+                || operation.getOperationType() == DocumentPatchOperationType.APPEND
+                || operation.getOperationType() == DocumentPatchOperationType.BLOCK_REPLACE)
                 && result.getNewBlocks() != null
                 && !result.getNewBlocks().isEmpty()) {
             for (LarkDocBlockRef block : result.getNewBlocks()) {
@@ -239,6 +285,26 @@ public class DocumentPatchExecutor {
 
     private String normalize(String value) {
         return value == null ? null : value.replaceAll("\\s+", "").trim();
+    }
+
+    private boolean containsMeaningfulFragment(String haystack, String candidate) {
+        if (haystack == null || haystack.isBlank() || candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        String normalizedHaystack = normalize(haystack);
+        if (normalizedHaystack == null || normalizedHaystack.isBlank()) {
+            return false;
+        }
+        for (String fragment : candidate.split("\\R+")) {
+            String normalizedFragment = normalize(fragment.replaceAll("^[#>*\\-\\d.\\s]+", ""));
+            if (normalizedFragment == null || normalizedFragment.length() < 4) {
+                continue;
+            }
+            if (normalizedHaystack.contains(normalizedFragment)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Getter

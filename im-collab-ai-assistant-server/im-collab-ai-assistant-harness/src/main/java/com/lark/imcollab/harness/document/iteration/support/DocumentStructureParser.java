@@ -40,6 +40,19 @@ public class DocumentStructureParser {
         return headings;
     }
 
+    public HeadingBlock findFirstTopLevelHeading(List<HeadingBlock> headings) {
+        if (headings == null || headings.isEmpty()) {
+            return null;
+        }
+        int minLevel = headings.stream().mapToInt(HeadingBlock::getLevel).min().orElse(Integer.MAX_VALUE);
+        for (HeadingBlock heading : headings) {
+            if (heading.getLevel() == minLevel) {
+                return heading;
+            }
+        }
+        return headings.get(0);
+    }
+
     public List<String> parseBlockIds(String xml) {
         if (!hasText(xml)) {
             return List.of();
