@@ -109,7 +109,11 @@ public class LlmIntentClassifier {
         builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, or regenerate plan steps.\n");
         builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
         builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
-        builder.append("- UNKNOWN means the message cannot be safely mapped to one fixed intent.\n\n");
+        builder.append("- START_TASK requires a real task request with a work goal or deliverable. Casual chat, greetings, mood sharing, jokes, and meta questions are UNKNOWN.\n");
+        builder.append("- Even when existingSession=true and hasPlan=true, choose START_TASK for a standalone new work request with a concrete deliverable; choose ADJUST_PLAN only when the user explicitly modifies the current plan.\n");
+        builder.append("- Do not classify a concrete deliverable request as UNKNOWN just because another task is already active in the chat.\n");
+        builder.append("- Identity or capability questions like 你是谁 / 你能做什么 are UNKNOWN unless the user also asks for a concrete deliverable.\n");
+        builder.append("- UNKNOWN means the message cannot be safely mapped to one fixed intent, including small talk or non-task chat.\n\n");
         builder.append("Session:\n");
         builder.append("- existingSession: ").append(existingSession).append("\n");
         builder.append("- phase: ").append(session == null || session.getPlanningPhase() == null

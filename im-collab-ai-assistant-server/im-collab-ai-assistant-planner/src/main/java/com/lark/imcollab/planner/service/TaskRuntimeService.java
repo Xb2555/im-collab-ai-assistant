@@ -54,14 +54,15 @@ public class TaskRuntimeService {
         int version = stateStore.findSession(taskId)
                 .map(PlanTaskSession::getVersion)
                 .orElse(0);
-        stateStore.findTask(taskId).ifPresent(task -> {
-            task.setStatus(mapTaskStatus(phase));
-            task.setCurrentStage(phase.name());
-            task.setVersion(version);
-            task.setUpdatedAt(Instant.now());
-            stateStore.saveTask(task);
-        });
+        syncTaskState(taskId, phase, version);
         appendRuntimeEvent(taskId, version, eventType, null);
+    }
+
+    public void syncTaskState(String taskId, PlanningPhaseEnum phase) {
+        int version = stateStore.findSession(taskId)
+                .map(PlanTaskSession::getVersion)
+                .orElse(0);
+        syncTaskState(taskId, phase, version);
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
@@ -159,6 +160,16 @@ public class TaskRuntimeService {
                 .version(version)
                 .createdAt(Instant.now())
                 .build());
+    }
+
+    private void syncTaskState(String taskId, PlanningPhaseEnum phase, int version) {
+        stateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(mapTaskStatus(phase));
+            task.setCurrentStage(phase.name());
+            task.setVersion(version);
+            task.setUpdatedAt(Instant.now());
+            stateStore.saveTask(task);
+        });
     }
 
     private String toJson(Object value) {

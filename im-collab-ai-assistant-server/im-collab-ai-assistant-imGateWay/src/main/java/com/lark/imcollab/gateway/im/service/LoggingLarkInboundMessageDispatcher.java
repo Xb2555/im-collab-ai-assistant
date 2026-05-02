@@ -16,23 +16,24 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.UUID;
 
 @Component
 public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(LoggingLarkInboundMessageDispatcher.class);
-    private static final String WORKSPACE_SELECTION_TYPE = "MESSAGE";
-
     private final PlannerPlanFacade plannerPlanFacade;
     private final ImTaskCommandFacade taskCommandFacade;
     private final LarkMessageReplyTool replyTool;
     private final LarkIMMessageStreamService streamService;
     private final LarkOutboundMessageRetryService retryService;
     private final LarkIMTaskReplyFormatter replyFormatter;
+    private final DocRefExtractionService docRefExtractionService;
 
     public LoggingLarkInboundMessageDispatcher(PlannerPlanFacade plannerPlanFacade) {
-        this(plannerPlanFacade, null, null, null, null, new LarkIMTaskReplyFormatter());
+        this(plannerPlanFacade, null, null, null, null, new LarkIMTaskReplyFormatter(),
+                new DocRefExtractionService(new com.fasterxml.jackson.databind.ObjectMapper()));
     }
 
     @Autowired
@@ -42,7 +43,8 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             LarkMessageReplyTool replyTool,
             LarkIMMessageStreamService streamService,
             LarkOutboundMessageRetryService retryService,
-            LarkIMTaskReplyFormatter replyFormatter
+            LarkIMTaskReplyFormatter replyFormatter,
+            DocRefExtractionService docRefExtractionService
     ) {
         this.plannerPlanFacade = plannerPlanFacade;
         this.taskCommandFacade = taskCommandFacade;
@@ -50,6 +52,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         this.streamService = streamService;
         this.retryService = retryService;
         this.replyFormatter = replyFormatter == null ? new LarkIMTaskReplyFormatter() : replyFormatter;
+        this.docRefExtractionService = docRefExtractionService;
     }
 
     @Override
@@ -165,18 +168,20 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
     }
 
     private WorkspaceContext buildWorkspaceContext(LarkInboundMessage message) {
+        List<String> docRefs = docRefExtractionService == null
+                ? List.of()
+                : docRefExtractionService.extractDocRefs(message.content(), message.rawContent());
         return WorkspaceContext.builder()
-                .selectionType(WORKSPACE_SELECTION_TYPE)
-                .timeRange(message.createTime())
+                .selectionType(docRefs.isEmpty() ? null : "DOCUMENT")
+                .timeRange(null)
                 .chatId(message.chatId())
                 .threadId(message.threadId())
                 .messageId(message.messageId())
                 .senderOpenId(message.senderOpenId())
                 .chatType(message.chatType())
                 .inputSource(message.inputSource() == null ? null : message.inputSource().name())
-                .selectedMessages(message.content() == null || message.content().isBlank()
-                        ? java.util.List.of()
-                        : java.util.List.of(message.content()))
+                .selectedMessages(java.util.List.of())
+                .docRefs(docRefs)
                 .build();
     }
 
@@ -189,6 +194,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                 message.chatType(),
                 message.messageType(),
                 message.content(),
+                message.rawContent(),
                 message.senderOpenId(),
                 message.createTime(),
                 false

@@ -111,6 +111,53 @@ class PlanGateServiceTest {
         assertThat(result.reasons()).contains("step ppt-1 worker does not match capability");
     }
 
+    @Test
+    void rejectsStandaloneSummaryExecutionInCurrentHarness() {
+        TaskStepRecord step = step("summary-1", List.of());
+        step.setType(StepTypeEnum.SUMMARY);
+        step.setAssignedWorker("summary-worker");
+        TaskPlanGraph graph = TaskPlanGraph.builder()
+                .taskId("task-1")
+                .goal("生成一段摘要")
+                .deliverables(List.of("SUMMARY"))
+                .steps(List.of(step))
+                .build();
+
+        PlanGateResult result = service.check(graph, ExecutionContract.builder()
+                .taskId("task-1")
+                .rawInstruction("写一段摘要")
+                .clarifiedInstruction("写一段摘要")
+                .allowedArtifacts(List.of("SUMMARY"))
+                .build());
+
+        assertThat(result.passed()).isFalse();
+        assertThat(result.reasons()).contains(
+                "standalone SUMMARY steps are not executable in the current harness; merge the summary into a DOC or split it into a separate future capability");
+    }
+
+    @Test
+    void rejectsMultipleDocStepsInOneExecutionRun() {
+        TaskStepRecord docOne = step("doc-1", List.of());
+        TaskStepRecord docTwo = step("doc-2", List.of("doc-1"));
+        TaskPlanGraph graph = TaskPlanGraph.builder()
+                .taskId("task-1")
+                .goal("生成文档和风险清单")
+                .deliverables(List.of("DOC"))
+                .steps(List.of(docOne, docTwo))
+                .build();
+
+        PlanGateResult result = service.check(graph, ExecutionContract.builder()
+                .taskId("task-1")
+                .rawInstruction("写文档")
+                .clarifiedInstruction("写文档并补风险清单")
+                .allowedArtifacts(List.of("DOC"))
+                .build());
+
+        assertThat(result.passed()).isFalse();
+        assertThat(result.reasons()).contains(
+                "multiple DOC steps are not executable in one run; merge extra sections into the main DOC");
+    }
+
     private TaskPlanGraph graph(List<TaskStepRecord> steps) {
         return TaskPlanGraph.builder()
                 .taskId("task-1")

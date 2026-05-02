@@ -6,11 +6,13 @@ import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.UUID;
 
 @Service
 public class PlannerConversationService {
@@ -45,7 +47,9 @@ public class PlannerConversationService {
             String userFeedback
     ) {
         TaskSessionResolution resolution = sessionResolver.resolve(taskId, workspaceContext);
-        PlanTaskSession session = sessionService.getOrCreate(resolution.taskId());
+        PlanTaskSession session = resolution.existingSession()
+                ? sessionService.get(resolution.taskId())
+                : transientSession(resolution.taskId(), workspaceContext);
 
         TaskIntakeDecision intakeDecision = intakeService.decide(
                 session,
@@ -53,8 +57,20 @@ public class PlannerConversationService {
                 userFeedback,
                 resolution.existingSession()
         );
+        intakeDecision = absorbDocLinksDuringClarification(session, resolution, workspaceContext, intakeDecision, userFeedback, rawInstruction);
+        if (shouldStartFreshTask(taskId, resolution, intakeDecision)) {
+            resolution = new TaskSessionResolution(UUID.randomUUID().toString(), false, resolution.continuationKey());
+            session = transientSession(resolution.taskId(), workspaceContext);
+        }
         String userInput = firstText(userFeedback, rawInstruction);
         String graphInstruction = userInput.isBlank() ? intakeDecision.effectiveInput() : userInput;
+        if (shouldShortCircuitWithoutTask(resolution, intakeDecision)) {
+            updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution, graphInstruction);
+            return session;
+        }
+        if (!resolution.existingSession()) {
+            session = sessionService.getOrCreate(resolution.taskId());
+        }
         if (shouldBindConversation(resolution, intakeDecision)) {
             sessionResolver.bindConversation(resolution);
         }
@@ -82,6 +98,25 @@ public class PlannerConversationService {
         return result;
     }
 
+    private boolean shouldShortCircuitWithoutTask(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
+        if (resolution == null || resolution.existingSession() || intakeDecision == null) {
+            return false;
+        }
+        TaskIntakeTypeEnum type = intakeDecision.intakeType();
+        return type == TaskIntakeTypeEnum.UNKNOWN
+                || type == TaskIntakeTypeEnum.STATUS_QUERY
+                || type == TaskIntakeTypeEnum.CANCEL_TASK
+                || type == TaskIntakeTypeEnum.CONFIRM_ACTION;
+    }
+
+    private boolean shouldStartFreshTask(String explicitTaskId, TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
+        return resolution != null
+                && !hasText(explicitTaskId)
+                && resolution.existingSession()
+                && intakeDecision != null
+                && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK;
+    }
+
     private boolean shouldBindConversation(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
         if (resolution == null || intakeDecision == null) {
             return false;
@@ -93,6 +128,44 @@ public class PlannerConversationService {
             case STATUS_QUERY, UNKNOWN, CANCEL_TASK, CONFIRM_ACTION -> false;
             default -> true;
         };
+    }
+
+    private PlanTaskSession transientSession(String taskId, WorkspaceContext workspaceContext) {
+        return PlanTaskSession.builder()
+                .taskId(taskId)
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .planScore(0)
+                .aborted(false)
+                .turnCount(0)
+                .scenarioPath(List.of(ScenarioCodeEnum.A_IM, ScenarioCodeEnum.B_PLANNING))
+                .build();
+    }
+
+    private TaskIntakeDecision absorbDocLinksDuringClarification(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision current,
+            String userFeedback,
+            String rawInstruction
+    ) {
+        if (session == null
+                || resolution == null
+                || !resolution.existingSession()
+                || session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
+                || workspaceContext == null
+                || workspaceContext.getDocRefs() == null
+                || workspaceContext.getDocRefs().isEmpty()) {
+            return current;
+        }
+        String effectiveInput = firstText(userFeedback, rawInstruction);
+        return new TaskIntakeDecision(
+                TaskIntakeTypeEnum.CLARIFICATION_REPLY,
+                effectiveInput,
+                "guard clarification reply from extracted doc refs",
+                null,
+                null
+        );
     }
 
     private void updateSessionEnvelope(
@@ -137,5 +210,9 @@ public class PlannerConversationService {
             return first.trim();
         }
         return second == null ? "" : second.trim();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

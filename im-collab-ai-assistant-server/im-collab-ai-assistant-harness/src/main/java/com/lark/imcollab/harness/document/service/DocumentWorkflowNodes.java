@@ -100,7 +100,6 @@ public class DocumentWorkflowNodes {
         DocumentOutline outline = invokeOutline(prompt, taskId);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.OUTLINE_TASK_SUFFIX),
                 ArtifactType.DOC_OUTLINE, outline.getTitle(), support.writeJson(outline), null);
-        support.publishEvent(taskId, null, TaskEventType.STEP_COMPLETED);
         return CompletableFuture.completedFuture(Map.of(
                 DocumentStateKeys.OUTLINE, outline,
                 DocumentStateKeys.DONE_OUTLINE, true
@@ -127,7 +126,6 @@ public class DocumentWorkflowNodes {
             AssistantMessage response = callAgent(documentSectionAgent, prompt, taskId + ":section:" + section.getHeading());
             drafts.add(parseSectionDraft(response.getText(), section));
         }
-        support.publishEvent(taskId, null, TaskEventType.STEP_COMPLETED);
         return CompletableFuture.completedFuture(Map.of(
                 DocumentStateKeys.SECTION_DRAFTS, drafts,
                 DocumentStateKeys.DONE_SECTIONS, true
@@ -233,7 +231,6 @@ public class DocumentWorkflowNodes {
                     DocumentStateKeys.SECTION_DRAFTS, effectiveDrafts
             ));
         }
-        support.publishEvent(taskId, null, TaskEventType.STEP_COMPLETED);
         return CompletableFuture.completedFuture(Map.of(
                 DocumentStateKeys.REVIEW_RESULT, reviewResult,
                 DocumentStateKeys.DONE_REVIEW, true,

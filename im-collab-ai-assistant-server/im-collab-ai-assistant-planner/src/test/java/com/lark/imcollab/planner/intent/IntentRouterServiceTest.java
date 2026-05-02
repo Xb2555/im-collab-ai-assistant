@@ -18,6 +18,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class IntentRouterServiceTest {
@@ -39,25 +40,18 @@ class IntentRouterServiceTest {
     }
 
     @Test
-    void statusQueryUsesModelClassificationInsteadOfHardRule() {
+    void statusQueryUsesHardRuleBeforeModel() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         IntentRouterService service = router(model, new PlannerProperties());
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-2")
                 .planningPhase(PlanningPhaseEnum.EXECUTING)
                 .build();
-        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
-                TaskCommandTypeEnum.QUERY_STATUS,
-                0.9d,
-                "user asks progress",
-                "现在进度怎么样了",
-                false
-        )));
 
         TaskCommand command = service.route(session, "现在进度怎么样了", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
-        verify(model).classify(session, "现在进度怎么样了", true);
+        verifyNoInteractions(model);
     }
 
     @Test
@@ -120,29 +114,22 @@ class IntentRouterServiceTest {
     }
 
     @Test
-    void taskOverviewUsesModelClassification() {
+    void taskOverviewUsesHardRuleBeforeModel() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         IntentRouterService service = router(model, new PlannerProperties());
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-2")
                 .planningPhase(PlanningPhaseEnum.EXECUTING)
                 .build();
-        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
-                TaskCommandTypeEnum.QUERY_STATUS,
-                0.9d,
-                "task overview",
-                "任务概况",
-                false
-        )));
 
         TaskCommand command = service.route(session, "任务概况", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
-        verify(model).classify(session, "任务概况", true);
+        verifyNoInteractions(model);
     }
 
     @Test
-    void modelUnavailableTaskOverviewBecomesUnknown() {
+    void modelUnavailableTaskOverviewStaysReadOnly() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-2")
                 .planningPhase(PlanningPhaseEnum.PLAN_READY)
@@ -150,7 +137,7 @@ class IntentRouterServiceTest {
 
         TaskCommand command = router.route(session, "任务概况", null, true);
 
-        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.UNKNOWN);
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
     }
 
     @Test
@@ -175,19 +162,47 @@ class IntentRouterServiceTest {
     void noSessionFullPlanQueryCanStayReadOnly() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         IntentRouterService service = router(model, new PlannerProperties());
-        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
-                TaskCommandTypeEnum.QUERY_STATUS,
-                0.93d,
-                "user asks for existing full plan",
-                "完整计划给我看看",
-                false,
-                "PLAN"
-        )));
 
         TaskCommand command = service.route(null, "完整计划给我看看", null, false);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
-        verify(model).classify(null, "完整计划给我看看", false);
+        verifyNoInteractions(model);
+    }
+
+    @Test
+    void newTaskMentioningStatusDoesNotUseReadOnlyKeywordRule() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.92d,
+                "user asks to create a document whose title contains status",
+                "帮我写一份标题叫状态回归文档的测试文档",
+                false
+        )));
+
+        TaskCommand command = service.route(null, "帮我写一份标题叫状态回归文档的测试文档", null, false);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+        verify(model).classify(null, "帮我写一份标题叫状态回归文档的测试文档", false);
+    }
+
+    @Test
+    void newTaskMentioningQueryDoesNotUseReadOnlyKeywordRule() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.9d,
+                "user asks to create a query report",
+                "帮我生成一个查询性能分析文档",
+                false
+        )));
+
+        TaskCommand command = service.route(null, "帮我生成一个查询性能分析文档", null, false);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+        verify(model).classify(null, "帮我生成一个查询性能分析文档", false);
     }
 
     @Test
@@ -251,7 +266,7 @@ class IntentRouterServiceTest {
     }
 
     @Test
-    void modelStartTaskInsideExistingPlanIsRejectedByGuard() {
+    void modelStartTaskInsideExistingPlanCanOpenFreshTask() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         PlannerProperties properties = new PlannerProperties();
         properties.getIntent().setFallbackToLocalRules(false);
@@ -267,7 +282,7 @@ class IntentRouterServiceTest {
 
         TaskCommand command = service.route(session, "重新描述一下", null, true);
 
-        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.UNKNOWN);
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
     }
 
     @Test
@@ -303,7 +318,7 @@ class IntentRouterServiceTest {
         TaskCommand command = service.route(session, "完整计划给我看看", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
-        verify(model).classify(session, "完整计划给我看看", true);
+        verifyNoInteractions(model);
     }
 
     @Test
@@ -325,6 +340,24 @@ class IntentRouterServiceTest {
         TaskCommand command = service.route(session, "再加一条风险分析", null, true);
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.ADJUST_PLAN);
+    }
+
+    @Test
+    void standaloneNewTaskInsideActiveConversationStaysStartTask() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        PlanTaskSession session = plannedSession();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.92d,
+                "standalone new deliverable request",
+                "帮我总结群里消息并生成一个总结文档",
+                false
+        )));
+
+        TaskCommand command = service.route(session, "帮我总结群里消息并生成一个总结文档", null, true);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
     }
 
     @Test

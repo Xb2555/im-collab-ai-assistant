@@ -3,6 +3,7 @@ package com.lark.imcollab.gateway.im.service;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
 import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
@@ -304,6 +305,7 @@ public class LarkIMListenerService {
                 event.chatType(),
                 event.messageType(),
                 event.content(),
+                event.rawContent(),
                 event.senderOpenId(),
                 event.createTime(),
                 mapInputSource(event.chatType())
@@ -325,6 +327,16 @@ public class LarkIMListenerService {
         if (session != null
                 && session.getIntakeState() != null
                 && hasText(session.getIntakeState().getAssistantReply())) {
+            return false;
+        }
+        TaskIntakeTypeEnum intakeType = session == null || session.getIntakeState() == null
+                ? null
+                : session.getIntakeState().getIntakeType();
+        if (intakeType == TaskIntakeTypeEnum.STATUS_QUERY
+                || intakeType == TaskIntakeTypeEnum.UNKNOWN
+                || intakeType == TaskIntakeTypeEnum.CANCEL_TASK
+                || intakeType == TaskIntakeTypeEnum.CONFIRM_ACTION
+                || intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
             return false;
         }
         return session == null

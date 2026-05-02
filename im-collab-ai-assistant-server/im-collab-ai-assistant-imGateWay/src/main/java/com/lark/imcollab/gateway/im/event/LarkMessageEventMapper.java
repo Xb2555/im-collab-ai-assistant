@@ -61,6 +61,7 @@ public class LarkMessageEventMapper {
                 message.getChatType(),
                 message.getMessageType(),
                 content,
+                message.getContent(),
                 senderId == null ? null : senderId.getOpenId(),
                 sender == null ? null : sender.getSenderType(),
                 firstText(message.getCreateTime(), header == null ? null : header.getCreateTime()),

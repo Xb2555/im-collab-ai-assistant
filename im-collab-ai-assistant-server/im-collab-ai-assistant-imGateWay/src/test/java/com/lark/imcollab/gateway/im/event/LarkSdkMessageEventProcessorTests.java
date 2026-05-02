@@ -23,6 +23,7 @@ class LarkSdkMessageEventProcessorTests {
                 "group",
                 "text",
                 "hello",
+                "hello",
                 "ou_1",
                 "1777453955475",
                 false

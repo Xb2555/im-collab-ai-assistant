@@ -38,6 +38,9 @@ public class IntentDecisionGuard {
                     || candidate.type() == TaskCommandTypeEnum.UNKNOWN) {
                 return candidate;
             }
+            if (candidate.type() == TaskCommandTypeEnum.CONFIRM_ACTION) {
+                return unknown(normalized, "guard rejected confirm without existing task");
+            }
             return rewrite(candidate, TaskCommandTypeEnum.START_TASK, "guard new conversation starts task", normalized, false);
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER
@@ -48,7 +51,8 @@ public class IntentDecisionGuard {
                     "guard session waiting clarification", normalized, false);
         }
         if (candidate.type() == TaskCommandTypeEnum.START_TASK && hasExistingPlan(session)) {
-            return unknown(normalized, "guard rejected start task inside existing planned session");
+            return rewrite(candidate, TaskCommandTypeEnum.START_TASK,
+                    "guard accepted standalone new task inside active conversation", normalized, false);
         }
         if (candidate.type() == TaskCommandTypeEnum.ADJUST_PLAN && !canAdjust(session)) {
             return unknown(normalized, "guard rejected plan adjustment before plan is available");
