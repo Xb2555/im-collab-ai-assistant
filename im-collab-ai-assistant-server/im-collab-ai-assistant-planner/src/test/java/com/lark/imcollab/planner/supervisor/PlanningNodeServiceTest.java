@@ -7,8 +7,10 @@ import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.planner.prompt.PromptContextKeys;
 import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
 import com.lark.imcollab.planner.service.ExecutionContractFactory;
 import com.lark.imcollab.planner.service.PlanQualityService;
@@ -26,11 +28,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 class PlanningNodeServiceTest {
 
@@ -154,6 +159,59 @@ class PlanningNodeServiceTest {
 
         assertThat(result.getPlanCards()).hasSize(2);
         verify(sessionService, atLeast(2)).saveWithoutVersionChange(session);
+    }
+
+    @Test
+    void passesSelectedMessagesIntoAgentPromptAndRunnableMetadata() throws Exception {
+        ReactAgent intentAgent = mock(ReactAgent.class);
+        ReactAgent planningAgent = mock(ReactAgent.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-context")
+                .rawInstruction("基于选中消息生成项目复盘文档")
+                .build();
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .selectedMessages(List.of("客户反馈：移动端审批入口太深", "方案结论：先优化首页快捷入口"))
+                .timeRange("2026-05-01T00:00:00Z/2026-05-02T00:00:00Z")
+                .build();
+        when(sessionService.getOrCreate("task-context")).thenReturn(session);
+        when(memoryService.renderContext(session)).thenReturn("用户刚刚选择了两条消息");
+        when(intentAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"userGoal":"基于选中消息生成项目复盘文档","deliverableTargets":["DOC"]}
+                        """)
+        ))));
+        when(planningAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"planCards":[{"cardId":"card-001","title":"生成项目复盘文档","type":"DOC"}]}
+                        """)
+        ))));
+        PlanningNodeService planningService = new PlanningNodeService(
+                intentAgent,
+                planningAgent,
+                sessionService,
+                new PlanQualityService(new ObjectMapper(), List.of(), new ExecutionContractFactory()),
+                projectionService,
+                memoryService,
+                questionTool,
+                new ObjectMapper()
+        );
+
+        planningService.plan("task-context", "基于选中消息生成项目复盘文档", workspaceContext, "");
+
+        verify(intentAgent).invoke(contains("客户反馈：移动端审批入口太深"), any());
+        ArgumentCaptor<com.alibaba.cloud.ai.graph.RunnableConfig> configCaptor = forClass(com.alibaba.cloud.ai.graph.RunnableConfig.class);
+        verify(planningAgent).invoke(contains("方案结论：先优化首页快捷入口"), configCaptor.capture());
+        Map<String, Object> metadata = configCaptor.getValue().metadata().orElse(Map.of());
+        assertThat(metadata.get(PromptContextKeys.AGENT_NAME)).isEqualTo("planning-agent");
+        assertThat((String) metadata.get(PromptContextKeys.CONTEXT))
+                .contains("客户反馈：移动端审批入口太深")
+                .contains("方案结论：先优化首页快捷入口");
     }
 
     @Test

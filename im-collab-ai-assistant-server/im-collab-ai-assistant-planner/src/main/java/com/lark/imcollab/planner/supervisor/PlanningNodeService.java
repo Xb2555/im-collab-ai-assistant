@@ -18,6 +18,7 @@ import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
 import com.lark.imcollab.planner.service.PlanQualityService;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
+import com.lark.imcollab.planner.prompt.AgentPromptContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -70,9 +71,15 @@ public class PlanningNodeService {
         if (!hasText(session.getRawInstruction()) && hasText(rawInstruction)) {
             session.setRawInstruction(rawInstruction.trim());
         }
-        String planningInput = buildPlanningInput(session, rawInstruction, workspaceContext, userFeedback);
+        String workspacePromptContext = renderWorkspaceContext(workspaceContext);
+        String conversationMemory = memoryService.renderContext(session);
+        String planningInput = buildPlanningInput(session, rawInstruction, workspaceContext, userFeedback, conversationMemory);
         projectionService.projectStage(session, TaskEventTypeEnum.INTENT_ROUTING, "Understanding user intent");
-        Optional<IntentSnapshot> intent = invokeAgent(intentAgent, planningInput, config(taskId, "intent"), IntentSnapshot.class);
+        Optional<IntentSnapshot> intent = invokeAgent(
+                intentAgent,
+                planningInput,
+                config(taskId, "intent", session, rawInstruction, workspacePromptContext, conversationMemory),
+                IntentSnapshot.class);
         if (intent.isEmpty()) {
             questionTool.askUser(session, java.util.List.of("我还需要确认一下：这次任务要产出文档、PPT，还是摘要？"));
             return sessionService.get(taskId);
@@ -89,7 +96,7 @@ public class PlanningNodeService {
         Optional<PlanBlueprint> blueprint = invokeAgent(
                 planningAgent,
                 planningInput + "\n\nIntent snapshot:\n" + toJson(intent.get()),
-                config(taskId, "planning"),
+                config(taskId, "planning", session, rawInstruction, workspacePromptContext, conversationMemory),
                 PlanBlueprint.class
         );
         if (blueprint.isPresent() && !hasPlanCards(blueprint.get())) {
@@ -146,7 +153,7 @@ public class PlanningNodeService {
         Optional<PlanBlueprint> repaired = invokeAgent(
                 planningAgent,
                 repairPrompt,
-                config(taskId, "planning-repair"),
+                config(taskId, "planning", sessionService.getOrCreate(taskId), planningInput, planningInput, memoryService.renderContext(sessionService.getOrCreate(taskId))),
                 PlanBlueprint.class
         );
         if (repaired.isPresent() && hasPlanCards(repaired.get())) {
@@ -464,10 +471,25 @@ public class PlanningNodeService {
         return planningInput.trim();
     }
 
-    private RunnableConfig config(String taskId, String agentName) {
-        return RunnableConfig.builder()
+    private RunnableConfig config(
+            String taskId,
+            String agentName,
+            PlanTaskSession session,
+            String rawInstruction,
+            String context,
+            String conversationMemory
+    ) {
+        RunnableConfig base = RunnableConfig.builder()
                 .threadId(taskId + ":planner:" + agentName)
                 .build();
+        return AgentPromptContext.withPlanningPromptContext(
+                base,
+                session,
+                rawInstruction,
+                context,
+                conversationMemory,
+                agentName.endsWith("-agent") ? agentName : agentName + "-agent"
+        );
     }
 
     private <T> Optional<T> invokeAgent(ReactAgent agent, String prompt, RunnableConfig config, Class<T> type) {
@@ -545,26 +567,59 @@ public class PlanningNodeService {
             PlanTaskSession session,
             String rawInstruction,
             WorkspaceContext workspaceContext,
-            String userFeedback
+            String userFeedback,
+            String conversationMemory
     ) {
         StringBuilder builder = new StringBuilder();
         builder.append("User instruction: ").append(rawInstruction == null ? "" : rawInstruction);
         if (hasText(userFeedback)) {
             builder.append("\nUser feedback: ").append(userFeedback);
         }
-        if (workspaceContext != null) {
-            if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
-                builder.append("\nSelected messages:\n").append(String.join("\n", workspaceContext.getSelectedMessages()));
-            }
-            if (hasText(workspaceContext.getTimeRange())) {
-                builder.append("\nTime range: ").append(workspaceContext.getTimeRange());
-            }
+        String workspacePromptContext = renderWorkspaceContext(workspaceContext);
+        if (hasText(workspacePromptContext)) {
+            builder.append("\nWorkspace context:\n").append(workspacePromptContext);
         }
-        String memory = memoryService.renderContext(session);
-        if (hasText(memory)) {
-            builder.append("\nConversation memory:\n").append(memory);
+        if (hasText(conversationMemory)) {
+            builder.append("\nConversation memory:\n").append(conversationMemory);
         }
         return builder.toString();
+    }
+
+    private String renderWorkspaceContext(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
+            builder.append("Selected messages:\n")
+                    .append(String.join("\n", workspaceContext.getSelectedMessages()))
+                    .append("\n");
+        }
+        if (workspaceContext.getSelectedMessageIds() != null && !workspaceContext.getSelectedMessageIds().isEmpty()) {
+            builder.append("Selected message ids: ")
+                    .append(String.join(", ", workspaceContext.getSelectedMessageIds()))
+                    .append("\n");
+        }
+        if (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty()) {
+            builder.append("Document refs: ")
+                    .append(String.join(", ", workspaceContext.getDocRefs()))
+                    .append("\n");
+        }
+        if (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty()) {
+            builder.append("Attachment refs: ")
+                    .append(String.join(", ", workspaceContext.getAttachmentRefs()))
+                    .append("\n");
+        }
+        if (hasText(workspaceContext.getTimeRange())) {
+            builder.append("Time range: ").append(workspaceContext.getTimeRange()).append("\n");
+        }
+        if (hasText(workspaceContext.getChatId())) {
+            builder.append("Chat id: ").append(workspaceContext.getChatId()).append("\n");
+        }
+        if (hasText(workspaceContext.getThreadId())) {
+            builder.append("Thread id: ").append(workspaceContext.getThreadId()).append("\n");
+        }
+        return builder.toString().trim();
     }
 
     private String extractJson(String text) {
