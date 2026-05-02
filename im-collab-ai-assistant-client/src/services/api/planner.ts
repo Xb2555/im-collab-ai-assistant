@@ -48,5 +48,12 @@ export const plannerApi = {
     const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(`/api/planner/tasks/${taskId}/resume`, data);
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
-  }
+  },
+
+  // ✨ 新增：获取任务运行时快照 (新的单一事实源)
+  getTaskRuntime: async (taskId: string): Promise<any> => { // 类型先用 any 兜底，后续补全
+    const response = await apiClient.get(`/api/planner/tasks/${taskId}/runtime`);
+    if (response.data.code !== 0) throw new Error(response.data.message);
+    return response.data.data;
+  },
 };

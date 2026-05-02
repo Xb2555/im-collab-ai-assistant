@@ -10,13 +10,18 @@ import {
   MessageSquare, LayoutTemplate, Bot, Plus, Search, LogOut, 
   Settings, PanelRightClose, Loader2, UserPlus, User,
   Play, Square, RefreshCw, CheckCircle2, CircleDashed, Check, AlertCircle,
-  X, StopCircle // ✨ 关键修复：补全这两个缺失的图标
+  X, StopCircle, Send // ✨ 关键修复：补全这两个缺失的图标
 } from 'lucide-react';
+import confetti from 'canvas-confetti'; // ✨ 新增：引入撒花库
 import { CreateChatModal } from '@/components/chat/CreateChatModal';
 import { InviteMemberModal } from '@/components/chat/InviteMemberModal';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { plannerApi } from '@/services/api/planner';
 import { useTaskStore } from '@/store/useTaskStore';
+// 👇 🌟🌟🌟 新增这一行：引入我们的流式监听引擎 🌟🌟🌟 👇
+import { useAgentStream } from '@/hooks/useAgentStream';
+import { DocPreviewCard } from '@/components/chat/DocPreviewCard';
+import { PptPreviewCard } from '@/components/chat/PptPreviewCard';
 
 // ✨ 飞书消息内容智能解析器
 const parseFeishuContent = (rawContent: string | null | undefined, msgType?: string) => {
@@ -72,8 +77,14 @@ export default function Dashboard() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false); // 新增：用于历史消息加载状态
   const abortControllerRef = useRef<AbortController | null>(null);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false); // 新增弹窗状态
+  
   // ✨ 引入刚才写的 Task Store
-  const { activeTaskId, planPreview, setActiveTaskId, setPlanPreview, clearTask } = useTaskStore();
+  // 👇 🌟🌟🌟 修改这里：把 aiThinkingText 和 isStreaming 解构出来 🌟🌟🌟 👇
+  const { activeTaskId, planPreview, setActiveTaskId, setPlanPreview, clearTask, aiThinkingText, isStreaming } = useTaskStore();
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+
+  // 👇 🌟🌟🌟 新增这里：启动打字机/SSE 引擎 🌟🌟🌟 👇
+  useAgentStream();
   const [isPlanning, setIsPlanning] = useState(false);
   // ✨ 新增：用于处理“重新规划”的表单状态
   const [isReplanningMode, setIsReplanningMode] = useState(false);
@@ -99,22 +110,30 @@ const [resumeFeedback, setResumeFeedback] = useState(''); // ✨ 新增：记录
     }
   };
   // ✨ 新增：唤醒 Agent 发起规划任务
-  const handleStartAgentPlan = async () => {
+const handleStartAgentPlan = async () => {
     if (!inputText.trim() || !activeChatId) return;
     try {
       setIsPlanning(true);
+      
+      // ✨ 新增：把勾选的消息内容提取出来
+      const selectedTexts = messages
+        .filter(msg => selectedMessageIds.includes(msg.eventId))
+        .map(msg => `${msg.senderName}: ${msg.content}`); // 拼成 "张三: 刚才说的方案" 格式
+
       // 调用创建规划接口
       const preview = await plannerApi.createPlan({
         rawInstruction: inputText.trim(),
         workspaceContext: {
           chatId: activeChatId,
-          selectionType: 'MESSAGE'
+          selectionType: selectedTexts.length > 0 ? 'MESSAGE' : undefined,
+          selectedMessages: selectedTexts.length > 0 ? selectedTexts : undefined // ✨ 硬塞给大模型
         }
       });
-      // 将返回的 taskId 和 初始预览状态存入 Zustand
+      
       setActiveTaskId(preview.taskId || null);
       setPlanPreview(preview);
-      setInputText(''); // 清空输入框
+      setInputText('');
+      setSelectedMessageIds([]); // 提交后清空勾选
     } catch (e: any) {
       alert('唤醒 Agent 失败: ' + e.message);
     } finally {
@@ -145,6 +164,27 @@ const [resumeFeedback, setResumeFeedback] = useState(''); // ✨ 新增：记录
       } else {
         alert('操作失败: ' + e.message);
       }
+    }
+  };
+
+// ✨ 新增：处理“总结与交付”撒花及后续逻辑
+  const handleDeliver = async () => {
+    if (!activeTaskId) return;
+    try {
+      // 触发满屏炫酷撒花特效 🎉
+      confetti({
+        particleCount: 150,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'],
+        zIndex: 9999 // 确保撒花在最顶层
+      });
+      
+      // 注意：这里预留了调后端的接口。
+      // 等后端把交付接口写好后，取消下面的注释即可。
+      // await plannerApi.executeCommand(activeTaskId, { action: 'DELIVER', version: planPreview.task?.version || 0 });
+    } catch (e: any) {
+      alert('交付失败: ' + e.message);
     }
   };
 
@@ -463,7 +503,22 @@ messages.map((msg, index) => {
                 const displayName = isBot ? 'Agent Pilot' : (msg.senderName || '系统通知');
                 
                 return (
-                  <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'}`}>
+                  <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} group relative`}>
+                    {/* ✨ 新增：鼠标悬浮或已选中时显示的复选框 */}
+                    <div className={`absolute top-2 ${isMe ? '-left-6' : '-right-6'} opacity-0 group-hover:opacity-100 transition-opacity ${selectedMessageIds.includes(msg.eventId) ? 'opacity-100' : ''}`}>
+                      <input 
+                        type="checkbox" 
+                        className="w-4 h-4 cursor-pointer"
+                        checked={selectedMessageIds.includes(msg.eventId)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedMessageIds(prev => [...prev, msg.eventId]);
+                          } else {
+                            setSelectedMessageIds(prev => prev.filter(id => id !== msg.eventId));
+                          }
+                        }}
+                      />
+                    </div>
                     <div className={`flex max-w-[85%] gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
                       
                       {/* 头像区域 */}
@@ -568,20 +623,32 @@ messages.map((msg, index) => {
         // 任务详情与步骤条 (Stepper)
         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
           
+           {/* 👇 🌟🌟🌟 在这里插入打字机 UI 🌟🌟🌟 👇 */}
+          {aiThinkingText && (
+            <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4 mb-4 text-sm text-zinc-700 leading-relaxed whitespace-pre-wrap font-mono relative overflow-hidden shadow-sm">
+              <div className="absolute top-0 left-0 w-1 h-full bg-blue-500 animate-pulse"></div>
+              {aiThinkingText}
+              {isStreaming && <span className="inline-block w-2 h-4 bg-blue-600 ml-1 animate-pulse"></span>}
+            </div>
+          )}
+          {/* 👆 🌟🌟🌟 插入结束 🌟🌟🌟 👆 */}       
           {/* 1. 任务头部卡片 & 追问历史回显 */}
           <div className="bg-white border border-zinc-200 rounded-xl p-4 shadow-sm mb-4">
             <div className="flex items-center justify-between mb-1">
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
-                <h3 className="text-sm font-bold text-zinc-900">{planPreview.title || 'Agent 任务规划'}</h3>
+                {/* ✨ 修改：标题从 planPreview.task 读取 */}
+                <h3 className="text-sm font-bold text-zinc-900">{planPreview.task?.title || 'Agent 任务规划'}</h3>
               </div>
               <span className="text-[10px] font-medium text-zinc-400 bg-zinc-100 px-2 py-0.5 rounded-full">
-                {planPreview.planningPhase}
+                {/* ✨ 修改：状态从 planPreview.task.status 读取 */}
+                {planPreview.task?.status || planPreview.planningPhase}
               </span>
             </div>
-            <p className="text-xs text-zinc-500 mb-3">{planPreview.summary || '已收到您的意图，生成以下执行步骤'}</p>
+            {/* ✨ 修改：摘要从 planPreview.task.goal 读取 */}
+            <p className="text-xs text-zinc-500 mb-3">{planPreview.task?.goal || planPreview.summary || '已收到您的意图，生成以下执行步骤'}</p>
             
-            {/* ✨ 新增细节：如果有之前的追问回答，展示出来作为前情提要 */}
+            {/* 追问历史回显 (保持不变，只要后端还有这个字段) */}
             {planPreview.clarificationAnswers && planPreview.clarificationAnswers.length > 0 && (
                <div className="mb-4 p-2 bg-zinc-50 rounded-md border border-zinc-100 text-xs text-zinc-500 flex gap-2">
                  <span className="font-semibold text-zinc-700 shrink-0">您的意图补充:</span>
@@ -591,13 +658,14 @@ messages.map((msg, index) => {
             
             {/* 步骤条核心区 */}
             <div className="space-y-4 relative before:absolute before:inset-0 before:ml-2 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-zinc-200 before:to-transparent">
-              {planPreview.cards?.map((card, idx) => (
-                <div key={card.cardId || idx} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+              {/* ✨ 核心修改：将 cards 替换为 steps */}
+              {(planPreview.steps || planPreview.cards)?.map((step: any, idx: number) => (
+                <div key={step.stepId || step.cardId || idx} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
                   {/* 状态图标 */}
                   <div className="flex items-center justify-center w-5 h-5 rounded-full border border-white bg-zinc-100 text-zinc-500 shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow-sm z-10">
-                    {card.status === 'COMPLETED' || card.status === 'DONE' ? (
+                    {step.status === 'COMPLETED' || step.status === 'DONE' ? (
                       <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-                    ) : card.status === 'IN_PROGRESS' || card.status === 'EXECUTING' ? (
+                    ) : step.status === 'IN_PROGRESS' || step.status === 'EXECUTING' || step.status === 'RUNNING' ? (
                       <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
                     ) : (
                       <CircleDashed className="w-3.5 h-3.5" />
@@ -605,22 +673,101 @@ messages.map((msg, index) => {
                   </div>
                   {/* 卡片内容 */}
                   <div className="w-[calc(100%-2rem)] md:w-[calc(50%-1.5rem)] bg-white p-3 rounded-lg border border-zinc-200 shadow-sm relative">
-                    {/* ✨ 新增细节：渲染任务类型 Tag */}
-                    {card.type && (
+                    {step.type && (
                       <span className="absolute top-3 right-3 text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider bg-indigo-50 text-indigo-600 border border-indigo-100">
-                        {card.type}
+                        {step.type}
                       </span>
                     )}
-                    <h4 className="text-xs font-semibold text-zinc-800 pr-12">{card.title}</h4>
-                    {card.description && <p className="text-[10px] text-zinc-500 mt-1 line-clamp-2">{card.description}</p>}
+                    {/* ✨ 修改：读取 step.name */}
+                    <h4 className="text-xs font-semibold text-zinc-800 pr-12">{step.name || step.title}</h4>
+                    {/* ✨ 修改：读取 step.outputSummary 作为描述描述 */}
+                    {(step.outputSummary || step.description) && <p className="text-[10px] text-zinc-500 mt-1 line-clamp-2">{step.outputSummary || step.description}</p>}
                   </div>
                 </div>
               ))}
             </div>
           </div>
 
+                            {/* 👇 🌟🌟🌟 在这里插入产物预览区 🌟🌟🌟 👇 */}
+          {/* 👇 🌟🌟🌟 调换位置：产物预览区先渲染 🌟🌟🌟 👇 */}
+          <div className="flex flex-col gap-4 mt-4 mb-6">
+            {/* 恢复使用真实的 planPreview.artifacts */}
+            {planPreview.artifacts?.map((artifact: any) => {
+              if (artifact.type === 'DOC') {
+                return (
+                  <DocPreviewCard 
+                    key={artifact.artifactId}
+                    status={artifact.status === 'CREATED' ? 'COMPLETED' : 'EXECUTING'} 
+                    docUrl={artifact.url}
+                    docTitle={artifact.title}
+                    onInterrupt={() => handleCommand('CANCEL')}
+                  />
+                );
+              }
+              if (artifact.type === 'PPT') {
+                return (
+                  <PptPreviewCard 
+                    key={artifact.artifactId}
+                    status={artifact.status === 'CREATED' ? 'COMPLETED' : 'EXECUTING'} 
+                    pptUrl={artifact.url}
+                    pptTitle={artifact.title}
+                    slideCount={artifact.slideCount} // 如果后端有返回页数的话
+                    onInterrupt={() => handleCommand('CANCEL')}
+                  />
+                );
+              }
+              return null;
+            })}
+          </div>
+          {/* 👆 🌟🌟🌟 产物预览区结束 🌟🌟🌟 👆 */}        
+
           {/* 审查态/操作干预区 */}
-          {planPreview.actions && (
+          {/* 👇 然后再渲染底部的操作按钮 👇 */}
+          {/* 审查态/操作干预区与交付区 */}
+          {planPreview.task?.status === 'COMPLETED' ? (
+            // 🌟 1. 任务完成时的专属大按钮 🌟
+            <div className="mt-4 pt-4 border-t border-zinc-200">
+              <Button 
+                className="w-full h-10 font-bold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-md animate-in zoom-in duration-500" 
+                onClick={handleDeliver}
+              >
+                <Send className="h-4 w-4 mr-2" /> 总结与交付
+              </Button>
+            </div>
+          ) : (planPreview.task?.status === 'CLARIFYING' || planPreview.planningPhase === 'ASK_USER') ? (
+            // 🌟 2. 新增：Agent 反问与澄清表单 (等待用户补充) 🌟
+            <div className="bg-blue-50 rounded-xl p-4 flex flex-col gap-3 border border-blue-200 shadow-inner animate-in slide-in-from-bottom-4">
+              <div className="flex items-center gap-2 text-blue-700 font-bold text-sm">
+                <Bot className="h-4 w-4" /> Agent 需要您的进一步确认
+              </div>
+              
+              {/* 渲染后端传来的澄清问题列表 */}
+              {planPreview.clarificationQuestions?.map((question: string, idx: number) => (
+                <p key={idx} className="text-xs text-blue-900 bg-blue-100/60 p-2.5 rounded-md leading-relaxed border border-blue-200/50">
+                  {question}
+                </p>
+              ))}
+
+              <textarea 
+                value={resumeFeedback}
+                onChange={(e) => setResumeFeedback(e.target.value)}
+                placeholder="请输入您的回答补充..."
+                className="w-full text-xs p-3 rounded-lg border border-blue-200 focus:border-blue-500 outline-none resize-none bg-white shadow-sm transition-all"
+                rows={3}
+              />
+              
+              <Button 
+                size="sm" 
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white shadow-md" 
+                disabled={!resumeFeedback.trim() || isResuming} 
+                onClick={handleResumeTask}
+              >
+                {isResuming ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
+                提交回答，继续任务
+              </Button>
+            </div>
+          ) : planPreview.actions && (
+            // 🌟 3. 原有逻辑：任务未完成时的干预面板 (审查态/执行态) 🌟
             <div className="bg-zinc-100 rounded-xl p-3 flex flex-col gap-3 border border-zinc-200 border-dashed transition-all">
               <span className="text-xs text-zinc-500 font-medium text-center">人工干预控制台</span>
               
@@ -669,9 +816,11 @@ messages.map((msg, index) => {
                 </div>
               )}
             </div>
-          )}
+                  )}
+                  
+
         </div>
-      )}
+            )}
     </div>
   </aside>
 
