@@ -63,6 +63,54 @@ class PlanGateServiceTest {
         assertThat(result.reasons()).contains("plan deliverables are required", "step doc-1 missing assignedWorker");
     }
 
+    @Test
+    void rejectsUnsupportedDeliverableAndStepType() {
+        TaskStepRecord step = step("whiteboard-1", List.of());
+        step.setType(StepTypeEnum.WHITEBOARD_CREATE);
+        step.setAssignedWorker("whiteboard-worker");
+        TaskPlanGraph graph = TaskPlanGraph.builder()
+                .taskId("task-1")
+                .goal("生成白板")
+                .deliverables(List.of("WHITEBOARD"))
+                .steps(List.of(step))
+                .build();
+
+        PlanGateResult result = service.check(graph, ExecutionContract.builder()
+                .taskId("task-1")
+                .rawInstruction("生成白板")
+                .clarifiedInstruction("生成白板")
+                .allowedArtifacts(List.of("WHITEBOARD"))
+                .build());
+
+        assertThat(result.passed()).isFalse();
+        assertThat(result.reasons()).contains("unsupported deliverable: WHITEBOARD");
+        assertThat(result.reasons()).contains("step whiteboard-1 has unsupported type");
+    }
+
+    @Test
+    void rejectsWorkerMismatchAndContractOverflow() {
+        TaskStepRecord step = step("ppt-1", List.of());
+        step.setType(StepTypeEnum.PPT_CREATE);
+        step.setAssignedWorker("doc-create-worker");
+        TaskPlanGraph graph = TaskPlanGraph.builder()
+                .taskId("task-1")
+                .goal("生成 PPT")
+                .deliverables(List.of("PPT"))
+                .steps(List.of(step))
+                .build();
+
+        PlanGateResult result = service.check(graph, ExecutionContract.builder()
+                .taskId("task-1")
+                .rawInstruction("写文档")
+                .clarifiedInstruction("写文档")
+                .allowedArtifacts(List.of("DOC"))
+                .build());
+
+        assertThat(result.passed()).isFalse();
+        assertThat(result.reasons()).contains("deliverable is outside execution contract: PPT");
+        assertThat(result.reasons()).contains("step ppt-1 worker does not match capability");
+    }
+
     private TaskPlanGraph graph(List<TaskStepRecord> steps) {
         return TaskPlanGraph.builder()
                 .taskId("task-1")

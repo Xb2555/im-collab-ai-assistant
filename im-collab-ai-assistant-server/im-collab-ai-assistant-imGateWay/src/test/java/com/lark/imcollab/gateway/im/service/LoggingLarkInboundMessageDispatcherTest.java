@@ -91,6 +91,21 @@ class LoggingLarkInboundMessageDispatcherTest {
     }
 
     @Test
+    void planAdjustmentClarificationDoesNotPretendPlanUpdated() {
+        PlanTaskSession unchanged = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.PLAN_READY);
+        unchanged.getIntakeState().setAssistantReply("我还没完全判断清楚要怎么改这份计划。");
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(unchanged);
+
+        dispatcher.dispatch(message("顺手处理一下"));
+
+        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
+        assertThat(textCaptor.getValue()).contains("我还没完全判断清楚");
+        assertThat(textCaptor.getValue()).doesNotContain("计划已更新");
+    }
+
+    @Test
     void failedPlanAdjustmentRepliesFailureInsteadOfReceiptText() {
         PlanTaskSession failed = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.FAILED);
         failed.setTransitionReason("计划调整失败");
@@ -124,6 +139,7 @@ class LoggingLarkInboundMessageDispatcherTest {
     @Test
     void detailedPlanExpandsCardsOnlyWhenAsked() {
         PlanTaskSession detailed = session(TaskIntakeTypeEnum.STATUS_QUERY, PlanningPhaseEnum.PLAN_READY);
+        detailed.getIntakeState().setAssistantReply(new LarkIMTaskReplyFormatter().fullPlan(detailed));
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(detailed);
 
@@ -137,6 +153,7 @@ class LoggingLarkInboundMessageDispatcherTest {
     @Test
     void naturalPlanQuestionExpandsFullPlan() {
         PlanTaskSession detailed = session(TaskIntakeTypeEnum.STATUS_QUERY, PlanningPhaseEnum.PLAN_READY);
+        detailed.getIntakeState().setAssistantReply(new LarkIMTaskReplyFormatter().fullPlan(detailed));
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(detailed);
 
@@ -152,6 +169,7 @@ class LoggingLarkInboundMessageDispatcherTest {
     @Test
     void completePlanWithParticleExpandsFullPlan() {
         PlanTaskSession detailed = session(TaskIntakeTypeEnum.STATUS_QUERY, PlanningPhaseEnum.PLAN_READY);
+        detailed.getIntakeState().setAssistantReply(new LarkIMTaskReplyFormatter().fullPlan(detailed));
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(detailed);
 

@@ -33,7 +33,9 @@ public class IntentDecisionGuard {
             return unknown(normalized, "intent confidence below threshold: " + candidate.reason());
         }
         if (!existingSession || session == null) {
-            if (candidate.type() == TaskCommandTypeEnum.CANCEL_TASK || candidate.type() == TaskCommandTypeEnum.UNKNOWN) {
+            if (candidate.type() == TaskCommandTypeEnum.CANCEL_TASK
+                    || candidate.type() == TaskCommandTypeEnum.QUERY_STATUS
+                    || candidate.type() == TaskCommandTypeEnum.UNKNOWN) {
                 return candidate;
             }
             return rewrite(candidate, TaskCommandTypeEnum.START_TASK, "guard new conversation starts task", normalized, false);
@@ -81,7 +83,7 @@ public class IntentDecisionGuard {
             String normalizedInput,
             boolean needsClarification
     ) {
-        return new IntentRoutingResult(type, source.confidence(), reason, normalizedInput, needsClarification);
+        return new IntentRoutingResult(type, source.confidence(), reason, normalizedInput, needsClarification, source.readOnlyView());
     }
 
     private IntentRoutingResult unknown(String normalizedInput, String reason) {

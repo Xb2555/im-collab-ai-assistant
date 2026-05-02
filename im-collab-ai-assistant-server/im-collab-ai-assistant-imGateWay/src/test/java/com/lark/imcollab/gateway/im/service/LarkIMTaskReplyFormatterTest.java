@@ -42,6 +42,40 @@ class LarkIMTaskReplyFormatterTest {
     }
 
     @Test
+    void planReadyTurnsNounTitlesIntoActionSteps() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planBlueprint(PlanBlueprint.builder()
+                        .planCards(List.of(
+                                card("技术方案文档（含 Mermaid 架构图）", PlanCardTypeEnum.DOC),
+                                card("汇报 PPT 初稿", PlanCardTypeEnum.PPT)
+                        ))
+                        .build())
+                .build();
+
+        String text = formatter.planReady(session);
+
+        assertThat(text).contains("1. 先生成技术方案文档（含 Mermaid 架构图）");
+        assertThat(text).contains("2. 再生成汇报 PPT 初稿");
+        assertThat(text).doesNotContain("先技术方案文档", "再汇报 PPT 初稿");
+    }
+
+    @Test
+    void singlePptPlanDoesNotStartWithThen() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planBlueprint(PlanBlueprint.builder()
+                        .planCards(List.of(card("老板汇报 PPT 初稿", PlanCardTypeEnum.PPT)))
+                        .build())
+                .build();
+
+        String text = formatter.planReady(session);
+
+        assertThat(text).contains("1. 先生成老板汇报 PPT 初稿");
+        assertThat(text).doesNotContain("1. 再生成老板汇报 PPT 初稿");
+    }
+
+    @Test
     void clarificationShowsAtMostTwoQuestions() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .activePromptSlots(List.of(
@@ -53,9 +87,20 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.clarification(session);
 
-        assertThat(text).contains("我还需要确认一下");
+        assertThat(text).contains("我先确认两点");
         assertThat(text).contains("面向老板还是技术评审？", "需要覆盖哪个时间范围？");
         assertThat(text).doesNotContain("是否需要 PPT？");
+    }
+
+    @Test
+    void singleClarificationUsesQuestionDirectly() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .activePromptSlots(List.of(slot("我还需要确认一下：你希望基于哪些材料整理？")))
+                .build();
+
+        String text = formatter.clarification(session);
+
+        assertThat(text).isEqualTo("你希望基于哪些材料整理？");
     }
 
     @Test
@@ -107,6 +152,23 @@ class LarkIMTaskReplyFormatterTest {
 
         assertThat(text).contains("任务状态：等待你确认", "等待你确认计划", "确认后下一步：生成技术方案文档");
         assertThat(text).doesNotContain("当前步骤：生成技术方案文档", "正在处理：生成技术方案文档");
+    }
+
+    @Test
+    void completedStatusDoesNotShowReadyStepAsCurrentStep() {
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .steps(List.of(
+                        TaskStepRecord.builder().name("生成技术方案文档").status(StepStatusEnum.COMPLETED).build(),
+                        TaskStepRecord.builder().name("项目风险评估表").status(StepStatusEnum.READY).build()
+                ))
+                .artifacts(List.of())
+                .build();
+
+        String text = formatter.status(snapshot);
+
+        assertThat(text).contains("任务状态：已完成", "主执行链路已完成", "计划项：2 个");
+        assertThat(text).doesNotContain("当前步骤：项目风险评估表", "步骤进度：1/2");
     }
 
     private static UserPlanCard card(String title, PlanCardTypeEnum type) {

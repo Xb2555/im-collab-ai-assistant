@@ -1,11 +1,8 @@
 package com.lark.imcollab.app.planner.controller;
 
+import com.lark.imcollab.app.planner.service.PlannerCommandApplicationService;
 import com.lark.imcollab.app.planner.assembler.PlannerViewAssembler;
 import com.lark.imcollab.app.planner.assembler.TaskRuntimeViewAssembler;
-import com.lark.imcollab.common.domain.Task;
-import com.lark.imcollab.common.domain.TaskStatus;
-import com.lark.imcollab.common.domain.TaskType;
-import com.lark.imcollab.common.facade.HarnessFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
@@ -13,7 +10,6 @@ import com.lark.imcollab.common.model.entity.BaseResponse;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
-import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.common.model.vo.TaskDetailVO;
@@ -23,21 +19,16 @@ import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
 import com.lark.imcollab.planner.service.AsyncPlannerService;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
-import com.lark.imcollab.planner.service.SupervisorPlannerService;
-import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,13 +41,11 @@ class PlannerControllerCommandTest {
     private static final LarkFrontendUserResponse USER = new LarkFrontendUserResponse("ou-user", "User", null);
 
     @Mock private PlannerPlanFacade plannerPlanFacade;
-    @Mock private SupervisorPlannerService supervisorPlannerService;
+    @Mock private PlannerCommandApplicationService plannerCommandApplicationService;
     @Mock private PlannerSessionService sessionService;
     @Mock private TaskRuntimeService taskRuntimeService;
     @Mock private TaskResultEvaluationService evaluationService;
     @Mock private PlannerStateStore repository;
-    @Mock private HarnessFacade harnessFacade;
-    @Mock private TaskBridgeService taskBridgeService;
     @Mock private AsyncPlannerService asyncPlannerService;
     @Mock private PlannerViewAssembler plannerViewAssembler;
     @Mock private TaskRuntimeViewAssembler taskRuntimeViewAssembler;
@@ -119,19 +108,20 @@ class PlannerControllerCommandTest {
     }
 
     @Test
-    void confirmExecute_triggersHarness() {
+    void confirmExecuteRoutesThroughPlannerGraphFacade() {
         PlanTaskSession session = new PlanTaskSession();
         session.setTaskId("task-1");
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
         session.setVersion(1);
+        PlanTaskSession executing = new PlanTaskSession();
+        executing.setTaskId("task-1");
+        executing.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        executing.setVersion(2);
 
         when(repository.findSession("task-1")).thenReturn(Optional.of(session));
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.WAITING_APPROVAL)));
-        when(harnessFacade.startExecution("task-1")).thenReturn(Task.builder()
-                .taskId("task-1").type(TaskType.WRITE_DOC).status(TaskStatus.EXECUTING)
-                .steps(new ArrayList<>()).artifacts(new ArrayList<>())
-                .createdAt(Instant.now()).updatedAt(Instant.now()).build());
-        when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
+        when(plannerCommandApplicationService.confirmExecution("task-1", session)).thenReturn(executing);
+        when(plannerViewAssembler.toPlanPreview(executing)).thenReturn(new PlanPreviewVO(
                 "task-1", 1, "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
@@ -141,11 +131,8 @@ class PlannerControllerCommandTest {
 
         controller.command("task-1", request, AUTHORIZATION);
 
-        InOrder inOrder = inOrder(taskBridgeService, harnessFacade);
-        inOrder.verify(taskBridgeService).ensureTask(session);
-        inOrder.verify(harnessFacade).startExecution("task-1");
-        verify(harnessFacade).startExecution("task-1");
-        verify(plannerViewAssembler).toPlanPreview(session);
+        verify(plannerCommandApplicationService).confirmExecution("task-1", session);
+        verify(plannerViewAssembler).toPlanPreview(executing);
     }
 
     @Test
@@ -162,17 +149,15 @@ class PlannerControllerCommandTest {
         request.setAction("REPLAN");
         request.setVersion(1);
         request.setFeedback("change it");
-        when(supervisorPlannerService.adjustPlan("task-1", "change it", null)).thenReturn(session);
+        when(plannerCommandApplicationService.replan("task-1", "change it")).thenReturn(session);
         when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
                 "task-1", 1, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
         controller.command("task-1", request, AUTHORIZATION);
 
-        verifyNoInteractions(harnessFacade);
-        verify(supervisorPlannerService).adjustPlan("task-1", "change it", null);
-        verify(taskBridgeService).ensureTask(session);
-        verify(supervisorPlannerService, never()).resume(anyString(), anyString(), anyBoolean());
+        verify(plannerCommandApplicationService).replan("task-1", "change it");
+        verify(plannerCommandApplicationService, never()).resume(anyString(), anyString(), anyBoolean());
     }
 
     @Test
@@ -181,9 +166,14 @@ class PlannerControllerCommandTest {
         session.setTaskId("task-1");
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
         session.setVersion(2);
+        PlanTaskSession aborted = new PlanTaskSession();
+        aborted.setTaskId("task-1");
+        aborted.setPlanningPhase(PlanningPhaseEnum.ABORTED);
+        aborted.setVersion(3);
         when(repository.findSession("task-1")).thenReturn(Optional.of(session));
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.WAITING_APPROVAL)));
-        when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
+        when(plannerCommandApplicationService.cancel("task-1")).thenReturn(aborted);
+        when(plannerViewAssembler.toPlanPreview(aborted)).thenReturn(new PlanPreviewVO(
                 "task-1", 2, "ABORTED", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
@@ -194,13 +184,8 @@ class PlannerControllerCommandTest {
         BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
 
         assertThat(response.getCode()).isZero();
-        assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ABORTED);
-        verify(taskRuntimeService).projectPhaseTransition(
-                "task-1",
-                PlanningPhaseEnum.ABORTED,
-                TaskEventTypeEnum.TASK_CANCELLED
-        );
-        verifyNoInteractions(harnessFacade);
+        verify(plannerCommandApplicationService).cancel("task-1");
+        verify(taskRuntimeService, never()).projectPhaseTransition(anyString(), any(), any());
     }
 
     @Test
@@ -215,7 +200,7 @@ class PlannerControllerCommandTest {
 
         assertThat(response.getCode()).isEqualTo(40000);
         assertThat(response.getMessage()).contains("Unsupported planner command");
-        verifyNoInteractions(sessionService, harnessFacade, supervisorPlannerService);
+        verifyNoInteractions(sessionService, plannerCommandApplicationService);
     }
 
     @Test

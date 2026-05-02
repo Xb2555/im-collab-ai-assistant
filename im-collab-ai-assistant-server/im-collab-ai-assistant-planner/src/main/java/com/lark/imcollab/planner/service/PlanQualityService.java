@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 @Slf4j
@@ -128,9 +129,10 @@ public class PlanQualityService {
     }
 
     public PlanTaskSession applyIntentReady(PlanTaskSession session, IntentSnapshot intentSnapshot) {
-        session.setIntentSnapshot(intentSnapshot);
-        session.setScenarioPath(resolveScenarioPath(intentSnapshot, null, session.getScenarioPath()));
-        session.setActivePromptSlots(buildPromptSlots(intentSnapshot));
+        IntentSnapshot normalized = normalizeIntentSnapshot(intentSnapshot);
+        session.setIntentSnapshot(normalized);
+        session.setScenarioPath(resolveScenarioPath(normalized, null, session.getScenarioPath()));
+        session.setActivePromptSlots(buildPromptSlots(normalized));
         session.setPlanningPhase(PlanningPhaseEnum.INTENT_READY);
         session.setTransitionReason("Intent understood");
         return session;
@@ -250,6 +252,14 @@ public class PlanQualityService {
         return slots;
     }
 
+    private IntentSnapshot normalizeIntentSnapshot(IntentSnapshot intentSnapshot) {
+        if (intentSnapshot == null) {
+            return null;
+        }
+        intentSnapshot.setScenarioPath(normalizeScenarioPath(intentSnapshot.getScenarioPath()));
+        return intentSnapshot;
+    }
+
     private PlanBlueprint mergePlanBlueprint(
             PlanBlueprint existing,
             PlanBlueprint updated,
@@ -274,9 +284,7 @@ public class PlanQualityService {
         if (candidate.getDeliverables() == null || candidate.getDeliverables().isEmpty()) {
             candidate.setDeliverables(extractDeliverables(cards, intentSnapshot));
         }
-        if (candidate.getScenarioPath() == null || candidate.getScenarioPath().isEmpty()) {
-            candidate.setScenarioPath(resolveScenarioPath(intentSnapshot, candidate, List.of(ScenarioCodeEnum.A_IM, ScenarioCodeEnum.B_PLANNING)));
-        }
+        candidate.setScenarioPath(resolveScenarioPath(intentSnapshot, candidate, List.of(ScenarioCodeEnum.A_IM, ScenarioCodeEnum.B_PLANNING)));
         if (candidate.getSourceScope() == null && intentSnapshot != null) {
             candidate.setSourceScope(intentSnapshot.getSourceScope());
         }
@@ -759,10 +767,10 @@ public class PlanQualityService {
         path.add(ScenarioCodeEnum.A_IM);
         path.add(ScenarioCodeEnum.B_PLANNING);
         if (intentSnapshot != null && intentSnapshot.getScenarioPath() != null) {
-            path.addAll(intentSnapshot.getScenarioPath());
+            path.addAll(normalizeScenarioPath(intentSnapshot.getScenarioPath()));
         }
         if (planBlueprint != null && planBlueprint.getScenarioPath() != null) {
-            path.addAll(planBlueprint.getScenarioPath());
+            path.addAll(normalizeScenarioPath(planBlueprint.getScenarioPath()));
         }
         List<UserPlanCard> cards = planBlueprint == null ? List.of() : planBlueprint.getPlanCards();
         if (cards != null) {
@@ -776,9 +784,41 @@ public class PlanQualityService {
             }
         }
         if (path.isEmpty() && fallback != null) {
-            path.addAll(fallback);
+            path.addAll(normalizeScenarioPath(fallback));
         }
         return new ArrayList<>(path);
+    }
+
+    private List<ScenarioCodeEnum> normalizeScenarioPath(List<?> rawPath) {
+        if (rawPath == null || rawPath.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<ScenarioCodeEnum> normalized = new LinkedHashSet<>();
+        for (Object item : rawPath) {
+            ScenarioCodeEnum code = toScenarioCode(item);
+            if (code != null) {
+                normalized.add(code);
+            }
+        }
+        return new ArrayList<>(normalized);
+    }
+
+    private ScenarioCodeEnum toScenarioCode(Object item) {
+        if (item instanceof ScenarioCodeEnum scenarioCode) {
+            return scenarioCode;
+        }
+        if (item instanceof String text) {
+            String normalized = text.trim();
+            if (normalized.isBlank()) {
+                return null;
+            }
+            try {
+                return ScenarioCodeEnum.valueOf(normalized.toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                log.debug("Ignoring unsupported scenario path item from agent output: {}", text);
+            }
+        }
+        return null;
     }
 
     private List<ScenarioIntegrationHook> buildIntegrationHooks(PlanBlueprint blueprint) {

@@ -2,7 +2,7 @@ package com.lark.imcollab.app.planner.controller;
 
 import com.lark.imcollab.app.planner.assembler.PlannerViewAssembler;
 import com.lark.imcollab.app.planner.assembler.TaskRuntimeViewAssembler;
-import com.lark.imcollab.common.facade.HarnessFacade;
+import com.lark.imcollab.app.planner.service.PlannerCommandApplicationService;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
@@ -17,8 +17,6 @@ import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
-import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
-import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.PlanCardVO;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
@@ -30,8 +28,6 @@ import com.lark.imcollab.gateway.auth.dto.LarkFrontendUserResponse;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
 import com.lark.imcollab.planner.service.AsyncPlannerService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
-import com.lark.imcollab.planner.service.SupervisorPlannerService;
-import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
@@ -61,13 +57,11 @@ public class PlannerController {
     private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "CANCEL");
 
     private final PlannerPlanFacade plannerPlanFacade;
-    private final SupervisorPlannerService supervisorPlannerService;
+    private final PlannerCommandApplicationService plannerCommandApplicationService;
     private final PlannerSessionService sessionService;
     private final TaskRuntimeService taskRuntimeService;
     private final TaskResultEvaluationService evaluationService;
     private final PlannerStateStore repository;
-    private final HarnessFacade harnessFacade;
-    private final TaskBridgeService taskBridgeService;
     private final AsyncPlannerService asyncPlannerService;
     private final PlannerViewAssembler plannerViewAssembler;
     private final TaskRuntimeViewAssembler taskRuntimeViewAssembler;
@@ -187,7 +181,7 @@ public class PlannerController {
     @Operation(summary = "2. 中断任务", description = "中断正在执行的任务")
     public BaseResponse<PlanPreviewVO> interrupt(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId) {
-        PlanTaskSession session = supervisorPlannerService.interrupt(taskId);
+        PlanTaskSession session = plannerCommandApplicationService.cancel(taskId);
         return ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
     }
 
@@ -196,7 +190,7 @@ public class PlannerController {
     public BaseResponse<PlanPreviewVO> resume(
             @Parameter(description = "任务 ID", required = true, example = "task-123") @PathVariable String taskId,
             @RequestBody ResumeRequest request) {
-        PlanTaskSession session = supervisorPlannerService.resume(
+        PlanTaskSession session = plannerCommandApplicationService.resume(
                 taskId,
                 request.getFeedback(),
                 request.isReplanFromRoot()
@@ -285,28 +279,16 @@ public class PlannerController {
 
         return switch (request.getAction()) {
             case "CONFIRM_EXECUTE" -> {
-                taskBridgeService.ensureTask(session);
-                session.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
-                session.setTransitionReason("User confirmed execution");
-                sessionService.save(session);
-                sessionService.publishEvent(taskId, "EXECUTING");
-                taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.EXECUTING, TaskEventTypeEnum.PLAN_APPROVED);
-                harnessFacade.startExecution(taskId);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
+                PlanTaskSession updated = plannerCommandApplicationService.confirmExecution(taskId, session);
+                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
             }
             case "REPLAN" -> {
-                PlanTaskSession updated = supervisorPlannerService.adjustPlan(taskId, request.getFeedback(), null);
-                taskBridgeService.ensureTask(updated);
+                PlanTaskSession updated = plannerCommandApplicationService.replan(taskId, request.getFeedback());
                 yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
             }
             case "CANCEL" -> {
-                session.setPlanningPhase(PlanningPhaseEnum.ABORTED);
-                session.setAborted(true);
-                session.setTransitionReason("User cancelled");
-                sessionService.save(session);
-                sessionService.publishEvent(taskId, "ABORTED");
-                taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.ABORTED, TaskEventTypeEnum.TASK_CANCELLED);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
+                PlanTaskSession updated = plannerCommandApplicationService.cancel(taskId);
+                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
             }
             default -> error(BusinessCode.PARAMS_ERROR, "Unsupported planner command: " + request.getAction());
         };

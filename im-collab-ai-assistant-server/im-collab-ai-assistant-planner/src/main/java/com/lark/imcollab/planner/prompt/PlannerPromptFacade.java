@@ -68,10 +68,20 @@ public class PlannerPromptFacade {
             String rawInstruction,
             String context,
             String clarificationAnswers) {
+        return planningInstruction(session, rawInstruction, context, clarificationAnswers, "");
+    }
+
+    public String planningInstruction(
+            PlanTaskSession session,
+            String rawInstruction,
+            String context,
+            String clarificationAnswers,
+            String conversationMemory) {
         Map<String, String> extra = new HashMap<>();
         extra.put("rawInstruction", safe(rawInstruction));
         extra.put("context", safe(context));
         extra.put("clarificationAnswers", safe(clarificationAnswers));
+        extra.put("conversationMemory", safe(conversationMemory));
         return renderRoleAware("planning-instruction.md", session, extra);
     }
 
@@ -126,6 +136,7 @@ public class PlannerPromptFacade {
         variables.put("audience", fallback(session != null ? session.getAudience() : null, defaults.getDefaultAudience()));
         variables.put("tone", fallback(session != null ? session.getTone() : null, defaults.getDefaultTone()));
         variables.put("language", fallback(session != null ? session.getLanguage() : null, defaults.getDefaultLanguage()));
+        variables.put("conversationMemory", "");
         variables.putAll(extraVariables);
 
         String profile = fallback(session != null ? session.getPromptProfile() : null, defaults.getProfile());

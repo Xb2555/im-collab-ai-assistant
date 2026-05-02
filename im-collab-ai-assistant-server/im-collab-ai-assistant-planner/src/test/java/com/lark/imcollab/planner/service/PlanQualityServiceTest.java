@@ -1,10 +1,13 @@
 package com.lark.imcollab.planner.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -18,6 +21,31 @@ class PlanQualityServiceTest {
             List.of(),
             new ExecutionContractFactory()
     );
+
+    @Test
+    void intentReadyNormalizesStringScenarioPathFromAgentOutput() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .build();
+
+        IntentSnapshot snapshot = IntentSnapshot.builder()
+                .userGoal("生成技术方案文档和 PPT")
+                .scenarioPath(rawScenarioPath("C_DOC", "D_PRESENTATION"))
+                .build();
+
+        service.applyIntentReady(session, snapshot);
+
+        assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTENT_READY);
+        assertThat(session.getIntentSnapshot().getScenarioPath())
+                .containsExactly(ScenarioCodeEnum.C_DOC, ScenarioCodeEnum.D_PRESENTATION);
+        assertThat(session.getScenarioPath())
+                .containsExactly(
+                        ScenarioCodeEnum.A_IM,
+                        ScenarioCodeEnum.B_PLANNING,
+                        ScenarioCodeEnum.C_DOC,
+                        ScenarioCodeEnum.D_PRESENTATION
+                );
+    }
 
     @Test
     void additiveAdjustmentKeepsExistingCardsAndAppendsNewCard() {
@@ -104,5 +132,10 @@ class PlanQualityServiceTest {
                 .type(type)
                 .dependsOn(List.of())
                 .build();
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static List<ScenarioCodeEnum> rawScenarioPath(String... values) {
+        return (List) List.of(values);
     }
 }

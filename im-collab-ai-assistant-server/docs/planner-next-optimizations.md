@@ -96,8 +96,8 @@ Planner 不应该自己去读 IM 历史、文档、会议纪要或 Base，而应
 
 ```text
 用户输入
--> IntentRouter
--> PlanRoutingGate
+-> PlannerSupervisorGraphRunner
+-> context_check
 -> ContextCollectionGate
 -> ContextCollectorAgent
 -> TaskPlanningService

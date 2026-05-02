@@ -10,7 +10,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -68,10 +67,11 @@ public class UnknownIntentReplyService {
         builder.append("You are replying in a Feishu IM chat as a collaborative task agent.\n");
         builder.append("The user's latest message could not be safely mapped to the supported task intents.\n");
         builder.append("Write ONE short, natural Chinese reply. Do not mention JSON, intent labels, routing, or classifiers.\n");
+        builder.append("Do not use a fixed template. Echo one concrete hint from the user's wording or the current plan when useful.\n");
         builder.append("Be warm and specific. If the user is just giving feedback or weak approval, acknowledge it and keep the current plan; do not say you failed to understand.\n");
-        builder.append("If the user seems to ask for a plan or status, tell them what you can show next naturally.\n");
+        builder.append("If the user seems to ask for a plan or status, tell them what you can show next naturally, but do not claim the plan changed.\n");
         builder.append("Do not pretend to start execution, confirm execution, or complete actions. Do not ask multiple-choice questions.\n");
-        builder.append("Limit to 45 Chinese characters if possible.\n\n");
+        builder.append("Avoid bureaucratic phrases like '我没完全判断清楚'. Limit to 55 Chinese characters if possible.\n\n");
         builder.append("Session phase: ").append(session == null ? "unknown" : session.getPlanningPhase()).append("\n");
         builder.append("Has plan: ").append(hasPlan(session)).append("\n");
         builder.append("Plan cards: ").append(cardSummary(session)).append("\n");
@@ -83,40 +83,9 @@ public class UnknownIntentReplyService {
 
     private String fallbackReply(PlanTaskSession session, String rawInput) {
         if (hasPlan(session)) {
-            if (looksLikePlanFeedback(rawInput)) {
-                return "好，那我先保留当前计划。要继续就回复“开始执行”，要调整也可以直接说。";
-            }
-            return "我先保留当前计划。你可以继续补充想改的点；不用改的话回复“开始执行”就行。";
+            return "我先不动当前计划。想看细节、调整步骤或推进执行，都可以直接说。";
         }
-        return "我还没完全理解你想让我做什么。你可以直接说目标和想要的产物，我来帮你拆计划。";
-    }
-
-    private boolean looksLikePlanFeedback(String rawInput) {
-        String normalized = rawInput == null ? "" : rawInput.trim().toLowerCase(Locale.ROOT);
-        if (normalized.isBlank()) {
-            return false;
-        }
-        String compact = normalized
-                .replaceAll("\\s+", "")
-                .replace("。", "")
-                .replace(".", "")
-                .replace("！", "")
-                .replace("!", "");
-        if (compact.length() > 24) {
-            return false;
-        }
-        return compact.contains("还行")
-                || compact.contains("不错")
-                || compact.contains("可以")
-                || compact.contains("挺好")
-                || compact.contains("没问题")
-                || compact.contains("先这样")
-                || compact.contains("方案感觉")
-                || compact.equals("ok")
-                || compact.equals("okay")
-                || compact.equals("好")
-                || compact.equals("好的")
-                || compact.equals("收到");
+        return "我还缺一点目标背景。你直接说想整理什么、要什么产物就行。";
     }
 
     private String normalizeReply(String text) {
@@ -126,6 +95,7 @@ public class UnknownIntentReplyService {
         String normalized = text.trim()
                 .replaceAll("^```[a-zA-Z]*", "")
                 .replace("```", "")
+                .replaceFirst("^(回复|答复)[:：]", "")
                 .trim();
         if (normalized.isBlank()) {
             return null;
@@ -144,8 +114,13 @@ public class UnknownIntentReplyService {
                 .replaceAll("\\s+", "")
                 .replace("。", "")
                 .replace(".", "");
-        return compact.contains("开始执行")
+        return compact.contains("已开始执行")
+                || compact.contains("正在执行")
+                || compact.contains("执行中")
                 || compact.contains("马上执行")
+                || compact.contains("好的开始执行")
+                || compact.contains("我会开始执行")
+                || compact.contains("我来开始执行")
                 || compact.contains("执行计划")
                 || compact.contains("按计划执行")
                 || compact.contains("我会执行")

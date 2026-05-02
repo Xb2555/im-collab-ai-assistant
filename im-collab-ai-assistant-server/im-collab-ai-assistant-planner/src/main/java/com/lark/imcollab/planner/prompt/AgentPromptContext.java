@@ -17,6 +17,15 @@ public final class AgentPromptContext {
             PlanTaskSession session,
             String rawInstruction,
             String context) {
+        return withPlanningPromptContext(base, session, rawInstruction, context, "");
+    }
+
+    public static RunnableConfig withPlanningPromptContext(
+            RunnableConfig base,
+            PlanTaskSession session,
+            String rawInstruction,
+            String context,
+            String conversationMemory) {
         RunnableConfig.Builder builder = RunnableConfig.builder(base);
         Map<String, Object> values = new HashMap<>(base.metadata().orElse(Map.of()));
         if (session != null) {
@@ -29,6 +38,7 @@ public final class AgentPromptContext {
         }
         values.put(PromptContextKeys.RAW_INSTRUCTION, safe(rawInstruction));
         values.put(PromptContextKeys.CONTEXT, safe(context));
+        values.put(PromptContextKeys.CONVERSATION_MEMORY, safe(conversationMemory));
         values.forEach(builder::addMetadata);
         return builder.build();
     }

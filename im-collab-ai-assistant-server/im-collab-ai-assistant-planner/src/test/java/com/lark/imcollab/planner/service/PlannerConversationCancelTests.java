@@ -4,12 +4,16 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
+import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class PlannerConversationCancelTests {
@@ -19,14 +23,15 @@ class PlannerConversationCancelTests {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
-        SupervisorPlannerService supervisorPlannerService = mock(SupervisorPlannerService.class);
         TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
         PlannerConversationService service = new PlannerConversationService(
                 resolver,
                 intakeService,
                 sessionService,
-                supervisorPlannerService,
-                taskBridgeService
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
         );
 
         WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
@@ -43,13 +48,13 @@ class PlannerConversationCancelTests {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(intakeService.decide(session, "\u53d6\u6d88\u4efb\u52a1", null, true))
                 .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.CANCEL_TASK, "\u53d6\u6d88\u4efb\u52a1"));
-        when(sessionService.get("task-1")).thenReturn(abortedSession);
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("\u53d6\u6d88\u4efb\u52a1"), eq(workspaceContext), eq(null)))
+                .thenReturn(abortedSession);
 
         PlanTaskSession result = service.handlePlanRequest("\u53d6\u6d88\u4efb\u52a1", workspaceContext, null, null);
 
         assertThat(result).isSameAs(abortedSession);
-        verify(sessionService).markAborted("task-1", "User cancelled from conversation: \u53d6\u6d88\u4efb\u52a1");
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("\u53d6\u6d88\u4efb\u52a1"), eq(workspaceContext), eq(null));
         verify(taskBridgeService).ensureTask(abortedSession);
-        verifyNoInteractions(supervisorPlannerService);
     }
 }

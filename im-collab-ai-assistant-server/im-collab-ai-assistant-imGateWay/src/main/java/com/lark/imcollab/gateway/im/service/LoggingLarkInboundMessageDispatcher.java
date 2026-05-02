@@ -83,11 +83,15 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             return;
         }
         if (intakeType == TaskIntakeTypeEnum.STATUS_QUERY) {
-            replyStatus(message, session, isDetailedPlanRequest(message.content()));
+            replyStatus(message, session);
             return;
         }
         if (intakeType == TaskIntakeTypeEnum.UNKNOWN) {
             replyText(message, session, replyFormatter.uncertainIntent(session), "unknown intent");
+            return;
+        }
+        if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT && hasAssistantReply(session)) {
+            replyText(message, session, session.getIntakeState().getAssistantReply(), "plan adjustment clarification");
             return;
         }
         if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT && session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
@@ -99,9 +103,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             return;
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
-            replyText(message, session, isDetailedPlanRequest(message.content())
-                    ? replyFormatter.fullPlan(session)
-                    : replyFormatter.planReady(session), "plan ready");
+            replyText(message, session, replyFormatter.planReady(session), "plan ready");
             return;
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.ABORTED) {
@@ -130,9 +132,9 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         replyText(message, executing, replyFormatter.executionStarted(snapshot(executing)), "execution started");
     }
 
-    private void replyStatus(LarkInboundMessage message, PlanTaskSession session, boolean detailedPlan) {
-        if (detailedPlan && session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
-            replyText(message, session, replyFormatter.fullPlan(session), "full plan");
+    private void replyStatus(LarkInboundMessage message, PlanTaskSession session) {
+        if (session.getIntakeState() != null && hasText(session.getIntakeState().getAssistantReply())) {
+            replyText(message, session, session.getIntakeState().getAssistantReply(), "read-only reply");
             return;
         }
         replyText(message, session, replyFormatter.status(snapshot(session)), "status");
@@ -202,38 +204,6 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         }
     }
 
-    private boolean isDetailedPlanRequest(String input) {
-        if (!hasText(input)) {
-            return false;
-        }
-        String normalized = input.trim().toLowerCase();
-        String compact = normalized
-                .replaceAll("\\s+", "")
-                .replace("的", "")
-                .replace("？", "")
-                .replace("?", "")
-                .replace("。", "")
-                .replace(".", "");
-        if (normalized.contains("详细计划")
-                || normalized.contains("完整计划")
-                || normalized.contains("展开计划")
-                || normalized.contains("所有步骤")
-                || normalized.contains("full plan")
-                || normalized.contains("detail")) {
-            return true;
-        }
-        if (compact.contains("完整计划")
-                || compact.contains("全部计划")
-                || compact.contains("所有计划")
-                || compact.contains("计划详情")
-                || compact.contains("计划是什么")
-                || compact.contains("看看计划")
-                || compact.contains("给我计划")) {
-            return true;
-        }
-        return "计划".equals(compact) || "当前计划".equals(compact);
-    }
-
     private void safePublishText(LarkInboundMessage message, PlanTaskSession session, String text, String publishType) {
         if (streamService == null) {
             return;
@@ -252,6 +222,12 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean hasAssistantReply(PlanTaskSession session) {
+        return session != null
+                && session.getIntakeState() != null
+                && hasText(session.getIntakeState().getAssistantReply());
     }
 
     private void enqueueReplyRetry(LarkInboundMessage message, String text, String idempotencyKey) {

@@ -1,6 +1,8 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
+import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
@@ -8,6 +10,7 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
+import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.junit.jupiter.api.Test;
@@ -34,6 +37,33 @@ class PlannerSessionServiceTest {
 
         service.saveWithoutVersionChange(session);
         assertThat(session.getVersion()).isEqualTo(1);
+    }
+
+    @Test
+    void normalizesStringScenarioPathWhenReadingAndSavingSession() {
+        InMemoryStore store = new InMemoryStore();
+        PlannerSessionService service = new PlannerSessionService(store, new PlannerProperties());
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .scenarioPath(rawScenarioPath("A_IM", "B_PLANNING"))
+                .intentSnapshot(IntentSnapshot.builder()
+                        .scenarioPath(rawScenarioPath("C_DOC"))
+                        .build())
+                .planBlueprint(PlanBlueprint.builder()
+                        .scenarioPath(rawScenarioPath("D_PRESENTATION"))
+                        .build())
+                .build();
+        store.saveSession(session);
+
+        PlanTaskSession result = service.get("task-1");
+
+        assertThat(result.getScenarioPath()).containsExactly(ScenarioCodeEnum.A_IM, ScenarioCodeEnum.B_PLANNING);
+        assertThat(result.getIntentSnapshot().getScenarioPath()).containsExactly(ScenarioCodeEnum.C_DOC);
+        assertThat(result.getPlanBlueprint().getScenarioPath()).containsExactly(ScenarioCodeEnum.D_PRESENTATION);
+
+        service.saveWithoutVersionChange(result);
+        assertThat(store.findSession("task-1").orElseThrow().getIntentSnapshot().getScenarioPath().get(0))
+                .isInstanceOf(ScenarioCodeEnum.class);
     }
 
     private static class InMemoryStore implements PlannerStateStore {
@@ -67,5 +97,10 @@ class PlannerSessionServiceTest {
         @Override public Optional<TaskSubmissionResult> findSubmission(String taskId, String agentTaskId) { return Optional.empty(); }
         @Override public void saveEvaluation(TaskResultEvaluation evaluation) {}
         @Override public Optional<TaskResultEvaluation> findEvaluation(String taskId, String agentTaskId) { return Optional.empty(); }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static List<ScenarioCodeEnum> rawScenarioPath(String... values) {
+        return (List) List.of(values);
     }
 }

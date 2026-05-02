@@ -92,6 +92,9 @@ public class LarkIMListenerService {
     }
 
     private void handleMessage(LarkMessageEvent event) {
+        if (shouldIgnoreBotSender(event)) {
+            return;
+        }
         if (!shouldTriggerAgent(event)) {
             return;
         }
@@ -157,6 +160,24 @@ public class LarkIMListenerService {
 
     private boolean shouldTriggerAgent(LarkMessageEvent event) {
         return isP2P(event) || event.mentionDetected();
+    }
+
+    private boolean shouldIgnoreBotSender(LarkMessageEvent event) {
+        if (event == null) {
+            return true;
+        }
+        String senderType = event.senderType();
+        if ("bot".equalsIgnoreCase(senderType) || "app".equalsIgnoreCase(senderType)) {
+            log.info("Ignoring bot-authored Lark message: eventId={}, messageId={}, senderType={}",
+                    event.eventId(), event.messageId(), senderType);
+            return true;
+        }
+        if ("bot".equalsIgnoreCase(event.senderOpenId())) {
+            log.info("Ignoring local bot Lark message projection: eventId={}, messageId={}",
+                    event.eventId(), event.messageId());
+            return true;
+        }
+        return false;
     }
 
     private boolean shouldIgnoreDuplicateInbound(LarkMessageEvent event) {
@@ -301,6 +322,11 @@ public class LarkIMListenerService {
     }
 
     private boolean shouldSendReceipt(PlanTaskSession session) {
+        if (session != null
+                && session.getIntakeState() != null
+                && hasText(session.getIntakeState().getAssistantReply())) {
+            return false;
+        }
         return session == null
                 || (session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
                 && session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY

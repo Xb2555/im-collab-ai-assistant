@@ -12,7 +12,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -35,7 +38,7 @@ public class PlannerSessionService {
     }
 
     public PlanTaskSession getOrCreate(String taskId) {
-        return stateRepository.findSession(taskId).orElseGet(() -> {
+        return stateRepository.findSession(taskId).map(this::normalizeSession).orElseGet(() -> {
             PlanTaskSession session = PlanTaskSession.builder()
                     .taskId(taskId)
                     .planningPhase(PlanningPhaseEnum.INTAKE)
@@ -57,12 +60,14 @@ public class PlannerSessionService {
     }
 
     public PlanTaskSession save(PlanTaskSession session) {
+        normalizeSession(session);
         session.setVersion(session.getVersion() + 1);
         stateRepository.saveSession(session);
         return session;
     }
 
     public PlanTaskSession saveWithoutVersionChange(PlanTaskSession session) {
+        normalizeSession(session);
         stateRepository.saveSession(session);
         return session;
     }
@@ -76,6 +81,7 @@ public class PlannerSessionService {
 
     public PlanTaskSession get(String taskId) {
         return stateRepository.findSession(taskId)
+                .map(this::normalizeSession)
                 .orElseThrow(() -> new IllegalArgumentException("Session not found: " + taskId));
     }
 
@@ -86,6 +92,52 @@ public class PlannerSessionService {
         session.setTransitionReason(reason);
         stateRepository.saveSession(session);
         publishEvent(taskId, "ABORTED");
+    }
+
+    private PlanTaskSession normalizeSession(PlanTaskSession session) {
+        if (session == null) {
+            return null;
+        }
+        session.setScenarioPath(normalizeScenarioPath(session.getScenarioPath()));
+        if (session.getIntentSnapshot() != null) {
+            session.getIntentSnapshot().setScenarioPath(normalizeScenarioPath(session.getIntentSnapshot().getScenarioPath()));
+        }
+        if (session.getPlanBlueprint() != null) {
+            session.getPlanBlueprint().setScenarioPath(normalizeScenarioPath(session.getPlanBlueprint().getScenarioPath()));
+        }
+        return session;
+    }
+
+    private List<ScenarioCodeEnum> normalizeScenarioPath(List<?> rawPath) {
+        if (rawPath == null || rawPath.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<ScenarioCodeEnum> normalized = new LinkedHashSet<>();
+        for (Object item : rawPath) {
+            ScenarioCodeEnum code = toScenarioCode(item);
+            if (code != null) {
+                normalized.add(code);
+            }
+        }
+        return new ArrayList<>(normalized);
+    }
+
+    private ScenarioCodeEnum toScenarioCode(Object item) {
+        if (item instanceof ScenarioCodeEnum code) {
+            return code;
+        }
+        if (item instanceof String text) {
+            String normalized = text.trim();
+            if (normalized.isBlank()) {
+                return null;
+            }
+            try {
+                return ScenarioCodeEnum.valueOf(normalized.toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                log.debug("Ignoring unsupported scenario path item from session storage: {}", text);
+            }
+        }
+        return null;
     }
 
     public void publishEvent(String taskId, String status, RequireInput requireInput) {

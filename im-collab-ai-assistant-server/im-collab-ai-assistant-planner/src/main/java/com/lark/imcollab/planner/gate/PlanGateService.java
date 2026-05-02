@@ -10,10 +10,21 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 @Service
 public class PlanGateService {
+
+    private final PlannerCapabilityPolicy capabilityPolicy;
+
+    public PlanGateService(PlannerCapabilityPolicy capabilityPolicy) {
+        this.capabilityPolicy = capabilityPolicy;
+    }
+
+    public PlanGateService() {
+        this(new PlannerCapabilityPolicy());
+    }
 
     public PlanGateResult check(TaskPlanGraph graph, ExecutionContract contract) {
         List<String> reasons = new ArrayList<>();
@@ -35,6 +46,21 @@ public class PlanGateService {
         }
         if (graph.getDeliverables() == null || graph.getDeliverables().isEmpty()) {
             reasons.add("plan deliverables are required");
+        } else {
+            for (String deliverable : graph.getDeliverables()) {
+                if (!capabilityPolicy.supportsArtifact(deliverable)) {
+                    reasons.add("unsupported deliverable: " + deliverable);
+                }
+                if (contract != null && contract.getAllowedArtifacts() != null && !contract.getAllowedArtifacts().isEmpty()
+                        && capabilityPolicy.normalizeArtifact(deliverable)
+                        .filter(normalized -> contract.getAllowedArtifacts().stream()
+                                .map(capabilityPolicy::normalizeArtifact)
+                                .flatMap(Optional::stream)
+                                .noneMatch(normalized::equals))
+                        .isPresent()) {
+                    reasons.add("deliverable is outside execution contract: " + deliverable);
+                }
+            }
         }
         List<TaskStepRecord> steps = graph.getSteps() == null ? List.of() : graph.getSteps();
         if (steps.isEmpty()) {
@@ -52,6 +78,13 @@ public class PlanGateService {
             }
             if (isBlank(step.getAssignedWorker())) {
                 reasons.add("step " + step.getStepId() + " missing assignedWorker");
+            } else if (step.getType() != null && capabilityPolicy.expectedWorker(step.getType())
+                    .filter(expected -> !expected.equals(step.getAssignedWorker()))
+                    .isPresent()) {
+                reasons.add("step " + step.getStepId() + " worker does not match capability");
+            }
+            if (step.getType() == null || !capabilityPolicy.supportsStep(step.getType())) {
+                reasons.add("step " + step.getStepId() + " has unsupported type");
             }
         }
         duplicated.forEach(stepId -> reasons.add("duplicate stepId: " + stepId));

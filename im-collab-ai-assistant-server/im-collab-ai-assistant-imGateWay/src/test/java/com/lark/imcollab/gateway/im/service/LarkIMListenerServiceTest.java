@@ -43,6 +43,37 @@ class LarkIMListenerServiceTest {
         verify(replyTool, never()).replyText(anyString(), anyString(), anyString());
     }
 
+    @Test
+    void botAuthoredMessageIsIgnoredBeforeDispatch() {
+        LarkMessageEventSubscriptionService subscriptionService = mock(LarkMessageEventSubscriptionService.class);
+        LarkMessageReplyTool replyTool = mock(LarkMessageReplyTool.class);
+        LarkInboundMessageDispatcher dispatcher = mock(LarkInboundMessageDispatcher.class);
+        ArgumentCaptor<Consumer<LarkMessageEvent>> consumerCaptor = ArgumentCaptor.forClass(Consumer.class);
+
+        when(subscriptionService.startMessageSubscription(anyString(), consumerCaptor.capture()))
+                .thenReturn(new LarkEventSubscriptionStatus(true, "running", "now", null));
+
+        LarkIMListenerService listener = new LarkIMListenerService(subscriptionService, replyTool, dispatcher);
+        listener.start();
+        consumerCaptor.getValue().accept(new LarkMessageEvent(
+                "event-bot",
+                "message-bot",
+                "chat-1",
+                "thread-1",
+                "p2p",
+                "text",
+                "没问题的话回复“开始执行”。",
+                "ou-bot",
+                "bot",
+                "2026-04-30T00:00:00Z",
+                false
+        ));
+
+        verify(dispatcher, never()).dispatch(any());
+        verify(replyTool, never()).sendPrivateText(anyString(), anyString(), anyString());
+        verify(replyTool, never()).replyText(anyString(), anyString(), anyString());
+    }
+
     private static LarkMessageEvent event() {
         return new LarkMessageEvent(
                 "event-1",
