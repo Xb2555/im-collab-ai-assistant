@@ -97,7 +97,10 @@ public class LarkIMMessageStreamService {
         String normalizedChatId = requireValue(chatId, "chatId");
         emittersByChatId.computeIfAbsent(normalizedChatId, ignored -> new CopyOnWriteArraySet<>()).add(emitter);
         emitter.onCompletion(() -> remove(normalizedChatId, emitter));
-        emitter.onTimeout(() -> remove(normalizedChatId, emitter));
+        emitter.onTimeout(() -> {
+            remove(normalizedChatId, emitter);
+            emitter.complete();
+        });
         emitter.onError(ignored -> remove(normalizedChatId, emitter));
     }
 
