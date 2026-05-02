@@ -18,7 +18,9 @@ public class TaskSessionResolver {
 
     public TaskSessionResolution resolve(String explicitTaskId, WorkspaceContext workspaceContext) {
         if (hasText(explicitTaskId)) {
-            return new TaskSessionResolution(explicitTaskId.trim(), true, buildConversationKey(workspaceContext));
+            String taskId = explicitTaskId.trim();
+            boolean existing = stateStore.findSession(taskId).isPresent();
+            return new TaskSessionResolution(taskId, existing, buildConversationKey(workspaceContext));
         }
 
         String continuationKey = buildConversationKey(workspaceContext);

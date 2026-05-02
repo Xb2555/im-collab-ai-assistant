@@ -1,13 +1,16 @@
 package com.lark.imcollab.planner.runtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskPlanGraph;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
@@ -59,6 +62,7 @@ public class TaskRuntimeProjectionService {
                 .build();
         stateStore.saveTask(task);
         appendRuntimeEvent(session.getTaskId(), session.getVersion(), eventType, payload);
+        appendPlannerStreamEvent(session, eventType.name());
     }
 
     public void projectPlanGraph(PlanTaskSession session, TaskPlanGraph graph, TaskEventTypeEnum eventType) {
@@ -92,6 +96,7 @@ public class TaskRuntimeProjectionService {
             graph.getSteps().forEach(stateStore::saveStep);
         }
         appendRuntimeEvent(session.getTaskId(), session.getVersion(), eventType, graph);
+        appendPlannerStreamEvent(session, eventType.name());
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
@@ -220,6 +225,48 @@ public class TaskRuntimeProjectionService {
                 .version(version)
                 .createdAt(Instant.now())
                 .build());
+    }
+
+    private void appendPlannerStreamEvent(PlanTaskSession session, String status) {
+        if (session == null || session.getTaskId() == null || session.getTaskId().isBlank()) {
+            return;
+        }
+        stateStore.appendEvent(TaskEvent.builder()
+                .eventId(UUID.randomUUID().toString())
+                .taskId(session.getTaskId())
+                .status(status)
+                .version(session.getVersion())
+                .subtasks(normalizeSubtasks(session.getPlanCards()))
+                .timestamp(Instant.now())
+                .build());
+    }
+
+    private List<AgentTaskPlanCard> normalizeSubtasks(List<UserPlanCard> cards) {
+        if (cards == null || cards.isEmpty()) {
+            return List.of();
+        }
+        return cards.stream()
+                .filter(card -> card != null && card.getAgentTaskPlanCards() != null)
+                .flatMap(card -> card.getAgentTaskPlanCards().stream()
+                        .map(subtask -> normalizeSubtask(card, subtask))
+                        .filter(java.util.Objects::nonNull))
+                .toList();
+    }
+
+    private AgentTaskPlanCard normalizeSubtask(UserPlanCard card, AgentTaskPlanCard subtask) {
+        if (subtask == null) {
+            return null;
+        }
+        if (subtask.getId() == null || subtask.getId().isBlank()) {
+            subtask.setId(firstNonBlank(subtask.getTaskId(), card.getCardId()));
+        }
+        if (subtask.getType() == null || subtask.getType().isBlank()) {
+            subtask.setType(subtask.getTaskType() == null ? null : subtask.getTaskType().name());
+        }
+        if (subtask.getTitle() == null || subtask.getTitle().isBlank()) {
+            subtask.setTitle(firstNonBlank(card.getTitle(), subtask.getContext(), subtask.getInput()));
+        }
+        return subtask;
     }
 
     private TaskStatusEnum mapTaskStatus(PlanningPhaseEnum phase) {

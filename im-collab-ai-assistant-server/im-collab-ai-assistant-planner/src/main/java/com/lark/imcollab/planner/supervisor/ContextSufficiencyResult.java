@@ -1,5 +1,7 @@
 package com.lark.imcollab.planner.supervisor;
 
+import com.lark.imcollab.common.model.entity.ContextAcquisitionPlan;
+
 import java.util.List;
 
 public record ContextSufficiencyResult(
@@ -7,11 +9,21 @@ public record ContextSufficiencyResult(
         String contextSummary,
         List<String> missingItems,
         String clarificationQuestion,
-        String reason
+        String reason,
+        boolean collectionRequired,
+        ContextAcquisitionPlan acquisitionPlan
 ) {
 
     public static ContextSufficiencyResult sufficient(String contextSummary, String reason) {
-        return new ContextSufficiencyResult(true, contextSummary == null ? "" : contextSummary, List.of(), "", reason);
+        return new ContextSufficiencyResult(
+                true,
+                contextSummary == null ? "" : contextSummary,
+                List.of(),
+                "",
+                reason,
+                false,
+                null
+        );
     }
 
     public static ContextSufficiencyResult insufficient(
@@ -24,7 +36,24 @@ public record ContextSufficiencyResult(
                 "",
                 missingItems == null ? List.of() : List.copyOf(missingItems),
                 clarificationQuestion == null ? "" : clarificationQuestion,
-                reason == null ? "" : reason
+                reason == null ? "" : reason,
+                false,
+                null
+        );
+    }
+
+    public static ContextSufficiencyResult collect(
+            ContextAcquisitionPlan acquisitionPlan,
+            String reason
+    ) {
+        return new ContextSufficiencyResult(
+                false,
+                "",
+                List.of("source_context"),
+                acquisitionPlan == null ? "" : acquisitionPlan.getClarificationQuestion(),
+                reason == null ? "" : reason,
+                true,
+                acquisitionPlan
         );
     }
 }

@@ -7,6 +7,7 @@ import com.alibaba.cloud.ai.graph.checkpoint.config.SaverConfig;
 import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
@@ -123,11 +124,63 @@ class PlannerSupervisorGraphRunnerTest {
         verifyNoInteractions(fixture.executionTool);
     }
 
+    @Test
+    void newTaskCollectsContextBeforePlanningWhenContextNodeRequestsCollection() throws Exception {
+        Fixture fixture = new Fixture();
+        WorkspaceContext initialContext = WorkspaceContext.builder().chatId("chat-1").build();
+        WorkspaceContext collectedContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .selectedMessages(java.util.List.of("项目目标：整理技术方案"))
+                .build();
+        PlanTaskSession intake = PlanTaskSession.builder()
+                .taskId("task-4")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-4")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        ContextSufficiencyResult needsCollection = ContextSufficiencyResult.collect(
+                com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.builder()
+                        .needCollection(true)
+                        .reason("needs im history")
+                        .build(),
+                "needs im history"
+        );
+        when(fixture.sessionService.getOrCreate("task-4")).thenReturn(intake);
+        when(fixture.decisionAgent.decide(any(), any(), eq("整理刚才讨论")))
+                .thenReturn(PlannerSupervisorDecisionResult.of(PlannerSupervisorAction.NEW_TASK, 1.0d, "new task"));
+        when(fixture.contextNodeService.check(intake, "task-4", "整理刚才讨论", initialContext))
+                .thenReturn(needsCollection);
+        when(fixture.contextAcquisitionNodeService.collect(eq("task-4"), eq("整理刚才讨论"), eq(initialContext), any()))
+                .thenReturn(new ContextCollectionOutcome(
+                        ContextSufficiencyResult.sufficient("已读取聊天记录", "context collected"),
+                        collectedContext
+                ));
+        when(fixture.planningNodeService.plan("task-4", "整理刚才讨论", collectedContext, "")).thenReturn(ready);
+        when(fixture.sessionService.get("task-4")).thenReturn(ready);
+        when(fixture.reviewGateNodeService.review("task-4")).thenReturn(PlanReviewResult.passed("ok"));
+        when(fixture.reviewGateNodeService.gateAndProject(eq("task-4"), any())).thenReturn(ready);
+
+        PlanTaskSession result = fixture.runner.run(
+                new PlannerSupervisorDecision(PlannerSupervisorAction.NEW_TASK, "new task"),
+                "task-4",
+                "整理刚才讨论",
+                initialContext,
+                null
+        );
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.PLAN_READY);
+        verify(fixture.contextAcquisitionNodeService).collect(eq("task-4"), eq("整理刚才讨论"), eq(initialContext), any());
+        verify(fixture.planningNodeService).plan("task-4", "整理刚才讨论", collectedContext, "");
+    }
+
     private static class Fixture {
         private final PlannerSessionService sessionService = mock(PlannerSessionService.class);
         private final PlannerSupervisorDecisionAgent decisionAgent = mock(PlannerSupervisorDecisionAgent.class);
         private final PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
         private final ContextNodeService contextNodeService = mock(ContextNodeService.class);
+        private final ContextAcquisitionNodeService contextAcquisitionNodeService = mock(ContextAcquisitionNodeService.class);
         private final PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
         private final PlanningNodeService planningNodeService = mock(PlanningNodeService.class);
         private final ClarificationNodeService clarificationNodeService = mock(ClarificationNodeService.class);
@@ -147,6 +200,7 @@ class PlannerSupervisorGraphRunnerTest {
                     decisionAgent,
                     memoryService,
                     contextNodeService,
+                    contextAcquisitionNodeService,
                     questionTool,
                     planningNodeService,
                     clarificationNodeService,
@@ -161,6 +215,7 @@ class PlannerSupervisorGraphRunnerTest {
             graph.addNode("append_memory", nodes::appendMemory);
             graph.addNode("supervisor_decide", nodes::supervisorDecide);
             graph.addNode("context_check", nodes::contextCheck);
+            graph.addNode("collect_context", nodes::collectContext);
             graph.addNode("clarify", nodes::clarify);
             graph.addNode("plan", nodes::plan);
             graph.addNode("resume", nodes::resume);
@@ -184,6 +239,12 @@ class PlannerSupervisorGraphRunnerTest {
             ));
             graph.addConditionalEdges("context_check", nodes::routeContext, Map.of(
                     "CLARIFY", "clarify",
+                    "COLLECT", "collect_context",
+                    "PLAN", "plan"
+            ));
+            graph.addConditionalEdges("collect_context", nodes::routeContext, Map.of(
+                    "CLARIFY", "clarify",
+                    "COLLECT", "clarify",
                     "PLAN", "plan"
             ));
             graph.addEdge("plan", "review");

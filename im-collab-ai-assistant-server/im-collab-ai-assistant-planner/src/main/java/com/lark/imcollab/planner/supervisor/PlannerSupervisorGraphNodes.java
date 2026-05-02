@@ -25,6 +25,7 @@ public class PlannerSupervisorGraphNodes {
     private final PlannerSupervisorDecisionAgent decisionAgent;
     private final PlannerConversationMemoryService memoryService;
     private final ContextNodeService contextNodeService;
+    private final ContextAcquisitionNodeService contextAcquisitionNodeService;
     private final PlannerQuestionTool questionTool;
     private final PlanningNodeService planningNodeService;
     private final ClarificationNodeService clarificationNodeService;
@@ -40,6 +41,7 @@ public class PlannerSupervisorGraphNodes {
             PlannerSupervisorDecisionAgent decisionAgent,
             PlannerConversationMemoryService memoryService,
             ContextNodeService contextNodeService,
+            ContextAcquisitionNodeService contextAcquisitionNodeService,
             PlannerQuestionTool questionTool,
             PlanningNodeService planningNodeService,
             ClarificationNodeService clarificationNodeService,
@@ -54,6 +56,7 @@ public class PlannerSupervisorGraphNodes {
         this.decisionAgent = decisionAgent;
         this.memoryService = memoryService;
         this.contextNodeService = contextNodeService;
+        this.contextAcquisitionNodeService = contextAcquisitionNodeService;
         this.questionTool = questionTool;
         this.planningNodeService = planningNodeService;
         this.clarificationNodeService = clarificationNodeService;
@@ -109,6 +112,25 @@ public class PlannerSupervisorGraphNodes {
                 PlannerSupervisorStateKeys.CONTEXT_RESULT, result,
                 PlannerSupervisorStateKeys.RESULT_PHASE, session.getPlanningPhase() == null ? "" : session.getPlanningPhase().name(),
                 PlannerSupervisorStateKeys.MESSAGE, result.reason() == null ? "" : result.reason()
+        ));
+    }
+
+    public CompletableFuture<Map<String, Object>> collectContext(OverAllState state, RunnableConfig config) {
+        String taskId = state.value(PlannerSupervisorStateKeys.TASK_ID, "");
+        ContextSufficiencyResult contextResult = state.value(PlannerSupervisorStateKeys.CONTEXT_RESULT, ContextSufficiencyResult.class)
+                .orElse(null);
+        ContextCollectionOutcome outcome = contextAcquisitionNodeService.collect(
+                taskId,
+                state.value(PlannerSupervisorStateKeys.RAW_INSTRUCTION, ""),
+                workspaceContext(state),
+                contextResult == null ? null : contextResult.acquisitionPlan()
+        );
+        PlanTaskSession session = sessionService.getOrCreate(taskId);
+        return CompletableFuture.completedFuture(Map.of(
+                PlannerSupervisorStateKeys.CONTEXT_RESULT, outcome.contextResult(),
+                PlannerSupervisorStateKeys.WORKSPACE_CONTEXT, outcome.workspaceContext() == null ? WorkspaceContext.builder().build() : outcome.workspaceContext(),
+                PlannerSupervisorStateKeys.RESULT_PHASE, session.getPlanningPhase() == null ? "" : session.getPlanningPhase().name(),
+                PlannerSupervisorStateKeys.MESSAGE, outcome.contextResult() == null ? "" : outcome.contextResult().reason()
         ));
     }
 
@@ -240,6 +262,9 @@ public class PlannerSupervisorGraphNodes {
         ContextSufficiencyResult result = state.value(PlannerSupervisorStateKeys.CONTEXT_RESULT, ContextSufficiencyResult.class)
                 .orElse(null);
         if (result != null && !result.sufficient()) {
+            if (result.collectionRequired()) {
+                return CompletableFuture.completedFuture("COLLECT");
+            }
             return CompletableFuture.completedFuture("CLARIFY");
         }
         return CompletableFuture.completedFuture("PLAN");

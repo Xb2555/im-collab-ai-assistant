@@ -52,7 +52,9 @@ class AsyncPlannerServiceTest {
         assertThat(store.runtimeEvents)
                 .extracting(TaskEventRecord::getType)
                 .containsExactly(TaskEventTypeEnum.INTAKE_ACCEPTED);
-        assertThat(store.events).isEmpty();
+        assertThat(store.events)
+                .extracting(TaskEvent::getStatus)
+                .containsExactly(TaskEventTypeEnum.INTAKE_ACCEPTED.name());
         assertThat(executor.submitted).hasSize(1);
     }
 

@@ -11,6 +11,7 @@ import com.lark.imcollab.planner.prompt.AgentPromptInterceptor;
 import com.lark.imcollab.planner.prompt.PlannerPromptFacade;
 import com.lark.imcollab.planner.replan.PlanPatchIntent;
 import com.lark.imcollab.planner.supervisor.PlannerContextTool;
+import com.lark.imcollab.planner.supervisor.PlannerContextAcquisitionTool;
 import com.lark.imcollab.planner.supervisor.PlannerExecutionTool;
 import com.lark.imcollab.planner.supervisor.PlannerGateTool;
 import com.lark.imcollab.planner.supervisor.PlannerMemoryTool;
@@ -197,6 +198,37 @@ public class AgentFrameworkConfig {
                 .build();
     }
 
+    @Bean(name = "contextAcquisitionAgent")
+    public ReactAgent contextAcquisitionAgent(ChatModel chatModel, SummarizationHook summarizationHook) {
+        return ReactAgent.builder()
+                .name("context-acquisition-agent")
+                .description("判断并规划 Planner 应从 IM 历史或飞书云文档读取哪些上下文")
+                .systemPrompt("""
+                        你是 Planner 的上下文拉取计划子 Agent。
+                        你只判断是否需要读取外部上下文，以及应该读取 IM_HISTORY 还是 LARK_DOC。
+                        不要生成任务计划，不要执行任务，不要回答用户。
+
+                        可用来源：
+                        - IM_HISTORY：聊天或线程历史。需要 chatId 或 threadId。
+                        - LARK_DOC：飞书云文档。需要 docRefs 中的 URL 或 token。
+
+                        决策规则：
+                        - selectedMessages 已经有真实材料时，needCollection=false。
+                        - 用户提到“刚才讨论/聊天记录/群里/这段对话/最近讨论”且有 chatId/threadId 时，使用 IM_HISTORY。
+                        - 用户提到文档、链接、根据这份材料，且 docRefs 有值时，使用 LARK_DOC。
+                        - docRefs 和 chatId/threadId 都有，且任务像是综合整理，允许同时使用两个来源。
+                        - 没有可用 source id/ref 时，needCollection=false，并给一个自然澄清问题。
+
+                        只输出 JSON：
+                        {"needCollection":true,"sources":[{"sourceType":"IM_HISTORY","chatId":"","threadId":"","timeRange":"","docRefs":[],"limit":30}],"reason":"","clarificationQuestion":""}
+                        sourceType 只能是 IM_HISTORY 或 LARK_DOC。
+                        """)
+                .outputType(com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.class)
+                .model(chatModel)
+                .hooks(summarizationHook)
+                .build();
+    }
+
     @Bean(name = "planReviewAgent")
     public ReactAgent planReviewAgent(ChatModel chatModel, SummarizationHook summarizationHook) {
         return ReactAgent.builder()
@@ -239,6 +271,7 @@ public class AgentFrameworkConfig {
             @Qualifier("planningAgent") ReactAgent planningAgent,
             @Qualifier("replanAgent") ReactAgent replanAgent,
             @Qualifier("contextCollectorAgent") ReactAgent contextCollectorAgent,
+            @Qualifier("contextAcquisitionAgent") ReactAgent contextAcquisitionAgent,
             @Qualifier("planReviewAgent") ReactAgent planReviewAgent,
             @Qualifier("runtimeStatusAgent") ReactAgent runtimeStatusAgent,
             PlannerMemoryTool plannerMemoryTool,
@@ -246,6 +279,7 @@ public class AgentFrameworkConfig {
             PlannerGateTool plannerGateTool,
             PlannerPatchTool plannerPatchTool,
             PlannerContextTool plannerContextTool,
+            PlannerContextAcquisitionTool plannerContextAcquisitionTool,
             PlannerQuestionTool plannerQuestionTool,
             PlannerExecutionTool plannerExecutionTool,
             PlannerReviewTool plannerReviewTool,
@@ -260,6 +294,7 @@ public class AgentFrameworkConfig {
                 AgentTool.create(planningAgent),
                 AgentTool.create(replanAgent),
                 AgentTool.create(contextCollectorAgent),
+                AgentTool.create(contextAcquisitionAgent),
                 AgentTool.create(planReviewAgent),
                 AgentTool.create(runtimeStatusAgent)
         );
@@ -275,6 +310,7 @@ public class AgentFrameworkConfig {
                         plannerGateTool,
                         plannerPatchTool,
                         plannerContextTool,
+                        plannerContextAcquisitionTool,
                         plannerQuestionTool,
                         plannerExecutionTool,
                         plannerReviewTool

@@ -5,6 +5,7 @@ public final class PromptContextKeys {
     private PromptContextKeys() {}
 
     public static final String TASK_ID = "prompt.taskId";
+    public static final String AGENT_NAME = "_AGENT_";
     public static final String PHASE = "prompt.phase";
     public static final String RAW_INSTRUCTION = "prompt.rawInstruction";
     public static final String CONTEXT = "prompt.context";

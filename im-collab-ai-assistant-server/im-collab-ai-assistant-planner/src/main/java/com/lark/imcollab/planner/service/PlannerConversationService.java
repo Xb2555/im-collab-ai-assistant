@@ -46,7 +46,6 @@ public class PlannerConversationService {
     ) {
         TaskSessionResolution resolution = sessionResolver.resolve(taskId, workspaceContext);
         PlanTaskSession session = sessionService.getOrCreate(resolution.taskId());
-        sessionResolver.bindConversation(resolution);
 
         TaskIntakeDecision intakeDecision = intakeService.decide(
                 session,
@@ -54,11 +53,16 @@ public class PlannerConversationService {
                 userFeedback,
                 resolution.existingSession()
         );
+        String userInput = firstText(userFeedback, rawInstruction);
+        String graphInstruction = userInput.isBlank() ? intakeDecision.effectiveInput() : userInput;
+        if (shouldBindConversation(resolution, intakeDecision)) {
+            sessionResolver.bindConversation(resolution);
+        }
 
-        updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution);
+        updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution, graphInstruction);
         memoryService.appendUserTurn(
                 session,
-                intakeDecision.effectiveInput(),
+                graphInstruction,
                 intakeDecision.intakeType(),
                 workspaceContext == null ? null : workspaceContext.getInputSource());
         if (intakeDecision.assistantReply() != null && !intakeDecision.assistantReply().isBlank()) {
@@ -70,7 +74,7 @@ public class PlannerConversationService {
         PlanTaskSession result = graphRunner.run(
                 PlannerSupervisorDecision.fromIntake(intakeDecision.intakeType(), intakeDecision.routingReason()),
                 session.getTaskId(),
-                intakeDecision.effectiveInput(),
+                graphInstruction,
                 workspaceContext,
                 userFeedback
         );
@@ -78,14 +82,28 @@ public class PlannerConversationService {
         return result;
     }
 
+    private boolean shouldBindConversation(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
+        if (resolution == null || intakeDecision == null) {
+            return false;
+        }
+        if (resolution.existingSession()) {
+            return true;
+        }
+        return switch (intakeDecision.intakeType()) {
+            case STATUS_QUERY, UNKNOWN, CANCEL_TASK, CONFIRM_ACTION -> false;
+            default -> true;
+        };
+    }
+
     private void updateSessionEnvelope(
             PlanTaskSession session,
             WorkspaceContext workspaceContext,
             TaskIntakeDecision intakeDecision,
-            TaskSessionResolution resolution
+            TaskSessionResolution resolution,
+            String userInput
     ) {
         if (!resolution.existingSession() && session.getRawInstruction() == null) {
-            session.setRawInstruction(intakeDecision.effectiveInput());
+            session.setRawInstruction(firstText(userInput, intakeDecision.effectiveInput()));
         }
         session.setInputContext(TaskInputContext.builder()
                 .inputSource(workspaceContext == null ? null : workspaceContext.getInputSource())
@@ -99,7 +117,7 @@ public class PlannerConversationService {
                 .intakeType(intakeDecision.intakeType())
                 .continuedConversation(resolution.existingSession())
                 .continuationKey(resolution.continuationKey())
-                .lastUserMessage(intakeDecision.effectiveInput())
+                .lastUserMessage(firstText(userInput, intakeDecision.effectiveInput()))
                 .routingReason(intakeDecision.routingReason())
                 .assistantReply(intakeDecision.assistantReply())
                 .readOnlyView(intakeDecision.readOnlyView())
@@ -112,5 +130,12 @@ public class PlannerConversationService {
             session.setPlanningPhase(PlanningPhaseEnum.INTAKE);
         }
         session.setTransitionReason("Scenario A intake accepted");
+    }
+
+    private String firstText(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first.trim();
+        }
+        return second == null ? "" : second.trim();
     }
 }

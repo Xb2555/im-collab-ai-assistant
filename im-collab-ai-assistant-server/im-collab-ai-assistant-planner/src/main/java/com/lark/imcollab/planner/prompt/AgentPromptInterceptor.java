@@ -17,8 +17,6 @@ import java.util.Map;
 @Component
 public class AgentPromptInterceptor extends ModelInterceptor {
 
-    private static final String AGENT_CONTEXT_KEY = "_AGENT_";
-
     private final PlannerPromptFacade promptFacade;
     private final PromptSessionContext sessionContext;
 
@@ -30,7 +28,7 @@ public class AgentPromptInterceptor extends ModelInterceptor {
     @Override
     public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
         Map<String, Object> context = request.getContext() == null ? Map.of() : request.getContext();
-        String agentName = asString(context.getOrDefault(AGENT_CONTEXT_KEY, ""));
+        String agentName = asString(context.getOrDefault(PromptContextKeys.AGENT_NAME, ""));
         if (agentName.isBlank()) {
             return handler.call(request);
         }

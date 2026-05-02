@@ -57,4 +57,47 @@ class PlannerConversationCancelTests {
         verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("\u53d6\u6d88\u4efb\u52a1"), eq(workspaceContext), eq(null));
         verify(taskBridgeService).ensureTask(abortedSession);
     }
+
+    @Test
+    void shouldPassOriginalUserInputToGraphWhenIntentClassifierNormalizesText() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-raw")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build();
+        PlanTaskSession readySession = PlanTaskSession.builder()
+                .taskId("task-raw")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .build();
+        String original = "根据我没发给你的那份客户合同，整理一份风险摘要给法务看";
+        String normalized = "根据客户合同整理风险摘要给法务";
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-raw", false, "LARK:chat-1"));
+        when(sessionService.getOrCreate("task-raw")).thenReturn(session);
+        when(intakeService.decide(session, original, null, false))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.NEW_TASK, normalized, "llm normalized input", null));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-raw"), eq(original), eq(workspaceContext), eq(null)))
+                .thenReturn(readySession);
+
+        PlanTaskSession result = service.handlePlanRequest(original, workspaceContext, null, null);
+
+        assertThat(result).isSameAs(readySession);
+        assertThat(session.getRawInstruction()).isEqualTo(original);
+        assertThat(session.getIntakeState().getLastUserMessage()).isEqualTo(original);
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-raw"), eq(original), eq(workspaceContext), eq(null));
+    }
 }

@@ -145,6 +145,10 @@ public class PlannerSessionService {
     public void publishEvent(String taskId, String status, RequireInput requireInput) {
         PlanTaskSession session = stateRepository.findSession(taskId).orElse(null);
         int version = session != null ? session.getVersion() : 0;
+        if (alreadyPublished(taskId, status, version)) {
+            log.debug("[{}] Event already published: {} v{}", taskId, status, version);
+            return;
+        }
         java.util.List<AgentTaskPlanCard> subtasks =
                 session != null && session.getPlanCards() != null
                         ? session.getPlanCards().stream()
@@ -163,6 +167,18 @@ public class PlannerSessionService {
                 .build();
         stateRepository.appendEvent(event);
         log.info("[{}] Event: {} v{}", taskId, status, version);
+    }
+
+    private boolean alreadyPublished(String taskId, String status, int version) {
+        if (taskId == null || taskId.isBlank() || status == null || status.isBlank()) {
+            return false;
+        }
+        String statusMarker = "\"status\":\"" + status.replace("\"", "\\\"") + "\"";
+        String versionMarker = "\"version\":" + version;
+        return stateRepository.getEventJsonList(taskId).stream()
+                .anyMatch(eventJson -> eventJson != null
+                        && eventJson.contains(statusMarker)
+                        && eventJson.contains(versionMarker));
     }
 
     public void publishEvent(String taskId, String status) {
