@@ -268,7 +268,9 @@ public class PlanningNodeService {
             return false;
         }
         if (hasSupportedDeliverable(intentSnapshot)
-                && (hasSubstantialClarificationAnswer(session) || hasEmbeddedTaskMaterial(planningInput))) {
+                && (hasSubstantialClarificationAnswer(session)
+                || hasEmbeddedTaskMaterial(planningInput)
+                || hasWorkspaceMaterial(planningInput))) {
             return false;
         }
         return true;
@@ -405,6 +407,17 @@ public class PlanningNodeService {
             return true;
         }
         return instruction.contains("\n") && instruction.length() >= 40;
+    }
+
+    private boolean hasWorkspaceMaterial(String planningInput) {
+        if (!hasText(planningInput)) {
+            return false;
+        }
+        String normalized = planningInput.toLowerCase(Locale.ROOT);
+        return normalized.contains("selected messages:")
+                || normalized.contains("time range:")
+                || normalized.contains("doc refs:")
+                || normalized.contains("attachments:");
     }
 
     private List<String> defaultTools(PlanCardTypeEnum type) {

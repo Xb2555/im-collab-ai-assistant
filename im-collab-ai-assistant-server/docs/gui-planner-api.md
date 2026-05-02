@@ -2,7 +2,7 @@
 
 ## 1. 基础约定
 
-- Base URL：`http://localhost:8078/api`
+- Base URL：本地默认按当前后端启动端口，例如 `http://localhost:8080/api`；也可通过 `APP_SERVER_PORT` 配置。
 - 响应统一结构：
 
 ```json
@@ -247,7 +247,8 @@ Content-Type: application/json
       "canReplan": false,
       "canCancel": true,
       "canResume": false,
-      "canInterrupt": false
+      "canInterrupt": false,
+      "canRetry": false
     }
   },
   "message": "ok"
@@ -305,7 +306,8 @@ Authorization: Bearer <accessToken>
       "canReplan": true,
       "canCancel": true,
       "canResume": false,
-      "canInterrupt": false
+      "canInterrupt": false,
+      "canRetry": false
     }
   },
   "message": "ok"
@@ -389,7 +391,8 @@ Authorization: Bearer <accessToken>
       "canReplan": true,
       "canCancel": true,
       "canResume": false,
-      "canInterrupt": false
+      "canInterrupt": false,
+      "canRetry": false
     }
   },
   "message": "ok"
@@ -408,7 +411,7 @@ DOC_DRAFT, DOC_CREATE, PPT_OUTLINE, PPT_CREATE, WHITEBOARD_CREATE, IM_REPLY, ARC
 INTAKE_ACCEPTED, INTENT_ROUTING, CLARIFICATION_REQUIRED, PLANNING_STARTED,
 PLAN_GATE_CHECKING, PLAN_READY, PLAN_ADJUSTED, PLAN_APPROVED,
 STEP_READY, STEP_STARTED, STEP_COMPLETED, STEP_FAILED,
-ARTIFACT_CREATED, TASK_COMPLETED, TASK_FAILED, TASK_CANCELLED
+STEP_RETRY_SCHEDULED, ARTIFACT_CREATED, TASK_COMPLETED, TASK_FAILED, TASK_CANCELLED
 ```
 
 ### 5.2 获取任务卡片列表
@@ -454,11 +457,42 @@ Accept: text/event-stream
   2. 再订阅 `/events/stream`。
   3. 收到事件后追加时间线，或重新请求 `/runtime` 刷新完整状态。
 
-当前返回内容是事件 JSON 字符串流，例如：
+当前返回内容是事件 JSON 字符串流。每个 EventSource 连接都有独立游标，多个详情页或多个标签页同时订阅同一个任务时不会互相抢事件。例如：
 
 ```json
-{"eventId":"...","taskId":"...","status":"PLAN_READY","version":2,"timestamp":"..."}
+{
+  "eventId": "...",
+  "taskId": "...",
+  "status": "PLAN_READY",
+  "version": 2,
+  "subtasks": [
+    {
+      "id": "task-001",
+      "type": "DOC",
+      "title": "生成项目周报文档",
+      "taskType": "WRITE_DOC",
+      "status": "pending"
+    }
+  ],
+  "requireInput": null,
+  "timestamp": "2026-05-02T02:39:31Z"
+}
 ```
+
+### 5.4 订阅我的任务事件流
+
+```http
+GET /planner/tasks/events/stream?activeOnly=true
+Authorization: Bearer <accessToken>
+Accept: text/event-stream
+```
+
+说明：
+
+- 适合任务工作台全局监听，不需要前端逐个任务建立 SSE。
+- `activeOnly=true` 默认只推送活跃任务事件：`PLANNING/CLARIFYING/WAITING_APPROVAL/EXECUTING`。
+- `activeOnly=false` 可推送当前用户更多任务事件。
+- 收到事件后，建议按 `taskId` 刷新对应任务的 `/runtime` 或列表项。
 
 ## 6. 任务操作
 
@@ -527,10 +561,37 @@ Content-Type: application/json
 
 成功后任务阶段会变成 `ABORTED`，runtime 状态会投影为取消。
 
-### 6.4 回答澄清问题
+### 6.4 重试失败任务
+
+```http
+POST /planner/tasks/{taskId}/commands
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "action": "RETRY_FAILED",
+  "feedback": null,
+  "version": 3
+}
+```
+
+说明：
+
+- 仅当任务处于 `FAILED` 且 `actions.canRetry=true` 时使用。
+- 重试不会重新规划、不生成新 taskId、不删除已有产物。
+- 后端会把失败或卡住的步骤重置为 `READY`，`retryCount + 1`，并重新提交执行链路。
+- 成功提交后任务进入 `EXECUTING`，事件中会出现 `STEP_RETRY_SCHEDULED`。
+- 非失败态调用会返回操作失败提示；旧 `version` 仍返回 `40900`。
+
+### 6.5 回答澄清问题
 
 ```http
 POST /planner/tasks/{taskId}/resume
+Authorization: Bearer <accessToken>
 Content-Type: application/json
 ```
 
@@ -546,7 +607,7 @@ Content-Type: application/json
 说明：
 
 - 当 `planningPhase=ASK_USER` 且存在 `clarificationQuestions` 时使用。
-- 当前接口尚未加 owner 鉴权，前端生产链路优先通过登录态页面使用，后续建议补齐鉴权。
+- 需要携带登录态，后端会校验 owner。
 
 ## 7. 前端推荐接入流程
 
@@ -586,7 +647,7 @@ Content-Type: application/json
 - `/planner/tasks/{taskId}/runtime`、`/{taskId}`、`/{taskId}/cards`、`/{taskId}/events/stream` 都会做 owner 校验，非本人任务返回 `40400`。
 - 任务详情页建议以 `/runtime` 为事实源，不要只依赖 `/cards`。
 - `/plan/sync` 只用于调试，不建议前端正式使用。
-- 当前用户级全局 SSE 还未提供，列表页建议轮询 `/planner/tasks/active`，详情页使用单任务 SSE。
+- 列表页可以订阅用户级 SSE：`GET /planner/tasks/events/stream`；详情页继续使用单任务 SSE：`GET /planner/tasks/{taskId}/events/stream`。
 
 ## 9. 场景 B 前端需求对齐情况
 
@@ -609,9 +670,10 @@ Content-Type: application/json
 | 确认执行 | 已实现。`POST /commands`，`action=CONFIRM_EXECUTE`。 | 请求必须携带当前 `version`。 |
 | 自然语言调整规划 | 已实现。`POST /commands`，`action=REPLAN`，`feedback` 放用户修改意见。 | 调整后使用返回的 `PlanPreviewVO.version` 更新本地版本。 |
 | 取消任务 | 已实现。`POST /commands`，`action=CANCEL`。 | 取消成功后刷新 `/runtime`。 |
+| 失败任务重试 | 已实现。`POST /commands`，`action=RETRY_FAILED`。 | 仅在 `FAILED` 且 `actions.canRetry=true` 时展示按钮；成功后刷新 `/runtime`。 |
 | 澄清/追问 | 已实现基础能力。规划不足时进入 `ASK_USER`，返回 `clarificationQuestions`。 | 前端展示为 `WAITING_USER`，用 `/resume` 提交回答。 |
 | 任务历史状态 | 已实现。`GET /runtime` 返回 `events[]`。 | 详情页时间线用 `events` 渲染。 |
-| 任务实时状态 | 部分实时已实现。单任务 SSE：`GET /events/stream`。 | 推荐收到 SSE 后重新拉 `/runtime`，以 runtime 为事实源。 |
+| 任务实时状态 | 已实现。单任务 SSE：`GET /events/stream`；用户级 SSE：`GET /planner/tasks/events/stream`。 | 推荐收到 SSE 后重新拉 `/runtime`，以 runtime 为事实源。 |
 | 我的任务列表 | 已实现。`GET /planner/tasks` 按登录用户 `openId` 查询。 | 可展示全部任务卡片。 |
 | 活跃任务列表 | 已实现。`GET /planner/tasks/active`。 | 列表页可轮询该接口。 |
 | IM 创建任务后 GUI 可见 | 已实现。任务归属统一使用 `ownerOpenId`。 | 只要 GUI 登录 openId 与 IM senderOpenId 一致，就能在列表看到。 |
@@ -628,28 +690,27 @@ Content-Type: application/json
 | --- | --- | --- |
 | 状态名 `WAITING_USER` | 后端状态是 `ASK_USER` 或 runtime status `CLARIFYING`。 | 前端需要映射：`ASK_USER/CLARIFYING -> WAITING_USER`。 |
 | 状态名 `REVIEWING_PLAN` | 后端状态是 `PLAN_READY` 或 runtime status `WAITING_APPROVAL`。 | 前端需要映射：`PLAN_READY/WAITING_APPROVAL -> REVIEWING_PLAN`。 |
-| SSE 事件驱动 UI | 后端提供单任务 `/events/stream`。 | 当前 SSE 仍偏旧 session event 字符串流，不是最终 GUI 事件包；建议收到事件后拉 `/runtime`。 |
-| `requireInput` 动态表单 | 后端有旧 `RequireInput`：`CLARIFICATION/CONFIRMATION/CHOICE`。 | 尚未对齐前端的 `DATE_RANGE/TEXT/CONFIRM` schema；当前澄清优先用 `clarificationQuestions`。 |
+| SSE 事件驱动 UI | 已实现单任务和用户级 SSE。事件包含 `eventId/taskId/status/version/subtasks/requireInput/timestamp`。 | `subtasks` 已补充 `id/type/title`，前端仍建议以 `/runtime` 为事实源刷新完整状态。 |
+| `requireInput` 动态表单 | 已实现基础 `TEXT` 澄清输入。ASK_USER 事件会携带 `requireInput.type=TEXT` 与 `prompt`。 | `DATE_RANGE/CONFIRM/CHOICE` 等更丰富表单类型后续按真实场景扩展。 |
 | 时间段上下文 | `workspaceContext.timeRange` 字段存在，planner 可读取。 | 还没有真正按 timeRange 自动拉群聊历史的内容收集子 Agent。 |
 | 文档引用上下文 | `workspaceContext.docRefs` 字段存在。 | 还没有统一内容收集子 Agent 自动读取文档内容后注入 planner。 |
 | 附件上下文 | `workspaceContext.attachmentRefs` 字段存在。 | 还没有自动解析附件内容的工具链。 |
 | 复杂任务进入 LLM 深度规划 | 已通过 `PlannerSupervisorGraphRunner` 的 `context_check -> plan/replan/review/gate` 主路径承载。 | 内容收集第一版仍偏摘要/上下文判断，后续需要接真实 IM 历史、文档搜索和会议纪要工具。 |
 | “已有文档转 PPT 不生成 DOC” | planner 已能根据用户语义生成 PPT step，但还不是强契约。 | 对 `docRefs + 转 PPT` 这类任务还需要加强规则/gate，确保不误加 DOC step。 |
-| IM 与 GUI 双端同步 | 已通过同一 `TaskRecord/Step/Event` 存储实现基础同步。 | 尚未提供用户级全局 SSE，列表页需要轮询。 |
+| IM 与 GUI 双端同步 | 已通过同一 `TaskRecord/Step/Event` 存储实现基础同步，并提供用户级 SSE。 | 用户级 SSE 适合工作台全局监听；详情页仍用单任务 SSE。 |
 | 多任务展示 | 已有“我的任务列表”。 | 多任务并行执行调度、队列占用、并发限制展示还未系统化。 |
-| 失败任务重试 | 有失败状态和事件。 | 还没有 GUI 专用 `RETRY` 命令，当前只能重新调整计划或重新发起。 |
 
 ### 9.3 未实现功能
 
 | 前端需求 | 未实现点 | 建议后端后续实现 |
 | --- | --- | --- |
-| `/api/intent/submit` | 当前没有该接口。 | 前端改用 `/api/planner/tasks/plan`；如必须兼容旧命名，可新增 adapter。 |
-| `voiceInstruction` | `PlanRequest` 当前不支持语音 base64。 | 新增 `voiceInstruction` DTO，并接入语音转文字后再进入 planner。 |
+| `/api/intent/submit` | 不计划单独实现旧路径。 | 前端直接使用 `/api/planner/tasks/plan`，该接口已覆盖任务意图提交能力。 |
+| `voiceInstruction` | DTO 已接受 `voiceInstruction.format/payload`，但当前不会转写或进入规划。 | 接入 ASR 后再将转写文本合并到 `rawInstruction`。 |
 | 内容收集子 Agent | 尚未真正按任务自动调用 IM/doc/file/search tools 拉取资料。 | 新增 `ContextCollectorAgent`，输出 `CollectedContext`，作为 planner 输入。 |
 | `COLLECT_CONTEXT_FAILED` | 尚无该错误码和失败分支。 | 内容收集失败时返回标准 code，并提供补救建议。 |
 | 群聊空间任务工作台 | 当前按 ownerOpenId 查“我的任务”，没有按 `groupId/chatId` 查空间任务。 | 新增 `GET /planner/chats/{chatId}/tasks`，并设计权限。 |
-| 统一用户级 SSE | 当前只有单任务 SSE。 | 新增 `GET /planner/tasks/events/stream` 推送当前用户全部任务事件。 |
-| GUI 标准 TaskEvent 包 | 当前 SSE 不是统一结构，runtime events 通过 `/runtime` 返回。 | 新增 `PlannerTaskEventVO`，包含 `eventId/taskId/status/displayStatus/version/steps/requireInput/content/createdAt`。 |
+| 统一用户级 SSE | 已实现 `GET /planner/tasks/events/stream`，推送当前用户全部任务事件。 | 默认 `activeOnly=true`，可传 `activeOnly=false` 看更多任务事件。 |
+| GUI 标准 TaskEvent 包 | 已提供基础任务事件包：`eventId/taskId/status/version/subtasks/requireInput/timestamp`。 | 后续如要 `displayStatus/content/createdAt` 等 GUI 专用字段，可再新增 VO；当前不影响工作台实时刷新。 |
 | 思考流/打字机 `content` | 当前没有流式思考文本。 | 如果要做打字机体验，需要 planner 阶段输出轻量 content event。 |
 | 严格 `selectionType=TIME_RANGE/CHERRY_PICK` | 后端当前 `selectionType` 是自由字符串。 | 增加枚举校验并兼容 `MESSAGE/DOCUMENT/FILE` 旧值。 |
 | 动态表单类型 `DATE_RANGE/TEXT/CONFIRM` | 当前未按这个 schema 输出。 | 统一 `RequireInputVO`，让 `ASK_USER` 可驱动动态表单。 |

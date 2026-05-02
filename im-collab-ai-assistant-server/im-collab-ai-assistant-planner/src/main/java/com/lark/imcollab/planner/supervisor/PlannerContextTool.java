@@ -61,7 +61,14 @@ public class PlannerContextTool {
         if (session != null && session.getClarifiedInstruction() != null && !session.getClarifiedInstruction().isBlank()) {
             summary += "\nclarifiedInstruction=" + session.getClarifiedInstruction();
         }
-        String reason = hasEmbeddedContext ? "embedded instruction context accepted for planner" : "context accepted for planner";
+        String reason;
+        if (hasExternalContext) {
+            reason = "external workspace context accepted for planner";
+        } else if (hasEmbeddedContext) {
+            reason = "embedded instruction context accepted for planner";
+        } else {
+            reason = "context accepted for planner";
+        }
         return ContextSufficiencyResult.sufficient(summary, reason);
     }
 

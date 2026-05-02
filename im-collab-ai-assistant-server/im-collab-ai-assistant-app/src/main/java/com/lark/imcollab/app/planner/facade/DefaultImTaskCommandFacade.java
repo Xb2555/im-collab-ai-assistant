@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.service.PlannerSessionService;
+import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import org.slf4j.Logger;
@@ -25,6 +26,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
 
     private final PlannerSessionService sessionService;
     private final TaskBridgeService taskBridgeService;
+    private final PlannerRetryService plannerRetryService;
     private final TaskRuntimeService taskRuntimeService;
     private final HarnessFacade harnessFacade;
     private final PlannerExecutionReviewService reviewService;
@@ -34,6 +36,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     public DefaultImTaskCommandFacade(
             PlannerSessionService sessionService,
             TaskBridgeService taskBridgeService,
+            PlannerRetryService plannerRetryService,
             TaskRuntimeService taskRuntimeService,
             HarnessFacade harnessFacade,
             PlannerExecutionReviewService reviewService,
@@ -42,6 +45,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     ) {
         this.sessionService = sessionService;
         this.taskBridgeService = taskBridgeService;
+        this.plannerRetryService = plannerRetryService;
         this.taskRuntimeService = taskRuntimeService;
         this.harnessFacade = harnessFacade;
         this.reviewService = reviewService;
@@ -63,6 +67,18 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.EXECUTING, TaskEventTypeEnum.PLAN_APPROVED);
         submitExecution(taskId);
         return session;
+    }
+
+    @Override
+    public PlanTaskSession retryExecution(String taskId) {
+        PlanTaskSession session = sessionService.get(taskId);
+        if (!plannerRetryService.isRetryable(taskId, session)) {
+            return session;
+        }
+        taskBridgeService.ensureTask(session);
+        PlanTaskSession retrying = plannerRetryService.prepareRetry(taskId);
+        submitExecution(taskId);
+        return retrying;
     }
 
     @Override

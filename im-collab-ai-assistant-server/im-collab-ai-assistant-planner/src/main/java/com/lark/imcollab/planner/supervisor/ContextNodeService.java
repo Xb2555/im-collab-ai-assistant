@@ -133,7 +133,8 @@ public class ContextNodeService {
     private boolean isStrongLocalContext(ContextSufficiencyResult result) {
         return result != null
                 && result.reason() != null
-                && result.reason().contains("embedded instruction context");
+                && (result.reason().contains("embedded instruction context")
+                || result.reason().contains("external workspace context"));
     }
 
     private String normalize(String value) {

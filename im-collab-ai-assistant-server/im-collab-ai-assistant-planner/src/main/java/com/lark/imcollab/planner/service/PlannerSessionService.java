@@ -1,8 +1,10 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
 import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.TaskEvent;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
@@ -143,10 +145,10 @@ public class PlannerSessionService {
     public void publishEvent(String taskId, String status, RequireInput requireInput) {
         PlanTaskSession session = stateRepository.findSession(taskId).orElse(null);
         int version = session != null ? session.getVersion() : 0;
-        java.util.List<com.lark.imcollab.common.model.entity.AgentTaskPlanCard> subtasks =
+        java.util.List<AgentTaskPlanCard> subtasks =
                 session != null && session.getPlanCards() != null
                         ? session.getPlanCards().stream()
-                            .flatMap(c -> c.getAgentTaskPlanCards() != null ? c.getAgentTaskPlanCards().stream() : java.util.stream.Stream.empty())
+                            .flatMap(card -> normalizeSubtasks(card).stream())
                             .toList()
                         : java.util.List.of();
 
@@ -169,5 +171,43 @@ public class PlannerSessionService {
 
     public List<String> getEventJsonList(String taskId) {
         return stateRepository.getEventJsonList(taskId);
+    }
+
+    private List<AgentTaskPlanCard> normalizeSubtasks(UserPlanCard card) {
+        if (card == null || card.getAgentTaskPlanCards() == null) {
+            return List.of();
+        }
+        return card.getAgentTaskPlanCards().stream()
+                .map(subtask -> normalizeSubtask(card, subtask))
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
+    private AgentTaskPlanCard normalizeSubtask(UserPlanCard card, AgentTaskPlanCard subtask) {
+        if (subtask == null) {
+            return null;
+        }
+        if (subtask.getId() == null || subtask.getId().isBlank()) {
+            subtask.setId(firstNonBlank(subtask.getTaskId(), card.getCardId()));
+        }
+        if (subtask.getType() == null || subtask.getType().isBlank()) {
+            subtask.setType(subtask.getTaskType() == null ? null : subtask.getTaskType().name());
+        }
+        if (subtask.getTitle() == null || subtask.getTitle().isBlank()) {
+            subtask.setTitle(firstNonBlank(card.getTitle(), subtask.getContext(), subtask.getInput()));
+        }
+        return subtask;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 }

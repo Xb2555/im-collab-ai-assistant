@@ -189,6 +189,35 @@ class PlannerControllerCommandTest {
     }
 
     @Test
+    void retryFailedRoutesThroughCommandService() {
+        PlanTaskSession failed = new PlanTaskSession();
+        failed.setTaskId("task-1");
+        failed.setPlanningPhase(PlanningPhaseEnum.FAILED);
+        failed.setVersion(4);
+        PlanTaskSession retrying = new PlanTaskSession();
+        retrying.setTaskId("task-1");
+        retrying.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        retrying.setVersion(5);
+
+        when(repository.findSession("task-1")).thenReturn(Optional.of(failed));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.FAILED)));
+        when(plannerCommandApplicationService.retryFailed("task-1", failed)).thenReturn(retrying);
+        when(plannerViewAssembler.toPlanPreview(retrying)).thenReturn(new PlanPreviewVO(
+                "task-1", 5, "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+        ));
+
+        PlanCommandRequest request = new PlanCommandRequest();
+        request.setAction("RETRY_FAILED");
+        request.setVersion(4);
+
+        BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
+
+        assertThat(response.getCode()).isZero();
+        verify(plannerCommandApplicationService).retryFailed("task-1", failed);
+        verify(plannerCommandApplicationService, never()).replan(anyString(), anyString());
+    }
+
+    @Test
     void invalidCommandReturnsParamsErrorInsteadOfSystemError() {
         PlanCommandRequest request = new PlanCommandRequest();
         request.setAction("NO_SUCH_ACTION");

@@ -52,7 +52,7 @@ public class TaskRuntimeProjectionService {
                 .progress(existing == null ? 0 : existing.getProgress())
                 .artifactIds(existing == null || existing.getArtifactIds() == null ? List.of() : existing.getArtifactIds())
                 .riskFlags(existing == null || existing.getRiskFlags() == null ? List.of() : existing.getRiskFlags())
-                .needUserAction(session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER)
+                .needUserAction(needsUserAction(session.getPlanningPhase()))
                 .version(session.getVersion())
                 .createdAt(existing == null ? now : existing.getCreatedAt())
                 .updatedAt(now)
@@ -81,7 +81,7 @@ public class TaskRuntimeProjectionService {
                 .progress(resolveProgress(graph.getSteps()))
                 .artifactIds(resolveArtifactIds(session.getTaskId()))
                 .riskFlags(graph.getRisks() == null ? List.of() : graph.getRisks())
-                .needUserAction(session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER)
+                .needUserAction(needsUserAction(session.getPlanningPhase()))
                 .version(session.getVersion())
                 .createdAt(existing == null ? now : existing.getCreatedAt())
                 .updatedAt(now)
@@ -242,6 +242,10 @@ public class TaskRuntimeProjectionService {
             return TaskStatusEnum.CANCELLED;
         }
         return TaskStatusEnum.PLANNING;
+    }
+
+    private boolean needsUserAction(PlanningPhaseEnum phase) {
+        return phase == PlanningPhaseEnum.ASK_USER || phase == PlanningPhaseEnum.PLAN_READY;
     }
 
     private String toJson(Object value) {

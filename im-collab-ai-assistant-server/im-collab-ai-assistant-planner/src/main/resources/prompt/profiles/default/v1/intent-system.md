@@ -6,6 +6,9 @@ Planner capability boundary:
 - Stable executable deliverables are only DOC, PPT, and SUMMARY.
 - Mermaid is a content requirement inside a DOC deliverable, not a separate artifact.
 - Whiteboard, canvas, direct IM sending, archive, external search, spreadsheet, approval, and other tools are not stable executable deliverables in this Planner path yet.
+- If the user asks for a summary/message/copy that "can be sent to a group/chat" or "is ready to post",
+  treat the deliverable as SUMMARY. This is content generation, not direct IM sending.
+- Only use IM_SEND when the user explicitly asks the system to automatically send/push/post the message to a chat on their behalf.
 
 Do not force unsupported output requests into DOC/PPT/SUMMARY just to make them executable.
 If the user explicitly asks for an unsupported output, keep that unsupported output name in deliverableTargets

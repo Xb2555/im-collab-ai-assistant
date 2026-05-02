@@ -164,6 +164,8 @@ public class AgentFrameworkConfig {
                         REORDER_STEP must return every current card id exactly once.
                         REGENERATE_ALL only when the user explicitly asks to redo the whole plan.
                         Stable deliverables are DOC, PPT, SUMMARY. Mermaid is a DOC content requirement.
+                        A message, copy, or summary that is "ready to send/post to a group/chat" is SUMMARY content generation.
+                        Only treat it as unsupported direct IM sending when the user explicitly asks the system to send or push it automatically.
                         Return JSON only with fields:
                         {"operation":"","targetCardIds":[],"orderedCardIds":[],"newCardDrafts":[{"title":"","description":"","type":"DOC|PPT|SUMMARY"}],"confidence":0.0,"reason":"","clarificationQuestion":""}
                         """)
@@ -184,6 +186,7 @@ public class AgentFrameworkConfig {
                         如果 workspace context 只有用户最新指令本身，没有选中消息、文档引用、附件或具体主题材料，不能把这句话当作“可整理内容”。
                         对“整理一下 / 给老板看 / 做个汇报 / 总结一下”这类依赖材料的请求，如果没有真实材料，必须返回上下文不足，并自然追问需要基于哪些内容以及输出形式。
                         如果用户请求当前不稳定支持的白板、画布、直接发 IM、归档、真实搜索等产物，不要把它当成可执行步骤；请自然询问是否转成文档中的 Mermaid 图、PPT 页面或摘要。
+                        但“生成一段可发到群里的摘要/话术”是 SUMMARY 内容产物，不是直接发 IM；这种场景不要反问能力转换。
                         如果不足，只返回缺失信息和一个自然反问。
                         不要生成计划，不要执行任务，不要声称已经收集到外部资料。
                 当前 Planner 稳定支持 DOC、PPT、SUMMARY；Mermaid 只能作为 DOC 内容要求。

@@ -1,6 +1,9 @@
 package com.lark.imcollab.app.planner.service;
 
+import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.planner.exception.RetryNotAllowedException;
+import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
@@ -12,13 +15,19 @@ public class PlannerCommandApplicationService {
 
     private final PlannerSupervisorGraphRunner graphRunner;
     private final TaskBridgeService taskBridgeService;
+    private final PlannerRetryService plannerRetryService;
+    private final ImTaskCommandFacade taskCommandFacade;
 
     public PlannerCommandApplicationService(
             PlannerSupervisorGraphRunner graphRunner,
-            TaskBridgeService taskBridgeService
+            TaskBridgeService taskBridgeService,
+            PlannerRetryService plannerRetryService,
+            ImTaskCommandFacade taskCommandFacade
     ) {
         this.graphRunner = graphRunner;
         this.taskBridgeService = taskBridgeService;
+        this.plannerRetryService = plannerRetryService;
+        this.taskCommandFacade = taskCommandFacade;
     }
 
     public PlanTaskSession resume(String taskId, String feedback, boolean replanFromRoot) {
@@ -65,5 +74,12 @@ public class PlannerCommandApplicationService {
                 null,
                 null
         );
+    }
+
+    public PlanTaskSession retryFailed(String taskId, PlanTaskSession currentSession) {
+        if (!plannerRetryService.isRetryable(taskId, currentSession)) {
+            throw new RetryNotAllowedException("当前任务不是失败状态，不需要重试。");
+        }
+        return taskCommandFacade.retryExecution(taskId);
     }
 }

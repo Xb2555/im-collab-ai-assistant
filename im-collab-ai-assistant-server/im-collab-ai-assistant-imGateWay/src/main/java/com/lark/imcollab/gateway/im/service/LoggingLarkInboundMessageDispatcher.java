@@ -120,6 +120,10 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
     }
 
     private void replyConfirmExecution(LarkInboundMessage message, PlanTaskSession session) {
+        if (session.getPlanningPhase() == PlanningPhaseEnum.FAILED) {
+            replyRetryExecution(message, session);
+            return;
+        }
         if (taskCommandFacade == null || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
             replyText(message, session, replyFormatter.status(snapshot(session)), "confirm unavailable");
             return;
@@ -130,6 +134,19 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             return;
         }
         replyText(message, executing, replyFormatter.executionStarted(snapshot(executing)), "execution started");
+    }
+
+    private void replyRetryExecution(LarkInboundMessage message, PlanTaskSession session) {
+        if (taskCommandFacade == null) {
+            replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
+            return;
+        }
+        PlanTaskSession retrying = taskCommandFacade.retryExecution(session.getTaskId());
+        if (retrying == null || retrying.getPlanningPhase() != PlanningPhaseEnum.EXECUTING) {
+            replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
+            return;
+        }
+        replyText(message, retrying, replyFormatter.retryStarted(snapshot(retrying)), "retry started");
     }
 
     private void replyStatus(LarkInboundMessage message, PlanTaskSession session) {

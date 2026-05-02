@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.planner.service.PlannerSessionService;
+import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,7 @@ class DefaultImTaskCommandFacadeTest {
 
     private final PlannerSessionService sessionService = mock(PlannerSessionService.class);
     private final TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+    private final PlannerRetryService plannerRetryService = mock(PlannerRetryService.class);
     private final TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
     private final HarnessFacade harnessFacade = mock(HarnessFacade.class);
     private final PlannerExecutionReviewService reviewService = mock(PlannerExecutionReviewService.class);
@@ -39,6 +41,7 @@ class DefaultImTaskCommandFacadeTest {
     private final DefaultImTaskCommandFacade facade = new DefaultImTaskCommandFacade(
             sessionService,
             taskBridgeService,
+            plannerRetryService,
             taskRuntimeService,
             harnessFacade,
             reviewService,
@@ -107,6 +110,49 @@ class DefaultImTaskCommandFacadeTest {
                 contains("server time out error")
         );
         verify(reviewService, never()).reviewAndNotify("task-1");
+    }
+
+    @Test
+    void retryExecutionResetsFailureAndSubmitsHarnessAgain() {
+        PlanTaskSession failed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.FAILED)
+                .build();
+        PlanTaskSession retrying = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build();
+        when(sessionService.get("task-1")).thenReturn(failed);
+        when(plannerRetryService.isRetryable("task-1", failed)).thenReturn(true);
+        when(plannerRetryService.prepareRetry("task-1")).thenReturn(retrying);
+
+        PlanTaskSession returned = facade.retryExecution("task-1");
+
+        assertThat(returned).isEqualTo(retrying);
+        verify(taskBridgeService).ensureTask(failed);
+        verify(harnessFacade, never()).startExecution("task-1");
+
+        executor.runAll();
+
+        verify(harnessFacade).startExecution("task-1");
+        verify(reviewService).reviewAndNotify("task-1");
+    }
+
+    @Test
+    void retryExecutionKeepsNonFailedTaskUnchanged() {
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(sessionService.get("task-1")).thenReturn(ready);
+        when(plannerRetryService.isRetryable("task-1", ready)).thenReturn(false);
+
+        PlanTaskSession returned = facade.retryExecution("task-1");
+
+        assertThat(returned).isEqualTo(ready);
+        verify(taskBridgeService, never()).ensureTask(any());
+        verify(plannerRetryService, never()).prepareRetry("task-1");
+        verify(harnessFacade, never()).startExecution("task-1");
     }
 
     private static class HoldingExecutor implements Executor {

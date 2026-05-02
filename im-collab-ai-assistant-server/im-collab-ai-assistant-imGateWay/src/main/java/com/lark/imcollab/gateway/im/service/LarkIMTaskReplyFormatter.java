@@ -58,6 +58,22 @@ public class LarkIMTaskReplyFormatter {
         return "好的，开始执行。我会按计划推进，并持续更新任务进度。";
     }
 
+    public String retryStarted(TaskRuntimeSnapshot snapshot) {
+        String nextStep = nextStepName(snapshot);
+        if (hasText(nextStep)) {
+            return "好的，我会从失败的步骤重新试一次。当前先处理：" + nextStep + "。";
+        }
+        return "好的，我会从失败的步骤重新试一次。";
+    }
+
+    public String retryUnavailable(TaskRuntimeSnapshot snapshot) {
+        TaskStatusEnum status = snapshot == null || snapshot.getTask() == null ? null : snapshot.getTask().getStatus();
+        if (status == TaskStatusEnum.FAILED) {
+            return "这个任务现在可以重试，但我还没能成功提交执行。你可以稍后再试一次。";
+        }
+        return "当前任务不是失败状态，不需要重试。你可以查看进度或继续调整计划。";
+    }
+
     public String status(TaskRuntimeSnapshot snapshot) {
         if (snapshot == null || snapshot.getTask() == null) {
             return "我还没有找到这个会话里的任务进度。你可以先发一个任务给我。";

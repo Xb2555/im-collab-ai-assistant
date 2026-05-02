@@ -109,7 +109,8 @@ public class TaskRuntimeViewAssembler {
         boolean canInterrupt = status == TaskStatusEnum.EXECUTING
                 && defaultList(steps).stream().anyMatch(step -> step.getStatus() == StepStatusEnum.RUNNING);
         boolean canConfirm = status == TaskStatusEnum.WAITING_APPROVAL;
-        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt);
+        boolean canRetry = status == TaskStatusEnum.FAILED;
+        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry);
     }
 
     private String resolveEventMessage(TaskEventRecord event) {
