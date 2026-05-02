@@ -8,9 +8,58 @@ import org.springframework.stereotype.Service;
 
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 public class HardRuleIntentClassifier {
+
+    private static final Set<String> PLAN_QUERY_SENTENCES = Set.of(
+            "计划",
+            "完整计划",
+            "详细计划",
+            "完整的计划",
+            "详细的计划",
+            "完整计划给我看看",
+            "详细计划给我看看",
+            "完整的计划给我看看",
+            "详细的计划给我看看",
+            "计划给我看看",
+            "看看计划",
+            "看一下计划",
+            "发一下计划",
+            "把计划发我",
+            "把完整计划发我",
+            "完整计划发我"
+    );
+
+    private static final Set<String> ARTIFACT_QUERY_SENTENCES = Set.of(
+            "已有产物",
+            "当前产物",
+            "产物链接",
+            "文档链接",
+            "输出物",
+            "已有产物给我看看",
+            "当前产物给我看看",
+            "产物给我看看",
+            "文档链接给我",
+            "把产物发我",
+            "把文档链接发我"
+    );
+
+    private static final Set<String> STATUS_QUERY_SENTENCES = Set.of(
+            "任务状态",
+            "当前任务状态",
+            "任务进度",
+            "当前进度",
+            "进度怎么样",
+            "现在进度怎么样了",
+            "现在做到哪了",
+            "做到哪了",
+            "做到哪一步了",
+            "任务概况",
+            "当前任务概况",
+            "现在什么状态"
+    );
 
     public Optional<IntentRoutingResult> classify(
             PlanTaskSession session,
@@ -78,47 +127,20 @@ public class HardRuleIntentClassifier {
     }
 
     private Optional<IntentRoutingResult> classifyReadOnlyQuery(String input) {
-        String normalized = normalize(input);
-        if (containsMutationCue(normalized)) {
-            return Optional.empty();
-        }
-        if (normalized.contains("完整计划")
-                || normalized.contains("详细计划")
-                || normalized.contains("计划给我看看")
-                || normalized.contains("看看计划")
-                || normalized.equals("计划")) {
+        String sentence = normalizeSentence(input);
+        if (PLAN_QUERY_SENTENCES.contains(sentence)) {
             return Optional.of(result(TaskCommandTypeEnum.QUERY_STATUS, 1.0d,
                     "hard rule read-only plan query", input, false, "PLAN"));
         }
-        if (normalized.contains("已有产物")
-                || normalized.contains("产物链接")
-                || normalized.contains("文档链接")
-                || normalized.contains("输出物")) {
+        if (ARTIFACT_QUERY_SENTENCES.contains(sentence)) {
             return Optional.of(result(TaskCommandTypeEnum.QUERY_STATUS, 1.0d,
                     "hard rule read-only artifact query", input, false, "ARTIFACTS"));
         }
-        if (normalized.contains("进度")
-                || normalized.contains("状态")
-                || normalized.contains("任务概况")
-                || normalized.contains("现在做到哪")
-                || normalized.contains("做到哪了")) {
+        if (STATUS_QUERY_SENTENCES.contains(sentence)) {
             return Optional.of(result(TaskCommandTypeEnum.QUERY_STATUS, 1.0d,
                     "hard rule read-only status query", input, false, "STATUS"));
         }
         return Optional.empty();
-    }
-
-    private boolean containsMutationCue(String normalized) {
-        return normalized.contains("加")
-                || normalized.contains("新增")
-                || normalized.contains("补")
-                || normalized.contains("删")
-                || normalized.contains("去掉")
-                || normalized.contains("不要")
-                || normalized.contains("改")
-                || normalized.contains("换")
-                || normalized.contains("重排")
-                || normalized.contains("重新规划");
     }
 
     private IntentRoutingResult result(
@@ -144,6 +166,25 @@ public class HardRuleIntentClassifier {
 
     private String normalize(String input) {
         return input == null ? "" : input.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizeSentence(String input) {
+        String normalized = normalize(input)
+                .replaceAll("[\\s，,。.!！?？：:；;、“”\"'‘’（）()【】\\[\\]]+", "");
+        return stripTrailingParticles(normalized);
+    }
+
+    private String stripTrailingParticles(String input) {
+        String sentence = input;
+        while (!sentence.isEmpty()
+                && (sentence.endsWith("吗")
+                || sentence.endsWith("呢")
+                || sentence.endsWith("啊")
+                || sentence.endsWith("呀")
+                || sentence.endsWith("吧"))) {
+            sentence = sentence.substring(0, sentence.length() - 1);
+        }
+        return sentence;
     }
 
 }

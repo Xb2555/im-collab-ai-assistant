@@ -2,7 +2,6 @@ package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
-import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -34,7 +33,7 @@ public class TaskSessionResolver {
         }
 
         Optional<PlanTaskSession> existingSession = stateStore.findSession(boundTaskId.get());
-        if (existingSession.isPresent() && !isTerminal(existingSession.get().getPlanningPhase())) {
+        if (existingSession.isPresent()) {
             return new TaskSessionResolution(boundTaskId.get(), true, continuationKey);
         }
         return new TaskSessionResolution(UUID.randomUUID().toString(), false, continuationKey);
@@ -55,12 +54,6 @@ public class TaskSessionResolver {
         String chatId = workspaceContext.getChatId().trim();
         String threadId = hasText(workspaceContext.getThreadId()) ? workspaceContext.getThreadId().trim() : "chat-root";
         return source + ":" + chatId + ":" + threadId;
-    }
-
-    private boolean isTerminal(PlanningPhaseEnum phase) {
-        return phase == PlanningPhaseEnum.COMPLETED
-                || phase == PlanningPhaseEnum.FAILED
-                || phase == PlanningPhaseEnum.ABORTED;
     }
 
     private boolean hasText(String value) {

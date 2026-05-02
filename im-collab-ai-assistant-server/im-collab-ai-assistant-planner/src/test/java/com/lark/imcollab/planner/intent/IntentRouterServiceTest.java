@@ -170,6 +170,42 @@ class IntentRouterServiceTest {
     }
 
     @Test
+    void newTaskMentioningStatusDoesNotUseReadOnlyKeywordRule() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.92d,
+                "user asks to create a document whose title contains status",
+                "帮我写一份标题叫状态回归文档的测试文档",
+                false
+        )));
+
+        TaskCommand command = service.route(null, "帮我写一份标题叫状态回归文档的测试文档", null, false);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+        verify(model).classify(null, "帮我写一份标题叫状态回归文档的测试文档", false);
+    }
+
+    @Test
+    void newTaskMentioningQueryDoesNotUseReadOnlyKeywordRule() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.9d,
+                "user asks to create a query report",
+                "帮我生成一个查询性能分析文档",
+                false
+        )));
+
+        TaskCommand command = service.route(null, "帮我生成一个查询性能分析文档", null, false);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+        verify(model).classify(null, "帮我生成一个查询性能分析文档", false);
+    }
+
+    @Test
     void taskOverviewWithMutationIntentUsesModelClassification() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         IntentRouterService service = router(model, new PlannerProperties());
