@@ -38,6 +38,9 @@ public class IntentDecisionGuard {
                     || candidate.type() == TaskCommandTypeEnum.UNKNOWN) {
                 return candidate;
             }
+            if (candidate.type() == TaskCommandTypeEnum.CONFIRM_ACTION) {
+                return unknown(normalized, "guard rejected confirm without existing task");
+            }
             return rewrite(candidate, TaskCommandTypeEnum.START_TASK, "guard new conversation starts task", normalized, false);
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER

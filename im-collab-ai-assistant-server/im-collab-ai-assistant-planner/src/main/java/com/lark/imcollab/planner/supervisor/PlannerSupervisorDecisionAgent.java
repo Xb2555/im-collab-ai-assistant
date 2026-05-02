@@ -123,6 +123,8 @@ public class PlannerSupervisorDecisionAgent {
         builder.append("Do not create a plan. Do not execute. Do not invent tools. Supported outputs: DOC, PPT, SUMMARY.\n");
         builder.append("Full plan/status queries must be QUERY_STATUS. Neutral acknowledgements such as '这个方案还行' should be UNKNOWN with a friendly userFacingReply.\n");
         builder.append("Add/remove/change/reorder requests should be PLAN_ADJUSTMENT. Only explicit start/execute/confirm should be CONFIRM_ACTION.\n\n");
+        builder.append("Casual chat, greetings, jokes, mood sharing, or meta questions without a work goal should be UNKNOWN with a short natural userFacingReply; do not create a task.\n");
+        builder.append("A new task requires a concrete work goal or deliverable, such as writing a DOC, preparing a PPT, summarizing material, or generating a project update.\n");
         builder.append("If the user asks for any additional/final/new deliverable to be included in the current plan, choose PLAN_ADJUSTMENT even when the wording is casual.\n");
         builder.append("Never use QUERY_STATUS or UNKNOWN to say that a plan was updated. Only the replan node may update the plan after patch merge.\n\n");
         builder.append("For UNKNOWN, fill userFacingReply with one natural Chinese sentence. Do not use stiff phrases like '我没完全判断清楚'.\n");

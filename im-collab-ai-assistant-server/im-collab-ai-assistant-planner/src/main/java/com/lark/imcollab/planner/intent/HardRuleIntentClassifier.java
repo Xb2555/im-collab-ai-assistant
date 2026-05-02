@@ -44,7 +44,8 @@ public class HardRuleIntentClassifier {
             return Optional.of(result(TaskCommandTypeEnum.UNKNOWN, 0.0d, "blank input", normalized, true));
         }
         if (!existingSession || session == null) {
-            return Optional.of(result(TaskCommandTypeEnum.START_TASK, 0.9d, "fallback new conversation", normalized, false));
+            return Optional.of(result(TaskCommandTypeEnum.UNKNOWN, 0.2d,
+                    "fallback new conversation without confident task intent", normalized, true));
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER) {
             return Optional.of(result(TaskCommandTypeEnum.ANSWER_CLARIFICATION, 0.75d,
