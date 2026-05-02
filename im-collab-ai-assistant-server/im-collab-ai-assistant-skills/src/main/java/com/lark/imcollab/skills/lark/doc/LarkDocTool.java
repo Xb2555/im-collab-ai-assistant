@@ -29,6 +29,15 @@ public class LarkDocTool {
     private final LarkCliProperties properties;
     private final Map<String, Set<String>> supportedFlagCache = new ConcurrentHashMap<>();
 
+    private static final Pattern FLAG_PATTERN = Pattern.compile("(?<!\\S)--[a-zA-Z0-9-]+");
+    private static final Set<String> CREATE_FALLBACK_FLAGS = Set.of(
+            "--as", "--title", "--markdown", "--wiki-space", "--wiki-node", "--folder-token", "--profile"
+    );
+    private static final Set<String> FETCH_FALLBACK_FLAGS = Set.of(
+            "--as", "--doc", "--format", "--limit", "--offset", "--profile"
+    );
+
+
     public LarkDocTool(LarkCliClient larkCliClient, LarkCliProperties properties) {
         this.larkCliClient = larkCliClient;
         this.properties = properties;

@@ -19,4 +19,9 @@ public class LarkDocFetchResult implements Serializable {
     private String docFormat;
     private String detail;
     private String scope;
+
+    private boolean success;
+    private String docRef;
+    private String title;
+    private String message;
 }
