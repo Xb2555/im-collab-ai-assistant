@@ -4,7 +4,7 @@ import { useAuthStore } from '@/store/useAuthStore';
 
 export const apiClient = axios.create({
   baseURL: '', 
-  timeout: 10000,
+  timeout: 60000,
 });
 
 // 请求拦截器：自动注入 Token
@@ -20,9 +20,20 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// 响应拦截器：全局处理 401 等常见错误
+// 响应拦截器：全局处理 401 和 40900(多端版本冲突)
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // ✨ 新增逻辑：拦截基于业务状态码的并发冲突 (40900 乐观锁)
+    const res = response.data;
+    if (res && res.code === 40900) {
+      console.warn('【乐观锁拦截】操作已在其他端完成，丢弃本次操作，等待 SSE 刷新');
+      // 抛出特定的 Error，这样组件里的 try-catch 就能拦截，不会继续执行错误的成功逻辑
+      return Promise.reject(new Error('VERSION_CONFLICT')); 
+    }
+    
+    // 如果没有冲突，原样返回 response，让具体 API 去校验 code !== 0
+    return response;
+  },
   (error) => {
     if (error.response?.status === 401) {
       console.warn('登录已过期，自动清理状态');

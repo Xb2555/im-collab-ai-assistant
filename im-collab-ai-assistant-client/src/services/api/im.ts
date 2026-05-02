@@ -79,6 +79,7 @@ export interface GetHistoryRequest {
   sortType?: 'ByCreateTimeAsc' | 'ByCreateTimeDesc';
   pageSize?: number;
   pageToken?: string;
+  signal?: AbortSignal; // ✨ 新增：用于主动中断请求
 }
 
 // ✨ 新增：分享链接相关契约
@@ -154,11 +155,17 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
     return response.data.data;
   },
 
-  // 6. 获取飞书历史消息
+// 2. 修改 getChatHistory 的实现，把 signal 透传给 apiClient
   getChatHistory: async (params: GetHistoryRequest): Promise<LarkMessageHistoryResponse> => {
+    // 将 signal 从 params 中解构出来，避免把它当成 URL 参数发给后端
+    const { signal, ...restParams } = params; 
+    
     const response = await apiClient.get<ApiResponse<LarkMessageHistoryResponse>>(
       '/api/im/messages/history',
-      { params }
+      { 
+        params: restParams,
+        signal // ✨ 新增：把取消信号传递给 Axios
+      }
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
