@@ -7,8 +7,15 @@ spring:
   application:
     name: im-collab-ai-assistant-app
   ai:
-    dashscope:
-      api-key: ${DASHSCOPE_API_KEY:}
+    model:
+      chat: deepseek
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: ${DEEPSEEK_MODEL:deepseek-chat}
+          temperature: ${DEEPSEEK_TEMPERATURE:0.2}
+          max-tokens: ${DEEPSEEK_MAX_TOKENS:4096}
 
 imcollab:
   store:
@@ -34,13 +41,13 @@ imcollab:
       open-api-base-url: ${LARK_OPEN_API_BASE_URL:}
     im:
       listener:
-        auto-start-enabled: ${LARK_IM_LISTENER_AUTO_START:true}
+        auto-start-enabled: ${LARK_IM_LISTENER_AUTO_START:false}
       event:
         domain: ${LARK_OPEN_DOMAIN:}
         auto-reconnect-enabled: ${LARK_IM_AUTO_RECONNECT:true}
     auth:
       # Web 直跳授权地址（302）
-      authorize-url: ${LARK_OAUTH_AUTHORIZE_URL:https://open.feishu.cn/open-apis/authen/v1/authorize}
+      authorize-url: ${LARK_OAUTH_AUTHORIZE_URL:https://accounts.feishu.cn/open-apis/authen/v1/authorize}
       # 二维码嵌入授权地址（QRLogin）
       qr-authorize-url: ${LARK_OAUTH_QR_AUTHORIZE_URL:https://passport.feishu.cn/suite/passport/oauth/authorize}
       # 二维码授权地址中的 client id 参数名
@@ -52,6 +59,8 @@ imcollab:
       state-ttl: ${LARK_AUTH_STATE_TTL:10m}
 
 planner:
+  auth:
+    enabled: ${PLANNER_AUTH_ENABLED:true}
   prompt:
     profile: ${PLANNER_PROMPT_PROFILE:default}
     version: ${PLANNER_PROMPT_VERSION:v1}

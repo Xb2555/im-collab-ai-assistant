@@ -32,7 +32,7 @@ public class PlannerPromptFacade {
     }
 
     public String supervisorPrompt(PlanTaskSession session) {
-        return renderComposedPrompt("supervisor-system.md", "supervisor-examples.md", session, Map.of());
+        return renderRoleAware("supervisor-system.md", session);
     }
 
     public String supervisorInstruction(PlanTaskSession session) {
@@ -48,7 +48,7 @@ public class PlannerPromptFacade {
     }
 
     public String intentPrompt(PlanTaskSession session) {
-        return renderComposedPrompt("intent-system.md", "intent-examples.md", session, Map.of());
+        return renderRoleAware("intent-system.md", session);
     }
 
     public String intentInstruction(PlanTaskSession session) {
@@ -56,7 +56,7 @@ public class PlannerPromptFacade {
     }
 
     public String planningPrompt(PlanTaskSession session) {
-        return renderComposedPrompt("planning-system.md", "planning-examples.md", session, Map.of());
+        return renderRoleAware("planning-system.md", session);
     }
 
     public String planningInstruction(PlanTaskSession session) {
@@ -68,10 +68,20 @@ public class PlannerPromptFacade {
             String rawInstruction,
             String context,
             String clarificationAnswers) {
+        return planningInstruction(session, rawInstruction, context, clarificationAnswers, "");
+    }
+
+    public String planningInstruction(
+            PlanTaskSession session,
+            String rawInstruction,
+            String context,
+            String clarificationAnswers,
+            String conversationMemory) {
         Map<String, String> extra = new HashMap<>();
         extra.put("rawInstruction", safe(rawInstruction));
         extra.put("context", safe(context));
         extra.put("clarificationAnswers", safe(clarificationAnswers));
+        extra.put("conversationMemory", safe(conversationMemory));
         return renderRoleAware("planning-instruction.md", session, extra);
     }
 
@@ -126,6 +136,7 @@ public class PlannerPromptFacade {
         variables.put("audience", fallback(session != null ? session.getAudience() : null, defaults.getDefaultAudience()));
         variables.put("tone", fallback(session != null ? session.getTone() : null, defaults.getDefaultTone()));
         variables.put("language", fallback(session != null ? session.getLanguage() : null, defaults.getDefaultLanguage()));
+        variables.put("conversationMemory", "");
         variables.putAll(extraVariables);
 
         String profile = fallback(session != null ? session.getPromptProfile() : null, defaults.getProfile());

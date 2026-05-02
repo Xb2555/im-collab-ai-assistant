@@ -1,5 +1,7 @@
 # 场景 B：任务理解与规划开发文档
 
+> 开发 planner 与 IM 交互前，请先阅读补充规则：[Planner 与 IM 交互开发规则](planner-im-development-rules.md)。该文档沉淀了意图识别、UNKNOWN 回复、计划修改、IM 文案、产物通知、失败重试和真实测试的约束。下一阶段演进建议见：[Planner 下一阶段优化建议](planner-next-optimizations.md)。
+
 ## 1. 定位
 
 场景 B 是从自然语言输入到可执行任务图的核心层，对应最终 Harness 架构中的 `Planner / Orchestrator` 层，并承接 `会话与任务中枢层` 的一部分状态建模。
@@ -23,8 +25,8 @@
 
 1. IM 输入可以通过 `PlannerConversationService` 进入 planner。
 2. `TaskSessionResolver` 可以基于 `chatId + threadId` 续接已有会话。
-3. `TaskIntakeService` 可以粗分新任务、澄清回复、状态查询、计划调整。
-4. `SupervisorPlannerService` 已经具备澄清、意图识别、计划生成、计划增量调整能力。
+3. `PlannerSupervisorGraphRunner` 已成为 HTTP/GUI/IM 的 planner 唯一主路径。
+4. Spring AI Alibaba `StateGraph` 节点负责澄清、上下文检查、计划、重规划、审查、门禁、投影和只读查询。
 5. `PlanTaskSession` 可以保存计划阶段、意图快照、计划蓝图、卡片和上下文。
 6. `PlannerStateStore` 已有 session 和 event 存储接口。
 
@@ -33,7 +35,7 @@
 1. `PlanTaskSession` 同时承担 Conversation、Task、Plan、Runtime 状态，职责过重。
 2. `PlanBlueprint` 仍是计划草案，不是可执行任务图。
 3. `UserPlanCard` 更像展示卡片，不是完整 Step Runtime。
-4. `SupervisorPlannerService` 承担过多职责，后续接 Doc/PPT/白板时会继续膨胀。
+4. 旧 Supervisor/规则快路径已经退出主路径，后续重点是把各 graph node service 继续保持小而专。
 5. 缺少独立 Orchestrator，无法根据 Step 状态自动调度能力节点。
 6. 缺少 Plan Gate、Action Gate 等分层门禁。
 7. 事件还偏内部日志，没有成为多端同步和前端卡片的统一事实源。
@@ -443,9 +445,9 @@ sequenceDiagram
 | Conversation Intake | `PlannerConversationService` | 保留入口职责，输出 `TaskCommand` |
 | Intent Router | `TaskIntakeService` | 升级为 `IntentRouterService`，支持确认、取消、补充素材 |
 | Session Resolver | `TaskSessionResolver` | 保留，改为绑定 `ConversationSession -> TaskRecord` |
-| Planning Service | `SupervisorPlannerService.plan` | 拆为 `TaskPlanningService` |
-| Clarification | `SupervisorPlannerService.handleAskUser` | 拆为 `ClarificationService` |
-| Plan Adjustment | `SupervisorPlannerService.adjustPlan` | 拆为 `PlanAdjustmentService` 或 `ReplannerService` |
+| Planning Service | `PlanningNodeService` + `TaskPlanningService` | 通过 planning agent 生成 `PlanBlueprint` |
+| Clarification | `ClarificationNodeService` + `ClarificationService` | 吸收澄清回答并续接 graph |
+| Plan Adjustment | `ReplanNodeService` + `PlanAdjustmentInterpreter/CardPlanPatchMerger` | 只做局部 patch，默认保留原计划 |
 | Plan Quality | `PlanQualityService` | 拆出 `PlanGraphBuilder` 和 `PlanPatchMerger` |
 | State Store | `PlannerStateStore` | 扩展 `Task/Step/Artifact/Event` 存取 |
 | Plan Card | `UserPlanCard` | 映射到 `TaskStepRecord` |
@@ -841,3 +843,50 @@ POST /api/planner/tasks/{taskId}/execute-next
 6. 下一阶段 worker 可以只按 Step 契约接入。
 
 达到以上标准后，场景 B 就可以作为最终 Harness 架构的核心骨架继续演进。
+
+## 19. 主控 Agent 收敛后的实现约束
+
+2026-05-01 起，场景 B 的主路径收敛为 Spring AI Alibaba `StateGraph`：
+
+1. `PlannerConversationService` 只做会话解析、用户输入写入 memory、owner/source 注入，并统一调用 `PlannerSupervisorGraphRunner`。
+2. `SupervisorPlannerService`、旧 `PlannerFacade`、`IntentRouter`、`PlanRoutingGate`、`FastPlanBlueprintFactory` 已退出代码主路径，不得重新引入。
+3. 子 Agent 通过 Spring AI Alibaba `AgentTool` 暴露给 `supervisorAgent`，不要同时再用 `SubAgentInterceptor` 暴露同一批 Agent。
+4. Planner 工具只能执行确定性动作，例如 memory、runtime、gate、patch、question、execution confirm；模型不能直接写 Redis、改 Step 状态或调用 harness。
+5. 旧 `TaskPlanner`、`Replanner`、`PlanGate` 薄封装已退出主路径，后续统一使用 `PlanningNodeService`、`ReplanNodeService`、`ReviewGateNodeService`、`TaskPlanningService`、`PlanAdjustmentInterpreter/CardPlanPatchMerger`、`PlanGateService`。
+6. Graph 节点必须写入用户可见的 runtime 阶段事件，至少包括 intake、context checking、clarification、planning、review、gate、ready/adjusted、executing、failed。
+7. `CONFIRM_EXECUTE`、`CANCEL`、`REPLAN` 等 GUI/IM 控制动作都应通过 graph/facade 路径进入，不再在 Controller 中直接编排 harness 或 runtime。
+
+### 19.1 后续开发不可遗忘的关键要求
+
+这些要求来自多轮真实 IM/GUI 测试反馈，后续优化 planner 时必须默认遵守：
+
+1. **主控 Agent 优先**：planner 应表现为能判断、澄清、收集上下文、规划、调整、查状态和确认执行的主控 Agent，而不是死板的一问一答流程。
+2. **Spring AI Alibaba 优先**：优先使用 `StateGraph`、`ReactAgent`、`AgentTool`、`ToolCallback/methodTools`、checkpoint/threadId 等框架能力；不要在项目里另起一套随意设计的 Agent runtime。
+3. **Claude Code 只借鉴模式**：planner 文档和架构设计必须参照 `/Users/xb2555/vsCodeProjects/claude-code-haha-main` 的 agent coding 架构模式，尤其是 `CLAUDE.md`、`src/Tool.ts`、`src/tasks.ts`、`src/tools/shared/spawnMultiAgent.ts`，但只做 Java/Spring AI Alibaba 等价映射，不复制外部项目代码。
+4. **规则只做护栏**：取消、确认执行、查状态、ASK_USER 回答吸收、owner/version 校验、PlanGate 属于硬规则；其他自然表达尽量交给受约束 LLM 和结构化输出，不维护大规模关键词表。
+5. **LLM 必须受约束**：Intent 只能选固定枚举，Clarification 只能输出 ASK_USER/READY，Replan 只能输出局部 patch intent，Planning 只能输出当前系统支持的计划结构。
+6. **局部调整不丢原计划**：用户说“顺手补一个风险表”“加个老板版 PPT”“不要群摘要”时，只应局部新增/删除/修改相关步骤，默认保留原 DOC/PPT/已完成产物。
+7. **只规划可执行能力**：当前稳定支持 `DOC`、`PPT`、`SUMMARY`；Mermaid 是 DOC 内容要求，不是独立图表/白板任务。不要生成未知 worker、未知 artifact 或当前 harness 不支持的执行节点。
+8. **Runtime 是事实源**：GUI/IM 展示统一读取 `TaskRuntimeSnapshot` 以及 `TaskRecord/TaskStepRecord/ArtifactRecord/TaskEventRecord`，不要依赖 planner 临时会话文本。
+9. **查询必须只读**：“完整计划”“任务概况”“进度怎么样”“已有产物”等查询不触发 replan，不增加 version，不改变计划。
+10. **自然交互优先**：IM 回复应短、自然、可继续对话；不把 GUI 卡片全文贴进聊天，不暴露 JSON、stepId、gate 失败、内部异常。
+11. **澄清要少而准**：信息不足时最多问 1-3 个关键问题，优先问 1 个；用户回答短词如“文档”“老板汇报”时必须结合 task memory 继续推进，而不是重复问。
+12. **不破坏 B -> C**：优化 planner 时不主动改 harness、doc agent、`DocumentWorkflowNodes` 或真实飞书文档链路；确认执行仍要保持现有 B -> C 回归可用。
+13. **前端是仪表盘**：GUI 负责查看、确认、调整和监控，不承载 planner 决策逻辑；planner 必须持续写入进度事件供 GUI/IM 查询。
+14. **测试要覆盖连续对话**：新增测试不能只测单句，应覆盖新任务、澄清回答、连续 replan、完整计划查询、version 冲突、确认执行、失败提示、B -> C 回归。
+
+### 19.2 Claude Code 架构参照映射
+
+后续补充 planner 设计文档、接口文档或重构计划时，必须先对照 `claude-code-haha-main`，并把参考点映射到本项目的 Java/Spring AI Alibaba 实现：
+
+| 参考项目模式 | 参考文件 | 本项目落点 |
+| --- | --- | --- |
+| 主会话/主控 Agent 负责最终判断和汇报 | `CLAUDE.md`、`src/query.ts` | `PlannerSupervisorDecisionAgent` + `PlannerSupervisorGraphRunner` |
+| 统一工具接口与工具上下文 | `src/Tool.ts` | `PlannerToolResult`、planner tools、task scoped context |
+| 工具进度、通知和 UI 状态分离 | `src/Tool.ts`、`src/remote/sdkMessageAdapter.ts` | `TaskEventRecord`、SSE、IM formatter、GUI runtime |
+| 多 Agent / teammate 由工具启动并隔离上下文 | `src/tools/shared/spawnMultiAgent.ts` | Spring AI Alibaba `AgentTool` + `{taskId}:planner:{agentName}` threadId |
+| Task registry 管理长期任务状态 | `src/tasks.ts`、`src/Task.ts` | `TaskRecord/TaskStepRecord/ArtifactRecord/TaskEventRecord` |
+| 权限与安全层保护工具调用 | `src/Tool.ts` 中 permission context | owner/version 校验、PlanGate、能力边界、确认执行硬规则 |
+| Memory/上下文注入有明确边界 | `src/context.ts`、`src/memdir/*` | task scoped memory，不做跨用户永久记忆 |
+
+文档写法也要借鉴它的分层说明方式：先讲主流程，再讲 tool system，再讲 multi-agent，再讲 state/data flow，再讲 safety/gate，最后讲测试和非目标。不要只罗列 Java 类名。

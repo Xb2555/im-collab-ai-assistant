@@ -74,7 +74,8 @@ public class AgentPromptInterceptor extends ModelInterceptor {
                     session,
                     asString(context.get(PromptContextKeys.RAW_INSTRUCTION)),
                     asString(context.get(PromptContextKeys.CONTEXT)),
-                    asString(context.get(PromptContextKeys.CLARIFICATION_ANSWERS)));
+                    asString(context.get(PromptContextKeys.CLARIFICATION_ANSWERS)),
+                    asString(context.get(PromptContextKeys.CONVERSATION_MEMORY)));
             case "result-judge-agent" -> promptFacade.resultJudgeInstruction(
                     session,
                     asSubmissionVariables(context));

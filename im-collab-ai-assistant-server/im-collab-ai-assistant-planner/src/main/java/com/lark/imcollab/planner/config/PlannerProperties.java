@@ -4,6 +4,8 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 @Data
 @Component
 @ConfigurationProperties(prefix = "planner")
@@ -12,6 +14,46 @@ public class PlannerProperties {
     private Prompt prompt = new Prompt();
     private Quality quality = new Quality();
     private Summarization summarization = new Summarization();
+    private Replan replan = new Replan();
+    private Intent intent = new Intent();
+    private Disambiguation disambiguation = new Disambiguation();
+    private Auth auth = new Auth();
+    private Clarification clarification = new Clarification();
+    private Memory memory = new Memory();
+    private Graph graph = new Graph();
+
+    public void initDefaults() {
+        if (disambiguation.getTermPolicies() != null && !disambiguation.getTermPolicies().isEmpty()) {
+            return;
+        }
+        TermPolicyDefinition harness = new TermPolicyDefinition();
+        harness.setTerm("harness");
+        harness.setClarificationPrompt("请确认你说的是哪一种 harness：");
+        harness.setMinimumScore(2);
+        harness.setDecisiveGap(2);
+        harness.setHighConfidenceScore(6);
+
+        TermMeaningDefinition projectModule = new TermMeaningDefinition();
+        projectModule.setMeaningCode("WORKSPACE_INTERNAL_CAPABILITY");
+        projectModule.setUserLabel("当前项目里的 Harness 模块");
+        projectModule.setSignals(List.of("当前项目", "模块", "场景 c", "文档生成", "链路"));
+        projectModule.setStrongSignals(List.of("harness 模块", "当前项目里的 harness", "场景 c"));
+
+        TermMeaningDefinition testHarness = new TermMeaningDefinition();
+        testHarness.setMeaningCode("TEST_HARNESS");
+        testHarness.setUserLabel("测试框架或测试 harness");
+        testHarness.setSignals(List.of("测试", "test", "mock", "用例", "自动化"));
+        testHarness.setStrongSignals(List.of("test harness", "测试 harness"));
+
+        TermMeaningDefinition safetyHarness = new TermMeaningDefinition();
+        safetyHarness.setMeaningCode("SAFETY_HARNESS");
+        safetyHarness.setUserLabel("安全带或硬件 harness");
+        safetyHarness.setSignals(List.of("硬件", "设备", "安全带", "线束", "hardware"));
+        safetyHarness.setStrongSignals(List.of("安全 harness", "wire harness"));
+
+        harness.setMeanings(List.of(projectModule, testHarness, safetyHarness));
+        disambiguation.setTermPolicies(List.of(harness));
+    }
 
     @Data
     public static class Prompt {
@@ -36,5 +78,73 @@ public class PlannerProperties {
     public static class Summarization {
         private int maxTokensBeforeSummary = 6000;
         private int messagesToKeep = 20;
+    }
+
+    @Data
+    public static class Replan {
+        private boolean patchIntentModelEnabled = true;
+        private int patchIntentTimeoutSeconds = 4;
+        private double patchIntentPassThreshold = 0.65d;
+    }
+
+    @Data
+    public static class Intent {
+        private boolean modelEnabled = true;
+        private int timeoutSeconds = 3;
+        private double passThreshold = 0.65d;
+        private boolean fallbackToLocalRules = true;
+        private boolean unknownReplyModelEnabled = true;
+        private int unknownReplyTimeoutSeconds = 2;
+    }
+
+    @Data
+    public static class Disambiguation {
+        private List<TermPolicyDefinition> termPolicies = List.of();
+    }
+
+    @Data
+    public static class Auth {
+        private boolean enabled = true;
+    }
+
+    @Data
+    public static class TermPolicyDefinition {
+        private String term;
+        private String clarificationPrompt = "";
+        private int minimumScore = 2;
+        private int decisiveGap = 2;
+        private int highConfidenceScore = 6;
+        private List<TermMeaningDefinition> meanings = List.of();
+    }
+
+    @Data
+    public static class TermMeaningDefinition {
+        private String meaningCode;
+        private String userLabel;
+        private List<String> signals = List.of();
+        private List<String> strongSignals = List.of();
+    }
+
+    @Data
+    public static class Clarification {
+        private boolean modelEnabled = true;
+        private int timeoutSeconds = 3;
+        private double passThreshold = 0.65d;
+    }
+
+    @Data
+    public static class Memory {
+        private boolean enabled = true;
+        private int recentTurns = 8;
+        private int maxTurnChars = 500;
+        private int maxContextChars = 3000;
+        private int summaryMaxChars = 1200;
+    }
+
+    @Data
+    public static class Graph {
+        private boolean enabled = true;
+        private int supervisorDecisionTimeoutSeconds = 3;
+        private double supervisorDecisionPassThreshold = 0.6d;
     }
 }

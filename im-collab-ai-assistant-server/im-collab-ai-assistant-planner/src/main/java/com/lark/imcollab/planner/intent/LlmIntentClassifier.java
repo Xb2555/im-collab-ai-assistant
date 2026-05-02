@@ -1,0 +1,193 @@
+package com.lark.imcollab.planner.intent;
+
+import com.alibaba.cloud.ai.graph.RunnableConfig;
+import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+@Service
+public class LlmIntentClassifier {
+
+    private final ReactAgent intentAgent;
+    private final ObjectMapper objectMapper;
+    private final PlannerProperties plannerProperties;
+    private final PlannerConversationMemoryService memoryService;
+    private final ExecutorService executorService = Executors.newCachedThreadPool();
+
+    public LlmIntentClassifier(
+            @Qualifier("intentClassifierAgent") ReactAgent intentAgent,
+            ObjectMapper objectMapper,
+            PlannerProperties plannerProperties,
+            PlannerConversationMemoryService memoryService
+    ) {
+        this.intentAgent = intentAgent;
+        this.objectMapper = objectMapper;
+        this.plannerProperties = plannerProperties;
+        this.memoryService = memoryService;
+    }
+
+    public Optional<IntentRoutingResult> classify(PlanTaskSession session, String rawInput, boolean existingSession) {
+        if (intentAgent == null || !plannerProperties.getIntent().isModelEnabled()) {
+            return Optional.empty();
+        }
+        String prompt = buildPrompt(session, rawInput, existingSession);
+        RunnableConfig config = RunnableConfig.builder()
+                .threadId((session == null ? "unknown" : session.getTaskId()) + "-intent")
+                .build();
+        try {
+            return CompletableFuture
+                    .supplyAsync(() -> {
+                        try {
+                            return intentAgent.call(prompt, config).getText();
+                        } catch (Exception exception) {
+                            throw new IllegalStateException(exception);
+                        }
+                    }, executorService)
+                    .orTimeout(timeoutSeconds(), TimeUnit.SECONDS)
+                    .thenApply(this::parse)
+                    .get(timeoutSeconds() + 1L, TimeUnit.SECONDS);
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
+    }
+
+    Optional<IntentRoutingResult> parse(String text) {
+        if (text == null || text.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(extractJson(text));
+            TaskCommandTypeEnum type = TaskCommandTypeEnum.valueOf(root.path("intent").asText("UNKNOWN"));
+            String normalizedInput = root.path("normalizedInput").asText("");
+            if (normalizedInput.isBlank()) {
+                normalizedInput = root.path("normalized_input").asText("");
+            }
+            return Optional.of(new IntentRoutingResult(
+                    type,
+                    root.path("confidence").asDouble(0.0d),
+                    root.path("reason").asText("llm intent classification"),
+                    normalizedInput,
+                    root.path("needsClarification").asBoolean(false)
+                            || root.path("needs_clarification").asBoolean(false),
+                    normalizeReadOnlyView(firstNonBlank(
+                            root.path("readOnlyView").asText(null),
+                            root.path("read_only_view").asText(null),
+                            root.path("queryView").asText(null),
+                            root.path("query_view").asText(null)
+                    ))
+            ));
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
+    }
+
+    private String buildPrompt(PlanTaskSession session, String rawInput, boolean existingSession) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("You classify one user message into a fixed task command intent.\n");
+        builder.append("Return JSON only. Do not plan steps, do not execute actions, do not answer the user.\n");
+        builder.append("Allowed intents: START_TASK, ANSWER_CLARIFICATION, ADJUST_PLAN, QUERY_STATUS, CONFIRM_ACTION, CANCEL_TASK, UNKNOWN.\n");
+        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false,\"readOnlyView\":\"PLAN|STATUS|ARTIFACTS|\"}\n");
+        builder.append("Decision hints:\n");
+        builder.append("- QUERY_STATUS means the user asks progress, status, task overview, current plan summary, full plan, existing artifacts, or what is being done.\n");
+        builder.append("- For QUERY_STATUS, set readOnlyView=PLAN when the user wants the stored plan/steps; STATUS when they want progress/current status; ARTIFACTS when they want outputs/links/artifacts.\n");
+        builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, or regenerate plan steps.\n");
+        builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
+        builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
+        builder.append("- UNKNOWN means the message cannot be safely mapped to one fixed intent.\n\n");
+        builder.append("Session:\n");
+        builder.append("- existingSession: ").append(existingSession).append("\n");
+        builder.append("- phase: ").append(session == null || session.getPlanningPhase() == null
+                ? PlanningPhaseEnum.INTAKE
+                : session.getPlanningPhase()).append("\n");
+        builder.append("- hasPlan: ").append(hasPlan(session)).append("\n");
+        builder.append("- recentCards: ").append(cardSummary(session)).append("\n");
+        String memoryContext = memoryService == null ? "" : memoryService.renderContext(session);
+        if (memoryContext != null && !memoryContext.isBlank()) {
+            builder.append("Conversation memory:\n").append(memoryContext).append("\n");
+        }
+        builder.append("User message: ").append(rawInput == null ? "" : rawInput.trim());
+        return builder.toString();
+    }
+
+    private boolean hasPlan(PlanTaskSession session) {
+        return session != null
+                && ((session.getPlanCards() != null && !session.getPlanCards().isEmpty())
+                || session.getPlanBlueprint() != null);
+    }
+
+    private String cardSummary(PlanTaskSession session) {
+        if (session == null || session.getPlanCards() == null || session.getPlanCards().isEmpty()) {
+            return "[]";
+        }
+        List<UserPlanCard> cards = session.getPlanCards();
+        StringBuilder builder = new StringBuilder("[");
+        int limit = Math.min(cards.size(), 3);
+        for (int index = 0; index < limit; index++) {
+            UserPlanCard card = cards.get(index);
+            if (index > 0) {
+                builder.append("; ");
+            }
+            builder.append(card.getCardId()).append("|")
+                    .append(card.getType()).append("|")
+                    .append(card.getTitle());
+        }
+        if (cards.size() > limit) {
+            builder.append("; +").append(cards.size() - limit).append(" more");
+        }
+        builder.append("]");
+        return builder.toString();
+    }
+
+    private String extractJson(String text) {
+        String trimmed = text.trim();
+        int start = trimmed.indexOf('{');
+        int end = trimmed.lastIndexOf('}');
+        if (start >= 0 && end >= start) {
+            return trimmed.substring(start, end + 1);
+        }
+        return trimmed.toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeReadOnlyView(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "PLAN", "STATUS", "ARTIFACTS" -> normalized;
+            default -> null;
+        };
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private long timeoutSeconds() {
+        return Math.max(1, plannerProperties.getIntent().getTimeoutSeconds());
+    }
+}

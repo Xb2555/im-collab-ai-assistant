@@ -16,15 +16,11 @@
 - 所有执行节点围绕冻结后的 execution contract 运转
 - 图表、文档、外部写入均应具备独立可重试能力
 
+{principles}
+
 ## 四、架构视图
 
-{contextDiagram}
-
-{dataFlowDiagram}
-
-{sequenceDiagram}
-
-{stateDiagram}
+{architectureViewBlock}
 
 ## 五、模块分层与职责
 
@@ -42,12 +38,4 @@
 
 {timeline}
 
-## 九、图表说明
-
-{diagramNotes}
-
-## 十、详细设计展开
-
----
-
-{sections}
+{additionalSectionsBlock}

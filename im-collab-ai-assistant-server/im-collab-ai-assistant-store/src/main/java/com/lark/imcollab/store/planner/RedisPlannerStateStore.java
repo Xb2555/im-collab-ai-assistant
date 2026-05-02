@@ -9,13 +9,17 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 @Repository
 @RequiredArgsConstructor
@@ -32,6 +36,7 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     private static final String SUBMISSION_KEY_PREFIX = "planner:submission:";
     private static final String EVALUATION_KEY_PREFIX = "planner:evaluation:";
     private static final String CONVERSATION_KEY_PREFIX = "planner:conversation:";
+    private static final String USER_TASK_KEY_PREFIX = "planner:user-tasks:";
     private static final Duration SESSION_TTL = Duration.ofDays(7);
 
     private final StringRedisTemplate redisTemplate;
@@ -97,6 +102,11 @@ public class RedisPlannerStateStore implements PlannerStateStore {
         try {
             String key = TASK_KEY_PREFIX + task.getTaskId();
             redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(task), SESSION_TTL);
+            if (hasText(task.getOwnerOpenId())) {
+                String userTasksKey = USER_TASK_KEY_PREFIX + task.getOwnerOpenId();
+                redisTemplate.opsForZSet().add(userTasksKey, task.getTaskId(), taskSortScore(task));
+                redisTemplate.expire(userTasksKey, SESSION_TTL);
+            }
         } catch (Exception e) {
             throw new RuntimeException("Failed to save runtime task: " + task.getTaskId(), e);
         }
@@ -112,6 +122,32 @@ public class RedisPlannerStateStore implements PlannerStateStore {
             return Optional.of(objectMapper.readValue(json, TaskRecord.class));
         } catch (Exception e) {
             throw new RuntimeException("Failed to load runtime task: " + taskId, e);
+        }
+    }
+
+    @Override
+    public List<TaskRecord> findTasksByOwner(String ownerOpenId, List<TaskStatusEnum> statuses, int offset, int limit) {
+        if (!hasText(ownerOpenId)) {
+            return List.of();
+        }
+        try {
+            Set<String> taskIds = redisTemplate.opsForZSet().reverseRange(USER_TASK_KEY_PREFIX + ownerOpenId, 0, -1);
+            if (taskIds == null || taskIds.isEmpty()) {
+                return List.of();
+            }
+            Set<TaskStatusEnum> statusFilter = statuses == null || statuses.isEmpty()
+                    ? Set.of()
+                    : new HashSet<>(statuses);
+            return taskIds.stream()
+                    .map(this::findTask)
+                    .flatMap(Optional::stream)
+                    .filter(task -> ownerOpenId.equals(task.getOwnerOpenId()))
+                    .filter(task -> statusFilter.isEmpty() || statusFilter.contains(task.getStatus()))
+                    .skip(Math.max(0, offset))
+                    .limit(Math.max(1, limit))
+                    .toList();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load user tasks: " + ownerOpenId, e);
         }
     }
 
@@ -275,5 +311,14 @@ public class RedisPlannerStateStore implements PlannerStateStore {
         } catch (Exception e) {
             throw new RuntimeException("Failed to parse runtime event", e);
         }
+    }
+
+    private double taskSortScore(TaskRecord task) {
+        Instant timestamp = task.getUpdatedAt() != null ? task.getUpdatedAt() : task.getCreatedAt();
+        return timestamp == null ? System.currentTimeMillis() : timestamp.toEpochMilli();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

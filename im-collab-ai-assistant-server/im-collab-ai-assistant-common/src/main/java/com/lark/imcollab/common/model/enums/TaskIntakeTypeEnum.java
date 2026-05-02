@@ -8,5 +8,7 @@ public enum TaskIntakeTypeEnum {
     CLARIFICATION_REPLY,
     PLAN_ADJUSTMENT,
     STATUS_QUERY,
-    CANCEL_TASK
+    CONFIRM_ACTION,
+    CANCEL_TASK,
+    UNKNOWN
 }

@@ -34,10 +34,10 @@ public class TaskRuntimeViewAssembler {
         }
         return new TaskDetailVO(
                 toTaskSummary(snapshot.getTask()),
-                defaultList(snapshot.getSteps()).stream().map(this::toTaskStep).toList(),
+                activeSteps(snapshot.getSteps()).stream().map(this::toTaskStep).toList(),
                 defaultList(snapshot.getArtifacts()).stream().map(this::toTaskArtifact).toList(),
                 defaultList(snapshot.getEvents()).stream().map(this::toTaskEvent).toList(),
-                resolveActions(snapshot.getTask(), snapshot.getSteps())
+                resolveActions(snapshot.getTask(), activeSteps(snapshot.getSteps()))
         );
     }
 
@@ -47,6 +47,7 @@ public class TaskRuntimeViewAssembler {
         }
         return new TaskSummaryVO(
                 task.getTaskId(),
+                task.getVersion(),
                 task.getTitle(),
                 task.getGoal(),
                 enumName(task.getStatus()),
@@ -90,6 +91,7 @@ public class TaskRuntimeViewAssembler {
     private TaskEventVO toTaskEvent(TaskEventRecord event) {
         return new TaskEventVO(
                 event.getEventId(),
+                event.getVersion(),
                 enumName(event.getType()),
                 event.getStepId(),
                 resolveEventMessage(event),
@@ -106,7 +108,9 @@ public class TaskRuntimeViewAssembler {
         boolean canResume = task != null && task.isNeedUserAction();
         boolean canInterrupt = status == TaskStatusEnum.EXECUTING
                 && defaultList(steps).stream().anyMatch(step -> step.getStatus() == StepStatusEnum.RUNNING);
-        return new TaskActionVO(false, canReplan, canCancel, canResume, canInterrupt);
+        boolean canConfirm = status == TaskStatusEnum.WAITING_APPROVAL;
+        boolean canRetry = status == TaskStatusEnum.FAILED;
+        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry);
     }
 
     private String resolveEventMessage(TaskEventRecord event) {
@@ -132,6 +136,14 @@ public class TaskRuntimeViewAssembler {
             case TASK_COMPLETED -> "任务已完成";
             case TASK_FAILED -> "任务执行失败";
             case TASK_CANCELLED -> "任务已取消";
+            case INTAKE_ACCEPTED -> "已收到用户指令";
+            case INTENT_ROUTING -> "正在理解用户意图";
+            case CLARIFICATION_REQUIRED -> "需要补充关键信息";
+            case CONTEXT_CHECKING -> "正在检查任务上下文";
+            case PLANNING_STARTED -> "正在生成任务计划";
+            case PLAN_REVIEWING -> "正在审查任务计划";
+            case PLAN_GATE_CHECKING -> "正在检查计划可执行性";
+            case PLAN_FAILED -> "任务计划生成失败";
         };
     }
 
@@ -156,5 +168,11 @@ public class TaskRuntimeViewAssembler {
 
     private <T> List<T> defaultList(List<T> values) {
         return values == null ? List.of() : values;
+    }
+
+    private List<TaskStepRecord> activeSteps(List<TaskStepRecord> steps) {
+        return defaultList(steps).stream()
+                .filter(step -> step != null && step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .toList();
     }
 }

@@ -1,12 +1,12 @@
 package com.lark.imcollab.gateway.im.service;
 
+import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
-import com.lark.imcollab.common.model.entity.PlanTaskSession;
-import com.lark.imcollab.common.model.entity.PlanBlueprint;
-import com.lark.imcollab.common.model.entity.PromptSlotState;
-import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
@@ -16,8 +16,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 
 @Component
@@ -25,35 +23,33 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
 
     private static final Logger log = LoggerFactory.getLogger(LoggingLarkInboundMessageDispatcher.class);
     private static final String WORKSPACE_SELECTION_TYPE = "MESSAGE";
-    private static final String CLARIFICATION_PREFIX =
-            "\u4e3a\u4e86\u7ee7\u7eed\u89c4\u5212\uff0c\u8bf7\u8865\u5145\u4ee5\u4e0b\u4fe1\u606f\uff1a";
-    private static final String PLAN_READY_PREFIX =
-            "\u89c4\u5212\u5df2\u751f\u6210\uff0c\u5efa\u8bae\u6309\u4ee5\u4e0b\u65b9\u5f0f\u63a8\u8fdb\uff1a";
-    private static final String PLAN_EDIT_HINT =
-            "\u5982\u9700\u4fee\u6539\u8ba1\u5212\uff0c\u53ef\u4ee5\u76f4\u63a5\u56de\u590d\u8865\u5145\u8981\u6c42\u3002";
-    private static final String TASK_CANCELLED_TEXT =
-            "\u4efb\u52a1\u5df2\u53d6\u6d88\uff0c\u540e\u7eed\u4e0d\u4f1a\u7ee7\u7eed\u89c4\u5212\u6216\u6267\u884c\u3002";
 
     private final PlannerPlanFacade plannerPlanFacade;
+    private final ImTaskCommandFacade taskCommandFacade;
     private final LarkMessageReplyTool replyTool;
     private final LarkIMMessageStreamService streamService;
     private final LarkOutboundMessageRetryService retryService;
+    private final LarkIMTaskReplyFormatter replyFormatter;
 
     public LoggingLarkInboundMessageDispatcher(PlannerPlanFacade plannerPlanFacade) {
-        this(plannerPlanFacade, null, null, null);
+        this(plannerPlanFacade, null, null, null, null, new LarkIMTaskReplyFormatter());
     }
 
     @Autowired
     public LoggingLarkInboundMessageDispatcher(
             PlannerPlanFacade plannerPlanFacade,
+            ImTaskCommandFacade taskCommandFacade,
             LarkMessageReplyTool replyTool,
             LarkIMMessageStreamService streamService,
-            LarkOutboundMessageRetryService retryService
+            LarkOutboundMessageRetryService retryService,
+            LarkIMTaskReplyFormatter replyFormatter
     ) {
         this.plannerPlanFacade = plannerPlanFacade;
+        this.taskCommandFacade = taskCommandFacade;
         this.replyTool = replyTool;
         this.streamService = streamService;
         this.retryService = retryService;
+        this.replyFormatter = replyFormatter == null ? new LarkIMTaskReplyFormatter() : replyFormatter;
     }
 
     @Override
@@ -71,71 +67,101 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                 null,
                 null
         );
-        replyClarificationIfNeeded(message, session);
-        replyPlanReadyIfNeeded(message, session);
-        replyCancelledIfNeeded(message, session);
+        replyBySessionState(message, session);
         log.info("Scenario A inbound Lark message bridged to planner: messageId={}, chatId={}, taskId={}, phase={}",
                 message.messageId(), message.chatId(), session.getTaskId(), session.getPlanningPhase());
         return session;
     }
 
-    private void replyClarificationIfNeeded(LarkInboundMessage message, PlanTaskSession session) {
-        if (message == null || session == null || session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER) {
+    private void replyBySessionState(LarkInboundMessage message, PlanTaskSession session) {
+        if (message == null || session == null) {
             return;
         }
-
-        String clarificationText = buildClarificationText(session);
-        if (!hasText(clarificationText)) {
+        TaskIntakeTypeEnum intakeType = session.getIntakeState() == null ? null : session.getIntakeState().getIntakeType();
+        if (intakeType == TaskIntakeTypeEnum.CONFIRM_ACTION) {
+            replyConfirmExecution(message, session);
             return;
         }
-
-        safeReplyClarification(message, session, clarificationText);
-        safePublishClarification(message, session, clarificationText);
+        if (intakeType == TaskIntakeTypeEnum.STATUS_QUERY) {
+            replyStatus(message, session);
+            return;
+        }
+        if (intakeType == TaskIntakeTypeEnum.UNKNOWN) {
+            replyText(message, session, replyFormatter.uncertainIntent(session), "unknown intent");
+            return;
+        }
+        if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT && hasAssistantReply(session)) {
+            replyText(message, session, session.getIntakeState().getAssistantReply(), "plan adjustment clarification");
+            return;
+        }
+        if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT && session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
+            replyText(message, session, replyFormatter.planAdjusted(session), "plan adjusted");
+            return;
+        }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER) {
+            replyText(message, session, replyFormatter.clarification(session), "clarification");
+            return;
+        }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
+            replyText(message, session, replyFormatter.planReady(session), "plan ready");
+            return;
+        }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.ABORTED) {
+            replyText(message, session, replyFormatter.taskCancelled(), "cancelled");
+            return;
+        }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.FAILED) {
+            replyText(message, session, replyFormatter.failure(session, snapshot(session)), "failed");
+            return;
+        }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED) {
+            replyText(message, session, replyFormatter.status(snapshot(session)), "terminal status");
+        }
     }
 
-    private void replyPlanReadyIfNeeded(LarkInboundMessage message, PlanTaskSession session) {
-        if (message == null || session == null || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
+    private void replyConfirmExecution(LarkInboundMessage message, PlanTaskSession session) {
+        if (session.getPlanningPhase() == PlanningPhaseEnum.FAILED) {
+            replyRetryExecution(message, session);
             return;
         }
-        String planReadyText = buildPlanReadyText(session);
-        if (!hasText(planReadyText)) {
+        if (taskCommandFacade == null || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
+            replyText(message, session, replyFormatter.status(snapshot(session)), "confirm unavailable");
             return;
         }
-        safeReplyText(message, session, planReadyText, "plan ready");
-        safePublishText(message, session, planReadyText, "plan ready");
+        PlanTaskSession executing = taskCommandFacade.confirmExecution(session.getTaskId());
+        if (executing != null && executing.getPlanningPhase() == PlanningPhaseEnum.FAILED) {
+            replyText(message, executing, replyFormatter.status(snapshot(executing)), "execution failed");
+            return;
+        }
+        replyText(message, executing, replyFormatter.executionStarted(snapshot(executing)), "execution started");
     }
 
-    private void replyCancelledIfNeeded(LarkInboundMessage message, PlanTaskSession session) {
-        if (message == null || session == null || session.getPlanningPhase() != PlanningPhaseEnum.ABORTED) {
+    private void replyRetryExecution(LarkInboundMessage message, PlanTaskSession session) {
+        if (taskCommandFacade == null) {
+            replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
             return;
         }
-        safeReplyText(message, session, TASK_CANCELLED_TEXT, "cancelled");
-        safePublishText(message, session, TASK_CANCELLED_TEXT, "cancelled");
+        PlanTaskSession retrying = taskCommandFacade.retryExecution(session.getTaskId());
+        if (retrying == null || retrying.getPlanningPhase() != PlanningPhaseEnum.EXECUTING) {
+            replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
+            return;
+        }
+        replyText(message, retrying, replyFormatter.retryStarted(snapshot(retrying)), "retry started");
     }
 
-    private String buildClarificationText(PlanTaskSession session) {
-        List<String> prompts = new ArrayList<>();
-        if (session.getActivePromptSlots() != null) {
-            for (PromptSlotState slot : session.getActivePromptSlots()) {
-                if (slot != null && !slot.isAnswered() && hasText(slot.getPrompt())) {
-                    prompts.add(slot.getPrompt().trim());
-                }
-            }
+    private void replyStatus(LarkInboundMessage message, PlanTaskSession session) {
+        if (session.getIntakeState() != null && hasText(session.getIntakeState().getAssistantReply())) {
+            replyText(message, session, session.getIntakeState().getAssistantReply(), "read-only reply");
+            return;
         }
-        if (prompts.isEmpty() && session.getClarificationQuestions() != null) {
-            for (String question : session.getClarificationQuestions()) {
-                if (hasText(question)) {
-                    prompts.add(question.trim());
-                }
-            }
-        }
-        if (prompts.isEmpty()) {
+        replyText(message, session, replyFormatter.status(snapshot(session)), "status");
+    }
+
+    private TaskRuntimeSnapshot snapshot(PlanTaskSession session) {
+        if (taskCommandFacade == null || session == null || !hasText(session.getTaskId())) {
             return null;
         }
-        if (prompts.size() == 1) {
-            return prompts.get(0);
-        }
-        return formatClarificationList(prompts);
+        return taskCommandFacade.getRuntimeSnapshot(session.getTaskId());
     }
 
     private WorkspaceContext buildWorkspaceContext(LarkInboundMessage message) {
@@ -169,105 +195,12 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         );
     }
 
-    private String formatClarificationList(List<String> prompts) {
-        StringBuilder builder = new StringBuilder(CLARIFICATION_PREFIX);
-        for (int index = 0; index < prompts.size(); index++) {
-            builder.append("\n").append(index + 1).append(". ").append(prompts.get(index));
-        }
-        return builder.toString();
-    }
-
-    private String buildPlanReadyText(PlanTaskSession session) {
-        StringBuilder builder = new StringBuilder(PLAN_READY_PREFIX);
-
-        String taskBrief = firstNonBlank(
-                session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getTaskBrief(),
-                session.getPlanBlueprintSummary(),
-                session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getUserGoal()
-        );
-        if (hasText(taskBrief)) {
-            builder.append("\n").append("\u4efb\u52a1\uff1a").append(taskBrief.trim());
-        }
-
-        appendListSection(
-                builder,
-                "\u4ea4\u4ed8\u7269\uff1a",
-                session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getDeliverables(),
-                5
-        );
-
-        appendPlanCardsSection(builder, session.getPlanBlueprint());
-        appendListSection(
-                builder,
-                "\u6210\u529f\u6807\u51c6\uff1a",
-                session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getSuccessCriteria(),
-                4
-        );
-        appendListSection(
-                builder,
-                "\u98ce\u9669\u5173\u6ce8\uff1a",
-                session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getRisks(),
-                4
-        );
-
-        builder.append("\n").append(PLAN_EDIT_HINT);
-        return builder.toString();
-    }
-
-    private void appendPlanCardsSection(StringBuilder builder, PlanBlueprint blueprint) {
-        if (blueprint == null || blueprint.getPlanCards() == null || blueprint.getPlanCards().isEmpty()) {
+    private void replyText(LarkInboundMessage message, PlanTaskSession session, String text, String replyType) {
+        if (!hasText(text)) {
             return;
         }
-        builder.append("\n").append("\u6267\u884c\u6b65\u9aa4\uff1a");
-        int limit = Math.min(blueprint.getPlanCards().size(), 6);
-        for (int index = 0; index < limit; index++) {
-            UserPlanCard card = blueprint.getPlanCards().get(index);
-            if (card == null || !hasText(card.getTitle())) {
-                continue;
-            }
-            builder.append("\n").append(index + 1).append(". ");
-            if (card.getType() != null) {
-                builder.append("[").append(card.getType().name()).append("] ");
-            }
-            builder.append(card.getTitle().trim());
-            if (hasText(card.getDescription())) {
-                builder.append(" - ").append(card.getDescription().trim());
-            }
-        }
-    }
-
-    private void appendListSection(StringBuilder builder, String title, List<String> items, int maxItems) {
-        if (items == null || items.isEmpty()) {
-            return;
-        }
-        builder.append("\n").append(title);
-        int added = 0;
-        for (String item : items) {
-            if (!hasText(item)) {
-                continue;
-            }
-            builder.append("\n").append(added + 1).append(". ").append(item.trim());
-            added++;
-            if (added >= maxItems) {
-                break;
-            }
-        }
-    }
-
-    private String firstNonBlank(String... values) {
-        if (values == null) {
-            return null;
-        }
-        for (String value : values) {
-            if (hasText(value)) {
-                return value;
-            }
-        }
-        return null;
-    }
-
-    private void safeReplyClarification(LarkInboundMessage message, PlanTaskSession session, String clarificationText) {
-        safeReplyText(message, session, clarificationText, "clarification");
+        safeReplyText(message, session, text, replyType);
+        safePublishText(message, session, text, replyType);
     }
 
     private void safeReplyText(LarkInboundMessage message, PlanTaskSession session, String text, String replyType) {
@@ -288,10 +221,6 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         }
     }
 
-    private void safePublishClarification(LarkInboundMessage message, PlanTaskSession session, String clarificationText) {
-        safePublishText(message, session, clarificationText, "clarification");
-    }
-
     private void safePublishText(LarkInboundMessage message, PlanTaskSession session, String text, String publishType) {
         if (streamService == null) {
             return;
@@ -310,6 +239,12 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean hasAssistantReply(PlanTaskSession session) {
+        return session != null
+                && session.getIntakeState() != null
+                && hasText(session.getIntakeState().getAssistantReply());
     }
 
     private void enqueueReplyRetry(LarkInboundMessage message, String text, String idempotencyKey) {

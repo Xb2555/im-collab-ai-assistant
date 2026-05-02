@@ -6,20 +6,37 @@ import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
-import lombok.RequiredArgsConstructor;
+import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
+import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
 @Service
-@RequiredArgsConstructor
 public class PlannerConversationService {
 
     private final TaskSessionResolver sessionResolver;
     private final TaskIntakeService intakeService;
     private final PlannerSessionService sessionService;
-    private final SupervisorPlannerService supervisorPlannerService;
     private final TaskBridgeService taskBridgeService;
+    private final PlannerConversationMemoryService memoryService;
+    private final PlannerSupervisorGraphRunner graphRunner;
+
+    public PlannerConversationService(
+            TaskSessionResolver sessionResolver,
+            TaskIntakeService intakeService,
+            PlannerSessionService sessionService,
+            TaskBridgeService taskBridgeService,
+            PlannerConversationMemoryService memoryService,
+            PlannerSupervisorGraphRunner graphRunner
+    ) {
+        this.sessionResolver = sessionResolver;
+        this.intakeService = intakeService;
+        this.sessionService = sessionService;
+        this.taskBridgeService = taskBridgeService;
+        this.memoryService = memoryService;
+        this.graphRunner = graphRunner;
+    }
 
     public PlanTaskSession handlePlanRequest(
             String rawInstruction,
@@ -39,28 +56,24 @@ public class PlannerConversationService {
         );
 
         updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution);
-        sessionService.save(session);
+        memoryService.appendUserTurn(
+                session,
+                intakeDecision.effectiveInput(),
+                intakeDecision.intakeType(),
+                workspaceContext == null ? null : workspaceContext.getInputSource());
+        if (intakeDecision.assistantReply() != null && !intakeDecision.assistantReply().isBlank()) {
+            memoryService.appendAssistantTurn(session, intakeDecision.assistantReply());
+        }
+        sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(session.getTaskId(), "INTAKE_ACCEPTED");
 
-        PlanTaskSession result = switch (intakeDecision.intakeType()) {
-            case STATUS_QUERY -> sessionService.get(session.getTaskId());
-            case CANCEL_TASK -> {
-                sessionService.markAborted(session.getTaskId(), "User cancelled from conversation: " + intakeDecision.effectiveInput());
-                yield sessionService.get(session.getTaskId());
-            }
-            case CLARIFICATION_REPLY -> supervisorPlannerService.resume(session.getTaskId(), intakeDecision.effectiveInput(), false);
-            case NEW_TASK -> supervisorPlannerService.plan(
-                    intakeDecision.effectiveInput(),
-                    workspaceContext,
-                    session.getTaskId(),
-                    userFeedback
-            );
-            case PLAN_ADJUSTMENT -> supervisorPlannerService.adjustPlan(
-                    session.getTaskId(),
-                    intakeDecision.effectiveInput(),
-                    workspaceContext
-            );
-        };
+        PlanTaskSession result = graphRunner.run(
+                PlannerSupervisorDecision.fromIntake(intakeDecision.intakeType(), intakeDecision.routingReason()),
+                session.getTaskId(),
+                intakeDecision.effectiveInput(),
+                workspaceContext,
+                userFeedback
+        );
         taskBridgeService.ensureTask(result);
         return result;
     }
@@ -87,6 +100,9 @@ public class PlannerConversationService {
                 .continuedConversation(resolution.existingSession())
                 .continuationKey(resolution.continuationKey())
                 .lastUserMessage(intakeDecision.effectiveInput())
+                .routingReason(intakeDecision.routingReason())
+                .assistantReply(intakeDecision.assistantReply())
+                .readOnlyView(intakeDecision.readOnlyView())
                 .lastInputAt(workspaceContext == null ? null : workspaceContext.getTimeRange())
                 .build());
         if (session.getScenarioPath() == null || session.getScenarioPath().isEmpty()) {

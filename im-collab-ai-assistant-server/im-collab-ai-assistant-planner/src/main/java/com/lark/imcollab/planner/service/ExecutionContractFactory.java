@@ -5,8 +5,12 @@ import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TermResolution;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.planner.intent.ArtifactIntentResolver;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -18,6 +22,17 @@ import java.util.Set;
 
 @Service
 public class ExecutionContractFactory {
+
+    private final ArtifactIntentResolver artifactIntentResolver;
+
+    public ExecutionContractFactory() {
+        this(new ArtifactIntentResolver((instruction, allowedChoices, systemPrompt) -> "DOC"));
+    }
+
+    @Autowired
+    public ExecutionContractFactory(ArtifactIntentResolver artifactIntentResolver) {
+        this.artifactIntentResolver = artifactIntentResolver;
+    }
 
     public ExecutionContract build(PlanTaskSession session) {
         String rawInstruction = firstNonBlank(
@@ -58,6 +73,8 @@ public class ExecutionContractFactory {
                 .constraints(resolveConstraints(session))
                 .sourceScope(sourceScope)
                 .contextRefs(resolveContextRefs(sourceScope))
+                .domainContext(resolveDomainContext(session))
+                .termResolutions(defaultList(session.getTermResolutions()))
                 .templateStrategy(resolveTemplateStrategy(rawInstruction, clarifiedInstruction))
                 .diagramRequirement(resolveDiagramRequirement(rawInstruction, clarifiedInstruction, resolveConstraints(session)))
                 .frozenAt(Instant.now())
@@ -91,22 +108,29 @@ public class ExecutionContractFactory {
         if (intentSnapshot != null && intentSnapshot.getDeliverableTargets() != null) {
             intentSnapshot.getDeliverableTargets().stream()
                     .map(this::normalizeArtifact)
+                    .filter(value -> value != null && !value.isBlank())
                     .forEach(artifacts::add);
         }
         PlanBlueprint blueprint = session.getPlanBlueprint();
-        if (artifacts.isEmpty() && blueprint != null && blueprint.getDeliverables() != null) {
+        if (blueprint != null && blueprint.getDeliverables() != null) {
             blueprint.getDeliverables().stream()
                     .map(this::normalizeArtifact)
+                    .filter(value -> value != null && !value.isBlank())
                     .forEach(artifacts::add);
         }
-        if (artifacts.isEmpty() && blueprint != null && blueprint.getPlanCards() != null) {
+        if (blueprint != null && blueprint.getPlanCards() != null) {
             blueprint.getPlanCards().stream()
                     .map(card -> card.getType() == null ? null : normalizeArtifact(card.getType().name()))
                     .filter(value -> value != null && !value.isBlank())
                     .forEach(artifacts::add);
         }
         if (artifacts.isEmpty()) {
-            artifacts.add("DOC");
+            artifactIntentResolver.resolveArtifacts(firstNonBlank(
+                    session.getClarifiedInstruction(),
+                    session.getRawInstruction(),
+                    session.getPlanBlueprintSummary(),
+                    session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getUserGoal()))
+                    .forEach(artifacts::add);
         }
         return List.copyOf(artifacts);
     }
@@ -114,14 +138,65 @@ public class ExecutionContractFactory {
     private String buildClarifiedInstruction(PlanTaskSession session, String rawInstruction) {
         List<String> answers = defaultList(session.getClarificationAnswers());
         List<String> constraints = resolveConstraints(session);
-        StringBuilder builder = new StringBuilder(firstNonBlank(session.getClarifiedInstruction(), rawInstruction));
-        if (!answers.isEmpty()) {
-            builder.append("\n补充说明：").append(String.join("；", answers));
-        }
-        if (!constraints.isEmpty()) {
-            builder.append("\n执行约束：").append(String.join("；", constraints));
+        List<String> planRequirements = resolvePlanRequirements(session);
+        StringBuilder builder = new StringBuilder(safe(firstNonBlank(
+                rawInstruction,
+                session.getRawInstruction(),
+                session.getClarifiedInstruction()
+        )));
+        appendUniqueSection(builder, "补充说明：", answers);
+        appendUniqueSection(builder, "当前计划要求：", planRequirements);
+        appendUniqueSection(builder, "执行约束：", constraints);
+        List<TermResolution> termResolutions = defaultList(session.getTermResolutions());
+        if (!termResolutions.isEmpty()) {
+            appendUniqueSection(builder, "术语消歧：", termResolutions.stream()
+                    .map(item -> item.getTerm() + "=" + item.getResolvedMeaning())
+                    .toList());
         }
         return builder.toString();
+    }
+
+    private String resolveDomainContext(PlanTaskSession session) {
+        List<TermResolution> termResolutions = defaultList(session.getTermResolutions());
+        if (!termResolutions.isEmpty()) {
+            return termResolutions.stream()
+                    .map(TermResolution::getResolvedMeaning)
+                    .reduce((left, right) -> left + "," + right)
+                    .orElse("");
+        }
+        return firstNonBlank(session.getIndustry(), session.getProfession(), "general");
+    }
+
+    private List<String> resolvePlanRequirements(PlanTaskSession session) {
+        List<UserPlanCard> cards = session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getPlanCards();
+        if (cards == null || cards.isEmpty()) {
+            cards = session.getPlanCards();
+        }
+        return defaultList(cards).stream()
+                .filter(card -> card != null)
+                .filter(card -> !"SUPERSEDED".equalsIgnoreCase(card.getStatus()))
+                .map(card -> {
+                    String title = firstNonBlank(card.getTitle(), "未命名步骤");
+                    String description = firstNonBlank(card.getDescription(), card.getType() == null ? null : card.getType().name());
+                    if (description == null) {
+                        return title;
+                    }
+                    return title + " - " + description;
+                })
+                .distinct()
+                .toList();
+    }
+
+    private void appendUniqueSection(StringBuilder builder, String label, List<String> values) {
+        List<String> uniqueValues = defaultList(values).stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .distinct()
+                .filter(value -> !builder.toString().contains(value))
+                .toList();
+        if (!uniqueValues.isEmpty()) {
+            builder.append("\n").append(label).append(String.join("；", uniqueValues));
+        }
     }
 
     private List<String> resolveConstraints(PlanTaskSession session) {

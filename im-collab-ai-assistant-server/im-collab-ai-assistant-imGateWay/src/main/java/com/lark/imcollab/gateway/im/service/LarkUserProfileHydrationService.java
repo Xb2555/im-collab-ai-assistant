@@ -127,7 +127,17 @@ public class LarkUserProfileHydrationService {
         if (value == null || value.isBlank()) {
             return null;
         }
-        return value.trim();
+        String normalized = value.trim();
+        if (!isHydratableOpenId(normalized)) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private boolean isHydratableOpenId(String value) {
+        return value != null
+                && value.startsWith("ou_")
+                && !"bot".equalsIgnoreCase(value);
     }
 
     private String text(JsonNode node, String fieldName) {

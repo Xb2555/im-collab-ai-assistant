@@ -49,6 +49,12 @@ public class PlanTaskSession implements Serializable {
     @Schema(description = "状态变更原因")
     private String transitionReason;
 
+    @Schema(description = "任务级对话记忆摘要")
+    private String conversationSummary;
+
+    @Schema(description = "任务级最近对话记忆")
+    private List<ConversationTurn> conversationTurns;
+
     @Schema(description = "输入上下文")
     private TaskInputContext inputContext;
 
@@ -66,6 +72,9 @@ public class PlanTaskSession implements Serializable {
 
     @Schema(description = "结构化意图快照")
     private IntentSnapshot intentSnapshot;
+
+    @Schema(description = "术语消歧结果")
+    private List<TermResolution> termResolutions;
 
     @Schema(description = "计划蓝图")
     private PlanBlueprint planBlueprint;
