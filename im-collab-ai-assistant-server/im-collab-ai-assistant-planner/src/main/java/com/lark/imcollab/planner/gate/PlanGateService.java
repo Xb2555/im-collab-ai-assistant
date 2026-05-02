@@ -3,6 +3,7 @@ package com.lark.imcollab.planner.gate;
 import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.TaskPlanGraph;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.enums.StepTypeEnum;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -101,7 +102,34 @@ public class PlanGateService {
         if (hasCycle(steps, byId)) {
             reasons.add("step dependencies contain a cycle");
         }
+        reasons.addAll(checkExecutionSupport(steps));
         return new PlanGateResult(reasons.isEmpty(), List.copyOf(reasons));
+    }
+
+    private List<String> checkExecutionSupport(List<TaskStepRecord> steps) {
+        if (steps == null || steps.isEmpty()) {
+            return List.of();
+        }
+        long docSteps = steps.stream()
+                .filter(step -> step != null && step.getType() == StepTypeEnum.DOC_CREATE)
+                .count();
+        long pptSteps = steps.stream()
+                .filter(step -> step != null && step.getType() == StepTypeEnum.PPT_CREATE)
+                .count();
+        long summarySteps = steps.stream()
+                .filter(step -> step != null && step.getType() == StepTypeEnum.SUMMARY)
+                .count();
+        List<String> reasons = new ArrayList<>();
+        if (summarySteps > 0) {
+            reasons.add("standalone SUMMARY steps are not executable in the current harness; merge the summary into a DOC or split it into a separate future capability");
+        }
+        if (docSteps > 1) {
+            reasons.add("multiple DOC steps are not executable in one run; merge extra sections into the main DOC");
+        }
+        if (pptSteps > 1) {
+            reasons.add("multiple PPT steps are not executable in one run; keep a single PPT deliverable");
+        }
+        return reasons;
     }
 
     private boolean hasCycle(List<TaskStepRecord> steps, Map<String, TaskStepRecord> byId) {

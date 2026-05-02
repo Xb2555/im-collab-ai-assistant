@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.UUID;
 
 @Component
@@ -28,9 +29,11 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
     private final LarkIMMessageStreamService streamService;
     private final LarkOutboundMessageRetryService retryService;
     private final LarkIMTaskReplyFormatter replyFormatter;
+    private final DocRefExtractionService docRefExtractionService;
 
     public LoggingLarkInboundMessageDispatcher(PlannerPlanFacade plannerPlanFacade) {
-        this(plannerPlanFacade, null, null, null, null, new LarkIMTaskReplyFormatter());
+        this(plannerPlanFacade, null, null, null, null, new LarkIMTaskReplyFormatter(),
+                new DocRefExtractionService(new com.fasterxml.jackson.databind.ObjectMapper()));
     }
 
     @Autowired
@@ -40,7 +43,8 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             LarkMessageReplyTool replyTool,
             LarkIMMessageStreamService streamService,
             LarkOutboundMessageRetryService retryService,
-            LarkIMTaskReplyFormatter replyFormatter
+            LarkIMTaskReplyFormatter replyFormatter,
+            DocRefExtractionService docRefExtractionService
     ) {
         this.plannerPlanFacade = plannerPlanFacade;
         this.taskCommandFacade = taskCommandFacade;
@@ -48,6 +52,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         this.streamService = streamService;
         this.retryService = retryService;
         this.replyFormatter = replyFormatter == null ? new LarkIMTaskReplyFormatter() : replyFormatter;
+        this.docRefExtractionService = docRefExtractionService;
     }
 
     @Override
@@ -163,8 +168,11 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
     }
 
     private WorkspaceContext buildWorkspaceContext(LarkInboundMessage message) {
+        List<String> docRefs = docRefExtractionService == null
+                ? List.of()
+                : docRefExtractionService.extractDocRefs(message.content(), message.rawContent());
         return WorkspaceContext.builder()
-                .selectionType(null)
+                .selectionType(docRefs.isEmpty() ? null : "DOCUMENT")
                 .timeRange(null)
                 .chatId(message.chatId())
                 .threadId(message.threadId())
@@ -173,6 +181,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                 .chatType(message.chatType())
                 .inputSource(message.inputSource() == null ? null : message.inputSource().name())
                 .selectedMessages(java.util.List.of())
+                .docRefs(docRefs)
                 .build();
     }
 
@@ -185,6 +194,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                 message.chatType(),
                 message.messageType(),
                 message.content(),
+                message.rawContent(),
                 message.senderOpenId(),
                 message.createTime(),
                 false

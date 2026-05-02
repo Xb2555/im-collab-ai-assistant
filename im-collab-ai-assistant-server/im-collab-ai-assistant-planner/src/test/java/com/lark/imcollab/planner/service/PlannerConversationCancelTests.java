@@ -173,6 +173,65 @@ class PlannerConversationCancelTests {
     }
 
     @Test
+    void askUserSessionWithDocRefsForcesClarificationReplyInsteadOfStatusQuery() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .docRefs(java.util.List.of("https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph"))
+                .build();
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-doc")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-doc")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-doc", true, "LARK:chat-1"));
+        when(sessionService.get("task-doc")).thenReturn(session);
+        when(intakeService.decide(session, "https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph这个是文档链接", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.STATUS_QUERY,
+                        "https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph这个是文档链接",
+                        "hard rule read-only artifact query",
+                        "现在还没有任务产物。",
+                        "ARTIFACTS"
+                ));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-doc"),
+                eq("https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph这个是文档链接"),
+                eq(workspaceContext), eq(null)))
+                .thenReturn(ready);
+
+        PlanTaskSession result = service.handlePlanRequest(
+                "https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph这个是文档链接",
+                workspaceContext,
+                null,
+                null
+        );
+
+        assertThat(result).isSameAs(ready);
+        assertThat(session.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.CLARIFICATION_REPLY);
+        assertThat(session.getIntakeState().getRoutingReason()).isEqualTo("guard clarification reply from extracted doc refs");
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-doc"),
+                eq("https://jcneyh7qlo8i.feishu.cn/docx/B4jUdLQnFofWU7x6M8ycb6MAnph这个是文档链接"),
+                eq(workspaceContext), eq(null));
+    }
+
+    @Test
     void standaloneNewTaskInBoundConversationGetsFreshTaskId() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);

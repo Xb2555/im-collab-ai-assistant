@@ -57,6 +57,7 @@ public class PlannerConversationService {
                 userFeedback,
                 resolution.existingSession()
         );
+        intakeDecision = absorbDocLinksDuringClarification(session, resolution, workspaceContext, intakeDecision, userFeedback, rawInstruction);
         if (shouldStartFreshTask(resolution, intakeDecision)) {
             resolution = new TaskSessionResolution(UUID.randomUUID().toString(), false, resolution.continuationKey());
             session = transientSession(resolution.taskId(), workspaceContext);
@@ -137,6 +138,33 @@ public class PlannerConversationService {
                 .turnCount(0)
                 .scenarioPath(List.of(ScenarioCodeEnum.A_IM, ScenarioCodeEnum.B_PLANNING))
                 .build();
+    }
+
+    private TaskIntakeDecision absorbDocLinksDuringClarification(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision current,
+            String userFeedback,
+            String rawInstruction
+    ) {
+        if (session == null
+                || resolution == null
+                || !resolution.existingSession()
+                || session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
+                || workspaceContext == null
+                || workspaceContext.getDocRefs() == null
+                || workspaceContext.getDocRefs().isEmpty()) {
+            return current;
+        }
+        String effectiveInput = firstText(userFeedback, rawInstruction);
+        return new TaskIntakeDecision(
+                TaskIntakeTypeEnum.CLARIFICATION_REPLY,
+                effectiveInput,
+                "guard clarification reply from extracted doc refs",
+                null,
+                null
+        );
     }
 
     private void updateSessionEnvelope(

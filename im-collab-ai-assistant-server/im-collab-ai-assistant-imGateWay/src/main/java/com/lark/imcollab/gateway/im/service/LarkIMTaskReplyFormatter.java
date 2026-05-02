@@ -24,14 +24,19 @@ public class LarkIMTaskReplyFormatter {
         List<UserPlanCard> cards = cards(session);
         StringBuilder builder = new StringBuilder("我准备这样推进：");
         appendCardSummary(builder, cards);
-        builder.append("\n\n没问题的话回复“开始执行”。要改的话直接说，比如“加一段群内摘要”。");
+        builder.append("\n\n没问题的话回复“开始执行”。要改的话直接说");
+        appendEditHint(builder, cards);
+        builder.append("。");
         return builder.toString();
     }
 
     public String planAdjusted(PlanTaskSession session) {
         StringBuilder builder = new StringBuilder("计划已更新，我会按这个顺序推进：");
-        appendCardSummary(builder, cards(session));
-        builder.append("\n\n没问题的话回复“开始执行”。");
+        List<UserPlanCard> cards = cards(session);
+        appendCardSummary(builder, cards);
+        builder.append("\n\n没问题的话回复“开始执行”。要继续改的话也可以直接说");
+        appendEditHint(builder, cards);
+        builder.append("。");
         return builder.toString();
     }
 
@@ -189,6 +194,52 @@ public class LarkIMTaskReplyFormatter {
         }
     }
 
+    private void appendEditHint(StringBuilder builder, List<UserPlanCard> cards) {
+        List<String> suggestions = suggestEdits(cards);
+        if (suggestions.isEmpty()) {
+            return;
+        }
+        builder.append("，比如");
+        if (suggestions.size() == 1) {
+            builder.append("“").append(suggestions.get(0)).append("”");
+            return;
+        }
+        builder.append("“").append(suggestions.get(0)).append("”或“").append(suggestions.get(1)).append("”");
+    }
+
+    private List<String> suggestEdits(List<UserPlanCard> cards) {
+        List<String> suggestions = new ArrayList<>();
+        boolean hasDoc = hasType(cards, "DOC");
+        boolean hasPpt = hasType(cards, "PPT");
+        boolean hasSummary = hasType(cards, "SUMMARY");
+        boolean mentionsRisk = containsKeyword(cards, "风险");
+        boolean mentionsMermaid = containsKeyword(cards, "mermaid") || containsKeyword(cards, "架构图");
+        boolean mentionsBoss = containsKeyword(cards, "老板") || containsKeyword(cards, "汇报");
+
+        if (hasDoc && !mentionsRisk) {
+            suggestions.add("补一段风险清单");
+        }
+        if (hasDoc && !hasPpt && mentionsBoss) {
+            suggestions.add("再加一份汇报PPT初稿");
+        }
+        if (hasDoc && !hasSummary) {
+            suggestions.add("最后补一段项目进展摘要");
+        }
+        if (hasDoc && !mentionsMermaid) {
+            suggestions.add("文档里加一张Mermaid架构图");
+        }
+        if (hasPpt && !hasDoc) {
+            suggestions.add("先补一份配套文档");
+        }
+        if (hasSummary && !hasDoc) {
+            suggestions.add("再整理成一份文档");
+        }
+        if (suggestions.isEmpty()) {
+            suggestions.add("补一段风险清单");
+        }
+        return suggestions.stream().distinct().limit(2).toList();
+    }
+
     private String toNaturalStep(UserPlanCard card, int index) {
         String title = normalizeActionTitle(card);
         if (startsWithSequenceWord(title)) {
@@ -337,6 +388,36 @@ public class LarkIMTaskReplyFormatter {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean hasType(List<UserPlanCard> cards, String typeName) {
+        if (cards == null || cards.isEmpty() || !hasText(typeName)) {
+            return false;
+        }
+        return cards.stream()
+                .anyMatch(card -> card != null
+                        && card.getType() != null
+                        && typeName.equalsIgnoreCase(card.getType().name()));
+    }
+
+    private boolean containsKeyword(List<UserPlanCard> cards, String keyword) {
+        if (cards == null || cards.isEmpty() || !hasText(keyword)) {
+            return false;
+        }
+        String normalizedKeyword = keyword.trim().toLowerCase();
+        return cards.stream().anyMatch(card -> containsText(card, normalizedKeyword));
+    }
+
+    private boolean containsText(UserPlanCard card, String keyword) {
+        if (card == null || !hasText(keyword)) {
+            return false;
+        }
+        return lower(card.getTitle()).contains(keyword)
+                || lower(card.getDescription()).contains(keyword);
+    }
+
+    private String lower(String value) {
+        return value == null ? "" : value.toLowerCase();
     }
 
     private String stripClarificationPrefix(String question) {

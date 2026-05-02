@@ -83,6 +83,7 @@ public class LarkIMMessageStreamService {
                 sourceEvent.chatType(),
                 "text",
                 text,
+                text,
                 "bot",
                 String.valueOf(Instant.now().toEpochMilli()),
                 false

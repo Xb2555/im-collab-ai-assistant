@@ -7,9 +7,11 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
@@ -22,6 +24,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -75,5 +78,53 @@ class PlannerExecutionReviewServiceTest {
         verify(sessionService).save(session);
         verify(sessionService).publishEvent("task-1", "COMPLETED");
         verify(notificationFacade).notifyExecutionReviewed(session, snapshot, evaluation);
+    }
+
+    @Test
+    void marksReviewFailedWhenHarnessLeavesActiveStepsUnfinished() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .version(4)
+                .build();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .version(4)
+                .build();
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(task)
+                .steps(List.of(
+                        TaskStepRecord.builder()
+                                .stepId("card-001")
+                                .name("生成技术方案文档")
+                                .status(StepStatusEnum.COMPLETED)
+                                .build(),
+                        TaskStepRecord.builder()
+                                .stepId("card-002")
+                                .name("生成项目进展摘要")
+                                .status(StepStatusEnum.READY)
+                                .build()
+                ))
+                .artifacts(List.of(ArtifactRecord.builder()
+                        .artifactId("artifact-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .title("技术方案文档")
+                        .build()))
+                .build();
+        when(sessionService.get("task-1")).thenReturn(session);
+        when(taskRuntimeService.getSnapshot("task-1")).thenReturn(snapshot);
+
+        service.reviewAndNotify("task-1");
+
+        assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.FAILED);
+        assertThat(session.getTransitionReason()).contains("剩余未完成", "生成项目进展摘要");
+        assertThat(task.getStatus()).isEqualTo(TaskStatusEnum.FAILED);
+        assertThat(task.getProgress()).isEqualTo(50);
+        verify(stateStore, never()).saveSubmission(org.mockito.ArgumentMatchers.any());
+        verify(evaluationService, never()).evaluate(org.mockito.ArgumentMatchers.any());
+        verify(sessionService).publishEvent("task-1", "FAILED");
+        verify(notificationFacade).notifyExecutionReviewed(session, snapshot, null);
     }
 }

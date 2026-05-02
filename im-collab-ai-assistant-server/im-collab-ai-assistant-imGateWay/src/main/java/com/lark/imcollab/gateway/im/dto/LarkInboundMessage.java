@@ -10,6 +10,7 @@ public record LarkInboundMessage(
         String chatType,
         String messageType,
         String content,
+        String rawContent,
         String senderOpenId,
         String createTime,
         InputSourceEnum inputSource

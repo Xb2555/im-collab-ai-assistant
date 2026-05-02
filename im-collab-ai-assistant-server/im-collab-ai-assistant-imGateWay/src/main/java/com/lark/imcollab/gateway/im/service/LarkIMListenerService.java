@@ -305,6 +305,7 @@ public class LarkIMListenerService {
                 event.chatType(),
                 event.messageType(),
                 event.content(),
+                event.rawContent(),
                 event.senderOpenId(),
                 event.createTime(),
                 mapInputSource(event.chatType())

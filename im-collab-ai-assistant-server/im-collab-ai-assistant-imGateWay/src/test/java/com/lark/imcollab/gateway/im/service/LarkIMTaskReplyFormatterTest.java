@@ -38,7 +38,8 @@ class LarkIMTaskReplyFormatterTest {
 
         assertThat(text).contains("我准备这样推进", "开始执行");
         assertThat(text).contains("生成技术方案文档", "生成汇报 PPT");
-        assertThat(text).doesNotContain("成功标准", "风险", "交付物");
+        assertThat(text).contains("补一段风险清单");
+        assertThat(text).doesNotContain("成功标准", "交付物");
     }
 
     @Test
@@ -73,6 +74,25 @@ class LarkIMTaskReplyFormatterTest {
 
         assertThat(text).contains("1. 先生成老板汇报 PPT 初稿");
         assertThat(text).doesNotContain("1. 再生成老板汇报 PPT 初稿");
+    }
+
+    @Test
+    void planReadySuggestsCurrentCapabilityScopedEdits() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planBlueprint(PlanBlueprint.builder()
+                        .planCards(List.of(
+                                card("生成技术方案文档（面向老板）", PlanCardTypeEnum.DOC)
+                        ))
+                        .build())
+                .build();
+
+        String text = formatter.planReady(session);
+
+        assertThat(text).contains("比如");
+        assertThat(text).contains("补一段风险清单");
+        assertThat(text).contains("再加一份汇报PPT初稿");
+        assertThat(text).doesNotContain("加一段群内摘要");
     }
 
     @Test

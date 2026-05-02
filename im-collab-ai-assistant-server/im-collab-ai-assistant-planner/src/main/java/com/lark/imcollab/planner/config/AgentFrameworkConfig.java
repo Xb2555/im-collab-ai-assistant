@@ -162,6 +162,8 @@ public class AgentFrameworkConfig {
                         Allowed operations: ADD_STEP, REMOVE_STEP, UPDATE_STEP, MERGE_STEP, REORDER_STEP, REGENERATE_ALL, CLARIFY_REQUIRED.
                         Use ADD_STEP whenever the user asks for an extra, additional, final, also-needed, or one-more deliverable.
                         ADD_STEP must include one or more newCardDrafts and must not target existing cards.
+                        If the user says to add one paragraph, one section, one appendix, one risk list, one summary paragraph, or one final blurb to an existing document-oriented step, prefer UPDATE_STEP on that DOC card instead of ADD_STEP.
+                        If the request can naturally become extra content inside the current DOC, preserve the card count and rewrite that DOC card.
                         REMOVE_STEP and UPDATE_STEP must target existing card ids only.
                         Use UPDATE_STEP when the user says to change one existing step into another form, remove wording from an existing step, or says "把/将 X 改成 Y" / "不要提 Z"; include the rewritten newCardDraft.
                         Use MERGE_STEP when the user says an existing step should no longer be separate and should be folded into another step. targetCardIds must put the destination card first, then the source card(s), and newCardDrafts must contain the rewritten destination card.

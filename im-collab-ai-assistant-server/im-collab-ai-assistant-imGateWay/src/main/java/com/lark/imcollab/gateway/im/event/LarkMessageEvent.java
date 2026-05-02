@@ -8,6 +8,7 @@ public record LarkMessageEvent(
         String chatType,
         String messageType,
         String content,
+        String rawContent,
         String senderOpenId,
         String senderType,
         String createTime,
@@ -21,10 +22,11 @@ public record LarkMessageEvent(
             String chatType,
             String messageType,
             String content,
+            String rawContent,
             String senderOpenId,
             String createTime,
             boolean mentionDetected
     ) {
-        this(eventId, messageId, chatId, threadId, chatType, messageType, content, senderOpenId, null, createTime, mentionDetected);
+        this(eventId, messageId, chatId, threadId, chatType, messageType, content, rawContent, senderOpenId, null, createTime, mentionDetected);
     }
 }

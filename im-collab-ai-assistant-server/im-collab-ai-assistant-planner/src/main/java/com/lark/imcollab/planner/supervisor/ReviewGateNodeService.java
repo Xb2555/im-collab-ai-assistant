@@ -86,7 +86,8 @@ public class ReviewGateNodeService {
         projectionService.projectStage(session, TaskEventTypeEnum.PLAN_GATE_CHECKING, "Checking generated plan");
         PlanGateResult gateResult = gateTool.check(planningResult.graph(), planningResult.executionContract());
         if (!gateResult.passed()) {
-            questionTool.askUser(session, List.of("当前计划包含暂不支持的步骤或产物。请确认是否改成文档、PPT 或摘要。"));
+            String question = humanizeGateFailure(gateResult.reasons());
+            questionTool.askUser(session, List.of(question));
             return sessionService.get(taskId);
         }
         session.setClarificationQuestions(List.of());
@@ -142,5 +143,22 @@ public class ReviewGateNodeService {
             }
         }
         return null;
+    }
+
+    private String humanizeGateFailure(List<String> reasons) {
+        if (reasons == null || reasons.isEmpty()) {
+            return "当前计划包含暂不支持的步骤或产物。请确认是否改成文档、PPT 或摘要。";
+        }
+        String first = reasons.get(0);
+        if (first.contains("standalone SUMMARY")) {
+            return "当前执行链路还不能把摘要作为独立步骤跑完。你可以改成把摘要并进文档里，或者先只生成文档。";
+        }
+        if (first.contains("multiple DOC steps")) {
+            return "当前执行链路一次只能稳定完成一个文档步骤。你可以把新增内容并进主文档，或者拆成后续单独任务。";
+        }
+        if (first.contains("multiple PPT steps")) {
+            return "当前执行链路一次只能稳定完成一个 PPT 步骤。你可以先收敛成一个 PPT 产物。";
+        }
+        return "当前计划包含暂不支持的步骤或产物。请确认是否改成文档、PPT 或摘要。";
     }
 }
