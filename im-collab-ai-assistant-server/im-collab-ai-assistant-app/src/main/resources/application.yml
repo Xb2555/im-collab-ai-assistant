@@ -41,7 +41,7 @@ imcollab:
       open-api-base-url: ${LARK_OPEN_API_BASE_URL:}
     im:
       listener:
-        auto-start-enabled: ${LARK_IM_LISTENER_AUTO_START:false}
+        auto-start-enabled: ${LARK_IM_LISTENER_AUTO_START:true}
       event:
         domain: ${LARK_OPEN_DOMAIN:}
         auto-reconnect-enabled: ${LARK_IM_AUTO_RECONNECT:true}
