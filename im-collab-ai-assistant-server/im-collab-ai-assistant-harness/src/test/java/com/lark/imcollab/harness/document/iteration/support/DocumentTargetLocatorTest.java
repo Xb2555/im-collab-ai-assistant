@@ -175,7 +175,7 @@ class DocumentTargetLocatorTest {
                         DocumentRelativePosition.REPLACE,
                         "第一小节"
                 ));
-        when(chatModel.call(anyString())).thenReturn("BLOCK_ID=heading-1");
+        when(chatModel.call(anyString())).thenReturn("SUBSECTION", "BLOCK_ID=heading-1");
         when(tool.fetchDocOutline("https://example.feishu.cn/docx/doc123"))
                 .thenReturn(LarkDocFetchResult.builder()
                         .content("<h1 id=\"heading-0\">一、项目背景</h1><h3 id=\"heading-1\">2.1 目标</h3><h4 id=\"heading-2\">2.1.1 提升组件复用性</h4><h2 id=\"heading-3\">二、项目目标</h2>")
@@ -232,7 +232,7 @@ class DocumentTargetLocatorTest {
                         DocumentRelativePosition.REPLACE,
                         "第一小节"
                 ));
-        when(chatModel.call(anyString())).thenReturn("BLOCK_ID=heading-1");
+        when(chatModel.call(anyString())).thenReturn("SUBSECTION", "BLOCK_ID=heading-1");
         when(tool.fetchDocOutline("https://example.feishu.cn/docx/doc123"))
                 .thenReturn(LarkDocFetchResult.builder()
                         .content("<h2 id=\"heading-1\">二、项目目标</h2><h3 id=\"heading-2\">2.2 非目标</h3><h2 id=\"heading-3\">三、项目架构</h2>")
@@ -240,6 +240,29 @@ class DocumentTargetLocatorTest {
         DocumentTargetLocator locator = new DocumentTargetLocator(anchorIntentService, tool, new DocumentStructureParser(), chatModel);
 
         assertThatThrownBy(() -> locator.locate(artifact(), DocumentIterationIntentType.DELETE, "删除第一小节的内容"))
+                .isInstanceOf(AiAssistantException.class)
+                .hasMessageContaining("未能定位目标章节");
+    }
+
+    @Test
+    void deleteWholeThirdChapterRejectsSubsectionEvenIfModelReturnsIt() {
+        DocumentAnchorIntentService anchorIntentService = mock(DocumentAnchorIntentService.class);
+        LarkDocTool tool = mock(LarkDocTool.class);
+        ChatModel chatModel = mock(ChatModel.class);
+        when(anchorIntentService.decide(DocumentIterationIntentType.DELETE, "删除第三节整个大章节"))
+                .thenReturn(new DocumentAnchorIntentService.AnchorDecision(
+                        DocumentLocatorStrategy.BY_HEADING,
+                        DocumentRelativePosition.DELETE,
+                        "第三节整个大章节"
+                ));
+        when(chatModel.call(anyString())).thenReturn("TOP_LEVEL", "BLOCK_ID=heading-31");
+        when(tool.fetchDocOutline("https://example.feishu.cn/docx/doc123"))
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("<h2 id=\"heading-2\">二、项目目标</h2><h3 id=\"heading-22\">2.2 非目标</h3><h2 id=\"heading-3\">三、项目架构</h2><h3 id=\"heading-31\">3.1 单向数据流与状态管理分离</h3>")
+                        .build());
+        DocumentTargetLocator locator = new DocumentTargetLocator(anchorIntentService, tool, new DocumentStructureParser(), chatModel);
+
+        assertThatThrownBy(() -> locator.locate(artifact(), DocumentIterationIntentType.DELETE, "删除第三节整个大章节"))
                 .isInstanceOf(AiAssistantException.class)
                 .hasMessageContaining("未能定位目标章节");
     }
