@@ -12,15 +12,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TermDisambiguationServiceTests {
 
     private final PlannerProperties properties = new PlannerProperties();
-    private final TermDisambiguationService service;
 
     TermDisambiguationServiceTests() {
         properties.initDefaults();
-        service = new TermDisambiguationService(new TermDisambiguationPolicyRegistry(properties));
     }
 
     @Test
-    void shouldResolveHarnessToProjectModuleWhenProjectSignalsAreStrong() {
+    void shouldResolveHarnessUsingLlmChoice() {
+        TermDisambiguationService service = serviceReturning("WORKSPACE_INTERNAL_CAPABILITY");
         PlanTaskSession session = PlanTaskSession.builder()
                 .profession("产品经理")
                 .industry("智能办公")
@@ -39,7 +38,8 @@ class TermDisambiguationServiceTests {
     }
 
     @Test
-    void shouldAskUserWhenHarnessMeaningIsAmbiguous() {
+    void shouldAskUserWhenLlmRequestsClarification() {
+        TermDisambiguationService service = serviceReturning("CLARIFY");
         PlanTaskSession session = PlanTaskSession.builder()
                 .profession("工程师")
                 .industry("软件")
@@ -56,5 +56,10 @@ class TermDisambiguationServiceTests {
         assertThat(outcome.requireInput().getType()).isEqualTo("CHOICE");
         assertThat(outcome.requireInput().getOptions()).hasSize(3);
         assertThat(outcome.requireInput().getOptions()).doesNotContain("当前项目里的 harness 执行编排模块");
+    }
+
+    private TermDisambiguationService serviceReturning(String choice) {
+        LlmChoiceResolver resolver = (instruction, allowedChoices, systemPrompt) -> choice;
+        return new TermDisambiguationService(new TermDisambiguationPolicyRegistry(properties, resolver));
     }
 }

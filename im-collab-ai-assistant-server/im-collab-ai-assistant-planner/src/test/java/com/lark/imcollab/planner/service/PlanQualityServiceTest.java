@@ -48,7 +48,7 @@ class PlanQualityServiceTest {
     }
 
     @Test
-    void additiveAdjustmentKeepsExistingCardsAndAppendsNewCard() {
+    void adjustmentTrustsAgentProvidedCardsAndDoesNotInferByKeywords() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
                 .rawInstruction("根据飞书项目协作方案生成技术方案文档，包含 Mermaid 架构图，并准备配套 PPT 初稿")
@@ -66,7 +66,8 @@ class PlanQualityServiceTest {
                 .planCards(List.of(
                         card("card-001", "生成技术方案文档", PlanCardTypeEnum.DOC),
                         card("card-002", "生成配套评审PPT初稿", PlanCardTypeEnum.PPT),
-                        card("card-003", "生成面向老板汇报的PPT大纲页", PlanCardTypeEnum.PPT)
+                        card("card-003", "生成面向老板汇报的PPT大纲页", PlanCardTypeEnum.PPT),
+                        card("card-004", "生成群内项目进展摘要", PlanCardTypeEnum.SUMMARY)
                 ))
                 .build();
 
@@ -86,7 +87,6 @@ class PlanQualityServiceTest {
                 );
         assertThat(session.getPlanCards().get(3).getCardId()).isEqualTo("card-004");
         assertThat(session.getPlanCards().get(3).getType()).isEqualTo(PlanCardTypeEnum.SUMMARY);
-        assertThat(session.getPlanCards().get(3).getDependsOn()).containsExactly("card-003");
     }
 
     @Test
@@ -106,6 +106,7 @@ class PlanQualityServiceTest {
 
         PlanBlueprint updated = PlanBlueprint.builder()
                 .planCards(List.of(
+                        card("card-001", "生成技术方案文档", PlanCardTypeEnum.DOC),
                         card("card-001", "生成老板汇报 PPT", PlanCardTypeEnum.PPT)
                 ))
                 .build();
@@ -122,7 +123,7 @@ class PlanQualityServiceTest {
                 .filteredOn(card -> "生成老板汇报 PPT".equals(card.getTitle()))
                 .singleElement()
                 .extracting(UserPlanCard::getCardId)
-                .isEqualTo("card-004");
+                .isEqualTo("card-002");
     }
 
     private static UserPlanCard card(String cardId, String title, PlanCardTypeEnum type) {

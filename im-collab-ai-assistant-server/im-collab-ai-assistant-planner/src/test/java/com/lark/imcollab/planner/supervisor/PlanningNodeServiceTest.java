@@ -110,7 +110,7 @@ class PlanningNodeServiceTest {
         assertThat(result.getPlanCards())
                 .extracting(UserPlanCard::getType)
                 .containsExactly(PlanCardTypeEnum.DOC, PlanCardTypeEnum.PPT);
-        assertThat(result.getPlanCards().get(0).getTitle()).contains("Mermaid");
+        assertThat(result.getPlanCards().get(0).getTitle()).contains("文档");
         assertThat(result.getPlanCards().get(1).getDependsOn()).containsExactly("card-001");
         assertThat(result.getPlanCards().get(0).getAgentTaskPlanCards().get(0).getTaskType())
                 .isEqualTo(AgentTaskTypeEnum.WRITE_DOC);
@@ -119,7 +119,7 @@ class PlanningNodeServiceTest {
     }
 
     @Test
-    void summaryDocumentIsPlannedAsDocNotSummary() {
+    void boundedPlanTrustsIntentDeliverableWithoutKeywordRewrite() {
         IntentSnapshot intent = IntentSnapshot.builder()
                 .userGoal("帮我总结群里消息并生成一个总结文档")
                 .deliverableTargets(List.of("SUMMARY"))
@@ -132,9 +132,9 @@ class PlanningNodeServiceTest {
         ).orElseThrow();
 
         assertThat(result.getPlanCards()).hasSize(1);
-        assertThat(result.getPlanCards().get(0).getType()).isEqualTo(PlanCardTypeEnum.DOC);
+        assertThat(result.getPlanCards().get(0).getType()).isEqualTo(PlanCardTypeEnum.SUMMARY);
         assertThat(result.getPlanCards().get(0).getAgentTaskPlanCards().get(0).getTaskType())
-                .isEqualTo(AgentTaskTypeEnum.WRITE_DOC);
+                .isEqualTo(AgentTaskTypeEnum.GENERATE_SUMMARY);
     }
 
     @Test

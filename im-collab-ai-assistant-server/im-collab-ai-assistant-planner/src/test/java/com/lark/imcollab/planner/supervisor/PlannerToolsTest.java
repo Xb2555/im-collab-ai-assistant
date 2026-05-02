@@ -102,21 +102,6 @@ class PlannerToolsTest {
     }
 
     @Test
-    void contextToolAsksWhenUserSaysSourceWasNotProvided() {
-        PlannerContextTool tool = new PlannerContextTool();
-
-        ContextSufficiencyResult result = tool.evaluateContext(
-                null,
-                "根据我没发给你的那份客户合同，整理一份风险摘要给法务看",
-                WorkspaceContext.builder().chatId("chat-1").build()
-        );
-
-        assertThat(result.sufficient()).isFalse();
-        assertThat(result.reason()).contains("source explicitly unavailable");
-        assertThat(result.clarificationQuestion()).contains("材料");
-    }
-
-    @Test
     void contextNodeUsesAcquisitionClarificationWhenNoSourceRefIsAvailable() throws Exception {
         ReactAgent contextCollectorAgent = mock(ReactAgent.class);
         ReactAgent contextAcquisitionAgent = mock(ReactAgent.class);
@@ -154,12 +139,19 @@ class PlannerToolsTest {
     }
 
     @Test
-    void contextNodeDoesNotUsePrivateChatHistoryForGroupMessageRequest() {
+    void contextNodeUsesAcquisitionAgentForPrivateChatGroupContextDecision() throws Exception {
+        ReactAgent acquisitionAgent = mock(ReactAgent.class);
         PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
         PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        when(acquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"needCollection":false,"sources":[],"reason":"private chat is not the requested group context","clarificationQuestion":"你想总结哪个群、哪段时间的消息？可以在群里直接提我，或把要总结的消息范围发给我。"}
+                        """)
+        ))));
         ContextNodeService service = new ContextNodeService(
                 mock(ReactAgent.class),
-                mock(ReactAgent.class),
+                acquisitionAgent,
                 new PlannerContextTool(),
                 runtimeTool,
                 new PlannerConversationMemoryService(new PlannerProperties()),
@@ -185,12 +177,19 @@ class PlannerToolsTest {
     }
 
     @Test
-    void contextNodeCollectsGroupHistoryForGroupMessageRequest() {
+    void contextNodeUsesAcquisitionAgentForGroupHistoryCollection() throws Exception {
+        ReactAgent acquisitionAgent = mock(ReactAgent.class);
         PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
         PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        when(acquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"needCollection":true,"sources":[{"sourceType":"IM_HISTORY","chatId":"chat-group","threadId":"","timeRange":"","docRefs":[],"limit":30}],"reason":"user asks for available group chat history","clarificationQuestion":""}
+                        """)
+        ))));
         ContextNodeService service = new ContextNodeService(
                 mock(ReactAgent.class),
-                mock(ReactAgent.class),
+                acquisitionAgent,
                 new PlannerContextTool(),
                 runtimeTool,
                 new PlannerConversationMemoryService(new PlannerProperties()),

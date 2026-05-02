@@ -85,8 +85,7 @@ public class PlannerSupervisorDecisionAgent {
         }
         if (session != null
                 && session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER
-                && action != PlannerSupervisorAction.CANCEL_TASK
-                && action != PlannerSupervisorAction.QUERY_STATUS) {
+                && action == PlannerSupervisorAction.CLARIFICATION_REPLY) {
             return PlannerSupervisorAction.CLARIFICATION_REPLY;
         }
         if (session != null
@@ -127,6 +126,10 @@ public class PlannerSupervisorDecisionAgent {
         builder.append("A new task requires a concrete work goal or deliverable, such as writing a DOC, preparing a PPT, summarizing material, or generating a project update.\n");
         builder.append("If the user asks for any additional/final/new deliverable to be included in the current plan, choose PLAN_ADJUSTMENT even when the wording is casual.\n");
         builder.append("Never use QUERY_STATUS or UNKNOWN to say that a plan was updated. Only the replan node may update the plan after patch merge.\n\n");
+        builder.append("ASK_USER phase rule: choose CLARIFICATION_REPLY only when the latest message directly answers the pending question or provides the missing material.\n");
+        builder.append("If the pending question asks for output form and the user says '文档', that is CLARIFICATION_REPLY.\n");
+        builder.append("If the pending question asks for material/range and the user asks '你是谁' or '你能做什么', that is UNKNOWN with an identity/capability reply.\n");
+        builder.append("If the user starts a clearly separate work request while another task is ASK_USER, choose NEW_TASK rather than treating it as the old clarification answer.\n\n");
         builder.append("For UNKNOWN, fill userFacingReply with one natural Chinese sentence. Do not use stiff phrases like '我没完全判断清楚'.\n");
         builder.append("If the user is just giving feedback, userFacingReply should acknowledge the feedback and say the current plan is kept.\n\n");
         builder.append("Session phase: ").append(session == null ? "NONE" : session.getPlanningPhase()).append("\n");

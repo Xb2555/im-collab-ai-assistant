@@ -5,6 +5,7 @@ import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
 import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
@@ -190,13 +191,39 @@ public class PlannerSessionService {
     }
 
     private List<AgentTaskPlanCard> normalizeSubtasks(UserPlanCard card) {
-        if (card == null || card.getAgentTaskPlanCards() == null) {
+        if (card == null) {
             return List.of();
+        }
+        if (card.getAgentTaskPlanCards() == null || card.getAgentTaskPlanCards().isEmpty()) {
+            return List.of(synthesizeSubtask(card));
         }
         return card.getAgentTaskPlanCards().stream()
                 .map(subtask -> normalizeSubtask(card, subtask))
                 .filter(java.util.Objects::nonNull)
                 .toList();
+    }
+
+    private AgentTaskPlanCard synthesizeSubtask(UserPlanCard card) {
+        AgentTaskTypeEnum taskType = null;
+        if (card.getType() != null) {
+            taskType = switch (card.getType()) {
+                case PPT -> AgentTaskTypeEnum.WRITE_SLIDES;
+                case SUMMARY -> AgentTaskTypeEnum.GENERATE_SUMMARY;
+                case DOC -> AgentTaskTypeEnum.WRITE_DOC;
+            };
+        }
+        return AgentTaskPlanCard.builder()
+                .taskId(firstNonBlank(card.getCardId(), card.getTaskId()))
+                .id(firstNonBlank(card.getCardId(), card.getTaskId()))
+                .parentCardId(card.getCardId())
+                .taskType(taskType)
+                .type(taskType == null ? null : taskType.name())
+                .title(firstNonBlank(card.getTitle(), card.getDescription(), card.getCardId()))
+                .status(card.getStatus())
+                .input(card.getDescription())
+                .context(card.getDescription())
+                .tools(List.of())
+                .build();
     }
 
     private AgentTaskPlanCard normalizeSubtask(UserPlanCard card, AgentTaskPlanCard subtask) {

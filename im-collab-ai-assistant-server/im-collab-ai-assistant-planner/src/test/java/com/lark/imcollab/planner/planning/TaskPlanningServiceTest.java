@@ -41,6 +41,6 @@ class TaskPlanningServiceTest {
         assertThat(result.executionContract())
                 .extracting(ExecutionContract::getPrimaryArtifact)
                 .isEqualTo("DOC");
-        assertThat(result.executionContract().getDiagramRequirement().isRequired()).isTrue();
+        assertThat(result.executionContract().getDiagramRequirement().isRequired()).isFalse();
     }
 }

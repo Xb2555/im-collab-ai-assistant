@@ -86,9 +86,6 @@ public class ContextNodeService {
                     firstNonBlank(acquisitionPlan.get().getReason(), "context acquisition needs user input")
             );
         }
-        if (isExplicitUnavailableSource(guardedResult)) {
-            return guardedResult;
-        }
         ContextAcquisitionPlan fallbackPlan = defaultAcquisitionPlan(workspaceContext);
         if (fallbackPlan != null && fallbackPlan.isNeedCollection()) {
             return ContextSufficiencyResult.collect(fallbackPlan, "available workspace source can be collected");
@@ -249,7 +246,7 @@ public class ContextNodeService {
                     .limit(1)
                     .build());
         }
-        if (shouldCollectImHistory(workspaceContext, null, false)) {
+        if (hasExplicitImReference(workspaceContext)) {
             sources.add(ContextSourceRequest.builder()
                     .sourceType(ContextSourceTypeEnum.IM_HISTORY)
                     .chatId(workspaceContext.getChatId())
@@ -316,41 +313,7 @@ public class ContextNodeService {
 
     private ContextAcquisitionPlan requiredReferenceAcquisitionPlan(WorkspaceContext workspaceContext, String rawInstruction) {
         ContextAcquisitionPlan plan = requiredReferenceAcquisitionPlan(workspaceContext);
-        if (plan != null) {
-            return plan;
-        }
-        if (workspaceContext == null
-                || plannerProperties.getContextCollection() == null
-                || !plannerProperties.getContextCollection().isEnabled()) {
-            return null;
-        }
-        if (!refersToConversationContext(rawInstruction)
-                || (!hasText(workspaceContext.getChatId()) && !hasText(workspaceContext.getThreadId()))) {
-            return null;
-        }
-        if (refersToGroupContext(rawInstruction) && !isGroupChat(workspaceContext)) {
-            return ContextAcquisitionPlan.builder()
-                    .needCollection(false)
-                    .sources(List.of())
-                    .reason("user asks for group context but current chat is not a group")
-                    .clarificationQuestion("你想总结哪个群、哪段时间的消息？可以在群里直接提我，或把要总结的消息/时间范围发给我。")
-                    .build();
-        }
-        if (!shouldCollectImHistory(workspaceContext, rawInstruction, true)) {
-            return null;
-        }
-        return ContextAcquisitionPlan.builder()
-                .needCollection(true)
-                .sources(List.of(ContextSourceRequest.builder()
-                        .sourceType(ContextSourceTypeEnum.IM_HISTORY)
-                        .chatId(workspaceContext.getChatId())
-                        .threadId(workspaceContext.getThreadId())
-                        .timeRange(workspaceContext.getTimeRange())
-                        .limit(plannerProperties.getContextCollection().getMaxImMessages())
-                        .build()))
-                .reason("user refers to prior conversation context")
-                .clarificationQuestion("")
-                .build();
+        return plan;
     }
 
     private boolean hasRealSelectedMessages(WorkspaceContext workspaceContext) {
@@ -359,29 +322,7 @@ public class ContextNodeService {
                 && !workspaceContext.getSelectedMessages().isEmpty();
     }
 
-    private boolean refersToConversationContext(String rawInstruction) {
-        String normalized = normalize(rawInstruction);
-        return normalized.contains("刚才")
-                || normalized.contains("上面")
-                || normalized.contains("前面")
-                || normalized.contains("之前")
-                || normalized.contains("最近")
-                || normalized.contains("这段时间")
-                || normalized.contains("讨论")
-                || normalized.contains("聊天")
-                || normalized.contains("消息");
-    }
-
-    private boolean refersToGroupContext(String rawInstruction) {
-        String normalized = normalize(rawInstruction);
-        return normalized.contains("群里")
-                || normalized.contains("群内")
-                || normalized.contains("群消息")
-                || normalized.contains("群聊")
-                || normalized.contains("群里的");
-    }
-
-    private boolean shouldCollectImHistory(WorkspaceContext workspaceContext, String rawInstruction, boolean fromInstruction) {
+    private boolean hasExplicitImReference(WorkspaceContext workspaceContext) {
         if (workspaceContext == null || (!hasText(workspaceContext.getChatId()) && !hasText(workspaceContext.getThreadId()))) {
             return false;
         }
@@ -391,13 +332,7 @@ public class ContextNodeService {
         if (isExplicitTimeRangeSelection(workspaceContext)) {
             return true;
         }
-        if (!fromInstruction || !refersToConversationContext(rawInstruction)) {
-            return false;
-        }
-        if (refersToGroupContext(rawInstruction)) {
-            return isGroupChat(workspaceContext);
-        }
-        return true;
+        return false;
     }
 
     private boolean isExplicitTimeRangeSelection(WorkspaceContext workspaceContext) {
@@ -405,20 +340,8 @@ public class ContextNodeService {
             return false;
         }
         String selectionType = normalize(workspaceContext.getSelectionType());
-        return selectionType.contains("timerange")
-                || selectionType.contains("time_range")
-                || selectionType.contains("时间范围");
-    }
-
-    private boolean isGroupChat(WorkspaceContext workspaceContext) {
-        if (workspaceContext == null) {
-            return false;
-        }
-        String chatType = normalize(workspaceContext.getChatType());
-        String inputSource = normalize(workspaceContext.getInputSource());
-        return chatType.contains("group")
-                || chatType.contains("群")
-                || inputSource.contains("lark_group");
+        return "timerange".equals(selectionType)
+                || "time_range".equals(selectionType);
     }
 
     private boolean containsOnlyLatestInstruction(WorkspaceContext workspaceContext, String rawInstruction) {
@@ -443,13 +366,6 @@ public class ContextNodeService {
                 && result.reason() != null
                 && (result.reason().contains("embedded instruction context")
                 || result.reason().contains("external workspace context"));
-    }
-
-    private boolean isExplicitUnavailableSource(ContextSufficiencyResult result) {
-        return result != null
-                && !result.sufficient()
-                && result.reason() != null
-                && result.reason().contains("source explicitly unavailable");
     }
 
     private String normalize(String value) {

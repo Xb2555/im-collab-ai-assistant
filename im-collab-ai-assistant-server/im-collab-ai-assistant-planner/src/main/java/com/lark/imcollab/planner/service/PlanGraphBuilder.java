@@ -53,20 +53,13 @@ public class PlanGraphBuilder {
         if (!hasText(value)) {
             return null;
         }
-        String text = value.trim();
-        String upper = text.toUpperCase(Locale.ROOT);
-        if (upper.contains("PPT") || upper.contains("SLIDE") || text.contains("幻灯") || text.contains("演示稿")) {
-            return "PPT";
-        }
-        if (upper.contains("SUMMARY") || text.contains("摘要") || text.contains("总结") || text.contains("话术")
-                || text.contains("文案")) {
-            return "SUMMARY";
-        }
-        if (upper.contains("DOC") || text.contains("文档") || text.contains("方案") || text.contains("报告")
-                || text.contains("纪要") || text.contains("材料")) {
-            return "DOC";
-        }
-        return upper;
+        String upper = value.trim().toUpperCase(Locale.ROOT);
+        return switch (upper) {
+            case "PPT", "SLIDE", "SLIDES", "PRESENTATION" -> "PPT";
+            case "SUMMARY" -> "SUMMARY";
+            case "DOC", "DOCUMENT" -> "DOC";
+            default -> upper;
+        };
     }
 
     private List<TaskStepRecord> buildSteps(String taskId, List<UserPlanCard> planCards) {

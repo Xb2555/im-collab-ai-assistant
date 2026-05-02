@@ -1,8 +1,11 @@
 package com.lark.imcollab.planner.supervisor;
 
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
@@ -59,6 +62,56 @@ class ReadOnlyNodeServiceTest {
 
         assertThat(result.getIntakeState().getAssistantReply()).contains("计划我先保留");
         assertThat(result.getIntakeState().getAssistantReply()).doesNotContain("没完全判断清楚");
+        verify(memoryService).appendAssistantTurn(session, result.getIntakeState().getAssistantReply());
+        verify(sessionService).saveWithoutVersionChange(session);
+    }
+
+    @Test
+    void artifactReadOnlyReplyIncludesFinalLinks() {
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        ReadOnlyNodeService service = new ReadOnlyNodeService(
+                sessionService,
+                memoryService,
+                runtimeTool,
+                null
+        );
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-artifact")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .planCards(List.of(UserPlanCard.builder()
+                        .cardId("card-001")
+                        .title("生成文档")
+                        .type(PlanCardTypeEnum.DOC)
+                        .build()))
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .readOnlyView("ARTIFACTS")
+                        .lastUserMessage("已有产物")
+                        .build())
+                .build();
+        when(sessionService.get("task-artifact")).thenReturn(session);
+        when(runtimeTool.getSnapshot("task-artifact")).thenReturn(TaskRuntimeSnapshot.builder()
+                .artifacts(List.of(ArtifactRecord.builder()
+                        .artifactId("artifact-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .title("项目进展文档")
+                        .url("https://example.feishu.cn/docx/doc")
+                        .build()))
+                .build());
+
+        PlanTaskSession result = service.readOnly(
+                "task-artifact",
+                "已有产物",
+                PlannerSupervisorDecisionResult.builder()
+                        .action(PlannerSupervisorAction.QUERY_STATUS)
+                        .confidence(1.0d)
+                        .build()
+        );
+
+        assertThat(result.getIntakeState().getAssistantReply()).contains("项目进展文档");
+        assertThat(result.getIntakeState().getAssistantReply()).contains("https://example.feishu.cn/docx/doc");
         verify(memoryService).appendAssistantTurn(session, result.getIntakeState().getAssistantReply());
         verify(sessionService).saveWithoutVersionChange(session);
     }

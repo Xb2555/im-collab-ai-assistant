@@ -53,14 +53,7 @@ public class ContextAcquisitionNodeService {
         if (message == null || message.isBlank()) {
             return "没有读取到可用内容";
         }
-        String lower = message.toLowerCase();
-        if (message.contains("LARK_DOC") || lower.contains("document") || lower.contains("docx")) {
-            return "文档读取失败，可能是链接无效、机器人没有权限，或文档还没有分享给当前应用";
-        }
-        if (message.contains("IM_HISTORY") || lower.contains("message") || lower.contains("chat")) {
-            return "聊天记录读取失败，可能是机器人没有权限，或这个时间范围内没有可用消息";
-        }
-        return "没有读取到可用内容";
+        return "没有读取到可用内容，可能是权限、链接或范围不对";
     }
 
     private String firstNonBlank(String... values) {

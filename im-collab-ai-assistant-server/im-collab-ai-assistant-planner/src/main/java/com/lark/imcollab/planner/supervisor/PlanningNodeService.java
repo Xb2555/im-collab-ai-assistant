@@ -201,14 +201,12 @@ public class PlanningNodeService {
     ) {
         String cardId = "card-" + String.format("%03d", existingCards.size() + 1);
         String title = switch (type) {
-            case DOC -> containsMermaid(planningInput) ? "生成技术方案文档（含 Mermaid 架构图）" : "生成结构化文档";
+            case DOC -> "生成结构化文档";
             case PPT -> "生成汇报 PPT 初稿";
             case SUMMARY -> "生成任务摘要";
         };
         String description = switch (type) {
-            case DOC -> containsMermaid(planningInput)
-                    ? "基于用户提供的飞书项目协作方案，撰写结构化技术方案文档，并在文档中包含 Mermaid 架构图"
-                    : "基于用户提供的上下文，撰写结构化文档";
+            case DOC -> "基于用户提供的上下文，撰写结构化文档";
             case PPT -> hasCardOfType(existingCards, PlanCardTypeEnum.DOC)
                     ? "基于技术方案文档，整理一份用于汇报的 PPT 初稿"
                     : "基于用户目标和已有上下文，整理一份用于汇报的 PPT 初稿";
@@ -249,32 +247,7 @@ public class PlanningNodeService {
                 toPlanCardType(target).ifPresent(resolved::add);
             }
         }
-        String text = normalize(planningInput + " " + (intentSnapshot == null ? "" : intentSnapshot.getUserGoal()));
-        if (asksForSummaryDocument(text)) {
-            resolved.remove(PlanCardTypeEnum.SUMMARY);
-            resolved.add(PlanCardTypeEnum.DOC);
-        }
-        if (resolved.isEmpty()) {
-            if (text.contains("文档") || text.contains("方案") || text.contains("doc")) {
-                resolved.add(PlanCardTypeEnum.DOC);
-            }
-            if (text.contains("ppt") || text.contains("演示稿") || text.contains("汇报")) {
-                resolved.add(PlanCardTypeEnum.PPT);
-            }
-            if (text.contains("摘要") || text.contains("总结") || text.contains("summary")) {
-                resolved.add(PlanCardTypeEnum.SUMMARY);
-            }
-        }
         return new ArrayList<>(resolved);
-    }
-
-    private boolean asksForSummaryDocument(String normalizedText) {
-        return hasText(normalizedText)
-                && (normalizedText.contains("总结文档")
-                || normalizedText.contains("总结成文档")
-                || normalizedText.contains("总结为文档")
-                || normalizedText.contains("总结并生成文档")
-                || normalizedText.contains("生成总结文档"));
     }
 
     private boolean hasMissingSlots(IntentSnapshot intentSnapshot) {
@@ -335,9 +308,7 @@ public class PlanningNodeService {
                     : "可以，我还差一点上下文。你可以直接贴材料、文档链接，或告诉我想做成文档、PPT 还是摘要。";
         }
         String joinedSlots = String.join("、", missingSlots);
-        if (hasDeliverable && missingSlots.stream().anyMatch(slot -> normalize(slot).contains("内容")
-                || normalize(slot).contains("材料")
-                || normalize(slot).contains("范围"))) {
+        if (hasDeliverable) {
             return "可以，产物形式我记下了。我还差要整理的内容：你可以直接贴材料、文档链接，或告诉我取哪段消息。";
         }
         return "我还差一点信息：" + joinedSlots + suffix;
@@ -355,16 +326,6 @@ public class PlanningNodeService {
     private Optional<PlanCardTypeEnum> toPlanCardType(String raw) {
         if (!hasText(raw)) {
             return Optional.empty();
-        }
-        String normalized = normalize(raw);
-        if (normalized.contains("doc") || normalized.contains("文档") || normalized.contains("方案")) {
-            return Optional.of(PlanCardTypeEnum.DOC);
-        }
-        if (normalized.contains("ppt") || normalized.contains("slide") || normalized.contains("演示稿") || normalized.contains("汇报")) {
-            return Optional.of(PlanCardTypeEnum.PPT);
-        }
-        if (normalized.contains("summary") || normalized.contains("摘要") || normalized.contains("总结")) {
-            return Optional.of(PlanCardTypeEnum.SUMMARY);
         }
         try {
             return Optional.of(PlanCardTypeEnum.valueOf(raw.trim().toUpperCase(Locale.ROOT)));
@@ -410,10 +371,6 @@ public class PlanningNodeService {
         return cards != null && cards.stream().anyMatch(card -> card != null && card.getType() == type);
     }
 
-    private boolean containsMermaid(String text) {
-        return normalize(text).contains("mermaid");
-    }
-
     private boolean hasEmbeddedTaskMaterial(String planningInput) {
         if (!hasText(planningInput)) {
             return false;
@@ -448,7 +405,7 @@ public class PlanningNodeService {
     private List<String> defaultSuccessCriteria(List<PlanCardTypeEnum> deliverables, String planningInput) {
         List<String> criteria = new ArrayList<>();
         if (deliverables.contains(PlanCardTypeEnum.DOC)) {
-            criteria.add(containsMermaid(planningInput) ? "文档包含可渲染的 Mermaid 架构图" : "文档结构清晰、内容可交付");
+            criteria.add("文档结构清晰、内容可交付");
         }
         if (deliverables.contains(PlanCardTypeEnum.PPT)) {
             criteria.add("PPT 初稿与文档或任务目标保持一致");
@@ -460,9 +417,7 @@ public class PlanningNodeService {
     }
 
     private List<String> defaultRisks(String planningInput) {
-        return hasText(planningInput) && planningInput.contains("飞书项目协作方案")
-                ? List.of("缺少飞书项目协作方案的详细原始材料时，部分架构细节需要用户确认")
-                : List.of();
+        return List.of();
     }
 
     private List<String> safeList(List<String> values) {

@@ -45,13 +45,6 @@ public class PlannerContextTool {
                     "empty instruction"
             );
         }
-        if (mentionsUnavailableSource(instruction)) {
-            return ContextSufficiencyResult.insufficient(
-                    List.of("source_context"),
-                    "你提到的材料我现在还没拿到。请把对应的文档链接、关键内容，或可查看的聊天范围发给我，我再继续整理。",
-                    "source explicitly unavailable"
-            );
-        }
         boolean hasEmbeddedContext = hasEmbeddedTaskMaterial(instruction);
         if (!hasCollectedContext && !hasEmbeddedContext && instruction.length() < 24) {
             return ContextSufficiencyResult.insufficient(
@@ -86,18 +79,6 @@ public class PlannerContextTool {
             return true;
         }
         return normalized.contains("\n") && normalized.length() >= 40;
-    }
-
-    private boolean mentionsUnavailableSource(String instruction) {
-        String normalized = normalize(instruction);
-        return normalized.contains("没发给你")
-                || normalized.contains("没有发给你")
-                || normalized.contains("还没发给你")
-                || normalized.contains("没提供")
-                || normalized.contains("没有提供")
-                || normalized.contains("未提供")
-                || normalized.contains("没给你")
-                || normalized.contains("没有给你");
     }
 
     private boolean containsOnlyLatestInstruction(WorkspaceContext workspaceContext, String instruction) {

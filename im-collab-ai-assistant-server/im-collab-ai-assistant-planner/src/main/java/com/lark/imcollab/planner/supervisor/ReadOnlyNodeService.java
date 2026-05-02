@@ -2,6 +2,7 @@ package com.lark.imcollab.planner.supervisor;
 
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
@@ -77,6 +78,14 @@ public class ReadOnlyNodeService {
             sessionService.saveWithoutVersionChange(session);
             return session;
         }
+        if (session.getIntakeState() != null && "ARTIFACTS".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
+            String reply = artifactsReply(session);
+            TaskIntakeState intakeState = session.getIntakeState();
+            intakeState.setAssistantReply(reply);
+            memoryService.appendAssistantTurn(session, reply);
+            sessionService.saveWithoutVersionChange(session);
+            return session;
+        }
         String reply = firstNonBlank(
                 decision == null ? null : decision.userFacingReply(),
                 generateReadOnlyReply(session, userInput)
@@ -120,9 +129,10 @@ public class ReadOnlyNodeService {
         builder.append("你是 Planner 的只读状态回复子 Agent。你只能根据下面的任务状态回答用户，不要改计划，不要执行任务。\n");
         builder.append("如果用户想看完整计划，请列出所有 plan cards 的标题、类型和描述。");
         builder.append("如果用户想看进度，请简短说明任务状态、当前/下一步、完成数量和产物数量。");
+        builder.append("如果用户想看已有产物或文档链接，请直接列出下面 Runtime 里的产物标题和链接；有链接就必须贴链接，不要让用户再问一次。");
         builder.append("如果用户表达认可但没有要求执行，请自然确认会保留当前计划，避免固定模板。");
         builder.append("如果用户原话像是在新增、删除、修改计划，你也只能说明当前计划尚未变化，不能说已收到新需求、已增加、会增加或当前计划多了新步骤。");
-        builder.append("回复要像同事对话，可以引用用户原话里的一个关键词；不要说“我没完全判断清楚”。");
+        builder.append("回复要像同事对话，可以自然引用用户原话里的具体表达；不要说“我没完全判断清楚”。");
         builder.append("不要输出 JSON，不要暴露内部字段名。\n\n");
         builder.append("用户原话：").append(userInput == null ? "" : userInput.trim()).append("\n");
         builder.append("任务阶段：").append(session == null ? "" : session.getPlanningPhase()).append("\n");
@@ -153,6 +163,20 @@ public class ReadOnlyNodeService {
             builder.append("步骤数：").append(snapshot.getSteps() == null ? 0 : snapshot.getSteps().size())
                     .append("，产物数：").append(snapshot.getArtifacts() == null ? 0 : snapshot.getArtifacts().size())
                     .append("\n");
+            if (snapshot.getArtifacts() != null && !snapshot.getArtifacts().isEmpty()) {
+                builder.append("产物：\n");
+                for (ArtifactRecord artifact : snapshot.getArtifacts()) {
+                    if (artifact == null) {
+                        continue;
+                    }
+                    builder.append("- ")
+                            .append(firstNonBlank(artifact.getTitle(), artifact.getArtifactId(), "未命名产物"));
+                    if (hasText(artifact.getUrl())) {
+                        builder.append(" | ").append(artifact.getUrl().trim());
+                    }
+                    builder.append("\n");
+                }
+            }
         }
         return builder.toString();
     }
@@ -176,6 +200,36 @@ public class ReadOnlyNodeService {
             if (hasText(card.getDescription())) {
                 builder.append(" - ").append(card.getDescription().trim());
             }
+        }
+        return builder.toString();
+    }
+
+    private String artifactsReply(PlanTaskSession session) {
+        TaskRuntimeSnapshot snapshot = runtimeTool == null || session == null
+                ? null
+                : runtimeTool.getSnapshot(session.getTaskId());
+        List<ArtifactRecord> artifacts = snapshot == null || snapshot.getArtifacts() == null
+                ? List.of()
+                : snapshot.getArtifacts().stream()
+                .filter(artifact -> artifact != null)
+                .toList();
+        if (artifacts.isEmpty()) {
+            return "当前还没有生成产物。任务完成后，我会把文档链接同步给你。";
+        }
+        StringBuilder builder = new StringBuilder("已有产物：");
+        int limit = Math.min(artifacts.size(), 5);
+        for (int index = 0; index < limit; index++) {
+            ArtifactRecord artifact = artifacts.get(index);
+            builder.append("\n").append(index + 1).append(". ")
+                    .append(firstNonBlank(artifact.getTitle(), artifact.getArtifactId(), "未命名产物"));
+            if (hasText(artifact.getUrl())) {
+                builder.append("\n   ").append(artifact.getUrl().trim());
+            } else if (hasText(artifact.getPreview())) {
+                builder.append("\n   内容预览已生成，正式链接还在回流中。");
+            }
+        }
+        if (artifacts.size() > limit) {
+            builder.append("\n还有 ").append(artifacts.size() - limit).append(" 个产物可在 GUI 里查看。");
         }
         return builder.toString();
     }

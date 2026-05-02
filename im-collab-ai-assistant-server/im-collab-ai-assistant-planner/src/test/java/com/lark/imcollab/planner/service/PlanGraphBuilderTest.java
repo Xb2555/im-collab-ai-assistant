@@ -40,4 +40,16 @@ class PlanGraphBuilderTest {
         assertThat(graph.getDeliverables()).containsExactly("DOC", "SUMMARY");
         assertThat(graph.getSteps()).hasSize(2);
     }
+
+    @Test
+    void doesNotInferDeliverablesFromFreeTextKeywords() {
+        PlanBlueprint blueprint = PlanBlueprint.builder()
+                .deliverables(List.of("标题包含PPT的文档", "风险摘要"))
+                .planCards(List.of())
+                .build();
+
+        TaskPlanGraph graph = builder.build("task-1", blueprint);
+
+        assertThat(graph.getDeliverables()).containsExactly("标题包含PPT的文档", "风险摘要");
+    }
 }

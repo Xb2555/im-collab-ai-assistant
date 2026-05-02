@@ -61,6 +61,16 @@ public class HardRuleIntentClassifier {
             "现在什么状态"
     );
 
+    private static final Set<String> META_UNKNOWN_SENTENCES = Set.of(
+            "你是谁",
+            "你能做什么",
+            "你可以做什么",
+            "你是干嘛的",
+            "你有什么用",
+            "介绍一下你",
+            "自我介绍一下"
+    );
+
     public Optional<IntentRoutingResult> classify(
             PlanTaskSession session,
             String rawInput,
@@ -79,6 +89,10 @@ public class HardRuleIntentClassifier {
         Optional<IntentRoutingResult> readOnlyQuery = classifyReadOnlyQuery(normalized);
         if (readOnlyQuery.isPresent()) {
             return readOnlyQuery;
+        }
+        Optional<IntentRoutingResult> metaUnknown = classifyMetaUnknown(normalized);
+        if (metaUnknown.isPresent()) {
+            return metaUnknown;
         }
         if (!existingSession || session == null) {
             return Optional.empty();
@@ -139,6 +153,15 @@ public class HardRuleIntentClassifier {
         if (STATUS_QUERY_SENTENCES.contains(sentence)) {
             return Optional.of(result(TaskCommandTypeEnum.QUERY_STATUS, 1.0d,
                     "hard rule read-only status query", input, false, "STATUS"));
+        }
+        return Optional.empty();
+    }
+
+    private Optional<IntentRoutingResult> classifyMetaUnknown(String input) {
+        String sentence = normalizeSentence(input);
+        if (META_UNKNOWN_SENTENCES.contains(sentence)) {
+            return Optional.of(result(TaskCommandTypeEnum.UNKNOWN, 1.0d,
+                    "whole sentence meta question", input, true));
         }
         return Optional.empty();
     }

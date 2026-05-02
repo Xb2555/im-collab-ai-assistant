@@ -99,6 +99,8 @@ public class AgentFrameworkConfig {
                         Generic approval such as "这个方案还行", "可以", or "就这样" is not enough to start execution.
                         Choose START_TASK only for a real work request with a goal or deliverable. Casual chat, greetings, mood sharing, jokes, and meta questions are UNKNOWN.
                         Identity or capability questions such as "你是谁" or "你能做什么" are UNKNOWN unless they include a concrete deliverable request.
+                        In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material.
+                        If the pending question asks for material or range and the user asks identity/capability, chats casually, or starts a separate task, do not choose ANSWER_CLARIFICATION.
                         If the user asks to add something and also mentions a desired output, it is ADJUST_PLAN, not QUERY_STATUS.
                         Choose UNKNOWN when the message cannot be safely mapped to one fixed intent, including non-task chat.
                         JSON shape: {"intent":"...","confidence":0.0,"reason":"","normalizedInput":"","needsClarification":false,"readOnlyView":"PLAN|STATUS|ARTIFACTS|"}
