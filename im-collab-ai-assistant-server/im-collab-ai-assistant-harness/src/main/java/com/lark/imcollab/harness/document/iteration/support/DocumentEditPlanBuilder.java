@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 @Component
@@ -21,6 +22,11 @@ public class DocumentEditPlanBuilder {
     private static final Pattern STRUCTURED_HEADING_PATTERN = Pattern.compile(
             "^(?:[一二三四五六七八九十百千万0-9]+[、.．]|[0-9]+(?:\\.[0-9]+)+)\\s*\\S+.*$"
     );
+
+    private enum DeleteScope {
+        BODY_ONLY,
+        WHOLE_SECTION
+    }
 
     private final ChatModel chatModel;
 
@@ -49,7 +55,7 @@ public class DocumentEditPlanBuilder {
             case INSERT -> buildInsertPlan(taskId, selector, instruction);
             case UPDATE_CONTENT -> buildRewritePlan(taskId, intentType, selector, instruction, false);
             case UPDATE_STYLE -> buildRewritePlan(taskId, intentType, selector, instruction, true);
-            case DELETE -> buildDeletePlan(taskId, selector);
+            case DELETE -> buildDeletePlan(taskId, selector, instruction);
             case INSERT_MEDIA, ADJUST_LAYOUT -> DocumentEditPlan.builder()
                     .taskId(taskId)
                     .intentType(intentType)
@@ -212,7 +218,7 @@ public class DocumentEditPlanBuilder {
                 .build();
     }
 
-    private DocumentEditPlan buildDeletePlan(String taskId, DocumentTargetSelector selector) {
+    private DocumentEditPlan buildDeletePlan(String taskId, DocumentTargetSelector selector, String instruction) {
         List<String> blockIds = selector.getMatchedBlockIds() == null ? List.of() : selector.getMatchedBlockIds();
         boolean exactBlock = selector.getLocatorStrategy() == DocumentLocatorStrategy.BY_EXACT_TEXT && blockIds.size() == 1;
         boolean sectionDelete = selector.getLocatorStrategy() == DocumentLocatorStrategy.BY_HEADING && !blockIds.isEmpty();
@@ -221,21 +227,28 @@ public class DocumentEditPlanBuilder {
         boolean requiresApproval;
         if (exactBlock) {
             commandType = DocumentPatchOperationType.BLOCK_DELETE;
-            requiresApproval = false;
+            requiresApproval = true;
             operations.add(DocumentPatchOperation.builder()
                     .operationType(DocumentPatchOperationType.BLOCK_DELETE)
                     .blockId(blockIds.get(0))
                     .oldText(selector.getMatchedExcerpt())
-                    .justification("删除唯一命中的目标 block")
+                    .justification("删除唯一命中的目标 block，需人工确认")
                     .build());
         } else if (sectionDelete) {
+            DeleteScope deleteScope = classifyDeleteScope(selector, instruction);
+            List<String> targetBlockIds = deleteScope == DeleteScope.BODY_ONLY && blockIds.size() > 1
+                    ? blockIds.subList(1, blockIds.size())
+                    : blockIds;
+            if (targetBlockIds.isEmpty()) {
+                throw new IllegalStateException("目标章节没有可删除的正文内容");
+            }
             commandType = DocumentPatchOperationType.BLOCK_DELETE;
             requiresApproval = true;
             operations.add(DocumentPatchOperation.builder()
                     .operationType(DocumentPatchOperationType.BLOCK_DELETE)
-                    .blockId(String.join(",", blockIds))
+                    .blockId(String.join(",", targetBlockIds))
                     .oldText(selector.getMatchedExcerpt())
-                    .justification("删除整节内容，需人工确认")
+                    .justification(deleteScope == DeleteScope.BODY_ONLY ? "删除章节正文，保留章节标题，需人工确认" : "删除整节内容，需人工确认")
                     .build());
         } else {
             commandType = DocumentPatchOperationType.STR_REPLACE;
@@ -259,6 +272,29 @@ public class DocumentEditPlanBuilder {
                 .riskLevel(requiresApproval ? DocumentRiskLevel.HIGH : DocumentRiskLevel.MEDIUM)
                 .patchOperations(operations)
                 .build();
+    }
+
+    private DeleteScope classifyDeleteScope(DocumentTargetSelector selector, String instruction) {
+        String prompt = """
+                你是文档删除范围判定器。
+                请根据用户指令和当前命中的文档片段，判断删除范围。
+                只能输出一个枚举值，不要解释：
+                BODY_ONLY
+                WHOLE_SECTION
+
+                规则：
+                1. 如果用户表达的是删除某节的“内容/正文/下面内容/这一段说明”，输出 BODY_ONLY。
+                2. 如果用户表达的是删除整个小节/整节/整个章节/标题连同内容一起删除，输出 WHOLE_SECTION。
+                3. 无法确定时，默认输出 WHOLE_SECTION。
+
+                用户指令：
+                %s
+
+                当前命中片段：
+                %s
+                """.formatted(instruction == null ? "" : instruction, selector.getMatchedExcerpt());
+        String response = trim(chatModel.call(prompt)).toUpperCase(Locale.ROOT);
+        return "BODY_ONLY".equals(response) ? DeleteScope.BODY_ONLY : DeleteScope.WHOLE_SECTION;
     }
 
     private String explain(String excerpt, String instruction) {

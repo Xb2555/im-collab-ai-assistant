@@ -1,6 +1,5 @@
 package com.lark.imcollab.common.model.vo;
 
-import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
@@ -25,5 +24,5 @@ public class DocumentIterationVO implements Serializable {
     private String docUrl;
     private List<String> modifiedBlocks;
     private String summary;
-    private DocumentEditPlan editPlan;
+    private DocumentIterationPlanVO editPlan;
 }

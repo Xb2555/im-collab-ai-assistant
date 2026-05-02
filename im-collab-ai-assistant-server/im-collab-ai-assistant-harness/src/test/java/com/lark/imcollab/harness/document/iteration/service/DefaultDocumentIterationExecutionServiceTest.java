@@ -15,6 +15,7 @@ import com.lark.imcollab.common.model.enums.DocumentLocatorStrategy;
 import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
 import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.enums.DocumentTargetType;
+import com.lark.imcollab.common.model.vo.DocumentIterationPlanVO;
 import com.lark.imcollab.common.model.vo.DocumentIterationVO;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditPlanBuilder;
 import com.lark.imcollab.harness.document.iteration.support.DocumentIterationIntentService;
@@ -87,6 +88,7 @@ class DefaultDocumentIterationExecutionServiceTest {
         DocumentIterationVO response = service.execute(request);
 
         assertThat(response.getRecognizedIntent()).isEqualTo(DocumentIterationIntentType.EXPLAIN);
+        assertThat(response.getEditPlan()).isInstanceOf(DocumentIterationPlanVO.class);
         verify(runtimeSupport, never()).touchOwnedDocument(any(), any());
         verify(runtimeSupport).complete(any(), anyString());
     }
@@ -122,6 +124,8 @@ class DefaultDocumentIterationExecutionServiceTest {
         DocumentIterationVO response = service.execute(request);
 
         assertThat(response.getModifiedBlocks()).containsExactly("text-match");
+        assertThat(response.getEditPlan().getGeneratedContent()).isEqualTo("新内容");
+        assertThat(response.getEditPlan().getTargetTitle()).isEqualTo("项目背景");
         verify(runtimeSupport).touchOwnedDocument(any(), any());
         verify(runtimeSupport).complete(any(), anyString());
     }
@@ -154,6 +158,7 @@ class DefaultDocumentIterationExecutionServiceTest {
 
         assertThat(response.getPlanningPhase()).isEqualTo("WAITING_APPROVAL");
         assertThat(response.isRequireInput()).isTrue();
+        assertThat(response.getEditPlan().getRiskLevel()).isEqualTo(DocumentRiskLevel.HIGH);
         verify(runtimeSupport).waitForApproval(any(), any(), any(), any(), anyString());
         verify(runtimeSupport, never()).complete(any(), anyString());
         verify(patchExecutor, never()).execute(anyString(), any());

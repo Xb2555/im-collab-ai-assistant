@@ -26,6 +26,10 @@ public class DocumentStructureParser {
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL
     );
     private static final Pattern HEADING_INDEX_PATTERN = Pattern.compile("^[一二三四五六七八九十0-9]+[、.．]\\s*");
+    private static final Pattern ORDINAL_SECTION_PATTERN = Pattern.compile(
+            "第\\s*([一二三四五六七八九十百千万两0-9]+)\\s*(小节|章节|章|节|部分)"
+    );
+    private static final Pattern DECIMAL_HEADING_PATTERN = Pattern.compile("^(\\d+(?:\\.\\d+)+)");
 
     public List<HeadingBlock> parseHeadings(String xml) {
         if (!hasText(xml)) {
@@ -137,6 +141,33 @@ public class DocumentStructureParser {
         return matcher.group(1).trim();
     }
 
+    public HeadingBlock resolveOrdinalHeading(String instruction, List<HeadingBlock> headings) {
+        if (!hasText(instruction) || headings == null || headings.isEmpty()) {
+            return null;
+        }
+        Matcher matcher = ORDINAL_SECTION_PATTERN.matcher(instruction);
+        if (!matcher.find()) {
+            return null;
+        }
+        int ordinal = parseChineseOrdinal(matcher.group(1));
+        if (ordinal <= 0) {
+            return null;
+        }
+        String unit = matcher.group(2);
+        List<HeadingBlock> candidates = selectOrdinalCandidates(headings, unit);
+        if ("小节".equals(unit) && hasDecimalNumberedSubsections(candidates)) {
+            return resolveOrdinalByHeadingNumber(candidates, ordinal, unit);
+        }
+        HeadingBlock semanticMatch = resolveOrdinalByHeadingNumber(candidates, ordinal, unit);
+        if (semanticMatch != null) {
+            return semanticMatch;
+        }
+        if (ordinal > candidates.size()) {
+            return null;
+        }
+        return candidates.get(ordinal - 1);
+    }
+
     private List<HeadingBlock> preferLongest(List<HeadingBlock> matches) {
         if (matches.size() <= 1) {
             return matches;
@@ -174,6 +205,117 @@ public class DocumentStructureParser {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private List<HeadingBlock> selectOrdinalCandidates(List<HeadingBlock> headings, String unit) {
+        if ("小节".equals(unit)) {
+            int minLevel = headings.stream().mapToInt(HeadingBlock::getLevel).min().orElse(Integer.MAX_VALUE);
+            List<HeadingBlock> nested = headings.stream().filter(heading -> heading.getLevel() > minLevel).toList();
+            return nested.isEmpty() ? headings : nested;
+        }
+        int minLevel = headings.stream().mapToInt(HeadingBlock::getLevel).min().orElse(Integer.MAX_VALUE);
+        List<HeadingBlock> topLevel = headings.stream().filter(heading -> heading.getLevel() == minLevel).toList();
+        return topLevel.isEmpty() ? headings : topLevel;
+    }
+
+    private int parseChineseOrdinal(String raw) {
+        if (!hasText(raw)) {
+            return -1;
+        }
+        String normalized = raw.trim();
+        if (normalized.chars().allMatch(Character::isDigit)) {
+            try {
+                return Integer.parseInt(normalized);
+            } catch (NumberFormatException exception) {
+                return -1;
+            }
+        }
+        normalized = normalized.replace("两", "二");
+        int result = 0;
+        int section = 0;
+        int number = 0;
+        for (char ch : normalized.toCharArray()) {
+            int digit = switch (ch) {
+                case '零' -> 0;
+                case '一' -> 1;
+                case '二' -> 2;
+                case '三' -> 3;
+                case '四' -> 4;
+                case '五' -> 5;
+                case '六' -> 6;
+                case '七' -> 7;
+                case '八' -> 8;
+                case '九' -> 9;
+                default -> -1;
+            };
+            if (digit >= 0) {
+                number = digit;
+                continue;
+            }
+            int unit = switch (ch) {
+                case '十' -> 10;
+                case '百' -> 100;
+                case '千' -> 1000;
+                case '万' -> 10000;
+                default -> -1;
+            };
+            if (unit < 0) {
+                return -1;
+            }
+            if (unit == 10000) {
+                section = (section + Math.max(number, 1)) * unit;
+                result += section;
+                section = 0;
+            } else {
+                section += Math.max(number, 1) * unit;
+            }
+            number = 0;
+        }
+        return result + section + number;
+    }
+
+    private HeadingBlock resolveOrdinalByHeadingNumber(List<HeadingBlock> candidates, int ordinal, String unit) {
+        if (!"小节".equals(unit) || candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        List<HeadingBlock> decimalCandidates = candidates.stream()
+                .filter(candidate -> extractTrailingDecimalOrdinal(candidate.getText()) > 0)
+                .toList();
+        if (decimalCandidates.isEmpty()) {
+            return null;
+        }
+        for (HeadingBlock candidate : decimalCandidates) {
+            if (extractTrailingDecimalOrdinal(candidate.getText()) == ordinal) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasDecimalNumberedSubsections(List<HeadingBlock> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return false;
+        }
+        return candidates.stream().anyMatch(candidate -> extractTrailingDecimalOrdinal(candidate.getText()) > 0);
+    }
+
+    private int extractTrailingDecimalOrdinal(String headingText) {
+        if (!hasText(headingText)) {
+            return -1;
+        }
+        Matcher matcher = DECIMAL_HEADING_PATTERN.matcher(headingText.trim());
+        if (!matcher.find()) {
+            return -1;
+        }
+        String[] parts = matcher.group(1).split("\\.");
+        if (parts.length < 2) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(parts[parts.length - 1]);
+        } catch (NumberFormatException exception) {
+            return -1;
+        }
     }
 
     @Getter

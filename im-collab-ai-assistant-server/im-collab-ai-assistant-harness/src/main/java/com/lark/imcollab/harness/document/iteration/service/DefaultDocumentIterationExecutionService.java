@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.entity.DocumentTargetSelector;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
+import com.lark.imcollab.common.model.vo.DocumentIterationPlanVO;
 import com.lark.imcollab.common.model.vo.DocumentIterationVO;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditPlanBuilder;
 import com.lark.imcollab.harness.document.iteration.support.DocumentIterationIntentService;
@@ -99,7 +100,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                         .docUrl(resolveDocUrl(ownedArtifact, pending.getDocUrl()))
                         .modifiedBlocks(List.of())
                         .summary(defaultIfBlank(request == null ? null : request.getFeedback(), "审批已拒绝"))
-                        .editPlan(pending.getEditPlan())
+                        .editPlan(toPlanVO(pending.getEditPlan()))
                         .build();
             }
 
@@ -178,7 +179,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                 .docUrl(resolveDocUrl(ownedArtifact, docRef))
                 .modifiedBlocks(patchResult.getModifiedBlocks())
                 .summary(summary)
-                .editPlan(editPlan)
+                .editPlan(toPlanVO(editPlan))
                 .build();
     }
 
@@ -205,7 +206,24 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                 .docUrl(resolveDocUrl(ownedArtifact, requestDocUrl))
                 .modifiedBlocks(List.of())
                 .summary(summary)
-                .editPlan(editPlan)
+                .editPlan(toPlanVO(editPlan))
+                .build();
+    }
+
+    private DocumentIterationPlanVO toPlanVO(DocumentEditPlan editPlan) {
+        if (editPlan == null) {
+            return null;
+        }
+        String targetTitle = editPlan.getSelector() == null ? null : editPlan.getSelector().getLocatorValue();
+        String targetPreview = editPlan.getSelector() == null ? null : editPlan.getSelector().getMatchedExcerpt();
+        return DocumentIterationPlanVO.builder()
+                .intentType(editPlan.getIntentType())
+                .targetTitle(targetTitle)
+                .targetPreview(targetPreview)
+                .generatedContent(editPlan.getGeneratedContent())
+                .toolCommandType(editPlan.getToolCommandType())
+                .requiresApproval(editPlan.isRequiresApproval())
+                .riskLevel(editPlan.getRiskLevel())
                 .build();
     }
 

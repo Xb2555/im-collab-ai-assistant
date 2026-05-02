@@ -10,6 +10,7 @@ import com.lark.imcollab.common.model.enums.DocumentRelativePosition;
 import com.lark.imcollab.common.model.enums.DocumentTargetType;
 import com.lark.imcollab.skills.lark.doc.LarkDocFetchResult;
 import com.lark.imcollab.skills.lark.doc.LarkDocTool;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -20,15 +21,18 @@ public class DocumentTargetLocator {
     private final DocumentAnchorIntentService anchorIntentService;
     private final LarkDocTool larkDocTool;
     private final DocumentStructureParser structureParser;
+    private final ChatModel chatModel;
 
     public DocumentTargetLocator(
             DocumentAnchorIntentService anchorIntentService,
             LarkDocTool larkDocTool,
-            DocumentStructureParser structureParser
+            DocumentStructureParser structureParser,
+            ChatModel chatModel
     ) {
         this.anchorIntentService = anchorIntentService;
         this.larkDocTool = larkDocTool;
         this.structureParser = structureParser;
+        this.chatModel = chatModel;
     }
 
     public DocumentTargetSelector locate(Artifact artifact, DocumentIterationIntentType intentType, String instruction) {
@@ -147,7 +151,11 @@ public class DocumentTargetLocator {
         String query = hasText(decision.locatorValue()) ? decision.locatorValue() : instruction;
         List<DocumentStructureParser.HeadingBlock> matches = structureParser.matchHeadings(query, headings);
         if (matches.isEmpty()) {
-            throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "未能定位目标章节，请明确指出标题或引用需要修改的原文");
+            DocumentStructureParser.HeadingBlock modelSelectedHeading = selectHeadingByModel(instruction, headings);
+            if (modelSelectedHeading == null) {
+                throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "未能定位目标章节，请明确指出标题或引用需要修改的原文");
+            }
+            matches = List.of(modelSelectedHeading);
         }
         if (matches.size() > 1) {
             throw new AiAssistantException(BusinessCode.PARAMS_ERROR,
@@ -181,6 +189,102 @@ public class DocumentTargetLocator {
                 .matchedExcerpt(structureParser.unwrapMarkdownFragment(sectionMarkdown.getContent()))
                 .matchedBlockIds(structureParser.parseBlockIds(sectionXml.getContent()))
                 .build();
+    }
+
+    private DocumentStructureParser.HeadingBlock selectHeadingByModel(
+            String instruction,
+            List<DocumentStructureParser.HeadingBlock> headings
+    ) {
+        if (headings == null || headings.isEmpty()) {
+            return null;
+        }
+        StringBuilder outline = new StringBuilder();
+        for (DocumentStructureParser.HeadingBlock heading : headings) {
+            outline.append("- blockId=")
+                    .append(heading.getBlockId())
+                    .append(", level=h")
+                    .append(heading.getLevel())
+                    .append(", title=")
+                    .append(heading.getText())
+                    .append('\n');
+        }
+        String prompt = """
+                你是文档标题定位助手。
+                基于用户指令和当前文档目录，选出最匹配的一个标题 block。
+
+                规则：
+                1. 只能返回一行：BLOCK_ID=<目录里已有的blockId>，或者 BLOCK_ID=NOT_FOUND。
+                2. 如果用户使用相对描述（如“第一小节”“第二部分”），必须严格依据当前目录结构理解，不要臆造缺失标题。
+                3. “小节”优先指向较细粒度的子标题，不要把它提升解释成父章节标题。
+                4. 如果用户说“第一小节”，但当前目录里第一个细粒度小节已经缺失、只剩“2.2/3.1”之类后续项，返回 BLOCK_ID=NOT_FOUND。
+                5. 如果目录结构已经被破坏，导致指令存在歧义，返回 BLOCK_ID=NOT_FOUND。
+                6. 不要为了给出结果而勉强选择父标题或相邻标题。
+                7. 不要解释，不要返回标题文本。
+
+                示例1：
+                用户指令：删除第一小节的内容
+                目录：
+                - h2 一、背景
+                - h3 2.1 目标
+                - h3 2.2 非目标
+                返回：BLOCK_ID=<2.1对应的blockId>
+
+                示例2：
+                用户指令：删除第一小节的内容
+                目录：
+                - h2 一、背景
+                - h3 2.2 非目标
+                - h2 二、架构
+                返回：BLOCK_ID=NOT_FOUND
+
+                示例3：
+                用户指令：删除第一小节的内容
+                目录：
+                - h2 二、项目目标
+                - h2 三、项目架构
+                返回：BLOCK_ID=NOT_FOUND
+
+                用户指令：
+                %s
+
+                当前文档目录：
+                %s
+                """.formatted(instruction, outline);
+        String response = chatModel.call(prompt);
+        if (response == null || response.isBlank()) {
+            return null;
+        }
+        String line = response.trim();
+        if (!line.startsWith("BLOCK_ID=")) {
+            return null;
+        }
+        String blockId = line.substring("BLOCK_ID=".length()).trim();
+        if ("NOT_FOUND".equalsIgnoreCase(blockId) || blockId.isBlank()) {
+            return null;
+        }
+        DocumentStructureParser.HeadingBlock selected = headings.stream()
+                .filter(heading -> blockId.equals(heading.getBlockId()))
+                .findFirst()
+                .orElse(null);
+        return isSelectionCompatibleWithInstruction(instruction, headings, selected) ? selected : null;
+    }
+
+    private boolean isSelectionCompatibleWithInstruction(
+            String instruction,
+            List<DocumentStructureParser.HeadingBlock> headings,
+            DocumentStructureParser.HeadingBlock selected
+    ) {
+        if (selected == null || instruction == null || instruction.isBlank() || headings == null || headings.isEmpty()) {
+            return selected != null;
+        }
+        String normalized = instruction.replaceAll("\\s+", "");
+        if (normalized.contains("小节")) {
+            int minLevel = headings.stream().mapToInt(DocumentStructureParser.HeadingBlock::getLevel).min().orElse(Integer.MAX_VALUE);
+            if (selected.getLevel() <= minLevel) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private DocumentTargetSelector resolveByKeyword(

@@ -151,4 +151,50 @@ class DocumentEditPlanBuilderTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("没有正文");
     }
+
+    @Test
+    void deleteSectionContentKeepsHeadingAndDeletesBodyBlocksOnly() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("BODY_ONLY");
+        DocumentEditPlanBuilder builder = new DocumentEditPlanBuilder(chatModel);
+        DocumentTargetSelector selector = DocumentTargetSelector.builder()
+                .targetType(DocumentTargetType.SECTION)
+                .locatorStrategy(DocumentLocatorStrategy.BY_HEADING)
+                .locatorValue("2.1 目标")
+                .matchedExcerpt("### 2.1 目标\n\n正文")
+                .matchedBlockIds(List.of("heading-block", "body-1", "body-2"))
+                .build();
+
+        DocumentEditPlan plan = builder.build("task-1", DocumentIterationIntentType.DELETE, selector, "删除第一小节的内容");
+
+        assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.BLOCK_DELETE);
+        assertThat(plan.isRequiresApproval()).isTrue();
+        assertThat(plan.getPatchOperations()).singleElement().satisfies(operation -> {
+            assertThat(operation.getBlockId()).isEqualTo("body-1,body-2");
+            assertThat(operation.getJustification()).contains("保留章节标题");
+            assertThat(operation.getJustification()).contains("需人工确认");
+        });
+    }
+
+    @Test
+    void deleteWholeSectionStillTargetsHeadingAndBody() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("WHOLE_SECTION");
+        DocumentEditPlanBuilder builder = new DocumentEditPlanBuilder(chatModel);
+        DocumentTargetSelector selector = DocumentTargetSelector.builder()
+                .targetType(DocumentTargetType.SECTION)
+                .locatorStrategy(DocumentLocatorStrategy.BY_HEADING)
+                .locatorValue("2.1 目标")
+                .matchedExcerpt("### 2.1 目标\n\n正文")
+                .matchedBlockIds(List.of("heading-block", "body-1", "body-2"))
+                .build();
+
+        DocumentEditPlan plan = builder.build("task-1", DocumentIterationIntentType.DELETE, selector, "删除第一小节");
+
+        assertThat(plan.getPatchOperations()).singleElement().satisfies(operation -> {
+            assertThat(operation.getBlockId()).isEqualTo("heading-block,body-1,body-2");
+            assertThat(operation.getJustification()).contains("删除整节内容");
+        });
+        assertThat(plan.isRequiresApproval()).isTrue();
+    }
 }
