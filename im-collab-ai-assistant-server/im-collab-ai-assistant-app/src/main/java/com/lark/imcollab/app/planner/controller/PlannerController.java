@@ -4,6 +4,8 @@ import com.lark.imcollab.app.planner.assembler.PlannerViewAssembler;
 import com.lark.imcollab.app.planner.assembler.TaskRuntimeViewAssembler;
 import com.lark.imcollab.app.planner.service.PlannerCommandApplicationService;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
+import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
+import com.lark.imcollab.common.model.dto.DocumentIterationApprovalRequest;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
 import com.lark.imcollab.common.model.dto.ResumeRequest;
@@ -19,6 +21,7 @@ import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.PlanCardVO;
+import com.lark.imcollab.common.model.vo.DocumentIterationVO;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.common.model.vo.TaskDetailVO;
 import com.lark.imcollab.common.model.vo.TaskListVO;
@@ -26,6 +29,7 @@ import com.lark.imcollab.common.model.vo.TaskSummaryVO;
 import com.lark.imcollab.common.utils.ResultUtils;
 import com.lark.imcollab.gateway.auth.dto.LarkFrontendUserResponse;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
+import com.lark.imcollab.harness.document.iteration.service.DocumentIterationExecutionService;
 import com.lark.imcollab.planner.service.AsyncPlannerService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
@@ -80,6 +84,7 @@ public class PlannerController {
     private final TaskRuntimeViewAssembler taskRuntimeViewAssembler;
     private final LarkOAuthService oauthService;
     private final PlannerProperties plannerProperties;
+    private final DocumentIterationExecutionService documentIterationExecutionService;
 
     @PostMapping("/plan")
     @Operation(summary = "1. 创建任务规划", description = "快速接收任务并在后台生成可执行计划")
@@ -309,6 +314,38 @@ public class PlannerController {
                 .orElseGet(() -> error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId));
     }
 
+    @PostMapping("/document-iteration")
+    @Operation(summary = "5.1. 执行文档迭代", description = "针对系统已生成并登记的飞书文档执行 explain/insert/update/delete 等受控编辑")
+    public BaseResponse<DocumentIterationVO> iterateDocument(
+            @RequestBody DocumentIterationRequest request,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
+        Optional<LarkFrontendUserResponse> user = currentUser(authorization);
+        if (user.isEmpty()) {
+            return error(BusinessCode.NOT_LOGIN_ERROR, "Not logged in");
+        }
+        if (request != null && hasText(request.getTaskId()) && !canAccessTask(request.getTaskId(), user.get().openId())) {
+            return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + request.getTaskId());
+        }
+        DocumentIterationRequest ownedRequest = withCurrentUser(request, user.get());
+        return ResultUtils.success(documentIterationExecutionService.execute(ownedRequest));
+    }
+
+    @PostMapping("/{taskId}/document-iteration/approval")
+    @Operation(summary = "5.2. 审批文档迭代计划", description = "对待审批的文档迭代计划执行批准、拒绝或带反馈修改后继续执行")
+    public BaseResponse<DocumentIterationVO> decideDocumentIteration(
+            @PathVariable String taskId,
+            @RequestBody DocumentIterationApprovalRequest request,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
+        Optional<LarkFrontendUserResponse> user = currentUser(authorization);
+        if (user.isEmpty()) {
+            return error(BusinessCode.NOT_LOGIN_ERROR, "Not logged in");
+        }
+        if (!canAccessTask(taskId, user.get().openId())) {
+            return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
+        }
+        return ResultUtils.success(documentIterationExecutionService.decide(taskId, request, user.get().openId()));
+    }
+
     @PostMapping("/{taskId}/commands")
     @Operation(summary = "6. 执行任务指令（确认执行/重新规划/取消规划/失败重试）", description = "用户确认执行、重规划、取消任务或重试失败任务")
     public BaseResponse<PlanPreviewVO> command(
@@ -415,6 +452,18 @@ public class PlannerController {
 
     private PlanRequest withCurrentUser(PlanRequest request, LarkFrontendUserResponse user) {
         PlanRequest owned = request == null ? new PlanRequest() : request;
+        WorkspaceContext context = owned.getWorkspaceContext();
+        if (context == null) {
+            context = new WorkspaceContext();
+            owned.setWorkspaceContext(context);
+        }
+        context.setSenderOpenId(user.openId());
+        context.setInputSource(InputSourceEnum.GUI.name());
+        return owned;
+    }
+
+    private DocumentIterationRequest withCurrentUser(DocumentIterationRequest request, LarkFrontendUserResponse user) {
+        DocumentIterationRequest owned = request == null ? new DocumentIterationRequest() : request;
         WorkspaceContext context = owned.getWorkspaceContext();
         if (context == null) {
             context = new WorkspaceContext();

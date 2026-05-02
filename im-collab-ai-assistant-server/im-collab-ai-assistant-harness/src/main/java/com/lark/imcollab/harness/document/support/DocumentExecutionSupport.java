@@ -58,6 +58,18 @@ public class DocumentExecutionSupport {
     }
 
     public void saveArtifact(String taskId, String stepId, ArtifactType type, String title, String content, String url) {
+        saveArtifact(taskId, stepId, type, title, content, null, url);
+    }
+
+    public void saveArtifact(
+            String taskId,
+            String stepId,
+            ArtifactType type,
+            String title,
+            String content,
+            String documentId,
+            String url
+    ) {
         Artifact artifact = Artifact.builder()
                 .artifactId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -65,7 +77,10 @@ public class DocumentExecutionSupport {
                 .type(type)
                 .title(title)
                 .content(content)
+                .documentId(documentId)
                 .externalUrl(url)
+                .ownerScenario("SCENARIO_C_DOCUMENT_GENERATION")
+                .createdBySystem(true)
                 .createdAt(Instant.now())
                 .build();
         artifactRepository.save(artifact);
@@ -270,7 +285,9 @@ public class DocumentExecutionSupport {
         List<TaskStepRecord> steps = plannerStateStore.findStepsByTaskId(taskId);
         return steps.stream()
                 .filter(Objects::nonNull)
-                .filter(step -> step.getType() == StepTypeEnum.DOC_CREATE || step.getType() == StepTypeEnum.DOC_DRAFT)
+                .filter(step -> step.getType() == StepTypeEnum.DOC_CREATE
+                        || step.getType() == StepTypeEnum.DOC_DRAFT
+                        || step.getType() == StepTypeEnum.DOC_EDIT)
                 .filter(step -> step.getStatus() != StepStatusEnum.COMPLETED
                         && step.getStatus() != StepStatusEnum.SKIPPED
                         && step.getStatus() != StepStatusEnum.SUPERSEDED)
