@@ -16,8 +16,10 @@ public final class DocumentStateKeys {
     public static final String MERMAID_DIAGRAM = "mermaidDiagram";
     public static final String USER_FEEDBACK = "userFeedback";
     public static final String OUTLINE = "outline";
+    public static final String DOCUMENT_PLAN = "documentPlan";
     public static final String SECTION_DRAFTS = "sectionDrafts";
     public static final String REVIEW_RESULT = "reviewResult";
+    public static final String COMPOSED_DRAFT = "composedDraft";
     public static final String SECTION_PROGRESS = "sectionProgress";
     public static final String COMPLETED_SECTION_KEYS = "completedSectionKeys";
     public static final String CURRENT_SECTION_KEY = "currentSectionKey";

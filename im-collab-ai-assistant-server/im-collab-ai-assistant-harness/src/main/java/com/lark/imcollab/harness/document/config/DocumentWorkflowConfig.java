@@ -33,6 +33,7 @@ public class DocumentWorkflowConfig {
         graph.addNode("generate_mermaid", nodes::generateMermaid);
         graph.addNode("validate_mermaid", nodes::validateMermaid);
         graph.addNode("review_doc", nodes::reviewDoc);
+        graph.addNode("compose_doc", nodes::composeDoc);
         graph.addNode("write_doc_and_sync", nodes::writeDocAndSync);
         graph.addEdge(StateGraph.START, "dispatch_doc_task");
         graph.addEdge("dispatch_doc_task", "generate_outline");
@@ -42,9 +43,11 @@ public class DocumentWorkflowConfig {
         graph.addEdge("generate_mermaid", "validate_mermaid");
         graph.addEdge("validate_mermaid", "review_doc");
         graph.addConditionalEdges("review_doc", nodes::routeAfterReview, Map.of(
+                "compose_doc", "compose_doc",
                 "write_doc_and_sync", "write_doc_and_sync",
                 StateGraph.END, StateGraph.END
         ));
+        graph.addEdge("compose_doc", "write_doc_and_sync");
         graph.addConditionalEdges("write_doc_and_sync", nodes::routeAfterWrite, Map.of(
                 StateGraph.END, StateGraph.END
         ));
