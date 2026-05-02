@@ -24,5 +24,7 @@ public class ComposedDocumentDraft implements Serializable {
 
     private String consistencyReport;
 
+    private DocumentCompletenessReport completenessReport;
+
     private long version;
 }
