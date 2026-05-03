@@ -120,6 +120,37 @@ class MixedExecutionRuntimeTest {
     }
 
     @Test
+    void summaryRuntimeEventsAttachToSummaryStepAndDoNotResetDocumentStep() {
+        InMemoryRuntime runtime = mixedRuntime();
+        runtime.steps.put("summary-step", TaskStepRecord.builder()
+                .stepId("summary-step")
+                .taskId("task-1")
+                .type(StepTypeEnum.SUMMARY)
+                .status(StepStatusEnum.READY)
+                .version(1)
+                .build());
+        runtime.steps.get("doc-step").setStatus(StepStatusEnum.COMPLETED);
+        runtime.steps.get("ppt-step").setStatus(StepStatusEnum.COMPLETED);
+        DocumentExecutionSupport documentSupport = new DocumentExecutionSupport(
+                runtime.taskRepository,
+                runtime.eventRepository,
+                runtime.artifactRepository,
+                runtime.stateStore,
+                new ObjectMapper(),
+                new TaskCancellationRegistry());
+
+        documentSupport.publishEvent("task-1", "summary-step", TaskEventType.STEP_STARTED, "开始生成任务上下文摘要");
+        documentSupport.publishEvent("task-1", "summary-step", TaskEventType.STEP_COMPLETED, "任务上下文摘要已完成");
+
+        assertThat(runtime.runtimeEvents).extracting(TaskEventRecord::getStepId)
+                .containsExactly("summary-step", "summary-step");
+        assertThat(runtime.steps.get("summary-step").getStatus()).isEqualTo(StepStatusEnum.COMPLETED);
+        assertThat(runtime.steps.get("doc-step").getStatus()).isEqualTo(StepStatusEnum.COMPLETED);
+        assertThat(runtime.steps.get("ppt-step").getStatus()).isEqualTo(StepStatusEnum.COMPLETED);
+        assertThat(runtime.taskRecords.get("task-1").getStatus()).isEqualTo(TaskStatusEnum.COMPLETED);
+    }
+
+    @Test
     void internalDocumentArtifactsAreNotProjectedToPlannerRuntime() {
         InMemoryRuntime runtime = mixedRuntime();
         DocumentExecutionSupport documentSupport = new DocumentExecutionSupport(
@@ -313,7 +344,7 @@ class MixedExecutionRuntimeTest {
 
         @Override
         public Optional<TaskStepRecord> findStep(String stepId) {
-            return Optional.ofNullable(runtime.steps.get(stepId));
+            return Optional.empty();
         }
 
         @Override

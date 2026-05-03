@@ -7,6 +7,7 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.common.util.ExecutionCommandGuard;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
@@ -84,6 +85,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         }
 
         PlanTaskSession accepted = acceptedSession(message);
+        replyImmediateReceipt(message, accepted);
         try {
             plannerDispatchExecutor.execute(() -> dispatchAndReply(message));
         } catch (RejectedExecutionException exception) {
@@ -94,6 +96,32 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             return failed;
         }
         return accepted;
+    }
+
+    private void replyImmediateReceipt(LarkInboundMessage message, PlanTaskSession accepted) {
+        String receipt = immediateReceiptText(message == null ? null : message.content());
+        if (!hasText(receipt)) {
+            return;
+        }
+        replyText(message, accepted, receipt, "immediate receipt");
+    }
+
+    private String immediateReceiptText(String content) {
+        if (!hasText(content) || shouldSkipImmediateReceipt(content)) {
+            return "";
+        }
+        if (ExecutionCommandGuard.isExplicitExecutionRequest(content)) {
+            return "";
+        }
+        return "收到，我先帮你看一下。";
+    }
+
+    private boolean shouldSkipImmediateReceipt(String content) {
+        String compact = compact(content);
+        if (!hasText(compact)) {
+            return true;
+        }
+        return compact.matches("(完整计划|详细计划|计划是什么|进度怎么样|任务状态|已有产物|你是谁|你能做什么|哈哈+|好|好的|嗯+|行|可以|ok|OK)");
     }
 
     private void dispatchAndReply(LarkInboundMessage message) {
@@ -167,6 +195,10 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             replyRetryExecution(message, session);
             return;
         }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
+            replyText(message, session, withStatus("好的，我现在开始执行。", snapshot(session)), "execution started");
+            return;
+        }
         if (taskCommandFacade == null || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
             replyText(message, session, replyFormatter.status(snapshot(session)), "confirm unavailable");
             return;
@@ -176,7 +208,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             replyText(message, executing, replyFormatter.status(snapshot(executing)), "execution failed");
             return;
         }
-        replyText(message, executing, replyFormatter.executionStarted(snapshot(executing)), "execution started");
+        replyText(message, executing, withStatus("好的，我现在开始执行。", snapshot(executing)), "execution started");
     }
 
     private void replyRetryExecution(LarkInboundMessage message, PlanTaskSession session) {
@@ -189,7 +221,15 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
             return;
         }
-        replyText(message, retrying, replyFormatter.retryStarted(snapshot(retrying)), "retry started");
+        replyText(message, retrying, withStatus("好的，我现在从失败的步骤重新试一次。", snapshot(retrying)), "retry started");
+    }
+
+    private String withStatus(String confirmation, TaskRuntimeSnapshot snapshot) {
+        String status = replyFormatter.status(snapshot);
+        if (!hasText(status)) {
+            return confirmation;
+        }
+        return confirmation + "\n" + status;
     }
 
     private void replyStatus(LarkInboundMessage message, PlanTaskSession session) {
@@ -312,6 +352,23 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String compact(String input) {
+        return input == null ? "" : input.trim()
+                .replaceAll("\\s+", "")
+                .replace("“", "")
+                .replace("”", "")
+                .replace("\"", "")
+                .replace("'", "")
+                .replace("？", "")
+                .replace("?", "")
+                .replace("。", "")
+                .replace(".", "")
+                .replace("，", "")
+                .replace(",", "")
+                .replace("！", "")
+                .replace("!", "");
     }
 
     private boolean hasAssistantReply(PlanTaskSession session) {
