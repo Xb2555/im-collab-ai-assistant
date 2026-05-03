@@ -20,6 +20,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcquisitionFacade {
@@ -27,15 +29,18 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
     private final LarkMessageHistoryTool messageHistoryTool;
     private final LarkDocTool docTool;
     private final PlannerProperties plannerProperties;
+    private final ContextMessageSelectionService messageSelectionService;
 
     public DefaultPlannerContextAcquisitionFacade(
             LarkMessageHistoryTool messageHistoryTool,
             LarkDocTool docTool,
-            PlannerProperties plannerProperties
+            PlannerProperties plannerProperties,
+            ContextMessageSelectionService messageSelectionService
     ) {
         this.messageHistoryTool = messageHistoryTool;
         this.docTool = docTool;
         this.plannerProperties = plannerProperties;
+        this.messageSelectionService = messageSelectionService;
     }
 
     @Override
@@ -70,6 +75,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
 
         boolean hasContent = !selectedMessages.isEmpty() || !docFragments.isEmpty();
         String summary = buildSummary(selectedMessages, docFragments, sourceRefs);
+        String failureMessage = firstNonBlank(String.join("；", failures), "没有读取到可用上下文。");
         return ContextAcquisitionResult.builder()
                 .success(hasContent)
                 .sufficient(hasContent)
@@ -78,7 +84,8 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                 .selectedMessageIds(selectedMessageIds)
                 .docFragments(docFragments)
                 .sourceRefs(new ArrayList<>(sourceRefs))
-                .message(hasContent ? summary : firstNonBlank(String.join("；", failures), "没有读取到可用上下文。"))
+                .message(hasContent ? summary : failureMessage)
+                .clarificationQuestion(hasContent ? "" : buildNoContentQuestion(plan, failures))
                 .build();
     }
 
@@ -97,7 +104,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             return;
         }
         String containerIdType = threadId == null || threadId.isBlank() ? "chat" : "thread";
-        TimeRange range = resolveTimeRange(firstNonBlank(source.getTimeRange(), workspaceContext == null ? null : workspaceContext.getTimeRange()));
+        TimeRange range = resolveTimeRange(source, workspaceContext, rawInstruction);
         int limit = normalizeLimit(source.getLimit(), plannerProperties.getContextCollection().getMaxImMessages());
         LarkMessageHistoryResponse response = messageHistoryTool.fetchHistory(
                 containerIdType,
@@ -112,13 +119,25 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             return;
         }
         sourceRefs.add("im:" + containerIdType + ":" + containerId);
-        for (LarkMessageHistoryItem item : response.items()) {
-            if (item == null || item.deleted() || item.content() == null || item.content().isBlank()) {
-                continue;
-            }
-            if ("app".equalsIgnoreCase(item.senderType()) || sameText(item.content(), rawInstruction)) {
-                continue;
-            }
+        List<LarkMessageHistoryItem> candidates = response.items().stream()
+                .filter(item -> item != null && !item.deleted() && item.content() != null && !item.content().isBlank())
+                .filter(item -> !"app".equalsIgnoreCase(item.senderType()))
+                .filter(item -> workspaceContext == null
+                        || workspaceContext.getMessageId() == null
+                        || !workspaceContext.getMessageId().equals(item.messageId()))
+                .filter(item -> !sameText(item.content(), rawInstruction))
+                .filter(item -> !containsUserInstruction(item.content(), rawInstruction))
+                .toList();
+        Set<String> explicitMessageIds = selectedMessageIds(workspaceContext);
+        if (!explicitMessageIds.isEmpty()) {
+            candidates = candidates.stream()
+                    .filter(item -> item.messageId() != null && explicitMessageIds.contains(item.messageId()))
+                    .toList();
+        }
+        List<LarkMessageHistoryItem> selected = source.getSelectionInstruction() != null && !source.getSelectionInstruction().isBlank()
+                ? messageSelectionService.select(rawInstruction, source.getSelectionInstruction(), candidates)
+                : candidates;
+        for (LarkMessageHistoryItem item : selected) {
             selectedMessages.add(renderMessage(item));
             if (item.messageId() != null && !item.messageId().isBlank()) {
                 selectedMessageIds.add(item.messageId());
@@ -152,7 +171,13 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         }
     }
 
-    private TimeRange resolveTimeRange(String timeRange) {
+    private TimeRange resolveTimeRange(ContextSourceRequest source, WorkspaceContext workspaceContext, String rawInstruction) {
+        String sourceRange = source == null ? "" : firstNonBlank(source.getTimeRange(), joinRange(source.getStartTime(), source.getEndTime()));
+        String timeRange = firstNonBlank(sourceRange, workspaceContext == null ? null : workspaceContext.getTimeRange(), rawInstruction);
+        TimeRange relative = resolveRelativeTimeRange(timeRange);
+        if (relative != null) {
+            return relative;
+        }
         if (timeRange != null && !timeRange.isBlank()) {
             String[] parts = timeRange.split("[/,，~至到]+");
             if (parts.length >= 2) {
@@ -166,6 +191,42 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         Instant end = Instant.now();
         Instant start = end.minusSeconds(Math.max(1, plannerProperties.getContextCollection().getDefaultLookbackMinutes()) * 60L);
         return new TimeRange(String.valueOf(start.getEpochSecond()), String.valueOf(end.getEpochSecond()));
+    }
+
+    private TimeRange resolveRelativeTimeRange(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        String normalized = normalize(text);
+        Matcher matcher = Pattern.compile("(最近|近)\\s*(\\d{1,4})\\s*(分钟|分|小时|时|天|日)").matcher(text);
+        if (!matcher.find()) {
+            if (normalized.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论).*")) {
+                Instant end = Instant.now();
+                Instant start = end.minusSeconds(10 * 60L);
+                return new TimeRange(String.valueOf(start.getEpochSecond()), String.valueOf(end.getEpochSecond()));
+            }
+            return null;
+        }
+        long amount = Long.parseLong(matcher.group(2));
+        String unit = matcher.group(3);
+        long seconds;
+        if ("分钟".equals(unit) || "分".equals(unit)) {
+            seconds = amount * 60L;
+        } else if ("小时".equals(unit) || "时".equals(unit)) {
+            seconds = amount * 3600L;
+        } else {
+            seconds = amount * 86400L;
+        }
+        Instant end = Instant.now();
+        Instant start = end.minusSeconds(Math.max(60L, seconds));
+        return new TimeRange(String.valueOf(start.getEpochSecond()), String.valueOf(end.getEpochSecond()));
+    }
+
+    private String joinRange(String start, String end) {
+        if (start == null || start.isBlank() || end == null || end.isBlank()) {
+            return "";
+        }
+        return start.trim() + "/" + end.trim();
     }
 
     private String normalizeEpochSeconds(String value) {
@@ -200,6 +261,14 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         return String.join("；", parts);
     }
 
+    private String buildNoContentQuestion(ContextAcquisitionPlan plan, List<String> failures) {
+        boolean hasFailure = failures != null && failures.stream().anyMatch(value -> value != null && !value.isBlank());
+        if (hasFailure) {
+            return "我尝试读取你指定的材料时遇到问题。你可以确认一下机器人是否有权限，或直接把要整理的消息/文档链接发给我吗？";
+        }
+        return "我按你给的条件查了一遍，但没有找到符合条件的消息。你想扩大时间范围、换个关键词，还是直接贴几条要总结的消息给我？";
+    }
+
     private int normalizeLimit(Integer requested, int configuredMax) {
         int max = Math.max(1, configuredMax);
         if (requested == null || requested <= 0) {
@@ -213,8 +282,23 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         return sender + "：" + truncate(item.content(), 800);
     }
 
+    private Set<String> selectedMessageIds(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null || workspaceContext.getSelectedMessageIds() == null) {
+            return Set.of();
+        }
+        return workspaceContext.getSelectedMessageIds().stream()
+                .filter(value -> value != null && !value.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
     private boolean sameText(String left, String right) {
         return normalize(left).equals(normalize(right));
+    }
+
+    private boolean containsUserInstruction(String content, String rawInstruction) {
+        String normalizedContent = normalize(content);
+        String normalizedInstruction = normalize(rawInstruction);
+        return !normalizedInstruction.isBlank() && normalizedContent.contains(normalizedInstruction);
     }
 
     private String normalize(String value) {

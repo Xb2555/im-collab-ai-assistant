@@ -283,4 +283,32 @@ class PlannerToolsTest {
         assertThat(merged.getSelectedMessageIds()).containsExactly("om_1", "om_2");
         verify(memoryService).appendAssistantTurn(session, "已收集上下文：已读取 2 条聊天记录和 1 份文档摘录");
     }
+
+    @Test
+    void contextAcquisitionNodeUsesToolClarificationWhenCollectionFindsNothing() {
+        PlannerContextAcquisitionTool acquisitionTool = mock(PlannerContextAcquisitionTool.class);
+        ContextAcquisitionNodeService service = new ContextAcquisitionNodeService(acquisitionTool);
+        ContextAcquisitionPlan plan = ContextAcquisitionPlan.builder()
+                .needCollection(true)
+                .build();
+        when(acquisitionTool.acquireContext(anyString(), anyString(), any(), any()))
+                .thenReturn(ContextAcquisitionResult.builder()
+                        .success(false)
+                        .sufficient(false)
+                        .message("没有读取到可用上下文。")
+                        .clarificationQuestion("我按你给的条件查了一遍，但没有找到符合条件的消息。你想扩大时间范围，还是换个关键词？")
+                        .build());
+
+        ContextCollectionOutcome outcome = service.collect(
+                "task-1",
+                "拉取最近5分钟带有某个标记的消息并总结",
+                WorkspaceContext.builder().chatId("chat-1").build(),
+                plan
+        );
+
+        assertThat(outcome.contextResult().sufficient()).isFalse();
+        assertThat(outcome.contextResult().clarificationQuestion())
+                .contains("没有找到符合条件的消息")
+                .doesNotContain("权限");
+    }
 }

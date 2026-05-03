@@ -29,5 +29,12 @@ public class ContextSourceRequest implements Serializable {
 
     private List<String> docRefs;
 
+    /**
+     * Natural-language selection criteria copied from the user request.
+     * The concrete tool uses this as a semantic filter for fetched candidates,
+     * instead of assuming every pulled message is relevant.
+     */
+    private String selectionInstruction;
+
     private Integer limit;
 }

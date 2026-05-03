@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -70,9 +71,6 @@ public class ContextNodeService {
                     firstNonBlank(requiredPlan.getReason(), "workspace source needs user input")
             );
         }
-        if (guardedResult.sufficient() && isStrongLocalContext(guardedResult)) {
-            return guardedResult;
-        }
         Optional<ContextAcquisitionPlan> acquisitionPlan = invokeAcquisitionAgent(session, taskId, rawInstruction, workspaceContext);
         if (acquisitionPlan.isPresent() && acquisitionPlan.get().isNeedCollection()) {
             return ContextSufficiencyResult.collect(acquisitionPlan.get(), acquisitionPlan.get().getReason());
@@ -100,6 +98,9 @@ public class ContextNodeService {
                 return guardedResult;
             }
             return result;
+        }
+        if (guardedResult.sufficient() && isStrongLocalContext(guardedResult)) {
+            return guardedResult;
         }
         return guardedResult;
     }
@@ -174,6 +175,11 @@ public class ContextNodeService {
                 Decide whether the available context is enough to create an executable plan.
                 If workspace context only contains the user's latest instruction and no real source material, do NOT treat it as material to summarize.
                 However, if the user instruction itself includes a concrete content body, topic details, or source material after a colon/newline, treat that embedded text as usable context.
+                If the user asks to pull/read/filter/summarize messages from the current chat or group and workspace context has chatId/threadId,
+                return collectionRequired=true with an IM_HISTORY acquisitionPlan. Copy the whole message-selection criteria into selectionInstruction.
+                If the user asks to summarize "recent/prior discussion" or "the previous discussion about topic A/B/C",
+                the topic names are only retrieval criteria, not source material. With chatId/threadId available, return collectionRequired=true.
+                Do not treat the pull instruction itself as the messages to summarize.
                 For vague requests like organizing, summarizing, or showing something to a stakeholder, the context is insufficient unless there are selected messages, document refs, attachments, or a concrete topic/material embedded in the instruction.
                 If insufficient, return sufficient=false, missingItems, and one natural Chinese clarificationQuestion.
                 Do not create plan steps.
@@ -183,6 +189,10 @@ public class ContextNodeService {
         builder.append("Conversation memory:\n").append(memoryService.renderContext(session)).append("\n");
         if (workspaceContext != null) {
             builder.append("Workspace context:\n");
+            builder.append("chatId=").append(nullToEmpty(workspaceContext.getChatId())).append("\n");
+            builder.append("threadId=").append(nullToEmpty(workspaceContext.getThreadId())).append("\n");
+            builder.append("chatType=").append(nullToEmpty(workspaceContext.getChatType())).append("\n");
+            builder.append("inputSource=").append(nullToEmpty(workspaceContext.getInputSource())).append("\n");
             builder.append("selectedMessagesContainsOnlyLatestInstruction=")
                     .append(containsOnlyLatestInstruction(workspaceContext, rawInstruction))
                     .append("\n");
@@ -193,7 +203,11 @@ public class ContextNodeService {
                 builder.append("timeRange=").append(workspaceContext.getTimeRange()).append("\n");
             }
         }
-        builder.append("Return ContextSufficiencyResult JSON only.");
+        builder.append("""
+                Return ContextSufficiencyResult JSON only.
+                When collectionRequired=true, include acquisitionPlan:
+                {"sufficient":false,"contextSummary":"","missingItems":["source_context"],"clarificationQuestion":"","reason":"","collectionRequired":true,"acquisitionPlan":{"needCollection":true,"sources":[{"sourceType":"IM_HISTORY","chatId":"","threadId":"","timeRange":"","selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}}
+                """);
         return builder.toString();
     }
 
@@ -204,14 +218,19 @@ public class ContextNodeService {
                 Decide whether the task needs external context to be pulled before planning.
                 You may request only these sources: IM_HISTORY and LARK_DOC.
                 Use IM_HISTORY when the user refers to recent/prior discussion, chat messages, "刚才", "群里", "聊天记录", and a matching chat/thread source is available.
+                Also use IM_HISTORY when the user says to summarize the previous/current discussion about named topics. Topic names are retrieval criteria, not collected content.
                 If the user refers to group messages but the current chat is p2p/private, do NOT request IM_HISTORY from the private chat; ask the user to provide the group, time range, selected messages, or paste the material.
                 Use LARK_DOC when docRefs are available or the user asks to use/read/convert a Lark document.
                 If selectedMessages already contain real source material, do not request collection.
                 The current user message itself is not selected source material unless selectedMessages contains additional real material.
                 If no usable source id/ref exists, return needCollection=false and put a natural clarificationQuestion.
                 Do not create plan steps and do not answer the user.
+                For IM_HISTORY, copy the user's exact message selection criteria into selectionInstruction.
+                Examples of selection criteria include time window, topics, required marker/text, excluded marker/text, sender constraints, and "if none found then ask me".
+                timeRange should be parseable when possible: use ISO range "start/end", epoch seconds "start/end", or a concise relative range like "最近10分钟".
+
                 Return ContextAcquisitionPlan JSON only:
-                {"needCollection":true|false,"sources":[{"sourceType":"IM_HISTORY|LARK_DOC","chatId":"","threadId":"","timeRange":"","docRefs":[],"limit":30}],"reason":"","clarificationQuestion":""}
+                {"needCollection":true|false,"sources":[{"sourceType":"IM_HISTORY|LARK_DOC","chatId":"","threadId":"","timeRange":"","docRefs":[],"selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}
 
                 """);
         builder.append("User instruction: ").append(rawInstruction == null ? "" : rawInstruction).append("\n");
@@ -291,7 +310,7 @@ public class ContextNodeService {
         }
         if (isExplicitTimeRangeSelection(workspaceContext)
                 && (hasText(workspaceContext.getChatId()) || hasText(workspaceContext.getThreadId()))
-                && !hasRealSelectedMessages(workspaceContext)) {
+        ) {
             sources.add(ContextSourceRequest.builder()
                     .sourceType(ContextSourceTypeEnum.IM_HISTORY)
                     .chatId(workspaceContext.getChatId())
@@ -312,8 +331,68 @@ public class ContextNodeService {
     }
 
     private ContextAcquisitionPlan requiredReferenceAcquisitionPlan(WorkspaceContext workspaceContext, String rawInstruction) {
-        ContextAcquisitionPlan plan = requiredReferenceAcquisitionPlan(workspaceContext);
-        return plan;
+        ContextAcquisitionPlan plan = withSelectionInstruction(
+                requiredReferenceAcquisitionPlan(workspaceContext),
+                rawInstruction
+        );
+        if (workspaceContext == null
+                || plannerProperties.getContextCollection() == null
+                || !plannerProperties.getContextCollection().isEnabled()
+                || !referencesCurrentConversation(rawInstruction)
+                || isPrivateConversationSource(workspaceContext)
+                || (!hasText(workspaceContext.getChatId()) && !hasText(workspaceContext.getThreadId()))
+                || hasRealSelectedMessages(workspaceContext)) {
+            return plan;
+        }
+        List<ContextSourceRequest> sources = plan == null || plan.getSources() == null
+                ? new ArrayList<>()
+                : new ArrayList<>(plan.getSources());
+        sources.add(ContextSourceRequest.builder()
+                .sourceType(ContextSourceTypeEnum.IM_HISTORY)
+                .chatId(workspaceContext.getChatId())
+                .threadId(workspaceContext.getThreadId())
+                .timeRange(workspaceContext.getTimeRange())
+                .selectionInstruction(rawInstruction)
+                .limit(plannerProperties.getContextCollection().getMaxImMessages())
+                .build());
+        return ContextAcquisitionPlan.builder()
+                .needCollection(true)
+                .sources(sources)
+                .reason("conversation references must be resolved before planning")
+                .clarificationQuestion("")
+                .build();
+    }
+
+    private ContextAcquisitionPlan withSelectionInstruction(ContextAcquisitionPlan plan, String rawInstruction) {
+        if (plan == null || plan.getSources() == null || plan.getSources().isEmpty() || !hasText(rawInstruction)) {
+            return plan;
+        }
+        List<ContextSourceRequest> sources = plan.getSources().stream()
+                .map(source -> {
+                    if (source == null
+                            || source.getSourceType() != ContextSourceTypeEnum.IM_HISTORY
+                            || hasText(source.getSelectionInstruction())) {
+                        return source;
+                    }
+                    return ContextSourceRequest.builder()
+                            .sourceType(source.getSourceType())
+                            .chatId(source.getChatId())
+                            .threadId(source.getThreadId())
+                            .timeRange(source.getTimeRange())
+                            .startTime(source.getStartTime())
+                            .endTime(source.getEndTime())
+                            .docRefs(source.getDocRefs())
+                            .selectionInstruction(rawInstruction)
+                            .limit(source.getLimit())
+                            .build();
+                })
+                .toList();
+        return ContextAcquisitionPlan.builder()
+                .needCollection(plan.isNeedCollection())
+                .sources(sources)
+                .reason(plan.getReason())
+                .clarificationQuestion(plan.getClarificationQuestion())
+                .build();
     }
 
     private boolean hasRealSelectedMessages(WorkspaceContext workspaceContext) {
@@ -333,6 +412,26 @@ public class ContextNodeService {
             return true;
         }
         return false;
+    }
+
+    private boolean referencesCurrentConversation(String rawInstruction) {
+        if (!hasText(rawInstruction)) {
+            return false;
+        }
+        String text = normalize(rawInstruction);
+        boolean temporalReference = text.matches(".*(刚才|前面|上面|最近|本群|群里|聊天记录|这段对话).*");
+        boolean conversationMaterial = text.matches(".*(讨论|聊|消息|对话|记录).*");
+        boolean asksForSynthesis = text.matches(".*(整理|总结|汇总|生成|写成|输出).*");
+        return asksForSynthesis && (text.contains("本群") || text.contains("群里") || (temporalReference && conversationMaterial));
+    }
+
+    private boolean isPrivateConversationSource(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null) {
+            return false;
+        }
+        String chatType = normalize(workspaceContext.getChatType());
+        String inputSource = normalize(workspaceContext.getInputSource());
+        return "p2p".equals(chatType) || "larkprivatechat".equals(inputSource) || "lark_private_chat".equals(inputSource);
     }
 
     private boolean isExplicitTimeRangeSelection(WorkspaceContext workspaceContext) {
@@ -369,7 +468,7 @@ public class ContextNodeService {
     }
 
     private String normalize(String value) {
-        return value == null ? "" : value.trim().replaceAll("\\s+", "");
+        return value == null ? "" : value.trim().replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
     }
 
     private boolean hasText(String value) {

@@ -224,12 +224,16 @@ public class AgentFrameworkConfig {
                         决策规则：
                         - selectedMessages 已经有真实材料时，needCollection=false。
                         - 用户提到“刚才讨论/聊天记录/群里/这段对话/最近讨论”且有 chatId/threadId 时，使用 IM_HISTORY。
+                        - 用户说“刚才关于 A、B、C 的讨论”“把前面讨论的某个主题整理成文档/摘要”时，即使主题名称很明确，也不代表材料已经在当前输入里；必须先使用 IM_HISTORY 拉取相关消息。
+                        - 如果 selectedMessages 只有当前这条指令本身，仍然视为没有真实材料。
                         - 用户提到文档、链接、根据这份材料，且 docRefs 有值时，使用 LARK_DOC。
                         - docRefs 和 chatId/threadId 都有，且任务像是综合整理，允许同时使用两个来源。
                         - 没有可用 source id/ref 时，needCollection=false，并给一个自然澄清问题。
+                        - 如果选择 IM_HISTORY，把用户原话里的筛选条件原样写入 selectionInstruction，例如时间范围、主题、必须包含/排除的内容、发送者或“找不到就反问”等约束。
+                        - timeRange 尽量写成可解析格式：ISO 区间、epoch 秒区间，或简短相对范围如“最近10分钟”。
 
                         只输出 JSON：
-                        {"needCollection":true,"sources":[{"sourceType":"IM_HISTORY","chatId":"","threadId":"","timeRange":"","docRefs":[],"limit":30}],"reason":"","clarificationQuestion":""}
+                        {"needCollection":true,"sources":[{"sourceType":"IM_HISTORY","chatId":"","threadId":"","timeRange":"","docRefs":[],"selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}
                         sourceType 只能是 IM_HISTORY 或 LARK_DOC。
                         """)
                 .outputType(com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.class)

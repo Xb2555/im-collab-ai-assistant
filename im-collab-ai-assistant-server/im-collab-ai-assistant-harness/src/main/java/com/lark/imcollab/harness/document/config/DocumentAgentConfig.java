@@ -25,7 +25,8 @@ public class DocumentAgentConfig {
                         输出必须是结构化 JSON：
                         - title: 文档标题
                         - templateType: report、meeting_summary、requirements、technical_plan、technical_architecture、technical_introduction、architecture_review 之一
-                        - sections: 至少 6 节，优先覆盖背景、目标、方案、风险、分工、时间计划；架构类文档必须覆盖“项目背景、设计目标与非目标、架构原则、模块分层、执行流程/数据流转、风险与边界、演进建议”
+                        - sections: 默认 4-6 节；如果任务是消息总结、纪要、摘要、群聊整理，或输入中出现“已拉取的原始材料”，按材料语义生成 3-6 节，不强制套用背景、目标、方案、分工、时间计划。
+                        - 架构类文档必须覆盖“项目背景、设计目标与非目标、架构原则、模块分层、执行流程/数据流转、风险与边界、演进建议”
                         - 每节包含 heading 和 2-4 个 keyPoints
                         规则：
                         1. 文档总标题只输出纯标题文本，不要带 #。
@@ -35,6 +36,8 @@ public class DocumentAgentConfig {
                         5. 如果用户要求 Mermaid 图，需要在相关章节 keyPoints 中显式写明图的用途和图类型，例如“输出全局架构分层 Mermaid flowchart TB”“输出数据流转 Mermaid sequenceDiagram”。
                         6. 严禁把当前项目中的 harness 模块擅自扩写为第三方 Harness CI/CD 产品；如果上下文只提到 harness 模块/场景 c/IM 协同助手，则默认指当前仓库内的执行编排模块。
                         7. 严禁引入任务上下文中未出现的外部厂商、云平台、产品白皮书式细节；标题和章节必须紧扣用户原始需求，不得主题漂移。
+                        8. 如果输入中有“已拉取的原始材料”，必须把这些消息正文当作事实来源；筛选条件和排除条件只是上下文，不要把筛选规则写成文档主题。
+                        9. 禁止输出通用模板章节或占位表达，例如“本节用于说明”“待补充”“相关内容如下”，必须写出材料里的具体事实、决策、风险或待办。
                         """)
                 .outputType(DocumentOutline.class)
                 .model(chatModel)
@@ -57,9 +60,10 @@ public class DocumentAgentConfig {
                         3. body 内的三级标题统一使用 H4，编号格式为 `#### 1.1.1 标题`。
                         4. 如果某个章节需要展开列表、原则、约束、接口、风险，请优先用 H3/H4 组织，而不是一整段散文。
                         5. 禁止输出“待补充”“略”“TBD”“TODO”。
-                        6. 如果上下文不足，也要基于任务目标先产出专业且自洽的默认内容，不要空缺。
+                        6. 如果输入中有“已拉取的原始材料”，必须优先基于这些消息正文写具体内容；不要把筛选规则、排除条件或任务约束当成正文主题。
                         7. 严禁把当前项目的 harness 模块写成第三方 Harness CI/CD 平台，不得臆造 AWS/GCP/GitOps/Delegate/OPA 等外部产品细节，除非任务上下文明确要求。
                         8. 所有论述必须围绕给定任务、当前系统架构、模块职责和数据流转展开，不要输出行业白皮书式泛化内容。
+                        9. 禁止输出“本节用于说明”“以下为示例”“相关内容如下”等模板化过渡句；每一段都要包含材料中的具体事实、结论、风险或待办。
                         不要返回 markdown 代码块。
                         """)
                 .outputType(DocumentSectionDraft.class)
@@ -109,6 +113,8 @@ public class DocumentAgentConfig {
                         3. 禁止建议输出“待补充”“TODO”“TBD”。
                         4. 对架构类文档，额外检查是否覆盖“设计目标与非目标”“Mermaid 图与正文一致性”“模块边界是否清晰”。
                         5. 必须检查是否发生主题漂移：如果任务说的是当前项目的 harness 模块，却写成第三方 Harness CI/CD 产品、云平台方案或行业白皮书，必须判定为缺陷并写入 missingItems。
+                        6. 如果输入中有“已拉取的原始材料”，必须检查正文是否覆盖材料中的具体消息内容；如果正文只总结筛选条件、排除规则或生成要求，而没有总结消息事实，应判定为缺陷并在 supplementalSections 中补齐。
+                        7. 如果任务是消息总结、纪要、摘要、群聊整理，或输入中有“已拉取的原始材料”，不要强制要求负责人、时间计划、背景、目标等通用模板槽位；除非用户明确要求，否则这些字段未覆盖不算缺陷。
                         如果信息已充分，supplementalSections 返回空数组。
                         """)
                 .outputType(DocumentReviewResult.class)

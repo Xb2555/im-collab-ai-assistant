@@ -5,12 +5,15 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionPlan;
+import com.lark.imcollab.common.model.entity.ContextSourceRequest;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
+import com.lark.imcollab.common.model.enums.ContextSourceTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
@@ -23,6 +26,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -44,8 +48,10 @@ public class PlanningNodeService {
     private final TaskRuntimeProjectionService projectionService;
     private final PlannerConversationMemoryService memoryService;
     private final PlannerQuestionTool questionTool;
+    private final ContextAcquisitionNodeService contextAcquisitionNodeService;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public PlanningNodeService(
             @Qualifier("intentAgent") ReactAgent intentAgent,
             @Qualifier("planningAgent") ReactAgent planningAgent,
@@ -54,6 +60,7 @@ public class PlanningNodeService {
             TaskRuntimeProjectionService projectionService,
             PlannerConversationMemoryService memoryService,
             PlannerQuestionTool questionTool,
+            ContextAcquisitionNodeService contextAcquisitionNodeService,
             ObjectMapper objectMapper
     ) {
         this.intentAgent = intentAgent;
@@ -63,7 +70,22 @@ public class PlanningNodeService {
         this.projectionService = projectionService;
         this.memoryService = memoryService;
         this.questionTool = questionTool;
+        this.contextAcquisitionNodeService = contextAcquisitionNodeService;
         this.objectMapper = objectMapper;
+    }
+
+    PlanningNodeService(
+            ReactAgent intentAgent,
+            ReactAgent planningAgent,
+            PlannerSessionService sessionService,
+            PlanQualityService qualityService,
+            TaskRuntimeProjectionService projectionService,
+            PlannerConversationMemoryService memoryService,
+            PlannerQuestionTool questionTool,
+            ObjectMapper objectMapper
+    ) {
+        this(intentAgent, planningAgent, sessionService, qualityService, projectionService, memoryService,
+                questionTool, null, objectMapper);
     }
 
     public PlanTaskSession plan(String taskId, String rawInstruction, WorkspaceContext workspaceContext, String userFeedback) {
@@ -87,6 +109,24 @@ public class PlanningNodeService {
         qualityService.applyIntentReady(session, intent.get());
         sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(taskId, "INTENT_READY");
+        ContextCollectionOutcome intentCollection = collectContextFromIntentSource(
+                taskId,
+                rawInstruction,
+                workspaceContext,
+                intent.get()
+        );
+        if (intentCollection != null) {
+            if (intentCollection.contextResult() != null && !intentCollection.contextResult().sufficient()) {
+                questionTool.askUser(session, List.of(firstNonBlank(
+                        intentCollection.contextResult().clarificationQuestion(),
+                        "我还需要你提供要整理的聊天内容或文档链接。"
+                )));
+                return sessionService.get(taskId);
+            }
+            workspaceContext = intentCollection.workspaceContext();
+            workspacePromptContext = renderWorkspaceContext(workspaceContext, rawInstruction);
+            planningInput = buildPlanningInput(session, rawInstruction, workspaceContext, userFeedback, conversationMemory);
+        }
         if (shouldPauseForMissingSlots(session, intent.get(), planningInput)) {
             questionTool.askUser(session, List.of(buildMissingSlotQuestion(intent.get())));
             return sessionService.get(taskId);
@@ -115,9 +155,82 @@ public class PlanningNodeService {
             questionTool.askUser(session, java.util.List.of("我还需要补充一点信息，才能生成稳定计划：你希望最终交付物是什么？"));
             return sessionService.get(taskId);
         }
-        qualityService.applyPlanReady(session, blueprint.get());
+        PlanBlueprint readyBlueprint = blueprint.get();
+        attachCollectedSourceScope(readyBlueprint, workspaceContext);
+        qualityService.applyPlanReady(session, readyBlueprint);
         sessionService.saveWithoutVersionChange(session);
         return session;
+    }
+
+    private ContextCollectionOutcome collectContextFromIntentSource(
+            String taskId,
+            String rawInstruction,
+            WorkspaceContext workspaceContext,
+            IntentSnapshot intentSnapshot
+    ) {
+        if (contextAcquisitionNodeService == null
+                || hasWorkspaceContextMaterial(workspaceContext)
+                || intentSnapshot == null
+                || intentSnapshot.getSourceScope() == null) {
+            return null;
+        }
+        WorkspaceContext intentScope = intentSnapshot.getSourceScope();
+        List<ContextSourceRequest> sources = new ArrayList<>();
+        if ((hasText(workspaceContext == null ? null : workspaceContext.getChatId())
+                || hasText(workspaceContext == null ? null : workspaceContext.getThreadId()))
+                && hasIntentSourceRequest(intentScope)) {
+            sources.add(ContextSourceRequest.builder()
+                    .sourceType(ContextSourceTypeEnum.IM_HISTORY)
+                    .chatId(workspaceContext == null ? "" : workspaceContext.getChatId())
+                    .threadId(workspaceContext == null ? "" : workspaceContext.getThreadId())
+                    .timeRange(firstNonBlank(intentScope.getTimeRange(), intentSnapshot.getTimeRange(), workspaceContext == null ? null : workspaceContext.getTimeRange()))
+                    .selectionInstruction(rawInstruction)
+                    .build());
+        }
+        if (intentScope.getDocRefs() != null && !intentScope.getDocRefs().isEmpty()) {
+            sources.add(ContextSourceRequest.builder()
+                    .sourceType(ContextSourceTypeEnum.LARK_DOC)
+                    .docRefs(intentScope.getDocRefs())
+                    .selectionInstruction(rawInstruction)
+                    .build());
+        }
+        if (sources.isEmpty()) {
+            return null;
+        }
+        ContextAcquisitionPlan plan = ContextAcquisitionPlan.builder()
+                .needCollection(true)
+                .sources(sources)
+                .reason("intent source scope requires context acquisition")
+                .clarificationQuestion("")
+                .build();
+        return contextAcquisitionNodeService.collect(taskId, rawInstruction, workspaceContext, plan);
+    }
+
+    private boolean hasIntentSourceRequest(WorkspaceContext sourceScope) {
+        if (sourceScope == null) {
+            return false;
+        }
+        return hasText(sourceScope.getSelectionType())
+                || hasText(sourceScope.getTimeRange())
+                || (sourceScope.getSelectedMessageIds() != null && !sourceScope.getSelectedMessageIds().isEmpty());
+    }
+
+    private void attachCollectedSourceScope(PlanBlueprint blueprint, WorkspaceContext workspaceContext) {
+        if (blueprint == null || workspaceContext == null || !hasWorkspaceContextMaterial(workspaceContext)) {
+            return;
+        }
+        WorkspaceContext sourceScope = blueprint.getSourceScope();
+        if (sourceScope == null || !hasWorkspaceContextMaterial(sourceScope)) {
+            blueprint.setSourceScope(workspaceContext);
+        }
+    }
+
+    private boolean hasWorkspaceContextMaterial(WorkspaceContext workspaceContext) {
+        return workspaceContext != null
+                && ((workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty())
+                || (workspaceContext.getSelectedMessageIds() != null && !workspaceContext.getSelectedMessageIds().isEmpty())
+                || (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty())
+                || (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty()));
     }
 
     private Optional<PlanBlueprint> repairPlanBlueprint(
