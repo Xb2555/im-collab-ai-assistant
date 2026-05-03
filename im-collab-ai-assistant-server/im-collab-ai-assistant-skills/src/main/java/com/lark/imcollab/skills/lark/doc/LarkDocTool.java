@@ -435,12 +435,25 @@ public class LarkDocTool {
                     ? "飞书文档工具参数不兼容，请检查 lark-cli 版本后重试。"
                     : "飞书文档工具参数不兼容：当前 lark-cli 不支持 " + flag + "。";
         }
+        if (isCliRuntimeError(lower)) {
+            return "飞书文档创建失败，请检查 lark-cli 可执行配置、登录状态或文档权限后重试。";
+        }
         String firstLine = extracted.lines()
                 .map(String::trim)
                 .filter(line -> !line.isBlank())
                 .findFirst()
                 .orElse("飞书文档工具调用失败，请稍后重试。");
         return firstLine.length() <= 220 ? firstLine : firstLine.substring(0, 220) + "...";
+    }
+
+    private boolean isCliRuntimeError(String lowerMessage) {
+        return lowerMessage.contains("powershell")
+                || lowerMessage.contains(".ps1")
+                || lowerMessage.contains("parameterbinding")
+                || lowerMessage.contains("processbuilder")
+                || lowerMessage.contains("java.lang.")
+                || lowerMessage.contains("org.springframework.")
+                || lowerMessage.contains("exception:");
     }
 
     private String extractUnknownFlag(String message) {

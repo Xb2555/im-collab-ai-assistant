@@ -20,6 +20,7 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -221,9 +222,10 @@ public class DocumentExecutionSupport {
     }
 
     private void markPrimaryStepFailed(String taskId, String reason) {
+        String userFacingReason = userFacingFailureReason(reason);
         updatePrimaryDocStep(taskId, step -> {
             step.setStatus(StepStatusEnum.FAILED);
-            step.setOutputSummary(blankToNull(reason));
+            step.setOutputSummary(blankToNull(userFacingReason));
             step.setEndedAt(Instant.now());
         });
     }
@@ -256,6 +258,33 @@ public class DocumentExecutionSupport {
             task.setUpdatedAt(Instant.now());
             plannerStateStore.saveTask(task);
         });
+    }
+
+    private String userFacingFailureReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "文档生成失败，请稍后重试。";
+        }
+        String trimmed = reason.trim();
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (isTechnicalRuntimeError(lower)) {
+            return "飞书文档创建失败，请检查 lark-cli 可执行配置、登录状态或文档权限后重试。";
+        }
+        String firstLine = trimmed.lines()
+                .map(String::trim)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("文档生成失败，请稍后重试。");
+        return firstLine.length() <= 220 ? firstLine : firstLine.substring(0, 220) + "...";
+    }
+
+    private boolean isTechnicalRuntimeError(String lowerReason) {
+        return lowerReason.contains("powershell")
+                || lowerReason.contains(".ps1")
+                || lowerReason.contains("parameterbinding")
+                || lowerReason.contains("processbuilder")
+                || lowerReason.contains("java.lang.")
+                || lowerReason.contains("org.springframework.")
+                || lowerReason.contains("exception:");
     }
 
     private void markTaskCancelled(String taskId, String reason) {

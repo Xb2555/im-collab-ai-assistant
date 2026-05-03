@@ -273,7 +273,7 @@ public class PlannerController {
         }
         Optional<PlanTaskSession> session = repository.findSession(taskId);
         return session
-                .map(value -> ResultUtils.success(plannerViewAssembler.toPlanPreview(value)))
+                .map(value -> ResultUtils.success(toPlanPreview(value, taskId)))
                 .orElseGet(() -> error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId));
     }
 
@@ -310,7 +310,7 @@ public class PlannerController {
         }
         Optional<PlanTaskSession> session = repository.findSession(taskId);
         return session
-                .map(value -> ResultUtils.success(plannerViewAssembler.toPlanCards(value.getPlanCards())))
+                .map(value -> ResultUtils.success(toPlanCards(value, taskId)))
                 .orElseGet(() -> error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId));
     }
 
@@ -373,19 +373,19 @@ public class PlannerController {
         return switch (request.getAction()) {
             case "CONFIRM_EXECUTE" -> {
                 PlanTaskSession updated = plannerCommandApplicationService.confirmExecution(taskId, session);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "REPLAN" -> {
                 PlanTaskSession updated = plannerCommandApplicationService.replan(taskId, request.getFeedback());
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "CANCEL" -> {
                 PlanTaskSession updated = plannerCommandApplicationService.cancel(taskId);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "RETRY_FAILED" -> {
                 PlanTaskSession updated = plannerCommandApplicationService.retryFailed(taskId, session);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             default -> error(BusinessCode.PARAMS_ERROR, "Unsupported planner command: " + request.getAction());
         };
@@ -425,6 +425,20 @@ public class PlannerController {
 
     private <T> BaseResponse<T> error(BusinessCode code, String message) {
         return new BaseResponse<>(code.getCode(), null, message);
+    }
+
+    private PlanPreviewVO toPlanPreview(PlanTaskSession session, String taskId) {
+        TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(taskId);
+        return snapshot == null
+                ? plannerViewAssembler.toPlanPreview(session)
+                : plannerViewAssembler.toPlanPreview(session, snapshot);
+    }
+
+    private List<PlanCardVO> toPlanCards(PlanTaskSession session, String taskId) {
+        TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(taskId);
+        return snapshot == null
+                ? plannerViewAssembler.toPlanCards(session.getPlanCards())
+                : plannerViewAssembler.toPlanCards(session.getPlanCards(), snapshot);
     }
 
     private Optional<LarkFrontendUserResponse> currentUser(String authorization) {

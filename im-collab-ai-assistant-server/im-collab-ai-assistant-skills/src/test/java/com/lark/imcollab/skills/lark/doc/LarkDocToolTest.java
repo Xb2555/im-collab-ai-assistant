@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LarkDocToolTest {
 
@@ -247,5 +248,33 @@ class LarkDocToolTest {
                 "--doc", "https://example.feishu.cn/docx/doc-token"
         ));
         assertThat(fetchArgs).doesNotContain("--api-version");
+    }
+
+    @Test
+    void createDocSanitizesPowerShellRuntimeError() {
+        CliCommandExecutor executor = command -> {
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +create [flags]
+
+                        Flags:
+                              --as string
+                              --markdown string
+                              --title string
+                        """);
+            }
+            return new CliCommandResult(1, """
+                    C:\\Users\\dev\\AppData\\Roaming\\npm\\lark-cli.ps1 : Cannot process argument transformation
+                    + CategoryInfo          : InvalidData: (:) [lark-cli.ps1], ParameterBindingArgumentTransformationException
+                    + FullyQualifiedErrorId : ParameterArgumentTransformationError,lark-cli.ps1
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
+
+        assertThatThrownBy(() -> tool.createDoc("测试文档", "正文"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("飞书文档创建失败，请检查 lark-cli 可执行配置、登录状态或文档权限后重试。");
     }
 }
