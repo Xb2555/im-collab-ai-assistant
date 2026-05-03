@@ -1,6 +1,8 @@
 package com.lark.imcollab.skills.lark.doc;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
@@ -35,6 +37,7 @@ public class LarkDocTool {
     private final LarkCliProperties properties;
     private final LarkDocOpenApiClient openApiClient;
     private final LarkDocProperties docProperties;
+    private final ObjectMapper objectMapper;
     private final Map<String, Set<String>> supportedFlagCache = new ConcurrentHashMap<>();
 
     private static final Pattern FLAG_PATTERN = Pattern.compile("(?<!\\S)--[a-zA-Z0-9-]+");
@@ -47,12 +50,14 @@ public class LarkDocTool {
             LarkCliClient larkCliClient,
             LarkCliProperties properties,
             LarkDocOpenApiClient openApiClient,
-            LarkDocProperties docProperties
+            LarkDocProperties docProperties,
+            ObjectMapper objectMapper
     ) {
         this.larkCliClient = larkCliClient;
         this.properties = properties;
         this.openApiClient = openApiClient;
         this.docProperties = docProperties;
+        this.objectMapper = objectMapper;
     }
 
     @Tool(description = "Scenario C: create a Lark doc from markdown.")
@@ -120,18 +125,21 @@ public class LarkDocTool {
     }
 
     private void writeMarkdownBlocks(String documentId, String markdown) {
-        List<Map<String, Object>> blocks = markdownToBlocks(markdown);
+        ConvertedMarkdownBlocks converted = convertMarkdownToBlocks(documentId, markdown);
+        List<Map<String, Object>> blocks = sanitizeConvertedBlocks(converted.blocks());
         if (blocks.isEmpty()) {
             return;
         }
-        int batchSize = Math.max(1, docProperties == null ? 40 : docProperties.getMaxBlocksPerRequest());
-        for (int start = 0; start < blocks.size(); start += batchSize) {
-            int end = Math.min(start + batchSize, blocks.size());
+        int batchSize = Math.min(1000, Math.max(1, docProperties == null ? 40 : docProperties.getMaxBlocksPerRequest()));
+        List<ConvertedMarkdownBlockBatch> batches = splitConvertedBlocksIntoBatches(converted.firstLevelBlockIds(), blocks, batchSize);
+        for (ConvertedMarkdownBlockBatch batch : batches) {
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("children", blocks.subList(start, end));
+            body.put("children_id", batch.childrenIds());
+            body.put("descendants", batch.descendants());
+            body.put("index", -1);
             openApiClient.post(
                     "/open-apis/docx/v1/documents/" + documentId + "/blocks/" + documentId
-                            + "/children?client_token=" + UUID.randomUUID(),
+                            + "/descendant?client_token=" + UUID.randomUUID(),
                     body,
                     docRequestTimeoutSeconds()
             );
@@ -139,126 +147,190 @@ public class LarkDocTool {
         }
     }
 
-    private List<Map<String, Object>> markdownToBlocks(String markdown) {
-        List<Map<String, Object>> blocks = new ArrayList<>();
-        String[] lines = markdown.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
-        StringBuilder paragraph = new StringBuilder();
-        StringBuilder codeBlock = null;
-        for (String line : lines) {
-            String trimmed = line.strip();
-            if (trimmed.startsWith("```")) {
-                if (codeBlock == null) {
-                    flushParagraph(blocks, paragraph);
-                    codeBlock = new StringBuilder();
-                } else {
-                    addTextBlocks(blocks, "```\n" + codeBlock.toString().stripTrailing() + "\n```", 2);
-                    codeBlock = null;
-                }
-                continue;
+    private List<ConvertedMarkdownBlockBatch> splitConvertedBlocksIntoBatches(
+            List<String> preferredRootIds,
+            List<Map<String, Object>> blocks,
+            int batchSize
+    ) {
+        Map<String, Map<String, Object>> blocksById = new LinkedHashMap<>();
+        for (Map<String, Object> block : blocks) {
+            String blockId = stringValue(block.get("block_id"));
+            if (hasText(blockId)) {
+                blocksById.put(blockId, block);
             }
-            if (codeBlock != null) {
-                codeBlock.append(line).append('\n');
-                continue;
-            }
-            int headingLevel = headingLevel(trimmed);
-            if (headingLevel > 0) {
-                flushParagraph(blocks, paragraph);
-                addTextBlocks(blocks, trimmed.substring(headingLevel).strip(), Math.min(8, 2 + headingLevel));
-                continue;
-            }
-            if (trimmed.isBlank()) {
-                flushParagraph(blocks, paragraph);
-                continue;
-            }
-            if (!paragraph.isEmpty()) {
-                paragraph.append('\n');
-            }
-            paragraph.append(line);
         }
-        if (codeBlock != null && !codeBlock.isEmpty()) {
-            addTextBlocks(blocks, "```\n" + codeBlock.toString().stripTrailing() + "\n```", 2);
+        List<String> rootIds = firstLevelBlockIds(preferredRootIds, blocks);
+        if (rootIds.isEmpty()) {
+            return List.of(new ConvertedMarkdownBlockBatch(List.of(), blocks));
         }
-        flushParagraph(blocks, paragraph);
-        return blocks;
+
+        List<ConvertedMarkdownBlockBatch> batches = new ArrayList<>();
+        List<String> currentRootIds = new ArrayList<>();
+        LinkedHashSet<String> currentBlockIds = new LinkedHashSet<>();
+        for (String rootId : rootIds) {
+            LinkedHashSet<String> subtreeIds = collectSubtreeIds(rootId, blocksById);
+            if (subtreeIds.isEmpty()) {
+                continue;
+            }
+            if (!currentBlockIds.isEmpty() && currentBlockIds.size() + subtreeIds.size() > batchSize) {
+                batches.add(toBlockBatch(currentRootIds, currentBlockIds, blocksById));
+                currentRootIds = new ArrayList<>();
+                currentBlockIds = new LinkedHashSet<>();
+            }
+            currentRootIds.add(rootId);
+            currentBlockIds.addAll(subtreeIds);
+        }
+        if (!currentBlockIds.isEmpty()) {
+            batches.add(toBlockBatch(currentRootIds, currentBlockIds, blocksById));
+        }
+        return batches;
     }
 
-    private int headingLevel(String line) {
-        int level = 0;
-        while (level < line.length() && level < 6 && line.charAt(level) == '#') {
-            level++;
-        }
-        return level > 0 && level < line.length() && Character.isWhitespace(line.charAt(level)) ? level : 0;
+    private LinkedHashSet<String> collectSubtreeIds(String rootId, Map<String, Map<String, Object>> blocksById) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        collectSubtreeIds(rootId, blocksById, ids);
+        return ids;
     }
 
-    private void flushParagraph(List<Map<String, Object>> blocks, StringBuilder paragraph) {
-        if (paragraph.isEmpty()) {
+    private void collectSubtreeIds(String blockId, Map<String, Map<String, Object>> blocksById, Set<String> ids) {
+        if (!hasText(blockId) || ids.contains(blockId)) {
             return;
         }
-        addTextBlocks(blocks, paragraph.toString().strip(), 2);
-        paragraph.setLength(0);
-    }
-
-    private void addTextBlocks(List<Map<String, Object>> blocks, String content, int blockType) {
-        if (content == null || content.isBlank()) {
+        Map<String, Object> block = blocksById.get(blockId);
+        if (block == null) {
             return;
         }
-        for (String chunk : splitText(content.strip(), maxTextCharsPerBlock())) {
-            blocks.add(textBlock(blockType, chunk));
+        ids.add(blockId);
+        for (String childId : childIds(block)) {
+            collectSubtreeIds(childId, blocksById, ids);
         }
     }
 
-    private Map<String, Object> textBlock(int blockType, String content) {
-        Map<String, Object> style = new LinkedHashMap<>();
-        Map<String, Object> textRun = new LinkedHashMap<>();
-        textRun.put("content", content);
-        textRun.put("text_element_style", style);
-        Map<String, Object> element = Map.of("text_run", textRun);
-
-        Map<String, Object> richText = new LinkedHashMap<>();
-        richText.put("elements", List.of(element));
-
-        Map<String, Object> block = new LinkedHashMap<>();
-        block.put("block_type", blockType);
-        block.put(blockFieldName(blockType), richText);
-        return block;
+    private ConvertedMarkdownBlockBatch toBlockBatch(
+            List<String> rootIds,
+            LinkedHashSet<String> blockIds,
+            Map<String, Map<String, Object>> blocksById
+    ) {
+        List<Map<String, Object>> descendants = blockIds.stream()
+                .map(blocksById::get)
+                .filter(block -> block != null)
+                .toList();
+        return new ConvertedMarkdownBlockBatch(List.copyOf(rootIds), descendants);
     }
 
-    private String blockFieldName(int blockType) {
-        return switch (blockType) {
-            case 3 -> "heading1";
-            case 4 -> "heading2";
-            case 5 -> "heading3";
-            case 6 -> "heading4";
-            case 7 -> "heading5";
-            case 8 -> "heading6";
-            default -> "text";
-        };
+    private ConvertedMarkdownBlocks convertMarkdownToBlocks(String documentId, String markdown) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("content_type", "markdown");
+        body.put("content", markdown);
+        JsonNode data = openApiClient.post(
+                "/open-apis/docx/v1/documents/blocks/convert",
+                body,
+                docRequestTimeoutSeconds()
+        );
+        JsonNode blocksNode = firstExisting(data, "blocks", "descendants");
+        JsonNode firstLevelNode = firstExisting(data, "first_level_block_ids", "children_id", "children_ids");
+        List<Map<String, Object>> blocks = blocksNode != null && blocksNode.isArray()
+                ? objectMapper.convertValue(blocksNode, new TypeReference<>() {})
+                : List.of();
+        List<String> firstLevelBlockIds = firstLevelNode != null && firstLevelNode.isArray()
+                ? objectMapper.convertValue(firstLevelNode, new TypeReference<>() {})
+                : List.of();
+        return new ConvertedMarkdownBlocks(blocks, firstLevelBlockIds);
     }
 
-    private List<String> splitText(String text, int maxChars) {
-        if (text.length() <= maxChars) {
-            return List.of(text);
+    private JsonNode firstExisting(JsonNode node, String... names) {
+        if (node == null || names == null) {
+            return null;
         }
-        List<String> chunks = new ArrayList<>();
-        int start = 0;
-        while (start < text.length()) {
-            int end = Math.min(start + maxChars, text.length());
-            chunks.add(text.substring(start, end));
-            start = end;
+        for (String name : names) {
+            JsonNode value = node.path(name);
+            if (!value.isMissingNode() && !value.isNull()) {
+                return value;
+            }
         }
-        return chunks;
+        return null;
+    }
+
+    private List<Map<String, Object>> sanitizeConvertedBlocks(List<Map<String, Object>> blocks) {
+        if (blocks == null || blocks.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> sanitized = new ArrayList<>(blocks.size());
+        for (Map<String, Object> block : blocks) {
+            Map<String, Object> copy = deepCopyMap(block);
+            removeReadOnlyMergeInfo(copy);
+            sanitized.add(copy);
+        }
+        return sanitized;
+    }
+
+    private Map<String, Object> deepCopyMap(Map<String, Object> source) {
+        if (source == null) {
+            return new LinkedHashMap<>();
+        }
+        return objectMapper.convertValue(source, new TypeReference<>() {});
+    }
+
+    @SuppressWarnings("unchecked")
+    private void removeReadOnlyMergeInfo(Object value) {
+        if (value instanceof Map<?, ?> rawMap) {
+            Map<String, Object> map = (Map<String, Object>) rawMap;
+            map.remove("merge_info");
+            for (Object child : new ArrayList<>(map.values())) {
+                removeReadOnlyMergeInfo(child);
+            }
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object child : list) {
+                removeReadOnlyMergeInfo(child);
+            }
+        }
+    }
+
+    private List<String> firstLevelBlockIds(List<String> preferredIds, List<Map<String, Object>> descendants) {
+        if (preferredIds != null && !preferredIds.isEmpty()) {
+            Set<String> descendantIds = descendants == null
+                    ? Set.of()
+                    : descendants.stream()
+                    .map(block -> stringValue(block.get("block_id")))
+                    .filter(this::hasText)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            return preferredIds.stream()
+                    .filter(this::hasText)
+                    .filter(id -> descendantIds.isEmpty() || descendantIds.contains(id))
+                    .toList();
+        }
+        if (descendants == null || descendants.isEmpty()) {
+            return List.of();
+        }
+        Set<String> childIds = descendants.stream()
+                .flatMap(block -> childIds(block).stream())
+                .collect(java.util.stream.Collectors.toSet());
+        return descendants.stream()
+                .map(block -> stringValue(block.get("block_id")))
+                .filter(this::hasText)
+                .filter(id -> !childIds.contains(id))
+                .toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> childIds(Map<String, Object> block) {
+        Object children = block == null ? null : block.get("children");
+        if (!(children instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream().map(this::stringValue).filter(this::hasText).toList();
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     private int docRequestTimeoutSeconds() {
         return docProperties == null || docProperties.getRequestTimeoutSeconds() <= 0
                 ? 30
                 : docProperties.getRequestTimeoutSeconds();
-    }
-
-    private int maxTextCharsPerBlock() {
-        return docProperties == null || docProperties.getMaxTextCharsPerBlock() <= 0
-                ? 1600
-                : docProperties.getMaxTextCharsPerBlock();
     }
 
     private void pauseBetweenDocWrites() {
@@ -855,5 +927,11 @@ public class LarkDocTool {
     }
 
     private record DocCommandAttempt(List<String> args, String stdin) {
+    }
+
+    private record ConvertedMarkdownBlocks(List<Map<String, Object>> blocks, List<String> firstLevelBlockIds) {
+    }
+
+    private record ConvertedMarkdownBlockBatch(List<String> childrenIds, List<Map<String, Object>> descendants) {
     }
 }

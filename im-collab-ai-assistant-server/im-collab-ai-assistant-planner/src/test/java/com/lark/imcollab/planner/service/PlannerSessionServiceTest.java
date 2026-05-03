@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
@@ -10,11 +11,15 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -66,8 +71,47 @@ class PlannerSessionServiceTest {
                 .isInstanceOf(ScenarioCodeEnum.class);
     }
 
+    @Test
+    void publishEventOverlaysRuntimeStepStatusForStreamSubtasks() {
+        InMemoryStore store = new InMemoryStore();
+        PlannerSessionService service = new PlannerSessionService(store, new PlannerProperties());
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .version(3)
+                .planCards(List.of(UserPlanCard.builder()
+                        .cardId("card-001")
+                        .type(PlanCardTypeEnum.DOC)
+                        .title("生成文档")
+                        .agentTaskPlanCards(List.of(AgentTaskPlanCard.builder()
+                                .id("task-001")
+                                .parentCardId("card-001")
+                                .title("生成文档")
+                                .status("pending")
+                                .build()))
+                        .build()))
+                .build();
+        store.saveSession(session);
+        store.steps.add(TaskStepRecord.builder()
+                .taskId("task-1")
+                .stepId("card-001")
+                .status(StepStatusEnum.COMPLETED)
+                .outputSummary("done")
+                .retryCount(2)
+                .build());
+
+        service.publishEvent("task-1", "COMPLETED");
+
+        TaskEvent event = store.events.get(0);
+        assertThat(event.getSubtasks()).hasSize(1);
+        assertThat(event.getSubtasks().get(0).getStatus()).isEqualTo("completed");
+        assertThat(event.getSubtasks().get(0).getOutput()).isEqualTo("done");
+        assertThat(event.getSubtasks().get(0).getRetryCount()).isEqualTo(2);
+    }
+
     private static class InMemoryStore implements PlannerStateStore {
         private final Map<String, PlanTaskSession> sessions = new HashMap<>();
+        private final List<TaskEvent> events = new ArrayList<>();
+        private final List<TaskStepRecord> steps = new ArrayList<>();
 
         @Override
         public void saveSession(PlanTaskSession session) {
@@ -81,13 +125,15 @@ class PlannerSessionServiceTest {
 
         @Override public Optional<String> findConversationTaskId(String conversationKey) { return Optional.empty(); }
         @Override public void saveConversationTaskBinding(String conversationKey, String taskId) {}
-        @Override public void appendEvent(TaskEvent event) {}
+        @Override public void appendEvent(TaskEvent event) { events.add(event); }
         @Override public List<String> getEventJsonList(String taskId) { return List.of(); }
         @Override public void saveTask(TaskRecord task) {}
         @Override public Optional<TaskRecord> findTask(String taskId) { return Optional.empty(); }
         @Override public List<TaskRecord> findTasksByOwner(String ownerOpenId, List<com.lark.imcollab.common.model.enums.TaskStatusEnum> statuses, int offset, int limit) { return List.of(); }
         @Override public void saveStep(TaskStepRecord step) {}
-        @Override public List<TaskStepRecord> findStepsByTaskId(String taskId) { return List.of(); }
+        @Override public List<TaskStepRecord> findStepsByTaskId(String taskId) {
+            return steps.stream().filter(step -> taskId.equals(step.getTaskId())).toList();
+        }
         @Override public Optional<TaskStepRecord> findStep(String stepId) { return Optional.empty(); }
         @Override public void saveArtifact(ArtifactRecord artifact) {}
         @Override public List<ArtifactRecord> findArtifactsByTaskId(String taskId) { return List.of(); }
