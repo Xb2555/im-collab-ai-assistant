@@ -214,14 +214,7 @@ public class DocumentStructureParser {
                 .replace("（", "")
                 .replace("）", "")
                 .replace("(", "")
-                .replace(")", "")
-                .replace("这部分", "")
-                .replace("这一部分", "")
-                .replace("这一节", "")
-                .replace("这节", "")
-                .replace("章节", "")
-                .replace("段落", "")
-                .replace("部分", "");
+                .replace(")", "");
     }
 
     private boolean hasText(String value) {

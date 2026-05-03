@@ -108,27 +108,40 @@ public class DocumentPatchCompiler {
         if (generated.isBlank()) {
             throw new IllegalStateException("文首新增内容为空，拒绝生成修改计划");
         }
+        DocumentSectionAnchor sectionAnchor = anchor.getSectionAnchor();
+        if (sectionAnchor == null || sectionAnchor.getHeadingBlockId() == null) {
+            return basePlan(taskId, intent, selector, snapshot, anchor, strategy)
+                    .reasoningSummary("未找到首个章节锚点，无法执行文首插入，需人工确认")
+                    .generatedContent(generated)
+                    .toolCommandType(null)
+                    .requiresApproval(true)
+                    .riskLevel(DocumentRiskLevel.HIGH)
+                    .patchOperations(List.of())
+                    .build();
+        }
+        // 两步法：先 append 新内容，再 block_move_after 到首章节之前的前序位置
+        // 飞书不支持 insert_before，用 append + move_after(prevSiblingId) 实现
+        String prevSiblingId = sectionAnchor.getPrevTopLevelSectionId();
         List<DocumentPatchOperation> operations = new ArrayList<>();
-        DocumentPatchOperationType commandType = null;
-        boolean requiresApproval = true;
-        if (anchor.getSectionAnchor() != null && anchor.getSectionAnchor().getHeadingBlockId() != null) {
-            String anchorExcerpt = trim(selector.getMatchedExcerpt());
-            String newContent = buildBlockReplacePrependContent(generated, anchorExcerpt);
+        operations.add(DocumentPatchOperation.builder()
+                .operationType(DocumentPatchOperationType.APPEND)
+                .newContent(generated)
+                .docFormat("markdown")
+                .justification("先追加新内容到文档末尾，后续通过 move 移到文首")
+                .build());
+        if (prevSiblingId != null) {
             operations.add(DocumentPatchOperation.builder()
-                    .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
-                    .blockId(anchor.getSectionAnchor().getHeadingBlockId())
-                    .oldText(anchorExcerpt)
-                    .newContent(newContent)
-                    .docFormat("markdown")
-                    .justification("通过 block_replace 在首个章节前插入 metadata，并保留原始标题结构")
+                    .operationType(DocumentPatchOperationType.BLOCK_MOVE_AFTER)
+                    .blockId("__new__")
+                    .targetBlockId(prevSiblingId)
+                    .justification("将新增内容移动到首章节之前")
                     .build());
-            commandType = DocumentPatchOperationType.BLOCK_REPLACE;
         }
         return basePlan(taskId, intent, selector, snapshot, anchor, strategy)
-                .reasoningSummary("文档头部插入需要绕过缺失的 before-first-block 原语，走受控重写")
+                .reasoningSummary("文首插入走 append + block_move_after 两步法，不拼接原标题")
                 .generatedContent(generated)
-                .toolCommandType(commandType)
-                .requiresApproval(requiresApproval)
+                .toolCommandType(DocumentPatchOperationType.APPEND)
+                .requiresApproval(true)
                 .riskLevel(DocumentRiskLevel.HIGH)
                 .patchOperations(List.copyOf(operations))
                 .build();
@@ -153,23 +166,30 @@ public class DocumentPatchCompiler {
             throw new IllegalStateException("新增章节只生成了标题、没有正文，拒绝直接写入文档");
         }
         DocumentSectionAnchor sectionAnchor = requireSectionAnchor(anchor);
-        String anchorExcerpt = trim(selector.getMatchedExcerpt());
-        String newContent = buildBlockReplacePrependContent(generated, anchorExcerpt);
-        DocumentPatchOperation operation = DocumentPatchOperation.builder()
-                .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
-                .blockId(sectionAnchor.getHeadingBlockId())
-                .oldText(anchorExcerpt)
-                .newContent(newContent)
+        // 两步法：先 append，再 block_move_after 到目标章节的前序锚点之后
+        String prevSiblingId = sectionAnchor.getPrevTopLevelSectionId();
+        List<DocumentPatchOperation> operations = new ArrayList<>();
+        operations.add(DocumentPatchOperation.builder()
+                .operationType(DocumentPatchOperationType.APPEND)
+                .newContent(generated)
                 .docFormat("markdown")
-                .justification("在目标章节前插入新章节，并保留原始章节锚点")
-                .build();
+                .justification("先追加新章节到文档末尾，后续通过 move 移到目标章节之前")
+                .build());
+        if (prevSiblingId != null) {
+            operations.add(DocumentPatchOperation.builder()
+                    .operationType(DocumentPatchOperationType.BLOCK_MOVE_AFTER)
+                    .blockId("__new__")
+                    .targetBlockId(prevSiblingId)
+                    .justification("将新章节移动到目标章节之前")
+                    .build());
+        }
         return basePlan(taskId, intent, selector, snapshot, anchor, strategy)
-                .reasoningSummary("同级章节前插入走受控 block_replace，以维持结构稳定")
+                .reasoningSummary("章节前插入走 append + block_move_after 两步法，不拼接原标题")
                 .generatedContent(generated)
-                .toolCommandType(DocumentPatchOperationType.BLOCK_REPLACE)
+                .toolCommandType(DocumentPatchOperationType.APPEND)
                 .requiresApproval(true)
                 .riskLevel(DocumentRiskLevel.HIGH)
-                .patchOperations(List.of(operation))
+                .patchOperations(List.copyOf(operations))
                 .build();
     }
 
@@ -877,18 +897,6 @@ public class DocumentPatchCompiler {
 
     private String normalizeHeadingText(String value) {
         return value == null ? "" : value.replaceAll("\\s+", "").trim();
-    }
-
-    private String buildBlockReplacePrependContent(String generated, String anchorExcerpt) {
-        String trimmedGenerated = trim(generated);
-        String trimmedAnchor = trim(anchorExcerpt);
-        if (trimmedGenerated.isEmpty()) {
-            return trimmedAnchor;
-        }
-        if (trimmedAnchor.isEmpty()) {
-            return trimmedGenerated;
-        }
-        return trim(trimmedGenerated + "\n\n" + trimmedAnchor);
     }
 
     private boolean looksLikeHeadingOnly(String markdown) {

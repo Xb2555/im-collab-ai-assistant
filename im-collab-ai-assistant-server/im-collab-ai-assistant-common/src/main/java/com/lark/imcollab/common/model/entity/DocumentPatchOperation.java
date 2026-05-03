@@ -15,6 +15,7 @@ import java.io.Serializable;
 public class DocumentPatchOperation implements Serializable {
     private DocumentPatchOperationType operationType;
     private String blockId;
+    private String targetBlockId;
     private String startBlockId;
     private String endBlockId;
     private String oldText;

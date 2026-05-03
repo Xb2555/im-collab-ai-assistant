@@ -12,9 +12,7 @@ import com.lark.imcollab.common.model.enums.DocumentAnchorType;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 @Component
@@ -133,9 +131,6 @@ public class DocumentAnchorResolver {
             List<DocumentStructureParser.HeadingBlock> matches = structureParser.matchHeadings(instruction, headings);
             matched = matches.isEmpty() ? null : matches.get(0);
         }
-        if (matched == null && !headings.isEmpty()) {
-            matched = headings.get(0);
-        }
         if (matched == null) {
             return null;
         }
@@ -160,26 +155,35 @@ public class DocumentAnchorResolver {
 
     private DocumentTextAnchor resolveTextAnchor(DocumentStructureSnapshot snapshot, String instruction) {
         String quoted = structureParser.extractQuotedText(instruction);
-        String matchedText = quoted == null || quoted.isBlank() ? guessInlineText(snapshot, instruction) : quoted;
-        int matchCount = structureParser.countOccurrences(snapshot.getRawFullMarkdown(), matchedText);
+        if (quoted == null || quoted.isBlank()) {
+            return DocumentTextAnchor.builder()
+                    .matchedText("")
+                    .matchCount(0)
+                    .surroundingContext("")
+                    .sourceBlockIds(List.of())
+                    .build();
+        }
+        int matchCount = structureParser.countOccurrences(snapshot.getRawFullMarkdown(), quoted);
         return DocumentTextAnchor.builder()
-                .matchedText(matchedText)
+                .matchedText(quoted)
                 .matchCount(matchCount)
-                .surroundingContext(matchedText)
+                .surroundingContext(quoted)
                 .sourceBlockIds(List.of())
                 .build();
     }
 
     private DocumentBlockAnchor resolveBlockAnchor(DocumentStructureSnapshot snapshot, String instruction) {
-        DocumentTextAnchor textAnchor = resolveTextAnchor(snapshot, instruction);
+        String quoted = structureParser.extractQuotedText(instruction);
+        if (quoted == null || quoted.isBlank()) {
+            return DocumentBlockAnchor.builder().blockId(null).blockType(null).plainText("").build();
+        }
         List<String> blockIds = structureParser.parseBlockIds(snapshot.getRawFullXml());
-        String snippet = textAnchor == null ? "" : textAnchor.getMatchedText();
         for (String blockId : blockIds) {
             DocumentStructureNode node = snapshot.getBlockIndex() == null ? null : snapshot.getBlockIndex().get(blockId);
             if (isProtectedBlock(node, snapshot)) {
                 continue;
             }
-            if (node != null && node.getPlainText() != null && !snippet.isBlank() && node.getPlainText().contains(snippet)) {
+            if (node != null && node.getPlainText() != null && node.getPlainText().contains(quoted)) {
                 return DocumentBlockAnchor.builder()
                         .blockId(blockId)
                         .blockType(node.getBlockType())
@@ -190,11 +194,7 @@ public class DocumentAnchorResolver {
                         .build();
             }
         }
-        return DocumentBlockAnchor.builder()
-                .blockId(null)
-                .blockType(null)
-                .plainText(textAnchor == null ? "" : textAnchor.getMatchedText())
-                .build();
+        return DocumentBlockAnchor.builder().blockId(null).blockType(null).plainText(quoted).build();
     }
 
     private DocumentSectionAnchor firstSectionAnchor(DocumentStructureSnapshot snapshot) {
@@ -257,26 +257,6 @@ public class DocumentAnchorResolver {
         return anchor.getHeadingText() == null ? "" : anchor.getHeadingText();
     }
 
-    private String guessInlineText(DocumentStructureSnapshot snapshot, String instruction) {
-        if (instruction == null || instruction.isBlank()) {
-            return "";
-        }
-        String normalized = instruction.toLowerCase(Locale.ROOT);
-        List<String> candidates = new ArrayList<>();
-        for (String token : normalized.split("[，。；、\\s]+")) {
-            String trimmed = token.trim();
-            if (trimmed.length() >= 4) {
-                candidates.add(trimmed);
-            }
-        }
-        for (String candidate : candidates) {
-            if (snapshot.getRawFullMarkdown() != null && snapshot.getRawFullMarkdown().toLowerCase(Locale.ROOT).contains(candidate)) {
-                return candidate;
-            }
-        }
-        return instruction.trim();
-    }
-
     private boolean isHeadMetadataCandidate(DocumentStructureNode node, Set<String> targetKeywords) {
         if (node == null || isProtectedBlock(node, null)) {
             return false;
@@ -317,6 +297,6 @@ public class DocumentAnchorResolver {
     }
 
     private String normalizeLoose(String value) {
-        return value == null ? "" : value.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+        return value == null ? "" : value.replaceAll("\\s+", "").toLowerCase(java.util.Locale.ROOT);
     }
 }
