@@ -18,6 +18,9 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 
 @RestController
@@ -37,8 +40,10 @@ public class LarkOAuthController {
     }
 
     @GetMapping("/login-url")
-    public ResponseEntity<BaseResponse<?>> loginUrl() {
-        LarkOAuthLoginResult result = oauthService.startLoginForQrEmbed();
+    public ResponseEntity<BaseResponse<?>> loginUrl(
+            @RequestParam(value = "client", required = false, defaultValue = "web") String client
+    ) {
+        LarkOAuthLoginResult result = oauthService.startLoginByClient(client);
         return ResponseEntity.ok(ResultUtils.success(result));
     }
 
@@ -67,6 +72,16 @@ public class LarkOAuthController {
         }
     }
 
+    @GetMapping("/lark/desktop-callback")
+    public ResponseEntity<Void> desktopCallback(
+            @RequestParam(value = "code", required = false) String code,
+            @RequestParam(value = "state", required = false) String state,
+            @RequestParam(value = "error", required = false) String error
+    ) {
+        URI target = buildDesktopDeepLink(code, state, error);
+        return redirect(target).build();
+    }
+
     @GetMapping("/me")
     public ResponseEntity<BaseResponse<?>> me(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization
@@ -88,6 +103,27 @@ public class LarkOAuthController {
 
     private ResponseEntity.BodyBuilder redirect(java.net.URI uri) {
         return ResponseEntity.status(HttpStatus.FOUND).location(uri);
+    }
+
+    private URI buildDesktopDeepLink(String code, String state, String error) {
+        StringBuilder builder = new StringBuilder("agentpilot://callback");
+        boolean hasQuery = false;
+        if (code != null && !code.isBlank()) {
+            builder.append("?code=").append(URLEncoder.encode(code.trim(), StandardCharsets.UTF_8));
+            hasQuery = true;
+        }
+        if (state != null && !state.isBlank()) {
+            builder.append(hasQuery ? '&' : '?')
+                    .append("state=")
+                    .append(URLEncoder.encode(state.trim(), StandardCharsets.UTF_8));
+            hasQuery = true;
+        }
+        if (error != null && !error.isBlank()) {
+            builder.append(hasQuery ? '&' : '?')
+                    .append("error=")
+                    .append(URLEncoder.encode(error.trim(), StandardCharsets.UTF_8));
+        }
+        return URI.create(builder.toString());
     }
 
     private String extractBearerToken(String authorization) {

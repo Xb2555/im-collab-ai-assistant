@@ -45,7 +45,7 @@ public class RestLarkOAuthClient implements LarkOAuthClient {
     }
 
     @Override
-    public LarkOAuthTokenPayload exchangeAuthorizationCode(String appAccessToken, String code) {
+    public LarkOAuthTokenPayload exchangeAuthorizationCode(String appAccessToken, String code, String redirectUri) {
         JsonNode response = restClient.post()
                 .uri("/open-apis/authen/v2/oauth/token")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -54,7 +54,7 @@ public class RestLarkOAuthClient implements LarkOAuthClient {
                         "client_id", appProperties.getAppId(),
                         "client_secret", appProperties.getAppSecret(),
                         "code", code,
-                        "redirect_uri", oauthProperties.getRedirectUri()
+                        "redirect_uri", redirectUri
                 ))
                 .retrieve()
                 .body(JsonNode.class);
