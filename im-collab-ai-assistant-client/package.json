@@ -7,16 +7,19 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.1",
+    "@capacitor/app": "^8.1.0",
     "@capacitor/browser": "^8.0.3",
     "@capacitor/core": "^8.3.1",
     "@capacitor/ios": "^8.3.1",
     "@fontsource-variable/geist": "^5.2.8",
     "@microsoft/fetch-event-source": "^2.0.1",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "ahooks": "^3.9.7",
     "axios": "^1.15.2",

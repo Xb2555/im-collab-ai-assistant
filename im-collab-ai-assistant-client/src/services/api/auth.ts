@@ -21,12 +21,17 @@ export const authApi = {
    * 获取飞书授权 URL（JSON，不重定向）
    */
   getLoginUrl: async (): Promise<LarkLoginUrlData> => {
-    const response = await apiClient.get<LarkLoginUrlResponse>('/api/auth/login-url');
+    // 判断当前是不是在 Tauri 桌面端环境中
+    const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+    const clientType = isTauri ? 'desktop' : 'web'; 
+    
+    // 把身份告诉后端
+    const response = await apiClient.get<LarkLoginUrlResponse>(`/api/auth/login-url?client=${clientType}`);
+    
     if (response.data.code !== 0) {
       throw new Error(response.data.message || '获取登录授权链接失败');
     }
-    // 【新增这一行】：把 state 存入本地缓存
-    localStorage.setItem('lark_oauth_state', response.data.data.state)
+    localStorage.setItem('lark_oauth_state', response.data.data.state);
     return response.data.data;
   },
 

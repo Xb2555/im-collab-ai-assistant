@@ -1,16 +1,28 @@
 // src/pages/Login.tsx
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { Button } from '@/components/ui/button';
 import { authLauncher } from '@/services/os/launcher/auth';
 import { useAuthStore } from '@/store/useAuthStore';
 import { Navigate } from 'react-router-dom';
 import { Terminal, LayoutDashboard, Zap } from 'lucide-react';
-
+import { browserLauncher } from '@/services/os/launcher/browser';
 export default function Login() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const [loading, setLoading] = useState(false);
+  const [authStep, setAuthStep] = useState<'idle' | 'opening-browser' | 'waiting-return'>('idle');
+  const [lastOAuthUrl, setLastOAuthUrl] = useState<string | null>(null);
+  const [showFallback, setShowFallback] = useState(false);
+  const fallbackTimerRef = useRef<number | null>(null);
   const isWebPlatform = Capacitor.getPlatform() === 'web';
+
+  useEffect(() => {
+    return () => {
+      if (fallbackTimerRef.current) {
+        window.clearTimeout(fallbackTimerRef.current);
+      }
+    };
+  }, []);
 
   if (isAuthenticated) {
     return <Navigate to="/" replace />;
@@ -19,21 +31,57 @@ export default function Login() {
   const handleLogin = async () => {
     try {
       setLoading(true);
+      setShowFallback(false);
       const platform = Capacitor.getPlatform();
+      const oauthUrl = await authLauncher.getOAuthUrl();
+
+      if (platform === 'web') {
+        setAuthStep('opening-browser');
+        window.location.href = oauthUrl;
+        return;
+      }
 
       if (platform === 'ios' || platform === 'android') {
-        const oauthUrl = await authLauncher.getOAuthUrl();
+        setAuthStep('opening-browser');
         await authLauncher.openInAppBrowser(oauthUrl);
         return;
       }
 
-      const oauthUrl = await authLauncher.getOAuthUrl();
-      window.location.href = oauthUrl;
+      setAuthStep('opening-browser');
+      setLastOAuthUrl(oauthUrl);
+      await browserLauncher.openUrl(oauthUrl);
+      setAuthStep('waiting-return');
+      fallbackTimerRef.current = window.setTimeout(() => {
+        setShowFallback(true);
+      }, 12000);
     } catch (error) {
       console.error(error);
       alert(error instanceof Error ? error.message : '获取登录二维码失败');
+      setAuthStep('idle');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDesktopRetry = async () => {
+    if (!lastOAuthUrl) {
+      await handleLogin();
+      return;
+    }
+    try {
+      setAuthStep('opening-browser');
+      await browserLauncher.openUrl(lastOAuthUrl);
+      setAuthStep('waiting-return');
+      setShowFallback(false);
+      if (fallbackTimerRef.current) {
+        window.clearTimeout(fallbackTimerRef.current);
+      }
+      fallbackTimerRef.current = window.setTimeout(() => {
+        setShowFallback(true);
+      }, 12000);
+    } catch (error) {
+      console.error(error);
+      alert(error instanceof Error ? error.message : '重新唤起授权失败');
     }
   };
 
@@ -102,7 +150,9 @@ export default function Login() {
                 onClick={handleLogin}
                 disabled={loading}
               >
-                {loading ? '正在跳转飞书授权...' : '授权飞书账号登录'}
+                {loading
+                  ? (authStep === 'opening-browser' ? '正在打开浏览器授权...' : '正在处理登录...')
+                  : '授权飞书账号登录'}
               </Button>
 
               {isWebPlatform && (
@@ -113,6 +163,23 @@ export default function Login() {
                   disabled={loading}
                 >
                   在浏览器中直接登录
+                </button>
+              )}
+
+              {!isWebPlatform && authStep !== 'idle' && (
+                <div className="text-center text-xs text-zinc-500">
+                  授权完成将自动返回应用
+                </div>
+              )}
+
+              {!isWebPlatform && authStep === 'waiting-return' && showFallback && (
+                <button
+                  type="button"
+                  className="w-full text-sm text-zinc-500 hover:text-zinc-700 underline underline-offset-2"
+                  onClick={handleDesktopRetry}
+                  disabled={loading}
+                >
+                  我已授权，点击重试/重新唤起
                 </button>
               )}
 
