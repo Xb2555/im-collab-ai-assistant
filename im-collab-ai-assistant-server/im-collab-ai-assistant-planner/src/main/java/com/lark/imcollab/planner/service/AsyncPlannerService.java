@@ -2,6 +2,7 @@ package com.lark.imcollab.planner.service;
 
 import cn.hutool.core.util.StrUtil;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -58,7 +59,7 @@ public class AsyncPlannerService {
                 ? null
                 : intakeService.decide(null, rawInstruction, userFeedback, false);
         if (StrUtil.isBlank(taskId) && shouldShortCircuitWithoutTask(earlyDecision)) {
-            return transientReplySession(resolvedTaskId, rawInstruction, earlyDecision);
+            return transientReplySession(resolvedTaskId, rawInstruction, workspaceContext, earlyDecision);
         }
         if (inFlightTasks.contains(resolvedTaskId)) {
             return sessionService.getOrCreate(resolvedTaskId);
@@ -90,11 +91,24 @@ public class AsyncPlannerService {
                 || type == TaskIntakeTypeEnum.CONFIRM_ACTION;
     }
 
-    private PlanTaskSession transientReplySession(String taskId, String rawInstruction, TaskIntakeDecision decision) {
-        return PlanTaskSession.builder()
+    private PlanTaskSession transientReplySession(
+            String taskId,
+            String rawInstruction,
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision decision
+    ) {
+        PlanTaskSession session = PlanTaskSession.builder()
                 .taskId(taskId)
                 .rawInstruction(rawInstruction == null ? null : rawInstruction.trim())
                 .planningPhase(PlanningPhaseEnum.INTAKE)
+                .inputContext(TaskInputContext.builder()
+                        .inputSource(workspaceContext == null ? null : workspaceContext.getInputSource())
+                        .chatId(workspaceContext == null ? null : workspaceContext.getChatId())
+                        .threadId(workspaceContext == null ? null : workspaceContext.getThreadId())
+                        .messageId(workspaceContext == null ? null : workspaceContext.getMessageId())
+                        .senderOpenId(workspaceContext == null ? null : workspaceContext.getSenderOpenId())
+                        .chatType(workspaceContext == null ? null : workspaceContext.getChatType())
+                        .build())
                 .intakeState(TaskIntakeState.builder()
                         .intakeType(decision.intakeType())
                         .lastUserMessage(decision.effectiveInput())
@@ -103,6 +117,8 @@ public class AsyncPlannerService {
                         .readOnlyView(decision.readOnlyView())
                         .build())
                 .build();
+        sessionService.saveWithoutVersionChange(session);
+        return session;
     }
 
     private PlanTaskSession initializeAcceptedSession(String taskId, String rawInstruction) {

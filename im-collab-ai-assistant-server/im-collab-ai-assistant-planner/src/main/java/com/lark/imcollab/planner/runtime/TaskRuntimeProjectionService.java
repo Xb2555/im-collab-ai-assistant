@@ -44,6 +44,7 @@ public class TaskRuntimeProjectionService {
         }
         Instant now = Instant.now();
         TaskRecord existing = stateStore.findTask(session.getTaskId()).orElse(null);
+        List<TaskStepRecord> existingSteps = stateStore.findStepsByTaskId(session.getTaskId());
         TaskRecord task = TaskRecord.builder()
                 .taskId(session.getTaskId())
                 .conversationKey(session.getIntakeState() == null ? null : session.getIntakeState().getContinuationKey())
@@ -55,8 +56,9 @@ public class TaskRuntimeProjectionService {
                 .goal(firstNonBlank(session.getClarifiedInstruction(), session.getRawInstruction(), session.getPlanBlueprintSummary()))
                 .status(mapTaskStatus(session.getPlanningPhase(), eventType))
                 .currentStage(resolveCurrentStage(session.getPlanningPhase(), eventType))
-                .progress(existing == null ? 0 : existing.getProgress())
-                .artifactIds(existing == null || existing.getArtifactIds() == null ? List.of() : existing.getArtifactIds())
+                .progress(existing == null ? resolveProgress(existingSteps) : existing.getProgress())
+                .artifactIds(existing == null ? resolveArtifactIds(session.getTaskId())
+                        : existing.getArtifactIds() == null ? List.of() : existing.getArtifactIds())
                 .riskFlags(existing == null || existing.getRiskFlags() == null ? List.of() : existing.getRiskFlags())
                 .needUserAction(needsUserAction(session.getPlanningPhase()))
                 .version(session.getVersion())

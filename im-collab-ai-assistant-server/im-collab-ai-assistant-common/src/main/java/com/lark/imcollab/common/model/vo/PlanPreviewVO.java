@@ -11,6 +11,24 @@ public record PlanPreviewVO(
         List<PlanCardVO> cards,
         List<String> clarificationQuestions,
         List<String> clarificationAnswers,
-        TaskActionVO actions
+        TaskActionVO actions,
+        boolean accepted,
+        boolean runtimeAvailable,
+        boolean transientReply,
+        String assistantReply
 ) {
+    public PlanPreviewVO(
+            String taskId,
+            int version,
+            String planningPhase,
+            String title,
+            String summary,
+            List<PlanCardVO> cards,
+            List<String> clarificationQuestions,
+            List<String> clarificationAnswers,
+            TaskActionVO actions
+    ) {
+        this(taskId, version, planningPhase, title, summary, cards, clarificationQuestions, clarificationAnswers,
+                actions, true, true, false, null);
+    }
 }

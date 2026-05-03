@@ -41,6 +41,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -58,6 +60,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Tag(name = "任务规划管理", description = "AI Agent 任务理解、规划、执行、反馈闭环接口")
 @RequiredArgsConstructor
 public class PlannerController {
+
+    private static final Logger log = LoggerFactory.getLogger(PlannerController.class);
 
     private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "CANCEL", "RETRY_FAILED");
     private static final List<TaskStatusEnum> GUI_RECOVERABLE_TASK_STATUSES = List.of(
@@ -289,7 +293,7 @@ public class PlannerController {
         if (!canAccessTask(taskId, user.get().openId())) {
             return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
         }
-        TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(taskId);
+        TaskRuntimeSnapshot snapshot = taskRuntimeService.ensureRuntimeProjection(taskId);
         if ((snapshot == null || snapshot.getTask() == null) && repository.findSession(taskId).isEmpty()) {
             return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
         }
@@ -377,6 +381,11 @@ public class PlannerController {
             }
             case "REPLAN" -> {
                 PlanTaskSession updated = plannerCommandApplicationService.replan(taskId, request.getFeedback());
+                if (!sameTaskId(taskId, updated)) {
+                    log.error("Planner REPLAN returned a different task id: requested={}, returned={}",
+                            taskId, updated == null ? null : updated.getTaskId());
+                    yield error(BusinessCode.OPERATION_ERROR, "Replan returned inconsistent task id");
+                }
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "CANCEL" -> {
@@ -428,7 +437,7 @@ public class PlannerController {
     }
 
     private PlanPreviewVO toPlanPreview(PlanTaskSession session, String taskId) {
-        TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(taskId);
+        TaskRuntimeSnapshot snapshot = taskRuntimeService.ensureRuntimeProjection(taskId);
         return snapshot == null
                 ? plannerViewAssembler.toPlanPreview(session)
                 : plannerViewAssembler.toPlanPreview(session, snapshot);
@@ -505,6 +514,12 @@ public class PlannerController {
                 .map(context -> context == null ? null : context.getSenderOpenId())
                 .orElse(null);
         return !hasText(sessionOwner) || ownerOpenId.equals(sessionOwner);
+    }
+
+    private boolean sameTaskId(String requestedTaskId, PlanTaskSession session) {
+        return session != null
+                && hasText(requestedTaskId)
+                && requestedTaskId.equals(session.getTaskId());
     }
 
     private List<TaskStatusEnum> parseStatuses(List<String> statuses) {

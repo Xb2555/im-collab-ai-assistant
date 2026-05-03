@@ -7,6 +7,7 @@ import com.lark.imcollab.common.domain.TaskType;
 import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskPlanGraph;
 import com.lark.imcollab.common.model.entity.TaskRecord;
@@ -15,6 +16,7 @@ import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.port.TaskRepository;
@@ -66,6 +68,34 @@ public class TaskRuntimeService {
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
+        return projectionService.getSnapshot(taskId);
+    }
+
+    public TaskRuntimeSnapshot ensureRuntimeProjection(String taskId) {
+        TaskRuntimeSnapshot snapshot = projectionService.getSnapshot(taskId);
+        if (snapshot == null || snapshot.getTask() != null) {
+            return snapshot;
+        }
+        PlanTaskSession session = stateStore.findSession(taskId).orElse(null);
+        if (session == null || isTransientReply(session)) {
+            return snapshot;
+        }
+        if (snapshot != null && snapshot.getSteps() != null && !snapshot.getSteps().isEmpty()) {
+            projectionService.projectStage(session, eventForPhase(session.getPlanningPhase()), "Recovered missing runtime task");
+            return projectionService.getSnapshot(taskId);
+        }
+        if (session.getPlanBlueprint() != null) {
+            TaskPlanGraph graph = planGraphBuilder.build(session.getTaskId(), session.getPlanBlueprint());
+            if (session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED && graph.getSteps() != null) {
+                graph.getSteps().forEach(step -> {
+                    step.setStatus(StepStatusEnum.COMPLETED);
+                    step.setProgress(100);
+                });
+            }
+            projectionService.projectPlanGraph(session, graph, eventForPhase(session.getPlanningPhase()));
+        } else {
+            projectionService.projectStage(session, eventForPhase(session.getPlanningPhase()), "Recovered missing runtime projection");
+        }
         return projectionService.getSnapshot(taskId);
     }
 
@@ -170,6 +200,69 @@ public class TaskRuntimeService {
             task.setUpdatedAt(Instant.now());
             stateStore.saveTask(task);
         });
+        taskRepository.findById(taskId).ifPresent(task -> {
+            task.setStatus(mapDomainTaskStatus(phase));
+            task.setUpdatedAt(Instant.now());
+            taskRepository.save(task);
+        });
+    }
+
+    private TaskStatus mapDomainTaskStatus(PlanningPhaseEnum phase) {
+        if (phase == PlanningPhaseEnum.ASK_USER) {
+            return TaskStatus.AWAITING_APPROVAL;
+        }
+        if (phase == PlanningPhaseEnum.PLAN_READY) {
+            return TaskStatus.PLAN_READY;
+        }
+        if (phase == PlanningPhaseEnum.EXECUTING) {
+            return TaskStatus.EXECUTING;
+        }
+        if (phase == PlanningPhaseEnum.COMPLETED) {
+            return TaskStatus.COMPLETED;
+        }
+        if (phase == PlanningPhaseEnum.FAILED) {
+            return TaskStatus.FAILED;
+        }
+        if (phase == PlanningPhaseEnum.ABORTED) {
+            return TaskStatus.ABORTED;
+        }
+        return TaskStatus.PLANNING;
+    }
+
+    private TaskEventTypeEnum eventForPhase(PlanningPhaseEnum phase) {
+        if (phase == PlanningPhaseEnum.FAILED) {
+            return TaskEventTypeEnum.PLAN_FAILED;
+        }
+        if (phase == PlanningPhaseEnum.ASK_USER) {
+            return TaskEventTypeEnum.CLARIFICATION_REQUIRED;
+        }
+        if (phase == PlanningPhaseEnum.PLAN_READY) {
+            return TaskEventTypeEnum.PLAN_READY;
+        }
+        if (phase == PlanningPhaseEnum.EXECUTING) {
+            return TaskEventTypeEnum.PLAN_APPROVED;
+        }
+        if (phase == PlanningPhaseEnum.COMPLETED) {
+            return TaskEventTypeEnum.TASK_COMPLETED;
+        }
+        if (phase == PlanningPhaseEnum.ABORTED) {
+            return TaskEventTypeEnum.TASK_CANCELLED;
+        }
+        return TaskEventTypeEnum.INTAKE_ACCEPTED;
+    }
+
+    private boolean isTransientReply(PlanTaskSession session) {
+        TaskIntakeState intakeState = session.getIntakeState();
+        TaskIntakeTypeEnum intakeType = intakeState == null ? null : intakeState.getIntakeType();
+        if (intakeType == null) {
+            return false;
+        }
+        return (intakeType == TaskIntakeTypeEnum.UNKNOWN
+                || intakeType == TaskIntakeTypeEnum.STATUS_QUERY
+                || intakeType == TaskIntakeTypeEnum.CANCEL_TASK
+                || intakeType == TaskIntakeTypeEnum.CONFIRM_ACTION)
+                && session.getPlanBlueprint() == null
+                && (session.getPlanCards() == null || session.getPlanCards().isEmpty());
     }
 
     private String toJson(Object value) {

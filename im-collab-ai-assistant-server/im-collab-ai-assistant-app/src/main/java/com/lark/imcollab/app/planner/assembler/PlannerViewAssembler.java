@@ -1,11 +1,13 @@
 package com.lark.imcollab.app.planner.assembler;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.PlanCardVO;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.common.model.vo.TaskActionVO;
@@ -27,6 +29,7 @@ public class PlannerViewAssembler {
         if (session == null) {
             return null;
         }
+        boolean transientReply = isTransientReply(session);
         return new PlanPreviewVO(
                 session.getTaskId(),
                 session.getVersion(),
@@ -36,7 +39,13 @@ public class PlannerViewAssembler {
                 toPlanCards(session.getPlanCards(), snapshot),
                 defaultList(session.getClarificationQuestions()),
                 defaultList(session.getClarificationAnswers()),
-                resolveActions(session.getPlanningPhase(), session.isAborted())
+                transientReply
+                        ? new TaskActionVO(false, false, false, false, false, false)
+                        : resolveActions(session.getPlanningPhase(), session.isAborted()),
+                !transientReply,
+                !transientReply,
+                transientReply,
+                session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply()
         );
     }
 
@@ -85,6 +94,20 @@ public class PlannerViewAssembler {
         boolean canInterrupt = phase == PlanningPhaseEnum.EXECUTING;
         boolean canRetry = phase == PlanningPhaseEnum.FAILED;
         return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry);
+    }
+
+    private boolean isTransientReply(PlanTaskSession session) {
+        TaskIntakeState intakeState = session.getIntakeState();
+        TaskIntakeTypeEnum intakeType = intakeState == null ? null : intakeState.getIntakeType();
+        if (intakeType == null) {
+            return false;
+        }
+        return (intakeType == TaskIntakeTypeEnum.UNKNOWN
+                || intakeType == TaskIntakeTypeEnum.STATUS_QUERY
+                || intakeType == TaskIntakeTypeEnum.CANCEL_TASK
+                || intakeType == TaskIntakeTypeEnum.CONFIRM_ACTION)
+                && session.getPlanBlueprint() == null
+                && defaultList(session.getPlanCards()).isEmpty();
     }
 
     private String resolveTitle(PlanTaskSession session) {
