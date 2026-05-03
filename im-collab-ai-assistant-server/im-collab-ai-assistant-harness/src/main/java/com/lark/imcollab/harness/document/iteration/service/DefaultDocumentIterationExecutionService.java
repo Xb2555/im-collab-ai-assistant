@@ -5,20 +5,26 @@ import com.lark.imcollab.common.domain.ApprovalStatus;
 import com.lark.imcollab.common.exception.AiAssistantException;
 import com.lark.imcollab.common.model.dto.DocumentIterationApprovalRequest;
 import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
+import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.DocumentEditPlan;
+import com.lark.imcollab.common.model.entity.DocumentEditStrategy;
 import com.lark.imcollab.common.model.entity.PendingDocumentIteration;
-import com.lark.imcollab.common.model.entity.DocumentTargetSelector;
+import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
+import com.lark.imcollab.common.model.entity.ResolvedDocumentAnchor;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.vo.DocumentIterationPlanVO;
 import com.lark.imcollab.common.model.vo.DocumentIterationVO;
-import com.lark.imcollab.harness.document.iteration.support.DocumentEditPlanBuilder;
-import com.lark.imcollab.harness.document.iteration.support.DocumentIterationIntentService;
+import com.lark.imcollab.harness.document.iteration.support.DocumentAnchorResolver;
+import com.lark.imcollab.harness.document.iteration.support.DocumentEditIntentResolver;
+import com.lark.imcollab.harness.document.iteration.support.DocumentEditStrategyPlanner;
 import com.lark.imcollab.harness.document.iteration.support.DocumentIterationRuntimeSupport;
 import com.lark.imcollab.harness.document.iteration.support.DocumentOwnershipGuard;
+import com.lark.imcollab.harness.document.iteration.support.DocumentPatchCompiler;
 import com.lark.imcollab.harness.document.iteration.support.DocumentPatchExecutor;
-import com.lark.imcollab.harness.document.iteration.support.DocumentTargetLocator;
+import com.lark.imcollab.harness.document.iteration.support.DocumentStructureSnapshotBuilder;
+import com.lark.imcollab.harness.document.iteration.support.DocumentTargetStateVerifier;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -28,25 +34,34 @@ import java.util.Locale;
 public class DefaultDocumentIterationExecutionService implements DocumentIterationExecutionService {
 
     private final DocumentOwnershipGuard ownershipGuard;
-    private final DocumentIterationIntentService intentService;
-    private final DocumentTargetLocator targetLocator;
-    private final DocumentEditPlanBuilder editPlanBuilder;
+    private final DocumentEditIntentResolver intentResolver;
+    private final DocumentStructureSnapshotBuilder snapshotBuilder;
+    private final DocumentAnchorResolver anchorResolver;
+    private final DocumentEditStrategyPlanner strategyPlanner;
+    private final DocumentPatchCompiler patchCompiler;
     private final DocumentPatchExecutor patchExecutor;
+    private final DocumentTargetStateVerifier targetStateVerifier;
     private final DocumentIterationRuntimeSupport runtimeSupport;
 
     public DefaultDocumentIterationExecutionService(
             DocumentOwnershipGuard ownershipGuard,
-            DocumentIterationIntentService intentService,
-            DocumentTargetLocator targetLocator,
-            DocumentEditPlanBuilder editPlanBuilder,
+            DocumentEditIntentResolver intentResolver,
+            DocumentStructureSnapshotBuilder snapshotBuilder,
+            DocumentAnchorResolver anchorResolver,
+            DocumentEditStrategyPlanner strategyPlanner,
+            DocumentPatchCompiler patchCompiler,
             DocumentPatchExecutor patchExecutor,
+            DocumentTargetStateVerifier targetStateVerifier,
             DocumentIterationRuntimeSupport runtimeSupport
     ) {
         this.ownershipGuard = ownershipGuard;
-        this.intentService = intentService;
-        this.targetLocator = targetLocator;
-        this.editPlanBuilder = editPlanBuilder;
+        this.intentResolver = intentResolver;
+        this.snapshotBuilder = snapshotBuilder;
+        this.anchorResolver = anchorResolver;
+        this.strategyPlanner = strategyPlanner;
+        this.patchCompiler = patchCompiler;
         this.patchExecutor = patchExecutor;
+        this.targetStateVerifier = targetStateVerifier;
         this.runtimeSupport = runtimeSupport;
     }
 
@@ -57,9 +72,11 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             WorkspaceContext context = request.getWorkspaceContext();
             String operator = context == null ? null : context.getSenderOpenId();
             Artifact ownedArtifact = ownershipGuard.assertEditable(request.getDocUrl(), operator, request.getTaskId());
-            DocumentIterationIntentType intentType = intentService.resolve(request.getInstruction());
-            DocumentTargetSelector selector = targetLocator.locate(ownedArtifact, intentType, request.getInstruction());
-            DocumentEditPlan editPlan = editPlanBuilder.build(runtime.getTaskId(), intentType, selector, request.getInstruction());
+            DocumentEditIntent editIntent = intentResolver.resolve(request.getInstruction());
+            DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
+            ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, editIntent);
+            DocumentEditStrategy strategy = strategyPlanner.plan(editIntent, anchor);
+            DocumentEditPlan editPlan = patchCompiler.compile(runtime.getTaskId(), editIntent, snapshot, anchor, strategy);
             if (editPlan.isRequiresApproval()) {
                 runtimeSupport.waitForApproval(runtime, request, editPlan, ownedArtifact, operator);
                 String summary = "已生成受控编辑计划，等待进一步确认";
@@ -107,8 +124,11 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentEditPlan plan = pending.getEditPlan();
             if (status == ApprovalStatus.MODIFIED) {
                 String revisedInstruction = defaultIfBlank(request == null ? null : request.getFeedback(), pending.getOriginalRequest().getInstruction());
-                DocumentTargetSelector selector = targetLocator.locate(ownedArtifact, pending.getIntentType(), revisedInstruction);
-                plan = editPlanBuilder.build(taskId, pending.getIntentType(), selector, revisedInstruction);
+                DocumentEditIntent revisedIntent = intentResolver.resolve(revisedInstruction);
+                DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
+                ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, revisedIntent);
+                DocumentEditStrategy strategy = strategyPlanner.plan(revisedIntent, anchor);
+                plan = patchCompiler.compile(taskId, revisedIntent, snapshot, anchor, strategy);
                 if (plan.isRequiresApproval()) {
                     DocumentIterationRequest revisedRequest = copyRequest(pending.getOriginalRequest(), revisedInstruction);
                     runtimeSupport.waitForApproval(runtime, revisedRequest, plan, ownedArtifact, operatorOpenId);
@@ -156,6 +176,14 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         DocumentPatchExecutor.PatchExecutionResult patchResult = editPlan.getIntentType() == DocumentIterationIntentType.EXPLAIN
                 ? new DocumentPatchExecutor.PatchExecutionResult(List.of(), -1L, -1L)
                 : patchExecutor.execute(docRef, editPlan);
+        if (editPlan.getIntentType() != DocumentIterationIntentType.EXPLAIN) {
+            Artifact runtimeArtifact = Artifact.builder()
+                    .externalUrl(resolveDocUrl(ownedArtifact, docRef))
+                    .documentId(resolveDocId(ownedArtifact))
+                    .build();
+            DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
+            targetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
+        }
         String summary = buildSummary(editPlan.getIntentType(), patchResult.getModifiedBlocks(), editPlan)
                 + appendRevisionSummary(patchResult);
         runtimeSupport.saveSummaryArtifact(
@@ -215,9 +243,14 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             return null;
         }
         String targetTitle = editPlan.getSelector() == null ? null : editPlan.getSelector().getLocatorValue();
-        String targetPreview = editPlan.getSelector() == null ? null : editPlan.getSelector().getMatchedExcerpt();
+        String targetPreview = editPlan.getResolvedAnchor() == null ? (editPlan.getSelector() == null ? null : editPlan.getSelector().getMatchedExcerpt())
+                : editPlan.getResolvedAnchor().getPreview();
         return DocumentIterationPlanVO.builder()
                 .intentType(editPlan.getIntentType())
+                .semanticAction(editPlan.getSemanticAction())
+                .anchorType(editPlan.getResolvedAnchor() == null ? null : editPlan.getResolvedAnchor().getAnchorType())
+                .strategyType(editPlan.getStrategyType())
+                .expectedState(editPlan.getExpectedState() == null ? null : editPlan.getExpectedState().getStateType())
                 .targetTitle(targetTitle)
                 .targetPreview(targetPreview)
                 .generatedContent(editPlan.getGeneratedContent())

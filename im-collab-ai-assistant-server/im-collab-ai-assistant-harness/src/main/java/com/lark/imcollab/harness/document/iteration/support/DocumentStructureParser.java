@@ -19,6 +19,10 @@ public class DocumentStructureParser {
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL
     );
     private static final Pattern BLOCK_ID_PATTERN = Pattern.compile("id=\"([^\"]+)\"");
+    private static final Pattern BLOCK_WITH_ID_PATTERN = Pattern.compile(
+            "<([a-zA-Z0-9]+)\\b[^>]*id=\"([^\"]+)\"[^>]*>(.*?)</\\1>",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+    );
     private static final Pattern QUOTED_TEXT_PATTERN = Pattern.compile("[\"“「『]([^\"”」』]{2,})[\"”」』]");
     private static final Pattern TAG_PATTERN = Pattern.compile("<[^>]+>");
     private static final Pattern FRAGMENT_WRAPPER_PATTERN = Pattern.compile(
@@ -74,6 +78,23 @@ public class DocumentStructureParser {
             }
         }
         return List.copyOf(ids);
+    }
+
+    public List<BlockNode> parseBlockNodes(String xml) {
+        if (!hasText(xml)) {
+            return List.of();
+        }
+        List<BlockNode> blocks = new ArrayList<>();
+        Matcher matcher = BLOCK_WITH_ID_PATTERN.matcher(xml);
+        while (matcher.find()) {
+            String tagName = matcher.group(1);
+            String blockId = matcher.group(2);
+            String plainText = stripTags(matcher.group(3));
+            if (hasText(blockId)) {
+                blocks.add(new BlockNode(blockId.trim(), tagName == null ? "block" : tagName.trim().toLowerCase(), plainText));
+            }
+        }
+        return blocks;
     }
 
     public String extractQuotedText(String instruction) {
@@ -324,5 +345,13 @@ public class DocumentStructureParser {
         private final String blockId;
         private final String text;
         private final int level;
+    }
+
+    @Getter
+    @AllArgsConstructor
+    public static class BlockNode {
+        private final String blockId;
+        private final String tagName;
+        private final String plainText;
     }
 }
