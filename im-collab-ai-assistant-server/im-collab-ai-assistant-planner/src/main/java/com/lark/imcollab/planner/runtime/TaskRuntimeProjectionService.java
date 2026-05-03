@@ -53,8 +53,8 @@ public class TaskRuntimeProjectionService {
                 .threadId(firstNonBlank(inputThreadId(session), existing == null ? null : existing.getThreadId()))
                 .title(firstNonBlank(session.getPlanBlueprintSummary(), session.getClarifiedInstruction(), session.getRawInstruction(), session.getTaskId()))
                 .goal(firstNonBlank(session.getClarifiedInstruction(), session.getRawInstruction(), session.getPlanBlueprintSummary()))
-                .status(mapTaskStatus(session.getPlanningPhase()))
-                .currentStage(session.getPlanningPhase() == null ? null : session.getPlanningPhase().name())
+                .status(mapTaskStatus(session.getPlanningPhase(), eventType))
+                .currentStage(resolveCurrentStage(session.getPlanningPhase(), eventType))
                 .progress(existing == null ? 0 : existing.getProgress())
                 .artifactIds(existing == null || existing.getArtifactIds() == null ? List.of() : existing.getArtifactIds())
                 .riskFlags(existing == null || existing.getRiskFlags() == null ? List.of() : existing.getRiskFlags())
@@ -356,6 +356,29 @@ public class TaskRuntimeProjectionService {
             return TaskStatusEnum.CANCELLED;
         }
         return TaskStatusEnum.PLANNING;
+    }
+
+    private TaskStatusEnum mapTaskStatus(PlanningPhaseEnum phase, TaskEventTypeEnum eventType) {
+        if (eventType == TaskEventTypeEnum.PLAN_REVIEWING
+                || eventType == TaskEventTypeEnum.PLAN_GATE_CHECKING) {
+            return TaskStatusEnum.REVIEWING;
+        }
+        return mapTaskStatus(phase);
+    }
+
+    private String resolveCurrentStage(PlanningPhaseEnum phase, TaskEventTypeEnum eventType) {
+        if (eventType == TaskEventTypeEnum.PLAN_REVIEWING
+                || eventType == TaskEventTypeEnum.PLAN_GATE_CHECKING
+                || eventType == TaskEventTypeEnum.CONTEXT_CHECKING
+                || eventType == TaskEventTypeEnum.CONTEXT_COLLECTING
+                || eventType == TaskEventTypeEnum.CONTEXT_COLLECTED
+                || eventType == TaskEventTypeEnum.INTENT_ROUTING
+                || eventType == TaskEventTypeEnum.PLANNING_STARTED
+                || eventType == TaskEventTypeEnum.CLARIFICATION_REQUIRED
+                || eventType == TaskEventTypeEnum.PLAN_FAILED) {
+            return eventType.name();
+        }
+        return phase == null ? null : phase.name();
     }
 
     private boolean needsUserAction(PlanningPhaseEnum phase) {
