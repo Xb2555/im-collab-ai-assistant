@@ -39,11 +39,23 @@ export const useTaskStore = create<TaskState>((set) => ({
   clearThinkingText: () => set({ aiThinkingText: '' }),
   setIsStreaming: (status) => set({ isStreaming: status }),
 
-  clearTask: () => set({
-    activeTaskId: null,
-    planPreview: null,
-    taskRuntime: null,
-    aiThinkingText: '',
-    isStreaming: false,
+  clearTask: () => set((state) => {
+    // ✨ 核心修复：只要是用户手动点 X 关闭的任务，统统加入黑名单！拒绝任何状态（包括 CLARIFYING）的自动弹脸
+    if (state.activeTaskId) {
+      const closed = JSON.parse(localStorage.getItem('closed_tasks') || '[]');
+      if (!closed.includes(state.activeTaskId)) {
+        closed.push(state.activeTaskId);
+        // 仅保留最近关闭的50个记录
+        localStorage.setItem('closed_tasks', JSON.stringify(closed.slice(-50)));
+      }
+    }
+
+    return {
+      activeTaskId: null,
+      planPreview: null,
+      taskRuntime: null,
+      aiThinkingText: '',
+      isStreaming: false,
+    };
   }),
 }));
