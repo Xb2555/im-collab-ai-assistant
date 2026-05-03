@@ -263,7 +263,7 @@ class PlannerControllerCommandTest {
 
         when(repository.findSession("task-1")).thenReturn(Optional.of(failed));
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.FAILED)));
-        when(plannerCommandApplicationService.retryFailed("task-1", failed)).thenReturn(retrying);
+        when(plannerCommandApplicationService.retryFailed("task-1", failed, "请用备用方案重试")).thenReturn(retrying);
         when(plannerViewAssembler.toPlanPreview(retrying)).thenReturn(new PlanPreviewVO(
                 "task-1", 5, "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
@@ -271,11 +271,12 @@ class PlannerControllerCommandTest {
         PlanCommandRequest request = new PlanCommandRequest();
         request.setAction("RETRY_FAILED");
         request.setVersion(4);
+        request.setFeedback("请用备用方案重试");
 
         BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
 
         assertThat(response.getCode()).isZero();
-        verify(plannerCommandApplicationService).retryFailed("task-1", failed);
+        verify(plannerCommandApplicationService).retryFailed("task-1", failed, "请用备用方案重试");
         verify(plannerCommandApplicationService, never()).replan(anyString(), anyString());
     }
 

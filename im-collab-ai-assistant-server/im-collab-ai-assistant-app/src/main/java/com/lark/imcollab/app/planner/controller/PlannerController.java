@@ -397,7 +397,7 @@ public class PlannerController {
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "RETRY_FAILED" -> {
-                PlanTaskSession updated = plannerCommandApplicationService.retryFailed(taskId, session);
+                PlanTaskSession updated = plannerCommandApplicationService.retryFailed(taskId, session, request.getFeedback());
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             default -> error(BusinessCode.PARAMS_ERROR, "Unsupported planner command: " + request.getAction());

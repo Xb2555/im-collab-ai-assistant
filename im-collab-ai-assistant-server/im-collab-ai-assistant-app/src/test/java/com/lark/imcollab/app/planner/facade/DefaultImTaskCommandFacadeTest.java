@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.service.TaskCancellationRegistry;
 import com.lark.imcollab.planner.config.PlannerExecutionProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
@@ -50,6 +51,7 @@ class DefaultImTaskCommandFacadeTest {
     private final HoldingAsyncExecutor executor = new HoldingAsyncExecutor();
     private final HoldingScheduledExecutor timeoutScheduler = new HoldingScheduledExecutor();
     private final PlannerExecutionProperties executionProperties = executionProperties();
+    private final TaskCancellationRegistry cancellationRegistry = new TaskCancellationRegistry();
     private final DefaultImTaskCommandFacade facade = new DefaultImTaskCommandFacade(
             sessionService,
             taskBridgeService,
@@ -60,7 +62,8 @@ class DefaultImTaskCommandFacadeTest {
             List.of(notificationFacade),
             executor,
             timeoutScheduler,
-            executionProperties
+            executionProperties,
+            cancellationRegistry
     );
 
     @Test
@@ -174,12 +177,12 @@ class DefaultImTaskCommandFacadeTest {
                 .build();
         when(sessionService.get("task-1")).thenReturn(failed);
         when(plannerRetryService.isRetryable("task-1", failed)).thenReturn(true);
-        when(plannerRetryService.prepareRetry("task-1")).thenReturn(retrying);
+        when(plannerRetryService.prepareRetry("task-1", "请用备用方案重试")).thenReturn(retrying);
 
-        PlanTaskSession returned = facade.retryExecution("task-1");
+        PlanTaskSession returned = facade.retryExecution("task-1", "请用备用方案重试");
 
         assertThat(returned).isEqualTo(retrying);
-        verify(taskBridgeService).ensureTask(failed);
+        verify(taskBridgeService).ensureTask(retrying);
         verify(harnessFacade, never()).startExecution("task-1");
 
         executor.runAll();
@@ -197,12 +200,30 @@ class DefaultImTaskCommandFacadeTest {
         when(sessionService.get("task-1")).thenReturn(ready);
         when(plannerRetryService.isRetryable("task-1", ready)).thenReturn(false);
 
-        PlanTaskSession returned = facade.retryExecution("task-1");
+        PlanTaskSession returned = facade.retryExecution("task-1", "请用备用方案重试");
 
         assertThat(returned).isEqualTo(ready);
         verify(taskBridgeService, never()).ensureTask(any());
-        verify(plannerRetryService, never()).prepareRetry("task-1");
+        verify(plannerRetryService, never()).prepareRetry("task-1", "请用备用方案重试");
         verify(harnessFacade, never()).startExecution("task-1");
+    }
+
+    @Test
+    void cancelExecutionInterruptsQueuedHarnessAndAbortsDomainTask() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(sessionService.get("task-1")).thenReturn(session);
+
+        facade.confirmExecution("task-1");
+        facade.cancelExecution("task-1");
+        executor.runAll();
+
+        assertThat(cancellationRegistry.isCancelled("task-1")).isTrue();
+        verify(harnessFacade).abortExecution("task-1");
+        verify(harnessFacade, never()).startExecution("task-1");
+        verify(reviewService, never()).reviewAndNotify("task-1");
     }
 
     private static PlannerExecutionProperties executionProperties() {

@@ -282,6 +282,7 @@ public class DocumentWorkflowNodes {
         LarkDocCreateResult result = larkDocTool.createDoc(plan.getTitle(), markdown);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.WRITE_TASK_SUFFIX),
                 ArtifactType.DOC_LINK, plan.getTitle(), null, result.getDocId(), result.getDocUrl());
+        saveSummaryArtifactIfRequested(taskId, plan, composedDraft, reviewResult, state);
         support.publishEvent(taskId, null, TaskEventType.ARTIFACT_CREATED);
         support.publishEvent(taskId, null, TaskEventType.TASK_COMPLETED);
         return CompletableFuture.completedFuture(Map.of(
@@ -290,6 +291,22 @@ public class DocumentWorkflowNodes {
                 DocumentStateKeys.DOC_ID, result.getDocId(),
                 DocumentStateKeys.DONE_WRITE, true
         ));
+    }
+
+    private void saveSummaryArtifactIfRequested(
+            String taskId,
+            DocumentPlan plan,
+            ComposedDocumentDraft composedDraft,
+            DocumentReviewResult reviewResult,
+            OverAllState state
+    ) {
+        if (readRequiredArtifacts(state).stream().noneMatch(value -> "SUMMARY".equalsIgnoreCase(value))) {
+            return;
+        }
+        String summary = buildSummaryArtifact(plan, composedDraft, reviewResult);
+        String stepId = support.findSummaryStepId(taskId)
+                .orElseGet(() -> support.subtaskId(taskId, "generate_summary"));
+        support.saveArtifact(taskId, stepId, ArtifactType.SUMMARY, plan.getTitle() + " - 摘要", summary, null);
     }
 
     public CompletableFuture<String> routeAfterReview(OverAllState state, RunnableConfig config) {
@@ -1007,6 +1024,33 @@ public class DocumentWorkflowNodes {
             return normalized;
         }
         return normalized.substring(0, 120) + "...";
+    }
+
+    private String buildSummaryArtifact(
+            DocumentPlan plan,
+            ComposedDocumentDraft composedDraft,
+            DocumentReviewResult reviewResult
+    ) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("# ").append(plan.getTitle()).append(" - 摘要\n\n");
+        if (reviewResult != null && reviewResult.getSummary() != null && !reviewResult.getSummary().isBlank()) {
+            builder.append(reviewResult.getSummary().trim()).append("\n\n");
+        }
+        builder.append("## 关键内容\n");
+        List<DocumentSectionDraft> sections = composedDraft == null || composedDraft.getOrderedSections() == null
+                ? List.of()
+                : composedDraft.getOrderedSections();
+        for (DocumentSectionDraft section : sections) {
+            if (section == null || section.getHeading() == null || section.getHeading().isBlank()) {
+                continue;
+            }
+            builder.append("- ")
+                    .append(section.getHeading())
+                    .append("：")
+                    .append(excerpt(defaultString(section.getBody())))
+                    .append("\n");
+        }
+        return builder.toString().trim();
     }
 
     private String normalizeHeadingForMatch(String heading) {

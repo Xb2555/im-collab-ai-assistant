@@ -71,6 +71,17 @@ public class TaskRuntimeService {
         return projectionService.getSnapshot(taskId);
     }
 
+    public void appendUserIntervention(String taskId, String feedback) {
+        if (taskId == null || taskId.isBlank() || feedback == null || feedback.isBlank()) {
+            return;
+        }
+        int version = stateStore.findSession(taskId)
+                .map(PlanTaskSession::getVersion)
+                .orElseGet(() -> stateStore.findTask(taskId).map(TaskRecord::getVersion).orElse(0));
+        appendRuntimeEvent(taskId, version, TaskEventTypeEnum.USER_INTERVENTION,
+                "用户人工干预：" + feedback.trim());
+    }
+
     public TaskRuntimeSnapshot ensureRuntimeProjection(String taskId) {
         TaskRuntimeSnapshot snapshot = projectionService.getSnapshot(taskId);
         if (snapshot == null || snapshot.getTask() != null) {

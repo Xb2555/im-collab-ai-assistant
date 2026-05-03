@@ -112,4 +112,30 @@ class TaskRuntimeServiceTest {
                 org.mockito.ArgumentMatchers.any(PlanBlueprint.class)
         );
     }
+
+    @Test
+    void appendUserInterventionWritesRuntimeEventWithFeedback() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        when(stateStore.findSession("task-1")).thenReturn(Optional.of(PlanTaskSession.builder()
+                .taskId("task-1")
+                .version(7)
+                .build()));
+        TaskRuntimeService service = new TaskRuntimeService(
+                stateStore,
+                mock(PlanGraphBuilder.class),
+                new ObjectMapper(),
+                mock(TaskRepository.class),
+                mock(ExecutionContractFactory.class),
+                mock(TaskRuntimeProjectionService.class)
+        );
+
+        service.appendUserIntervention("task-1", " 给一个大概的参考就好 ");
+
+        ArgumentCaptor<com.lark.imcollab.common.model.entity.TaskEventRecord> eventCaptor =
+                ArgumentCaptor.forClass(com.lark.imcollab.common.model.entity.TaskEventRecord.class);
+        verify(stateStore).appendRuntimeEvent(eventCaptor.capture());
+        assertThat(eventCaptor.getValue().getType()).isEqualTo(TaskEventTypeEnum.USER_INTERVENTION);
+        assertThat(eventCaptor.getValue().getVersion()).isEqualTo(7);
+        assertThat(eventCaptor.getValue().getPayloadJson()).contains("用户人工干预：给一个大概的参考就好");
+    }
 }

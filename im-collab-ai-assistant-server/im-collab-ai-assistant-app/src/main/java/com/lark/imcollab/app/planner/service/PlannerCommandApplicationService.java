@@ -5,6 +5,7 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
 import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
+import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
@@ -17,20 +18,24 @@ public class PlannerCommandApplicationService {
     private final TaskBridgeService taskBridgeService;
     private final PlannerRetryService plannerRetryService;
     private final ImTaskCommandFacade taskCommandFacade;
+    private final TaskRuntimeService taskRuntimeService;
 
     public PlannerCommandApplicationService(
             PlannerSupervisorGraphRunner graphRunner,
             TaskBridgeService taskBridgeService,
             PlannerRetryService plannerRetryService,
-            ImTaskCommandFacade taskCommandFacade
+            ImTaskCommandFacade taskCommandFacade,
+            TaskRuntimeService taskRuntimeService
     ) {
         this.graphRunner = graphRunner;
         this.taskBridgeService = taskBridgeService;
         this.plannerRetryService = plannerRetryService;
         this.taskCommandFacade = taskCommandFacade;
+        this.taskRuntimeService = taskRuntimeService;
     }
 
     public PlanTaskSession resume(String taskId, String feedback, boolean replanFromRoot) {
+        taskRuntimeService.appendUserIntervention(taskId, feedback);
         PlannerSupervisorAction action = replanFromRoot
                 ? PlannerSupervisorAction.PLAN_ADJUSTMENT
                 : PlannerSupervisorAction.CLARIFICATION_REPLY;
@@ -44,6 +49,7 @@ public class PlannerCommandApplicationService {
     }
 
     public PlanTaskSession replan(String taskId, String feedback) {
+        taskRuntimeService.appendUserIntervention(taskId, feedback);
         PlanTaskSession session = graphRunner.run(
                 new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "user requested plan adjustment"),
                 taskId,
@@ -67,6 +73,7 @@ public class PlannerCommandApplicationService {
     }
 
     public PlanTaskSession cancel(String taskId) {
+        taskCommandFacade.cancelExecution(taskId);
         return graphRunner.run(
                 new PlannerSupervisorDecision(PlannerSupervisorAction.CANCEL_TASK, "user cancelled task"),
                 taskId,
@@ -76,10 +83,11 @@ public class PlannerCommandApplicationService {
         );
     }
 
-    public PlanTaskSession retryFailed(String taskId, PlanTaskSession currentSession) {
+    public PlanTaskSession retryFailed(String taskId, PlanTaskSession currentSession, String feedback) {
         if (!plannerRetryService.isRetryable(taskId, currentSession)) {
             throw new RetryNotAllowedException("当前任务不是失败状态，不需要重试。");
         }
-        return taskCommandFacade.retryExecution(taskId);
+        taskRuntimeService.appendUserIntervention(taskId, feedback);
+        return taskCommandFacade.retryExecution(taskId, feedback);
     }
 }

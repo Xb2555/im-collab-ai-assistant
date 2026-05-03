@@ -184,7 +184,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
             return;
         }
-        PlanTaskSession retrying = taskCommandFacade.retryExecution(session.getTaskId());
+        PlanTaskSession retrying = taskCommandFacade.retryExecution(session.getTaskId(), message.content());
         if (retrying == null || retrying.getPlanningPhase() != PlanningPhaseEnum.EXECUTING) {
             replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
             return;

@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.state.StateSnapshot;
 import com.lark.imcollab.common.domain.Approval;
+import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskEventType;
 import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.harness.document.support.DocumentExecutionGuard;
@@ -14,11 +15,36 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @Service
 public class DefaultDocumentExecutionService implements DocumentExecutionService {
+
+    private static final List<String> GENERATED_STATE_KEYS = List.of(
+            DocumentStateKeys.OUTLINE,
+            DocumentStateKeys.DOCUMENT_PLAN,
+            DocumentStateKeys.SECTION_DRAFTS,
+            DocumentStateKeys.REVIEW_RESULT,
+            DocumentStateKeys.COMPOSED_DRAFT,
+            DocumentStateKeys.SECTION_PROGRESS,
+            DocumentStateKeys.COMPLETED_SECTION_KEYS,
+            DocumentStateKeys.CURRENT_SECTION_KEY,
+            DocumentStateKeys.DOC_MARKDOWN,
+            DocumentStateKeys.ARTIFACT_REFS,
+            DocumentStateKeys.DOC_ID,
+            DocumentStateKeys.DOC_URL,
+            DocumentStateKeys.WAITING_HUMAN_REVIEW,
+            DocumentStateKeys.HALTED_STAGE,
+            DocumentStateKeys.DONE_OUTLINE,
+            DocumentStateKeys.DONE_SECTIONS,
+            DocumentStateKeys.DONE_REVIEW,
+            DocumentStateKeys.DONE_WRITE,
+            DocumentStateKeys.DIAGRAM_PLAN,
+            DocumentStateKeys.MERMAID_DIAGRAM
+    );
 
     private final CompiledGraph documentWorkflow;
     private final TaskRepository taskRepository;
@@ -54,6 +80,9 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
         state.put(DocumentStateKeys.TASK_ID, taskId);
         state.put(DocumentStateKeys.USER_FEEDBACK, userFeedback == null ? "" : userFeedback);
         taskRepository.findById(taskId).ifPresent(task -> {
+            if (shouldRegenerateFromCurrentContext(snapshot.isPresent(), state, task, userFeedback)) {
+                clearGeneratedState(state);
+            }
             if (task.getRawInstruction() != null && !task.getRawInstruction().isBlank()) {
                 state.put(DocumentStateKeys.RAW_INSTRUCTION, task.getRawInstruction());
             }
@@ -69,6 +98,52 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
             }
         });
         documentWorkflow.invoke(new OverAllState(state), config);
+    }
+
+    private boolean shouldRegenerateFromCurrentContext(
+            boolean hasCheckpoint,
+            Map<String, Object> checkpointState,
+            Task task,
+            String userFeedback
+    ) {
+        if (!hasCheckpoint) {
+            return false;
+        }
+        if (hasText(userFeedback)) {
+            return true;
+        }
+        String previousInstruction = firstNonBlank(
+                stringValue(checkpointState.get(DocumentStateKeys.CLARIFIED_INSTRUCTION)),
+                stringValue(checkpointState.get(DocumentStateKeys.RAW_INSTRUCTION))
+        );
+        String currentInstruction = firstNonBlank(task.getClarifiedInstruction(), task.getRawInstruction());
+        return hasText(previousInstruction)
+                && hasText(currentInstruction)
+                && !Objects.equals(previousInstruction.trim(), currentInstruction.trim());
+    }
+
+    private void clearGeneratedState(Map<String, Object> state) {
+        GENERATED_STATE_KEYS.forEach(state::remove);
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (hasText(value)) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private void runSafely(String taskId, String userFeedback, String stepId) {

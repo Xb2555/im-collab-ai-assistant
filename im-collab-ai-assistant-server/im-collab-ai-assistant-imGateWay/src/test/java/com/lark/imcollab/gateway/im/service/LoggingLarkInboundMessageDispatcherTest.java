@@ -99,12 +99,12 @@ class LoggingLarkInboundMessageDispatcherTest {
         PlanTaskSession retrying = session(TaskIntakeTypeEnum.CONFIRM_ACTION, PlanningPhaseEnum.EXECUTING);
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(failed);
-        when(taskCommandFacade.retryExecution("task-1")).thenReturn(retrying);
+        when(taskCommandFacade.retryExecution("task-1", "再试一次")).thenReturn(retrying);
         when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshot(TaskStatusEnum.EXECUTING));
 
         dispatcher.dispatch(message("再试一次"));
 
-        verify(taskCommandFacade).retryExecution("task-1");
+        verify(taskCommandFacade).retryExecution("task-1", "再试一次");
         verify(taskCommandFacade, never()).confirmExecution(anyString());
         ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
         verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
