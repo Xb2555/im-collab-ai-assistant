@@ -15,12 +15,12 @@ import com.lark.imcollab.gateway.im.dto.LarkCreateChatRequest;
 import com.lark.imcollab.gateway.im.dto.LarkCreateChatResponse;
 import com.lark.imcollab.gateway.im.dto.LarkInviteChatMembersRequest;
 import com.lark.imcollab.gateway.im.dto.LarkInviteChatMembersResponse;
+import com.lark.imcollab.gateway.im.dto.LarkMessageHistoryViewResponse;
 import com.lark.imcollab.gateway.im.dto.LarkSendMessageRequest;
 import com.lark.imcollab.gateway.im.dto.LarkSendMessageResponse;
 import com.lark.imcollab.gateway.im.dto.LarkUserSearchResponse;
 import com.lark.imcollab.gateway.im.dto.LarkUserSummary;
 import com.lark.imcollab.skills.lark.im.LarkMessageHistoryMapper;
-import com.lark.imcollab.skills.lark.im.LarkMessageHistoryResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
@@ -270,7 +270,7 @@ public class LarkIMChatService {
         );
     }
 
-    public LarkMessageHistoryResponse fetchMessageHistory(
+    public LarkMessageHistoryViewResponse fetchMessageHistory(
             String authorization,
             String containerIdType,
             String containerId,
