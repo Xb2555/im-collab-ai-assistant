@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
+import com.lark.imcollab.skills.lark.config.LarkDocProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
@@ -12,11 +13,15 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
@@ -24,23 +29,30 @@ import java.util.concurrent.ConcurrentHashMap;
 public class LarkDocTool {
 
     private static final Pattern DOC_URL_PATTERN = Pattern.compile("/(?:docx|wiki)/([A-Za-z0-9]+)");
+    private static final String CONTENT_STDIN_MARKER = "-";
 
     private final LarkCliClient larkCliClient;
     private final LarkCliProperties properties;
+    private final LarkDocOpenApiClient openApiClient;
+    private final LarkDocProperties docProperties;
     private final Map<String, Set<String>> supportedFlagCache = new ConcurrentHashMap<>();
 
     private static final Pattern FLAG_PATTERN = Pattern.compile("(?<!\\S)--[a-zA-Z0-9-]+");
-    private static final Set<String> CREATE_FALLBACK_FLAGS = Set.of(
-            "--as", "--title", "--markdown", "--wiki-space", "--wiki-node", "--folder-token", "--profile"
-    );
     private static final Set<String> FETCH_FALLBACK_FLAGS = Set.of(
             "--as", "--doc", "--format", "--limit", "--offset", "--profile"
     );
 
 
-    public LarkDocTool(LarkCliClient larkCliClient, LarkCliProperties properties) {
+    public LarkDocTool(
+            LarkCliClient larkCliClient,
+            LarkCliProperties properties,
+            LarkDocOpenApiClient openApiClient,
+            LarkDocProperties docProperties
+    ) {
         this.larkCliClient = larkCliClient;
         this.properties = properties;
+        this.openApiClient = openApiClient;
+        this.docProperties = docProperties;
     }
 
     @Tool(description = "Scenario C: create a Lark doc from markdown.")
@@ -48,27 +60,214 @@ public class LarkDocTool {
         requireValue(title, "title");
         requireValue(markdown, "markdown");
 
-        Set<String> supportedFlags = supportedFlags("+create");
+        if (openApiClient == null) {
+            throw new IllegalStateException("飞书文档 OpenAPI 客户端未配置，无法创建文档。");
+        }
+        String normalizedTitle = normalizeTitle(title);
         String normalizedMarkdown = normalizeMarkdown(title, markdown);
-        JsonNode root = executeJsonWithCompat("+create", createDocAttempts(title.trim(), normalizedMarkdown, supportedFlags));
-        JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
-        JsonNode document = data.path("document").isMissingNode() ? data : data.path("document");
+        JsonNode document = createEmptyDocument(normalizedTitle);
+        String documentId = firstNonBlank(text(document, "document_id"), text(document, "doc_id"));
+        requireValue(documentId, "documentId");
+        writeMarkdownBlocks(documentId, normalizedMarkdown);
+        String docUrl = firstNonBlank(text(document, "url"), queryDocUrl(documentId), buildDocUrl(documentId));
         return LarkDocCreateResult.builder()
-                .docId(firstNonBlank(
-                        text(document, "document_id"),
-                        text(data, "doc_id"),
-                        text(data, "document_id")
-                ))
-                .docUrl(firstNonBlank(
-                        text(document, "url"),
-                        text(data, "doc_url"),
-                        text(data, "url")
-                ))
+                .docId(documentId)
+                .docUrl(docUrl)
                 .message(firstNonBlank(
-                        text(data, "message"),
-                        text(root, "message")
+                        text(document, "message"),
+                        "created by docx OpenAPI"
                 ))
                 .build();
+    }
+
+    private JsonNode createEmptyDocument(String title) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (docProperties != null && hasText(docProperties.getFolderToken())) {
+            body.put("folder_token", docProperties.getFolderToken().trim());
+        }
+        body.put("title", title);
+        JsonNode data = openApiClient.post(
+                "/open-apis/docx/v1/documents",
+                body,
+                docRequestTimeoutSeconds()
+        );
+        JsonNode document = data.path("document");
+        return document.isMissingNode() || document.isNull() ? data : document;
+    }
+
+    private String queryDocUrl(String documentId) {
+        try {
+            Map<String, Object> requestDoc = new LinkedHashMap<>();
+            requestDoc.put("doc_token", documentId);
+            requestDoc.put("doc_type", "docx");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("request_docs", List.of(requestDoc));
+            body.put("with_url", true);
+            JsonNode data = openApiClient.post(
+                    "/open-apis/drive/v1/metas/batch_query",
+                    body,
+                    docRequestTimeoutSeconds()
+            );
+            JsonNode metas = data.path("metas");
+            if (metas.isArray() && !metas.isEmpty()) {
+                return text(metas.get(0), "url");
+            }
+        } catch (RuntimeException exception) {
+            log.warn("Failed to query Lark doc URL from Drive meta, fallback to configured domain: docId={}",
+                    documentId, exception);
+        }
+        return "";
+    }
+
+    private void writeMarkdownBlocks(String documentId, String markdown) {
+        List<Map<String, Object>> blocks = markdownToBlocks(markdown);
+        if (blocks.isEmpty()) {
+            return;
+        }
+        int batchSize = Math.max(1, docProperties == null ? 40 : docProperties.getMaxBlocksPerRequest());
+        for (int start = 0; start < blocks.size(); start += batchSize) {
+            int end = Math.min(start + batchSize, blocks.size());
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("children", blocks.subList(start, end));
+            openApiClient.post(
+                    "/open-apis/docx/v1/documents/" + documentId + "/blocks/" + documentId
+                            + "/children?client_token=" + UUID.randomUUID(),
+                    body,
+                    docRequestTimeoutSeconds()
+            );
+            pauseBetweenDocWrites();
+        }
+    }
+
+    private List<Map<String, Object>> markdownToBlocks(String markdown) {
+        List<Map<String, Object>> blocks = new ArrayList<>();
+        String[] lines = markdown.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+        StringBuilder paragraph = new StringBuilder();
+        StringBuilder codeBlock = null;
+        for (String line : lines) {
+            String trimmed = line.strip();
+            if (trimmed.startsWith("```")) {
+                if (codeBlock == null) {
+                    flushParagraph(blocks, paragraph);
+                    codeBlock = new StringBuilder();
+                } else {
+                    addTextBlocks(blocks, "```\n" + codeBlock.toString().stripTrailing() + "\n```", 2);
+                    codeBlock = null;
+                }
+                continue;
+            }
+            if (codeBlock != null) {
+                codeBlock.append(line).append('\n');
+                continue;
+            }
+            int headingLevel = headingLevel(trimmed);
+            if (headingLevel > 0) {
+                flushParagraph(blocks, paragraph);
+                addTextBlocks(blocks, trimmed.substring(headingLevel).strip(), Math.min(8, 2 + headingLevel));
+                continue;
+            }
+            if (trimmed.isBlank()) {
+                flushParagraph(blocks, paragraph);
+                continue;
+            }
+            if (!paragraph.isEmpty()) {
+                paragraph.append('\n');
+            }
+            paragraph.append(line);
+        }
+        if (codeBlock != null && !codeBlock.isEmpty()) {
+            addTextBlocks(blocks, "```\n" + codeBlock.toString().stripTrailing() + "\n```", 2);
+        }
+        flushParagraph(blocks, paragraph);
+        return blocks;
+    }
+
+    private int headingLevel(String line) {
+        int level = 0;
+        while (level < line.length() && level < 6 && line.charAt(level) == '#') {
+            level++;
+        }
+        return level > 0 && level < line.length() && Character.isWhitespace(line.charAt(level)) ? level : 0;
+    }
+
+    private void flushParagraph(List<Map<String, Object>> blocks, StringBuilder paragraph) {
+        if (paragraph.isEmpty()) {
+            return;
+        }
+        addTextBlocks(blocks, paragraph.toString().strip(), 2);
+        paragraph.setLength(0);
+    }
+
+    private void addTextBlocks(List<Map<String, Object>> blocks, String content, int blockType) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        for (String chunk : splitText(content.strip(), maxTextCharsPerBlock())) {
+            blocks.add(textBlock(blockType, chunk));
+        }
+    }
+
+    private Map<String, Object> textBlock(int blockType, String content) {
+        Map<String, Object> style = new LinkedHashMap<>();
+        Map<String, Object> textRun = new LinkedHashMap<>();
+        textRun.put("content", content);
+        textRun.put("text_element_style", style);
+        Map<String, Object> element = Map.of("text_run", textRun);
+
+        Map<String, Object> richText = new LinkedHashMap<>();
+        richText.put("elements", List.of(element));
+
+        Map<String, Object> block = new LinkedHashMap<>();
+        block.put("block_type", blockType);
+        block.put(blockFieldName(blockType), richText);
+        return block;
+    }
+
+    private String blockFieldName(int blockType) {
+        return switch (blockType) {
+            case 3 -> "heading1";
+            case 4 -> "heading2";
+            case 5 -> "heading3";
+            case 6 -> "heading4";
+            case 7 -> "heading5";
+            case 8 -> "heading6";
+            default -> "text";
+        };
+    }
+
+    private List<String> splitText(String text, int maxChars) {
+        if (text.length() <= maxChars) {
+            return List.of(text);
+        }
+        List<String> chunks = new ArrayList<>();
+        int start = 0;
+        while (start < text.length()) {
+            int end = Math.min(start + maxChars, text.length());
+            chunks.add(text.substring(start, end));
+            start = end;
+        }
+        return chunks;
+    }
+
+    private int docRequestTimeoutSeconds() {
+        return docProperties == null || docProperties.getRequestTimeoutSeconds() <= 0
+                ? 30
+                : docProperties.getRequestTimeoutSeconds();
+    }
+
+    private int maxTextCharsPerBlock() {
+        return docProperties == null || docProperties.getMaxTextCharsPerBlock() <= 0
+                ? 1600
+                : docProperties.getMaxTextCharsPerBlock();
+    }
+
+    private void pauseBetweenDocWrites() {
+        try {
+            Thread.sleep(380L);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("飞书文档写入被中断。", exception);
+        }
     }
 
     @Tool(description = "Scenario C: append markdown content to an existing Lark doc.")
@@ -88,6 +287,17 @@ public class LarkDocTool {
         JsonNode document = data.path("document").isMissingNode() ? data : data.path("document");
         return LarkDocFetchResult.builder()
                 .success(root.path("success").asBoolean(data.path("success").asBoolean(true)))
+                .docId(firstNonBlank(
+                        text(document, "document_id"),
+                        text(data, "doc_id"),
+                        text(data, "document_id")
+                ))
+                .docUrl(firstNonBlank(
+                        text(document, "url"),
+                        text(data, "doc_url"),
+                        text(data, "url"),
+                        docRef.trim()
+                ))
                 .docRef(docRef.trim())
                 .title(firstNonBlank(
                         text(data, "title"),
@@ -134,7 +344,7 @@ public class LarkDocTool {
             args.add("--doc-format");
             args.add("markdown");
             args.add("--content");
-            args.add("-");
+            args.add(CONTENT_STDIN_MARKER);
             stdin = markdown;
         }
 
@@ -204,7 +414,7 @@ public class LarkDocTool {
         String stdin = null;
         if (content != null) {
             args.add("--content");
-            args.add("-");
+            args.add(CONTENT_STDIN_MARKER);
             stdin = content;
         }
         if (hasText(blockId)) {
@@ -237,7 +447,7 @@ public class LarkDocTool {
     }
 
     private JsonNode executeJson(List<String> args, String stdin) {
-        CliCommandResult result = larkCliClient.execute(args, stdin, commandTimeoutMillis());
+        CliCommandResult result = executeContentCommand(args, stdin);
         if (!result.isSuccess()) {
             throw new IllegalStateException(readableCliError(result.output()));
         }
@@ -248,12 +458,59 @@ public class LarkDocTool {
         }
     }
 
+    private CliCommandResult executeContentCommand(List<String> args, String content) {
+        if (content == null) {
+            return larkCliClient.execute(args, null, commandTimeoutMillis());
+        }
+        Path contentFile = null;
+        try {
+            Path baseDirectory = cliWorkingDirectory();
+            Path tempDirectory = baseDirectory.resolve(".lark-doc-content");
+            Files.createDirectories(tempDirectory);
+            contentFile = Files.createTempFile(tempDirectory, "content-", ".md");
+            Files.writeString(contentFile, content, StandardCharsets.UTF_8);
+            return larkCliClient.execute(withContentFileArg(args, baseDirectory.relativize(contentFile)), null, commandTimeoutMillis());
+        } catch (Exception exception) {
+            throw new IllegalStateException("飞书文档内容暂存失败，请稍后重试。", exception);
+        } finally {
+            if (contentFile != null) {
+                try {
+                    Files.deleteIfExists(contentFile);
+                } catch (Exception exception) {
+                    log.warn("Failed to delete temporary Lark doc content file: {}", contentFile, exception);
+                }
+            }
+        }
+    }
+
+    private Path cliWorkingDirectory() {
+        String configured = properties.getWorkingDirectory();
+        if (configured != null && !configured.isBlank()) {
+            return Path.of(configured.trim()).toAbsolutePath().normalize();
+        }
+        return Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
+    }
+
+    private List<String> withContentFileArg(List<String> args, Path contentFile) {
+        List<String> rewritten = new ArrayList<>(args);
+        String fileArg = "@" + contentFile;
+        for (int index = 1; index < rewritten.size(); index++) {
+            String previous = rewritten.get(index - 1);
+            if (("--content".equals(previous) || "--markdown".equals(previous))
+                    && CONTENT_STDIN_MARKER.equals(rewritten.get(index))) {
+                rewritten.set(index, fileArg);
+                return rewritten;
+            }
+        }
+        return rewritten;
+    }
+
     private JsonNode executeJsonWithCompat(String docsCommand, List<DocCommandAttempt> attempts) {
         IllegalStateException lastError = null;
         for (int index = 0; index < attempts.size(); index++) {
             DocCommandAttempt attempt = attempts.get(index);
             List<String> args = attempt.args();
-            CliCommandResult result = larkCliClient.execute(args, attempt.stdin(), commandTimeoutMillis());
+            CliCommandResult result = executeContentCommand(args, attempt.stdin());
             if (result.isSuccess()) {
                 try {
                     return larkCliClient.readJsonOutput(result.output());
@@ -319,18 +576,7 @@ public class LarkDocTool {
         if ("+fetch".equals(docsCommand)) {
             return FETCH_FALLBACK_FLAGS;
         }
-        if ("+create".equals(docsCommand)) {
-            return CREATE_FALLBACK_FLAGS;
-        }
         return Set.of("--as", "--profile");
-    }
-
-    private List<DocCommandAttempt> createDocAttempts(String title, String markdown, Set<String> supportedFlags) {
-        Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
-        attempts.put("preferred", createDocArgs(title, markdown, supportedFlags, true, false));
-        attempts.put("no-api-version", createDocArgs(title, markdown, supportedFlags, false, false));
-        attempts.put("classic-v1", classicCreateDocArgs(title, markdown));
-        return distinctAttempts(attempts);
     }
 
     private List<DocCommandAttempt> fetchDocAttempts(String docRef, String scope, String detail, Set<String> supportedFlags) {
@@ -339,49 +585,6 @@ public class LarkDocTool {
         attempts.put("no-api-version", new DocCommandAttempt(fetchDocArgs(docRef, scope, detail, supportedFlags, false, true), null));
         attempts.put("basic", new DocCommandAttempt(fetchDocArgs(docRef, null, null, Set.of("--as", "--doc"), false, false), null));
         return distinctAttempts(attempts);
-    }
-
-    private DocCommandAttempt createDocArgs(
-            String title,
-            String markdown,
-            Set<String> supportedFlags,
-            boolean withApiVersion,
-            boolean strictContentCheck
-    ) {
-        List<String> args = new ArrayList<>();
-        args.add("docs");
-        args.add("+create");
-        appendIfSupported(args, supportedFlags, "--as", resolveDocIdentity());
-        if (withApiVersion) {
-            appendIfSupported(args, supportedFlags, "--api-version", "v2");
-        }
-        appendIfSupported(args, supportedFlags, "--title", title);
-        if (supportedFlags.contains("--markdown")) {
-            appendIfSupported(args, supportedFlags, "--markdown", "-");
-            return new DocCommandAttempt(args, markdown);
-        }
-        if (supportedFlags.contains("--content")) {
-            appendIfSupported(args, supportedFlags, "--doc-format", "markdown");
-            appendIfSupported(args, supportedFlags, "--content", "-");
-            return new DocCommandAttempt(args, markdown);
-        }
-        if (strictContentCheck) {
-            throw new IllegalStateException("当前 lark-cli docs +create 不支持文档内容输入参数，请升级 lark-cli 后重试。");
-        }
-        return new DocCommandAttempt(args, null);
-    }
-
-    private DocCommandAttempt classicCreateDocArgs(String title, String markdown) {
-        List<String> args = new ArrayList<>();
-        args.add("docs");
-        args.add("+create");
-        args.add("--as");
-        args.add(resolveDocIdentity());
-        args.add("--title");
-        args.add(title);
-        args.add("--markdown");
-        args.add("-");
-        return new DocCommandAttempt(args, markdown);
     }
 
     private List<String> fetchDocArgs(
@@ -604,6 +807,29 @@ public class LarkDocTool {
             return trimmed;
         }
         return "# " + title.trim() + "\n\n" + trimmed;
+    }
+
+    private String normalizeTitle(String title) {
+        String normalized = title.trim();
+        return normalized.length() <= 800 ? normalized : normalized.substring(0, 800);
+    }
+
+    private String buildDocUrl(String documentId) {
+        String baseUrl = docProperties == null ? "" : docProperties.getWebBaseUrl();
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return "https://feishu.cn/docx/" + documentId;
+        }
+        String normalized = baseUrl.trim();
+        if (normalized.endsWith("/docx")) {
+            return normalized + "/" + documentId;
+        }
+        if (normalized.endsWith("/docx/")) {
+            return normalized + documentId;
+        }
+        if (normalized.endsWith("/")) {
+            return normalized + "docx/" + documentId;
+        }
+        return normalized + "/docx/" + documentId;
     }
 
     private String firstNonBlank(String... values) {

@@ -1,205 +1,85 @@
 package com.lark.imcollab.skills.lark.doc;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.skills.framework.cli.CliCommand;
 import com.lark.imcollab.skills.framework.cli.CliCommandExecutor;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
+import com.lark.imcollab.skills.lark.config.LarkBotMessageProperties;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
+import com.lark.imcollab.skills.lark.config.LarkDocProperties;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LarkDocToolTest {
 
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
     @Test
-    void createDocUsesOnlySupportedCreateFlags() {
+    void createDocUsesDocxOpenApiInsteadOfCliCreate() {
+        List<CliCommand> cliCommands = new ArrayList<>();
+        RecordingDocOpenApiClient openApiClient = new RecordingDocOpenApiClient(objectMapper);
+        LarkDocProperties docProperties = new LarkDocProperties();
+        docProperties.setWebBaseUrl("https://tenant.feishu.cn");
+        LarkDocTool tool = new LarkDocTool(dummyCliClient(cliCommands), new LarkCliProperties(), openApiClient, docProperties);
+
+        LarkDocCreateResult result = tool.createDoc("Java零基础入门教程", """
+                ## 学习路线
+                先学习变量和控制流。
+
+                ```java
+                System.out.println("hello");
+                ```
+                """);
+
+        assertThat(cliCommands).isEmpty();
+        assertThat(result.getDocId()).isEqualTo("doc-created");
+        assertThat(result.getDocUrl()).isEqualTo("https://tenant.feishu.cn/docx/doc-created-from-meta");
+        assertThat(openApiClient.calls).hasSize(3);
+        assertThat(openApiClient.calls.get(0).path()).isEqualTo("/open-apis/docx/v1/documents");
+        assertThat(openApiClient.calls.get(1).path()).startsWith(
+                "/open-apis/docx/v1/documents/doc-created/blocks/doc-created/children"
+        );
+        assertThat(openApiClient.calls.get(2).path()).isEqualTo("/open-apis/drive/v1/metas/batch_query");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> createBody = (Map<String, Object>) openApiClient.calls.get(0).body();
+        assertThat(createBody).containsEntry("title", "Java零基础入门教程");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> blockBody = (Map<String, Object>) openApiClient.calls.get(1).body();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> children = (List<Map<String, Object>>) blockBody.get("children");
+        assertThat(children).extracting(block -> block.get("block_type")).contains(3, 4, 2);
+    }
+
+    @Test
+    void createDocSplitsLongMarkdownIntoMultipleDocBlocks() {
+        List<CliCommand> cliCommands = new ArrayList<>();
+        RecordingDocOpenApiClient openApiClient = new RecordingDocOpenApiClient(objectMapper);
+        LarkDocProperties docProperties = new LarkDocProperties();
+        docProperties.setMaxTextCharsPerBlock(100);
+        LarkDocTool tool = new LarkDocTool(dummyCliClient(cliCommands), new LarkCliProperties(), openApiClient, docProperties);
+
+        tool.createDoc("长文档", "正文".repeat(200));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> blockBody = (Map<String, Object>) openApiClient.calls.get(1).body();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> children = (List<Map<String, Object>>) blockBody.get("children");
+        assertThat(children.size()).isGreaterThan(2);
+        assertThat(cliCommands).isEmpty();
+    }
+
+    @Test
+    void fetchDocStillUsesCliDuringReadMigration() {
         List<CliCommand> commands = new ArrayList<>();
         CliCommandExecutor executor = command -> {
             commands.add(command);
-            if (command.arguments().contains("--help")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +create [flags]
-
-                        Flags:
-                              --as string
-                              --markdown string
-                              --title string
-                        """);
-            }
-            return new CliCommandResult(0, """
-                    {"data":{"document":{"document_id":"doc-1","url":"https://example.feishu.cn/docx/doc-1"}}}
-                    """);
-        };
-        LarkCliProperties properties = new LarkCliProperties();
-        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
-
-        LarkDocCreateResult result = tool.createDoc("测试文档", "正文");
-
-        assertThat(result.getDocUrl()).contains("doc-1");
-        List<String> createArgs = commands.get(1).arguments();
-        assertThat(createArgs).containsSequence(List.of(
-                "docs", "+create",
-                "--as", "user",
-                "--title", "测试文档",
-                "--markdown", "-"
-        ));
-        assertThat(commands.get(1).stdin()).contains("正文");
-        assertThat(createArgs).doesNotContain("--api-version", "--doc-format", "--content");
-    }
-
-    @Test
-    void createDocUsesVersionedHelpWhenApiVersionChangesFlags() {
-        List<CliCommand> commands = new ArrayList<>();
-        CliCommandExecutor executor = command -> {
-            commands.add(command);
-            if (command.arguments().contains("--help")
-                    && command.arguments().contains("--api-version")
-                    && command.arguments().contains("v2")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +create [flags]
-
-                        Flags:
-                              --api-version string
-                              --as string
-                              --content string
-                              --doc-format string
-                        """);
-            }
-            if (command.arguments().contains("--help")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +create [flags]
-
-                        Flags:
-                              --api-version string
-                              --as string
-                              --markdown string
-                              --title string
-                        """);
-            }
-            return new CliCommandResult(0, """
-                    {"data":{"document":{"document_id":"doc-2","url":"https://example.feishu.cn/docx/doc-2"}}}
-                    """);
-        };
-        LarkCliProperties properties = new LarkCliProperties();
-        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
-
-        LarkDocCreateResult result = tool.createDoc("v2文档", "正文");
-
-        assertThat(result.getDocUrl()).contains("doc-2");
-        List<String> createArgs = commands.get(2).arguments();
-        assertThat(createArgs).containsSequence(List.of(
-                "docs", "+create",
-                "--as", "user",
-                "--api-version", "v2",
-                "--doc-format", "markdown",
-                "--content", "-"
-        ));
-        assertThat(commands.get(2).stdin()).contains("正文");
-        assertThat(createArgs).doesNotContain("--title", "--markdown");
-    }
-
-    @Test
-    void createDocFallsBackToClassicFlagsWhenRuntimeRejectsVersionedFlags() {
-        List<CliCommand> commands = new ArrayList<>();
-        CliCommandExecutor executor = command -> {
-            commands.add(command);
-            if (command.arguments().contains("--help")
-                    && command.arguments().contains("--api-version")
-                    && command.arguments().contains("v2")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +create [flags]
-
-                        Flags:
-                              --api-version string
-                              --as string
-                              --content string
-                              --doc-format string
-                        """);
-            }
-            if (command.arguments().contains("--help")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +create [flags]
-
-                        Flags:
-                              --api-version string
-                              --as string
-                              --markdown string
-                              --title string
-                        """);
-            }
-            if (command.arguments().contains("--content") || command.arguments().contains("--doc-format")) {
-                return new CliCommandResult(1, "Error: unknown flag: --api-version");
-            }
-            return new CliCommandResult(0, """
-                    {"data":{"document":{"document_id":"doc-3","url":"https://example.feishu.cn/docx/doc-3"}}}
-                    """);
-        };
-        LarkCliProperties properties = new LarkCliProperties();
-        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
-
-        LarkDocCreateResult result = tool.createDoc("兼容文档", "正文");
-
-        assertThat(result.getDocUrl()).contains("doc-3");
-        List<String> createArgs = commands.get(commands.size() - 1).arguments();
-        assertThat(createArgs).containsSequence(List.of(
-                "docs", "+create",
-                "--as", "user",
-                "--title", "兼容文档",
-                "--markdown", "-"
-        ));
-        assertThat(commands.get(commands.size() - 1).stdin()).contains("正文");
-        assertThat(createArgs).doesNotContain("--api-version", "--content", "--doc-format");
-    }
-
-    @Test
-    void createDocSendsLongMarkdownThroughStdinInsteadOfCommandLineArgument() {
-        AtomicReference<CliCommand> captured = new AtomicReference<>();
-        String longMarkdown = "Java 教程正文\n" + "基础内容".repeat(3000);
-        CliCommandExecutor executor = command -> {
-            if (command.arguments().contains("--help")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +create [flags]
-
-                        Flags:
-                              --api-version string
-                              --as string
-                              --content string
-                              --doc-format string
-                        """);
-            }
-            captured.set(command);
-            return new CliCommandResult(0, """
-                    {"data":{"document":{"document_id":"doc-long","url":"https://example.feishu.cn/docx/doc-long"}}}
-                    """);
-        };
-        LarkCliProperties properties = new LarkCliProperties();
-        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
-
-        LarkDocCreateResult result = tool.createDoc("Java零基础入门教程", longMarkdown);
-
-        assertThat(result.getDocUrl()).contains("doc-long");
-        assertThat(captured.get().arguments()).containsSequence("--content", "-");
-        assertThat(captured.get().arguments()).doesNotContain(longMarkdown);
-        assertThat(captured.get().stdin()).contains("Java 教程正文");
-    }
-
-    @Test
-    void fetchDocUsesOnlySupportedFetchFlags() {
-        AtomicReference<CliCommand> captured = new AtomicReference<>();
-        CliCommandExecutor executor = command -> {
             if (command.arguments().contains("--help")) {
                 return new CliCommandResult(0, """
                         Usage:
@@ -212,105 +92,65 @@ class LarkDocToolTest {
                               --format string
                         """);
             }
-            captured.set(command);
             return new CliCommandResult(0, """
-                    {"data":{"document":{"title":"方案文档","content":"项目背景与目标"}}}
+                    {"data":{"document":{"document_id":"doc-fetch","content":"正文"}}}
                     """);
         };
-        LarkCliProperties properties = new LarkCliProperties();
-        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties()
+        );
 
-        LarkDocFetchResult result = tool.fetchDoc("https://example.feishu.cn/docx/doc-token", "outline", "simple");
+        LarkDocFetchResult result = tool.fetchDoc("https://example.feishu.cn/docx/doc-fetch", "outline", "simple");
 
-        assertThat(result.getTitle()).isEqualTo("方案文档");
-        assertThat(result.getContent()).contains("项目背景");
-        assertThat(captured.get().arguments()).containsSequence(List.of(
-                "docs", "+fetch",
-                "--as", "user",
-                "--api-version", "v2",
-                "--doc", "https://example.feishu.cn/docx/doc-token"
-        ));
-        assertThat(captured.get().arguments()).doesNotContain("--scope", "--detail");
+        assertThat(result.getDocId()).isEqualTo("doc-fetch");
+        assertThat(commands).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(commands.get(commands.size() - 1).arguments()).contains("docs", "+fetch", "--doc");
     }
 
-    @Test
-    void fetchDocRetriesWithoutApiVersionWhenRuntimeRejectsIt() {
-        List<CliCommand> commands = new ArrayList<>();
+    private LarkCliClient dummyCliClient(List<CliCommand> commands) {
         CliCommandExecutor executor = command -> {
             commands.add(command);
-            if (command.arguments().contains("--help")
-                    && command.arguments().contains("--api-version")
-                    && command.arguments().contains("v2")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +fetch [flags]
-
-                        Flags:
-                              --api-version string
-                              --as string
-                              --doc string
-                              --scope string
-                              --detail string
-                        """);
-            }
-            if (command.arguments().contains("--help")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +fetch [flags]
-
-                        Flags:
-                              --api-version string
-                              --as string
-                              --doc string
-                        """);
-            }
-            if (command.arguments().contains("--api-version")) {
-                return new CliCommandResult(1, "Error: unknown flag: --api-version");
-            }
-            return new CliCommandResult(0, """
-                    {"data":{"document":{"title":"方案文档","content":"项目背景与目标"}}}
-                    """);
+            return new CliCommandResult(1, "CLI should not be used by createDoc");
         };
-        LarkCliProperties properties = new LarkCliProperties();
-        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
-
-        LarkDocFetchResult result = tool.fetchDoc("https://example.feishu.cn/docx/doc-token", "outline", "simple");
-
-        assertThat(result.getTitle()).isEqualTo("方案文档");
-        List<String> fetchArgs = commands.get(commands.size() - 1).arguments();
-        assertThat(fetchArgs).containsSequence(List.of(
-                "docs", "+fetch",
-                "--as", "user",
-                "--doc", "https://example.feishu.cn/docx/doc-token"
-        ));
-        assertThat(fetchArgs).doesNotContain("--api-version");
+        return new LarkCliClient(executor, new LarkCliProperties(), objectMapper);
     }
 
-    @Test
-    void createDocSanitizesPowerShellRuntimeError() {
-        CliCommandExecutor executor = command -> {
-            if (command.arguments().contains("--help")) {
-                return new CliCommandResult(0, """
-                        Usage:
-                          lark-cli docs +create [flags]
+    private static class RecordingDocOpenApiClient extends LarkDocOpenApiClient {
 
-                        Flags:
-                              --as string
-                              --markdown string
-                              --title string
+        private final ObjectMapper objectMapper;
+        private final List<Call> calls = new ArrayList<>();
+
+        RecordingDocOpenApiClient(ObjectMapper objectMapper) {
+            super(new LarkBotMessageProperties(), objectMapper);
+            this.objectMapper = objectMapper;
+        }
+
+        @Override
+        public JsonNode post(String pathWithQuery, Object body, int timeoutSeconds) {
+            calls.add(new Call(pathWithQuery, body));
+            try {
+                if (pathWithQuery.equals("/open-apis/docx/v1/documents")) {
+                    return objectMapper.readTree("""
+                            {"document":{"document_id":"doc-created","revision_id":1,"title":"created"}}
+                            """);
+                }
+                if (pathWithQuery.equals("/open-apis/drive/v1/metas/batch_query")) {
+                    return objectMapper.readTree("""
+                            {"metas":[{"doc_token":"doc-created","url":"https://tenant.feishu.cn/docx/doc-created-from-meta"}]}
+                            """);
+                }
+                return objectMapper.readTree("""
+                        {"children":[]}
                         """);
+            } catch (Exception exception) {
+                throw new IllegalStateException(exception);
             }
-            return new CliCommandResult(1, """
-                    C:\\Users\\dev\\AppData\\Roaming\\npm\\lark-cli.ps1 : Cannot process argument transformation
-                    + CategoryInfo          : InvalidData: (:) [lark-cli.ps1], ParameterBindingArgumentTransformationException
-                    + FullyQualifiedErrorId : ParameterArgumentTransformationError,lark-cli.ps1
-                    """);
-        };
-        LarkCliProperties properties = new LarkCliProperties();
-        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
+        }
+    }
 
-        assertThatThrownBy(() -> tool.createDoc("测试文档", "正文"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("飞书文档创建失败，请检查 lark-cli 可执行配置、登录状态或文档权限后重试。");
+    private record Call(String path, Object body) {
     }
 }
