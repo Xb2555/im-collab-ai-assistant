@@ -137,6 +137,9 @@ public class DocumentWorkflowNodes {
         String clarifiedInstruction = state.value(DocumentStateKeys.CLARIFIED_INSTRUCTION, state.value(DocumentStateKeys.RAW_INSTRUCTION, ""));
         DocumentPlan plan = requireValue(state, DocumentStateKeys.DOCUMENT_PLAN, DocumentPlan.class);
         List<DocumentSectionDraft> drafts = new ArrayList<>();
+        String summaryOnlyStyle = isSummaryOnlyRequest(state)
+                ? "\n输出样式额外要求：这是要直接发到 IM 聊天框的 SUMMARY 纯文本产物。body 必须是自然中文文本，不要使用 Markdown 语法，不要使用 #/##/### 标题、- 或 * 列表符号、**加粗**、代码块、表格。需要分点时用自然句式，例如“一是...；二是...；三是...”。"
+                : "";
         for (DocumentPlanSection section : safePlanSections(plan)) {
             String prompt = "任务目标：" + clarifiedInstruction
                     + buildExecutionContext(state)
@@ -145,7 +148,8 @@ public class DocumentWorkflowNodes {
                     + "\n已完成章节摘要：\n" + summarizeDrafts(drafts)
                     + "\n章节：" + section.getHeading()
                     + "\n章节职责：" + defaultString(section.getPurpose())
-                    + "\n要点：" + String.join("；", safeList(section.getMustCover()));
+                    + "\n要点：" + String.join("；", safeList(section.getMustCover()))
+                    + summaryOnlyStyle;
             AssistantMessage response = callAgent(documentSectionAgent, prompt, taskId + ":section:" + section.getSectionId());
             drafts.add(parseSectionDraft(response.getText(), section));
         }
@@ -270,6 +274,17 @@ public class DocumentWorkflowNodes {
         DocumentPlan plan = requireValue(state, DocumentStateKeys.DOCUMENT_PLAN, DocumentPlan.class);
         ComposedDocumentDraft composedDraft = requireValue(state, DocumentStateKeys.COMPOSED_DRAFT, ComposedDocumentDraft.class);
         DocumentReviewResult reviewResult = requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class);
+        if (isSummaryOnlyRequest(state)) {
+            saveSummaryArtifact(taskId, plan, composedDraft, reviewResult, true);
+            support.publishEvent(taskId, null, TaskEventType.ARTIFACT_CREATED);
+            support.publishEvent(taskId, null, TaskEventType.STEP_COMPLETED);
+            return CompletableFuture.completedFuture(Map.of(
+                    DocumentStateKeys.DOC_MARKDOWN, defaultString(composedDraft.getComposedMarkdown()),
+                    DocumentStateKeys.DOC_URL, "",
+                    DocumentStateKeys.DOC_ID, "",
+                    DocumentStateKeys.DONE_WRITE, true
+            ));
+        }
         String markdown = templateRenderer.render(
                 DocumentTemplateType.valueOf(state.value(DocumentStateKeys.TEMPLATE_TYPE, "REPORT")),
                 plan,
@@ -282,9 +297,8 @@ public class DocumentWorkflowNodes {
         LarkDocCreateResult result = larkDocTool.createDoc(plan.getTitle(), markdown);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.WRITE_TASK_SUFFIX),
                 ArtifactType.DOC_LINK, plan.getTitle(), null, result.getDocId(), result.getDocUrl());
-        saveSummaryArtifactIfRequested(taskId, plan, composedDraft, reviewResult, state);
         support.publishEvent(taskId, null, TaskEventType.ARTIFACT_CREATED);
-        support.publishEvent(taskId, null, TaskEventType.TASK_COMPLETED);
+        support.publishEvent(taskId, null, TaskEventType.STEP_COMPLETED);
         return CompletableFuture.completedFuture(Map.of(
                 DocumentStateKeys.DOC_MARKDOWN, markdown,
                 DocumentStateKeys.DOC_URL, result.getDocUrl(),
@@ -293,20 +307,20 @@ public class DocumentWorkflowNodes {
         ));
     }
 
-    private void saveSummaryArtifactIfRequested(
+    private void saveSummaryArtifact(
             String taskId,
             DocumentPlan plan,
             ComposedDocumentDraft composedDraft,
             DocumentReviewResult reviewResult,
-            OverAllState state
+            boolean summaryOnly
     ) {
-        if (readRequiredArtifacts(state).stream().noneMatch(value -> "SUMMARY".equalsIgnoreCase(value))) {
-            return;
-        }
-        String summary = buildSummaryArtifact(plan, composedDraft, reviewResult);
+        String summary = summaryOnly
+                ? buildPureSummaryArtifact(plan, composedDraft, reviewResult)
+                : buildSummaryArtifact(plan, composedDraft);
         String stepId = support.findSummaryStepId(taskId)
                 .orElseGet(() -> support.subtaskId(taskId, "generate_summary"));
         support.saveArtifact(taskId, stepId, ArtifactType.SUMMARY, plan.getTitle() + " - 摘要", summary, null);
+        support.markSummaryStepCompleted(taskId, summary);
     }
 
     public CompletableFuture<String> routeAfterReview(OverAllState state, RunnableConfig config) {
@@ -993,6 +1007,12 @@ public class DocumentWorkflowNodes {
         return values == null || values.isEmpty() ? List.of("DOC") : values;
     }
 
+    private boolean isSummaryOnlyRequest(OverAllState state) {
+        List<String> requiredArtifacts = readRequiredArtifacts(state);
+        return !requiredArtifacts.isEmpty()
+                && requiredArtifacts.stream().allMatch(value -> "SUMMARY".equalsIgnoreCase(value));
+    }
+
     private String buildPlanContract(DocumentPlan plan) {
         StringBuilder builder = new StringBuilder();
         builder.append("章节顺序：");
@@ -1026,16 +1046,37 @@ public class DocumentWorkflowNodes {
         return normalized.substring(0, 120) + "...";
     }
 
-    private String buildSummaryArtifact(
-            DocumentPlan plan,
-            ComposedDocumentDraft composedDraft,
-            DocumentReviewResult reviewResult
-    ) {
+    private String buildPureSummaryArtifact(DocumentPlan plan, ComposedDocumentDraft composedDraft, DocumentReviewResult reviewResult) {
+        List<DocumentSectionDraft> sections = composedDraft == null || composedDraft.getOrderedSections() == null
+                ? List.of()
+                : composedDraft.getOrderedSections();
+        if (!sections.isEmpty()) {
+            String body = sections.stream()
+                    .filter(Objects::nonNull)
+                    .map(section -> {
+                        String heading = stripMarkdownSyntax(defaultString(section.getHeading()));
+                        String sectionBody = stripMarkdownForIm(defaultString(section.getBody()));
+                        if (heading.isBlank()) {
+                            return sectionBody;
+                        }
+                        return heading + "\n" + sectionBody;
+                    })
+                    .filter(this::hasText)
+                    .collect(Collectors.joining("\n\n"));
+            if (hasText(body)) {
+                return stripMarkdownSyntax(plan.getTitle()) + "\n\n" + body;
+            }
+        }
+        String markdown = composedDraft == null ? null : composedDraft.getComposedMarkdown();
+        if (markdown != null && !markdown.isBlank()) {
+            return stripMarkdownSyntax(plan.getTitle()) + "\n\n" + stripMarkdownForIm(stripTopLevelHeading(markdown));
+        }
+        return buildSummaryArtifact(plan, composedDraft);
+    }
+
+    private String buildSummaryArtifact(DocumentPlan plan, ComposedDocumentDraft composedDraft) {
         StringBuilder builder = new StringBuilder();
         builder.append("# ").append(plan.getTitle()).append(" - 摘要\n\n");
-        if (reviewResult != null && reviewResult.getSummary() != null && !reviewResult.getSummary().isBlank()) {
-            builder.append(reviewResult.getSummary().trim()).append("\n\n");
-        }
         builder.append("## 关键内容\n");
         List<DocumentSectionDraft> sections = composedDraft == null || composedDraft.getOrderedSections() == null
                 ? List.of()
@@ -1047,10 +1088,53 @@ public class DocumentWorkflowNodes {
             builder.append("- ")
                     .append(section.getHeading())
                     .append("：")
-                    .append(excerpt(defaultString(section.getBody())))
+                    .append(excerpt(stripMarkdownSyntax(defaultString(section.getBody()))))
                     .append("\n");
         }
         return builder.toString().trim();
+    }
+
+    private String stripTopLevelHeading(String markdown) {
+        if (markdown == null || markdown.isBlank()) {
+            return "";
+        }
+        return markdown.lines()
+                .filter(line -> !line.trim().startsWith("# "))
+                .collect(Collectors.joining("\n"))
+                .trim();
+    }
+
+    private String stripMarkdownSyntax(String markdown) {
+        if (markdown == null || markdown.isBlank()) {
+            return "";
+        }
+        return markdown
+                .replaceAll("(?m)^#+\\s*", "")
+                .replace("**", "")
+                .replace("__", "")
+                .replace("`", "")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private String stripMarkdownForIm(String markdown) {
+        if (markdown == null || markdown.isBlank()) {
+            return "";
+        }
+        return markdown
+                .replace("**", "")
+                .replace("__", "")
+                .replace("`", "")
+                .lines()
+                .map(line -> line
+                        .replaceFirst("^\\s*#+\\s*", "")
+                        .replaceFirst("^\\s*[-*+]\\s+", "")
+                        .replaceFirst("^\\s*\\d+[.)、]\\s+", "")
+                        .trim())
+                .filter(line -> !line.isBlank())
+                .collect(Collectors.joining("\n"))
+                .replaceAll("\\n{3,}", "\n\n")
+                .trim();
     }
 
     private String normalizeHeadingForMatch(String heading) {
@@ -1065,6 +1149,10 @@ public class DocumentWorkflowNodes {
 
     private String defaultString(String value) {
         return value == null ? "" : value;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String toChineseSectionNumber(int index) {

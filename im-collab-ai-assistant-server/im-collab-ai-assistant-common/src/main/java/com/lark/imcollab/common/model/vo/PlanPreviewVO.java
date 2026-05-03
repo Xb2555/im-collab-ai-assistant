@@ -15,7 +15,8 @@ public record PlanPreviewVO(
         boolean accepted,
         boolean runtimeAvailable,
         boolean transientReply,
-        String assistantReply
+        String assistantReply,
+        List<String> capabilityHints
 ) {
     public PlanPreviewVO(
             String taskId,
@@ -29,6 +30,6 @@ public record PlanPreviewVO(
             TaskActionVO actions
     ) {
         this(taskId, version, planningPhase, title, summary, cards, clarificationQuestions, clarificationAnswers,
-                actions, true, true, false, null);
+                actions, true, true, false, null, List.of());
     }
 }

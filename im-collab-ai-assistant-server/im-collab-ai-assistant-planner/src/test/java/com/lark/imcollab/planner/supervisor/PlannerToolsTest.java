@@ -50,7 +50,7 @@ class PlannerToolsTest {
     }
 
     @Test
-    void contextToolAcceptsEmbeddedMaterialInInstruction() {
+    void contextToolDoesNotMakeSemanticDecisionForEmbeddedMaterial() {
         PlannerContextTool tool = new PlannerContextTool();
         String instruction = "基于这段材料整理成面向老板的文档：飞书项目协作方案要解决项目沟通分散、任务追踪困难的问题，目标是统一任务、文档和消息协作，让老板快速看到进展。";
         WorkspaceContext context = WorkspaceContext.builder()
@@ -59,8 +59,19 @@ class PlannerToolsTest {
 
         ContextSufficiencyResult result = tool.evaluateContext(null, instruction, context);
 
-        assertThat(result.sufficient()).isTrue();
-        assertThat(result.reason()).contains("embedded instruction context");
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("no source material");
+    }
+
+    @Test
+    void contextToolDefersMultiSectionInlineTaskContextToLlm() {
+        PlannerContextTool tool = new PlannerContextTool();
+        String instruction = "新开一个任务：请基于以下整个任务上下文生成中文项目进展摘要。上下文标记：IMC6A4。任务目标：验证 SUMMARY 是否能总结整个任务上下文。已完成：Planner 上下文拉取、IM 自然回复、纯 SUMMARY 独立执行链路。当前步骤：补充 SUMMARY 输入。风险：PPT Slides 授权偶发失败。下一步：做失败重试闭环和 GUI 刷新恢复验证。";
+
+        ContextSufficiencyResult result = tool.evaluateContext(null, instruction, null);
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("no source material");
     }
 
     @Test
@@ -178,19 +189,24 @@ class PlannerToolsTest {
     }
 
     @Test
-    void contextNodeDoesNotLetModelOverrideMissingSourceGuard() throws Exception {
+    void contextNodeLetsContextCollectorJudgeInlineTaskContextBeforeClarifying() throws Exception {
         ReactAgent contextCollectorAgent = mock(ReactAgent.class);
         ReactAgent contextAcquisitionAgent = mock(ReactAgent.class);
         PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
         PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
         PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
         when(memoryService.renderContext(session)).thenReturn("");
-        when(contextAcquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.empty());
-        when(contextCollectorAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+        when(contextAcquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
                 "messages",
                 new AssistantMessage("""
-                        {"sufficient":true,"contextSummary":"model tried to allow planning","missingItems":[],"clarificationQuestion":"","reason":"model semantic override","collectionRequired":false}
+                        {"needCollection":false,"sources":[],"reason":"no workspace source ref","clarificationQuestion":"请补充项目背景。"}
                         """)
+        ))));
+        when(contextCollectorAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                List.of(new AssistantMessage("thinking"), new AssistantMessage("""
+                                {"sufficient":true,"contextSummary":"用户在整句里提供了任务目标、已完成事项、风险和下一步，可生成摘要。","missingItems":[],"clarificationQuestion":"","reason":"inline task context judged sufficient by model","collectionRequired":false}
+                                """))
         ))));
         ContextNodeService service = new ContextNodeService(
                 contextCollectorAgent,
@@ -205,17 +221,12 @@ class PlannerToolsTest {
         ContextSufficiencyResult result = service.check(
                 session,
                 "task-ctx",
-                "请生成一份三步以内的项目复盘文档计划，先不要执行。",
-                WorkspaceContext.builder()
-                        .chatId("private-chat")
-                        .chatType("p2p")
-                        .inputSource("LARK_PRIVATE_CHAT")
-                        .build()
+                "新开一个任务：请基于以下整个任务上下文生成中文项目进展摘要。任务目标：验证 SUMMARY。已完成：上下文拉取和 IM 自然回复。风险：Slides 授权偶发失败。下一步：做失败重试闭环。",
+                WorkspaceContext.builder().build()
         );
 
-        assertThat(result.sufficient()).isFalse();
-        assertThat(result.reason()).contains("no source material");
-        assertThat(result.clarificationQuestion()).contains("项目背景");
+        assertThat(result.sufficient()).isTrue();
+        assertThat(result.reason()).contains("inline task context judged sufficient");
     }
 
     @Test

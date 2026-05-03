@@ -552,12 +552,21 @@ public class PlanningNodeService {
         if (!hasText(planningInput)) {
             return "";
         }
-        for (String line : planningInput.split("\\R")) {
-            if (line.startsWith("User instruction:")) {
-                return line.substring("User instruction:".length()).trim();
+        String marker = "User instruction:";
+        int start = planningInput.indexOf(marker);
+        if (start < 0) {
+            return planningInput.trim();
+        }
+        String instructionBlock = planningInput.substring(start + marker.length());
+        List<String> nextMarkers = List.of("\nUser feedback:", "\nWorkspace context:", "\nConversation memory:");
+        int end = instructionBlock.length();
+        for (String nextMarker : nextMarkers) {
+            int index = instructionBlock.indexOf(nextMarker);
+            if (index >= 0 && index < end) {
+                end = index;
             }
         }
-        return planningInput.trim();
+        return instructionBlock.substring(0, end).trim();
     }
 
     private RunnableConfig config(

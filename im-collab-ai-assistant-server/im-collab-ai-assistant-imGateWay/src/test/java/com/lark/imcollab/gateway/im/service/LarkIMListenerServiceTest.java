@@ -74,7 +74,7 @@ class LarkIMListenerServiceTest {
     }
 
     @Test
-    void acceptedAsyncSessionSendsNeutralImmediateReceipt() {
+    void acceptedAsyncSessionDoesNotSendGenericReceipt() {
         LarkMessageEventSubscriptionService subscriptionService = mock(LarkMessageEventSubscriptionService.class);
         LarkMessageReplyTool replyTool = mock(LarkMessageReplyTool.class);
         LarkInboundMessageDispatcher dispatcher = mock(LarkInboundMessageDispatcher.class);
@@ -91,11 +91,9 @@ class LarkIMListenerServiceTest {
         listener.start();
         consumerCaptor.getValue().accept(event());
 
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        org.assertj.core.api.Assertions.assertThat(textCaptor.getValue())
-                .contains("收到", "马上看一下")
-                .doesNotContain("任务已收到", "新任务");
+        verify(dispatcher).dispatch(any());
+        verify(replyTool, never()).sendPrivateText(anyString(), anyString(), anyString());
+        verify(replyTool, never()).replyText(anyString(), anyString(), anyString());
     }
 
 

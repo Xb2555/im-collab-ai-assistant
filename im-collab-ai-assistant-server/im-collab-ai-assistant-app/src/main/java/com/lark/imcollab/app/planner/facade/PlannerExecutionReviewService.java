@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
@@ -53,6 +54,14 @@ public class PlannerExecutionReviewService {
     public void reviewAndNotify(String taskId) {
         PlanTaskSession session = sessionService.get(taskId);
         TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(taskId);
+        if (isWaitingForHumanApproval(snapshot)) {
+            String reason = latestApprovalReason(taskId);
+            TaskResultEvaluation evaluation = humanReviewEvaluation(taskId, reason);
+            stateStore.saveEvaluation(evaluation);
+            updateSessionForHumanReview(session, reason);
+            notifyUser(sessionService.get(taskId), snapshot, evaluation);
+            return;
+        }
         if (hasUnfinishedSteps(snapshot)) {
             String reason = unfinishedStepReason(snapshot);
             markRuntimeFailed(snapshot, session, reason);
@@ -106,6 +115,16 @@ public class PlannerExecutionReviewService {
         sessionService.publishEvent(session.getTaskId(), nextPhase.name());
     }
 
+    private void updateSessionForHumanReview(PlanTaskSession session, String reason) {
+        if (session == null) {
+            return;
+        }
+        session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        session.setTransitionReason(firstNonBlank(reason, "Harness execution is waiting for human review"));
+        sessionService.save(session);
+        sessionService.publishEvent(session.getTaskId(), PlanningPhaseEnum.ASK_USER.name());
+    }
+
     private PlanningPhaseEnum resolvePhase(TaskRuntimeSnapshot snapshot, TaskResultEvaluation evaluation) {
         if (snapshot != null && snapshot.getTask() != null && snapshot.getTask().getStatus() == TaskStatusEnum.FAILED) {
             return PlanningPhaseEnum.FAILED;
@@ -153,6 +172,60 @@ public class PlannerExecutionReviewService {
                 .filter(step -> step != null && step.getStatus() != StepStatusEnum.SUPERSEDED)
                 .anyMatch(step -> step.getStatus() != StepStatusEnum.COMPLETED
                         && step.getStatus() != StepStatusEnum.SKIPPED);
+    }
+
+    private boolean isWaitingForHumanApproval(TaskRuntimeSnapshot snapshot) {
+        if (snapshot == null) {
+            return false;
+        }
+        if (snapshot.getTask() != null && snapshot.getTask().getStatus() == TaskStatusEnum.WAITING_APPROVAL) {
+            return true;
+        }
+        return snapshot.getSteps() != null
+                && snapshot.getSteps().stream()
+                .anyMatch(step -> step != null && step.getStatus() == StepStatusEnum.WAITING_APPROVAL);
+    }
+
+    private TaskResultEvaluation humanReviewEvaluation(String taskId, String reason) {
+        return TaskResultEvaluation.builder()
+                .taskId(taskId)
+                .agentTaskId(AGENT_TASK_ID)
+                .verdict(ResultVerdictEnum.HUMAN_REVIEW)
+                .issues(firstNonBlank(reason) == null ? List.of("需要用户确认执行产物。") : List.of(reason))
+                .suggestions(List.of("请确认当前产物是否符合预期，或补充修改意见后继续。"))
+                .build();
+    }
+
+    private String latestApprovalReason(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            return null;
+        }
+        List<TaskEventRecord> events = stateStore.findRuntimeEventsByTaskId(taskId);
+        if (events == null || events.isEmpty()) {
+            return null;
+        }
+        for (int index = events.size() - 1; index >= 0; index--) {
+            TaskEventRecord event = events.get(index);
+            if (event != null && event.getType() == TaskEventTypeEnum.PLAN_APPROVAL_REQUIRED) {
+                return decodePayload(event.getPayloadJson());
+            }
+        }
+        return null;
+    }
+
+    private String decodePayload(String payloadJson) {
+        if (payloadJson == null || payloadJson.isBlank() || "null".equals(payloadJson.trim())) {
+            return null;
+        }
+        String value = payloadJson.trim();
+        if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+            value = value.substring(1, value.length() - 1)
+                    .replace("\\\"", "\"")
+                    .replace("\\n", "\n")
+                    .replace("\\r", "\r")
+                    .replace("\\t", "\t");
+        }
+        return value.isBlank() ? null : value;
     }
 
     private String unfinishedStepReason(TaskRuntimeSnapshot snapshot) {
@@ -211,5 +284,17 @@ public class PlannerExecutionReviewService {
 
     private String toJson(String reason) {
         return reason == null ? "null" : "\"" + reason.replace("\"", "\\\"") + "\"";
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 }

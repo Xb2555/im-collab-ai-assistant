@@ -4,9 +4,13 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -78,6 +82,14 @@ public class ReadOnlyNodeService {
             sessionService.saveWithoutVersionChange(session);
             return session;
         }
+        if (session.getIntakeState() != null && "STATUS".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
+            String reply = statusReply(session);
+            TaskIntakeState intakeState = session.getIntakeState();
+            intakeState.setAssistantReply(reply);
+            memoryService.appendAssistantTurn(session, reply);
+            sessionService.saveWithoutVersionChange(session);
+            return session;
+        }
         if (session.getIntakeState() != null && "ARTIFACTS".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
             String reply = artifactsReply(session);
             TaskIntakeState intakeState = session.getIntakeState();
@@ -130,6 +142,7 @@ public class ReadOnlyNodeService {
         builder.append("如果用户想看完整计划，请列出所有 plan cards 的标题、类型和描述。");
         builder.append("如果用户想看进度，请简短说明任务状态、当前/下一步、完成数量和产物数量。");
         builder.append("如果用户想看已有产物或文档链接，请直接列出下面 Runtime 里的产物标题和链接；有链接就必须贴链接，不要让用户再问一次。");
+        builder.append("不要把所有产物都叫文档；如果产物类型是 PPT 或链接是 slides，请称为演示稿/PPT。");
         builder.append("如果用户表达认可但没有要求执行，请自然确认会保留当前计划，避免固定模板。");
         builder.append("如果用户原话像是在新增、删除、修改计划，你也只能说明当前计划尚未变化，不能说已收到新需求、已增加、会增加或当前计划多了新步骤。");
         builder.append("回复要像同事对话，可以自然引用用户原话里的具体表达；不要说“我没完全判断清楚”。");
@@ -170,6 +183,8 @@ public class ReadOnlyNodeService {
                         continue;
                     }
                     builder.append("- ")
+                            .append(artifact.getType() == null ? "UNKNOWN" : artifact.getType().name())
+                            .append(" | ")
                             .append(firstNonBlank(artifact.getTitle(), artifact.getArtifactId(), "未命名产物"));
                     if (hasText(artifact.getUrl())) {
                         builder.append(" | ").append(artifact.getUrl().trim());
@@ -204,6 +219,69 @@ public class ReadOnlyNodeService {
         return builder.toString();
     }
 
+    private String statusReply(PlanTaskSession session) {
+        TaskRuntimeSnapshot snapshot = runtimeTool == null || session == null
+                ? null
+                : runtimeTool.getSnapshot(session.getTaskId());
+        if (snapshot == null || snapshot.getTask() == null) {
+            return "我还没有找到这个会话里的任务进度。你可以先发一个任务给我。";
+        }
+        TaskRecord task = snapshot.getTask();
+        List<TaskStepRecord> steps = snapshot.getSteps() == null
+                ? List.of()
+                : snapshot.getSteps().stream()
+                .filter(step -> step != null && step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .toList();
+        long completed = steps.stream().filter(step -> step.getStatus() == StepStatusEnum.COMPLETED).count();
+        StringBuilder builder = new StringBuilder();
+        builder.append("任务状态：").append(readableStatus(task.getStatus()));
+        String currentStep = currentStepName(steps, task.getStatus());
+        if (hasText(currentStep)) {
+            builder.append("\n当前步骤：").append(currentStep);
+        }
+        if (!steps.isEmpty()) {
+            builder.append("\n步骤进度：").append(completed).append("/").append(steps.size());
+        }
+        int artifactCount = snapshot.getArtifacts() == null ? 0 : snapshot.getArtifacts().size();
+        if (artifactCount > 0) {
+            builder.append("\n已有产物：").append(artifactCount).append(" 个");
+        }
+        return builder.toString();
+    }
+
+    private String readableStatus(TaskStatusEnum status) {
+        if (status == null) {
+            return "处理中";
+        }
+        return switch (status) {
+            case WAITING_APPROVAL -> "等待你确认";
+            case EXECUTING -> "正在执行";
+            case CLARIFYING -> "等待补充信息";
+            case COMPLETED -> "已完成";
+            case FAILED -> "失败";
+            case CANCELLED -> "已取消";
+            default -> "处理中";
+        };
+    }
+
+    private String currentStepName(List<TaskStepRecord> steps, TaskStatusEnum taskStatus) {
+        if (taskStatus == TaskStatusEnum.COMPLETED || taskStatus == TaskStatusEnum.CANCELLED) {
+            return null;
+        }
+        for (TaskStepRecord step : steps) {
+            if (step.getStatus() == StepStatusEnum.RUNNING && hasText(step.getName())) {
+                return step.getName().trim();
+            }
+        }
+        for (TaskStepRecord step : steps) {
+            if ((step.getStatus() == StepStatusEnum.READY || step.getStatus() == StepStatusEnum.PENDING)
+                    && hasText(step.getName())) {
+                return step.getName().trim();
+            }
+        }
+        return null;
+    }
+
     private String artifactsReply(PlanTaskSession session) {
         TaskRuntimeSnapshot snapshot = runtimeTool == null || session == null
                 ? null
@@ -214,7 +292,7 @@ public class ReadOnlyNodeService {
                 .filter(artifact -> artifact != null)
                 .toList();
         if (artifacts.isEmpty()) {
-            return "当前还没有生成产物。任务完成后，我会把文档链接同步给你。";
+            return "当前还没有生成产物。任务完成后，我会把产物链接同步给你。";
         }
         StringBuilder builder = new StringBuilder("已有产物：");
         int limit = Math.min(artifacts.size(), 5);
