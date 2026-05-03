@@ -260,8 +260,28 @@ class TaskRuntimeProjectionServiceTest {
                 .containsExactly("final");
     }
 
+    @Test
+    void snapshotReconcilesTaskVersionFromSession() {
+        InMemoryPlannerStateStore store = new InMemoryPlannerStateStore();
+        TaskRuntimeProjectionService service = new TaskRuntimeProjectionService(store, new ObjectMapper());
+        store.saveSession(PlanTaskSession.builder()
+                .taskId("task-version")
+                .planningPhase(PlanningPhaseEnum.FAILED)
+                .version(3)
+                .build());
+        store.saveTask(TaskRecord.builder()
+                .taskId("task-version")
+                .status(com.lark.imcollab.common.model.enums.TaskStatusEnum.FAILED)
+                .version(2)
+                .build());
+
+        assertThat(service.getSnapshot("task-version").getTask().getVersion()).isEqualTo(3);
+        assertThat(store.task.getVersion()).isEqualTo(3);
+    }
+
     private static class InMemoryPlannerStateStore implements PlannerStateStore {
         private TaskRecord task;
+        private PlanTaskSession session;
         private final List<TaskStepRecord> steps = new ArrayList<>();
         private final List<TaskEventRecord> events = new ArrayList<>();
         private final List<com.lark.imcollab.common.model.entity.TaskEvent> streamEvents = new ArrayList<>();
@@ -275,8 +295,8 @@ class TaskRuntimeProjectionServiceTest {
         @Override public void appendRuntimeEvent(TaskEventRecord event) { events.add(event); }
         @Override public List<TaskEventRecord> findRuntimeEventsByTaskId(String taskId) { return events; }
 
-        @Override public void saveSession(PlanTaskSession session) { }
-        @Override public Optional<PlanTaskSession> findSession(String taskId) { return Optional.empty(); }
+        @Override public void saveSession(PlanTaskSession session) { this.session = session; }
+        @Override public Optional<PlanTaskSession> findSession(String taskId) { return Optional.ofNullable(session); }
         @Override public Optional<String> findConversationTaskId(String conversationKey) { return Optional.empty(); }
         @Override public void saveConversationTaskBinding(String conversationKey, String taskId) { }
         @Override public void appendEvent(com.lark.imcollab.common.model.entity.TaskEvent event) { streamEvents.add(event); }

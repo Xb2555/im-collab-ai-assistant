@@ -113,6 +113,7 @@ class DefaultImTaskCommandFacadeTest {
 
         assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.FAILED);
         assertThat(session.getTransitionReason()).contains("server time out error");
+        verify(taskRuntimeService).syncTaskState("task-1", PlanningPhaseEnum.FAILED);
         verify(taskRuntimeService, never()).projectPhaseTransition(
                 "task-1",
                 PlanningPhaseEnum.FAILED,
@@ -146,6 +147,7 @@ class DefaultImTaskCommandFacadeTest {
 
         assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.FAILED);
         assertThat(session.getTransitionReason()).contains("Execution timed out after");
+        verify(taskRuntimeService).syncTaskState("task-1", PlanningPhaseEnum.FAILED);
         verify(taskRuntimeService, never()).projectPhaseTransition(
                 "task-1",
                 PlanningPhaseEnum.FAILED,

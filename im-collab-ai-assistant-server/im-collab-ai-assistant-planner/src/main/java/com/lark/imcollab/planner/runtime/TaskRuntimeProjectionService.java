@@ -103,12 +103,28 @@ public class TaskRuntimeProjectionService {
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
+        TaskRecord task = reconcileTaskVersion(taskId);
         return TaskRuntimeSnapshot.builder()
-                .task(stateStore.findTask(taskId).orElse(null))
+                .task(task)
                 .steps(activeSteps(stateStore.findStepsByTaskId(taskId)))
                 .artifacts(visibleArtifacts(taskId))
                 .events(stateStore.findRuntimeEventsByTaskId(taskId))
                 .build();
+    }
+
+    private TaskRecord reconcileTaskVersion(String taskId) {
+        TaskRecord task = stateStore.findTask(taskId).orElse(null);
+        if (task == null) {
+            return null;
+        }
+        PlanTaskSession session = stateStore.findSession(taskId).orElse(null);
+        if (session == null || task.getVersion() == session.getVersion()) {
+            return task;
+        }
+        task.setVersion(session.getVersion());
+        task.setUpdatedAt(Instant.now());
+        stateStore.saveTask(task);
+        return task;
     }
 
     private void markMissingStepsSuperseded(String taskId, List<TaskStepRecord> nextSteps) {

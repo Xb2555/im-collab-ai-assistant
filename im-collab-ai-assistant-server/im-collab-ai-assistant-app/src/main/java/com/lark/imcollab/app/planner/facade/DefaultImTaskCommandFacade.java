@@ -169,7 +169,10 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         sessionService.save(failed);
         sessionService.publishEvent(taskId, "FAILED");
         TaskRuntimeSnapshot snapshot = loadRuntimeSnapshot(taskId);
-        if (!runtimeAlreadyFailed(snapshot)) {
+        if (runtimeAlreadyFailed(snapshot)) {
+            taskRuntimeService.syncTaskState(taskId, PlanningPhaseEnum.FAILED);
+            snapshot = loadRuntimeSnapshot(taskId);
+        } else {
             taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.FAILED, TaskEventTypeEnum.TASK_FAILED);
             snapshot = loadRuntimeSnapshot(taskId);
         }
