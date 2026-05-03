@@ -192,6 +192,37 @@ class PlannerControllerCommandTest {
     }
 
     @Test
+    void resumeCommandPassesFeedbackThroughPlannerResumePath() {
+        PlanTaskSession asking = new PlanTaskSession();
+        asking.setTaskId("task-1");
+        asking.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        asking.setVersion(2);
+        PlanTaskSession ready = new PlanTaskSession();
+        ready.setTaskId("task-1");
+        ready.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        ready.setVersion(3);
+
+        when(repository.findSession("task-1")).thenReturn(Optional.of(asking));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.CLARIFYING)));
+        when(plannerCommandApplicationService.resume("task-1", "使用通用知识即可", false)).thenReturn(ready);
+        when(plannerViewAssembler.toPlanPreview(ready)).thenReturn(new PlanPreviewVO(
+                "task-1", 3, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+        ));
+
+        PlanCommandRequest request = new PlanCommandRequest();
+        request.setAction("RESUME");
+        request.setVersion(2);
+        request.setFeedback("使用通用知识即可");
+
+        BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
+
+        assertThat(response.getCode()).isZero();
+        verify(plannerCommandApplicationService).resume("task-1", "使用通用知识即可", false);
+        verify(plannerCommandApplicationService, never()).replan(anyString(), anyString());
+        verify(plannerViewAssembler).toPlanPreview(ready);
+    }
+
+    @Test
     void cancelProjectsRuntimeCancelledState() {
         PlanTaskSession session = new PlanTaskSession();
         session.setTaskId("task-1");

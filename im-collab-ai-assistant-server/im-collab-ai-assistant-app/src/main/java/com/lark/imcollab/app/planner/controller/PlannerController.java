@@ -63,7 +63,7 @@ public class PlannerController {
 
     private static final Logger log = LoggerFactory.getLogger(PlannerController.class);
 
-    private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "CANCEL", "RETRY_FAILED");
+    private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "RESUME", "CANCEL", "RETRY_FAILED");
     private static final List<TaskStatusEnum> GUI_RECOVERABLE_TASK_STATUSES = List.of(
             TaskStatusEnum.RECEIVED,
             TaskStatusEnum.CLARIFYING,
@@ -386,6 +386,10 @@ public class PlannerController {
                             taskId, updated == null ? null : updated.getTaskId());
                     yield error(BusinessCode.OPERATION_ERROR, "Replan returned inconsistent task id");
                 }
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
+            }
+            case "RESUME" -> {
+                PlanTaskSession updated = plannerCommandApplicationService.resume(taskId, request.getFeedback(), false);
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "CANCEL" -> {
