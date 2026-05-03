@@ -129,14 +129,16 @@ public class LarkDocTool {
         args.add(docIdOrUrl.trim());
         args.add("--command");
         args.add(mode.trim());
+        String stdin = null;
         if (markdown != null && !markdown.isBlank()) {
             args.add("--doc-format");
             args.add("markdown");
             args.add("--content");
-            args.add(markdown);
+            args.add("-");
+            stdin = markdown;
         }
 
-        return parseUpdateResult(executeJson(args), mode);
+        return parseUpdateResult(executeJson(args, stdin), mode);
     }
 
     public LarkDocFetchResult fetchDocOutline(String docIdOrUrl) {
@@ -199,9 +201,11 @@ public class LarkDocTool {
             args.add("--doc-format");
             args.add(docFormat.trim());
         }
+        String stdin = null;
         if (content != null) {
             args.add("--content");
-            args.add(content);
+            args.add("-");
+            stdin = content;
         }
         if (hasText(blockId)) {
             args.add("--block-id");
@@ -215,7 +219,7 @@ public class LarkDocTool {
             args.add("--revision-id");
             args.add(String.valueOf(revisionId));
         }
-        return parseUpdateResult(executeJson(args), command);
+        return parseUpdateResult(executeJson(args, stdin), command);
     }
 
     public String extractDocumentId(String docIdOrUrl) {
@@ -229,7 +233,11 @@ public class LarkDocTool {
     }
 
     private JsonNode executeJson(List<String> args) {
-        CliCommandResult result = larkCliClient.execute(args, null, commandTimeoutMillis());
+        return executeJson(args, null);
+    }
+
+    private JsonNode executeJson(List<String> args, String stdin) {
+        CliCommandResult result = larkCliClient.execute(args, stdin, commandTimeoutMillis());
         if (!result.isSuccess()) {
             throw new IllegalStateException(readableCliError(result.output()));
         }
@@ -240,11 +248,12 @@ public class LarkDocTool {
         }
     }
 
-    private JsonNode executeJsonWithCompat(String docsCommand, List<List<String>> attempts) {
+    private JsonNode executeJsonWithCompat(String docsCommand, List<DocCommandAttempt> attempts) {
         IllegalStateException lastError = null;
         for (int index = 0; index < attempts.size(); index++) {
-            List<String> args = attempts.get(index);
-            CliCommandResult result = larkCliClient.execute(args, null, commandTimeoutMillis());
+            DocCommandAttempt attempt = attempts.get(index);
+            List<String> args = attempt.args();
+            CliCommandResult result = larkCliClient.execute(args, attempt.stdin(), commandTimeoutMillis());
             if (result.isSuccess()) {
                 try {
                     return larkCliClient.readJsonOutput(result.output());
@@ -316,23 +325,23 @@ public class LarkDocTool {
         return Set.of("--as", "--profile");
     }
 
-    private List<List<String>> createDocAttempts(String title, String markdown, Set<String> supportedFlags) {
-        Map<String, List<String>> attempts = new LinkedHashMap<>();
+    private List<DocCommandAttempt> createDocAttempts(String title, String markdown, Set<String> supportedFlags) {
+        Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
         attempts.put("preferred", createDocArgs(title, markdown, supportedFlags, true, false));
         attempts.put("no-api-version", createDocArgs(title, markdown, supportedFlags, false, false));
         attempts.put("classic-v1", classicCreateDocArgs(title, markdown));
         return distinctAttempts(attempts);
     }
 
-    private List<List<String>> fetchDocAttempts(String docRef, String scope, String detail, Set<String> supportedFlags) {
-        Map<String, List<String>> attempts = new LinkedHashMap<>();
-        attempts.put("preferred", fetchDocArgs(docRef, scope, detail, supportedFlags, true, true));
-        attempts.put("no-api-version", fetchDocArgs(docRef, scope, detail, supportedFlags, false, true));
-        attempts.put("basic", fetchDocArgs(docRef, null, null, Set.of("--as", "--doc"), false, false));
+    private List<DocCommandAttempt> fetchDocAttempts(String docRef, String scope, String detail, Set<String> supportedFlags) {
+        Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
+        attempts.put("preferred", new DocCommandAttempt(fetchDocArgs(docRef, scope, detail, supportedFlags, true, true), null));
+        attempts.put("no-api-version", new DocCommandAttempt(fetchDocArgs(docRef, scope, detail, supportedFlags, false, true), null));
+        attempts.put("basic", new DocCommandAttempt(fetchDocArgs(docRef, null, null, Set.of("--as", "--doc"), false, false), null));
         return distinctAttempts(attempts);
     }
 
-    private List<String> createDocArgs(
+    private DocCommandAttempt createDocArgs(
             String title,
             String markdown,
             Set<String> supportedFlags,
@@ -348,21 +357,21 @@ public class LarkDocTool {
         }
         appendIfSupported(args, supportedFlags, "--title", title);
         if (supportedFlags.contains("--markdown")) {
-            appendIfSupported(args, supportedFlags, "--markdown", markdown);
-            return args;
+            appendIfSupported(args, supportedFlags, "--markdown", "-");
+            return new DocCommandAttempt(args, markdown);
         }
         if (supportedFlags.contains("--content")) {
             appendIfSupported(args, supportedFlags, "--doc-format", "markdown");
-            appendIfSupported(args, supportedFlags, "--content", markdown);
-            return args;
+            appendIfSupported(args, supportedFlags, "--content", "-");
+            return new DocCommandAttempt(args, markdown);
         }
         if (strictContentCheck) {
             throw new IllegalStateException("当前 lark-cli docs +create 不支持文档内容输入参数，请升级 lark-cli 后重试。");
         }
-        return args;
+        return new DocCommandAttempt(args, null);
     }
 
-    private List<String> classicCreateDocArgs(String title, String markdown) {
+    private DocCommandAttempt classicCreateDocArgs(String title, String markdown) {
         List<String> args = new ArrayList<>();
         args.add("docs");
         args.add("+create");
@@ -371,8 +380,8 @@ public class LarkDocTool {
         args.add("--title");
         args.add(title);
         args.add("--markdown");
-        args.add(markdown);
-        return args;
+        args.add("-");
+        return new DocCommandAttempt(args, markdown);
     }
 
     private List<String> fetchDocArgs(
@@ -400,16 +409,16 @@ public class LarkDocTool {
         return args;
     }
 
-    private List<List<String>> distinctAttempts(Map<String, List<String>> attempts) {
-        List<List<String>> result = new ArrayList<>();
+    private List<DocCommandAttempt> distinctAttempts(Map<String, DocCommandAttempt> attempts) {
+        List<DocCommandAttempt> result = new ArrayList<>();
         Set<String> fingerprints = new LinkedHashSet<>();
-        for (List<String> args : attempts.values()) {
-            if (args == null || args.isEmpty()) {
+        for (DocCommandAttempt attempt : attempts.values()) {
+            if (attempt == null || attempt.args() == null || attempt.args().isEmpty()) {
                 continue;
             }
-            String fingerprint = String.join("\u0000", args);
+            String fingerprint = String.join("\u0000", attempt.args()) + "\u0001" + (attempt.stdin() == null ? "" : "stdin");
             if (fingerprints.add(fingerprint)) {
-                result.add(args);
+                result.add(attempt);
             }
         }
         return result;
@@ -449,6 +458,8 @@ public class LarkDocTool {
     private boolean isCliRuntimeError(String lowerMessage) {
         return lowerMessage.contains("powershell")
                 || lowerMessage.contains(".ps1")
+                || lowerMessage.contains("command line is too long")
+                || lowerMessage.contains("commandline is too long")
                 || lowerMessage.contains("parameterbinding")
                 || lowerMessage.contains("processbuilder")
                 || lowerMessage.contains("java.lang.")
@@ -615,5 +626,8 @@ public class LarkDocTool {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private record DocCommandAttempt(List<String> args, String stdin) {
     }
 }

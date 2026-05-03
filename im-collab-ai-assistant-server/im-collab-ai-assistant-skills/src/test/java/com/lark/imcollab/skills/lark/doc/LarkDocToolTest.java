@@ -49,8 +49,9 @@ class LarkDocToolTest {
                 "docs", "+create",
                 "--as", "user",
                 "--title", "测试文档",
-                "--markdown"
+                "--markdown", "-"
         ));
+        assertThat(commands.get(1).stdin()).contains("正文");
         assertThat(createArgs).doesNotContain("--api-version", "--doc-format", "--content");
     }
 
@@ -101,8 +102,9 @@ class LarkDocToolTest {
                 "--as", "user",
                 "--api-version", "v2",
                 "--doc-format", "markdown",
-                "--content"
+                "--content", "-"
         ));
+        assertThat(commands.get(2).stdin()).contains("正文");
         assertThat(createArgs).doesNotContain("--title", "--markdown");
     }
 
@@ -155,9 +157,43 @@ class LarkDocToolTest {
                 "docs", "+create",
                 "--as", "user",
                 "--title", "兼容文档",
-                "--markdown"
+                "--markdown", "-"
         ));
+        assertThat(commands.get(commands.size() - 1).stdin()).contains("正文");
         assertThat(createArgs).doesNotContain("--api-version", "--content", "--doc-format");
+    }
+
+    @Test
+    void createDocSendsLongMarkdownThroughStdinInsteadOfCommandLineArgument() {
+        AtomicReference<CliCommand> captured = new AtomicReference<>();
+        String longMarkdown = "Java 教程正文\n" + "基础内容".repeat(3000);
+        CliCommandExecutor executor = command -> {
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +create [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --content string
+                              --doc-format string
+                        """);
+            }
+            captured.set(command);
+            return new CliCommandResult(0, """
+                    {"data":{"document":{"document_id":"doc-long","url":"https://example.feishu.cn/docx/doc-long"}}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkDocTool tool = new LarkDocTool(new LarkCliClient(executor, properties, new ObjectMapper()), properties);
+
+        LarkDocCreateResult result = tool.createDoc("Java零基础入门教程", longMarkdown);
+
+        assertThat(result.getDocUrl()).contains("doc-long");
+        assertThat(captured.get().arguments()).containsSequence("--content", "-");
+        assertThat(captured.get().arguments()).doesNotContain(longMarkdown);
+        assertThat(captured.get().stdin()).contains("Java 教程正文");
     }
 
     @Test

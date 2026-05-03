@@ -280,6 +280,8 @@ public class DocumentExecutionSupport {
     private boolean isTechnicalRuntimeError(String lowerReason) {
         return lowerReason.contains("powershell")
                 || lowerReason.contains(".ps1")
+                || lowerReason.contains("command line is too long")
+                || lowerReason.contains("commandline is too long")
                 || lowerReason.contains("parameterbinding")
                 || lowerReason.contains("processbuilder")
                 || lowerReason.contains("java.lang.")
