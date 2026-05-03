@@ -493,10 +493,21 @@ public class PlanningNodeService {
             return false;
         }
         int delimiter = Math.max(instruction.lastIndexOf('：'), instruction.lastIndexOf(':'));
-        if (delimiter >= 0 && instruction.length() - delimiter - 1 >= 24) {
-            return true;
+        if (delimiter >= 0) {
+            return hasSubstantialInlineMaterial(instruction.substring(delimiter + 1));
         }
         return instruction.contains("\n") && instruction.length() >= 40;
+    }
+
+    private boolean hasSubstantialInlineMaterial(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.trim();
+        if (normalized.contains("\n") && normalized.length() >= 40) {
+            return true;
+        }
+        return normalized.length() >= 48;
     }
 
     private boolean hasWorkspaceMaterial(String planningInput) {

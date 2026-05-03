@@ -74,6 +74,32 @@ class LarkIMListenerServiceTest {
     }
 
     @Test
+    void acceptedAsyncSessionSendsNeutralImmediateReceipt() {
+        LarkMessageEventSubscriptionService subscriptionService = mock(LarkMessageEventSubscriptionService.class);
+        LarkMessageReplyTool replyTool = mock(LarkMessageReplyTool.class);
+        LarkInboundMessageDispatcher dispatcher = mock(LarkInboundMessageDispatcher.class);
+        ArgumentCaptor<Consumer<LarkMessageEvent>> consumerCaptor = ArgumentCaptor.forClass(Consumer.class);
+
+        when(subscriptionService.startMessageSubscription(anyString(), consumerCaptor.capture()))
+                .thenReturn(new LarkEventSubscriptionStatus(true, "running", "now", null));
+        when(dispatcher.dispatch(any())).thenReturn(PlanTaskSession.builder()
+                .taskId("im-pending-1")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build());
+
+        LarkIMListenerService listener = new LarkIMListenerService(subscriptionService, replyTool, dispatcher);
+        listener.start();
+        consumerCaptor.getValue().accept(event());
+
+        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
+        org.assertj.core.api.Assertions.assertThat(textCaptor.getValue())
+                .contains("收到", "马上看一下")
+                .doesNotContain("任务已收到", "新任务");
+    }
+
+
+    @Test
     void botAuthoredMessageIsIgnoredBeforeDispatch() {
         LarkMessageEventSubscriptionService subscriptionService = mock(LarkMessageEventSubscriptionService.class);
         LarkMessageReplyTool replyTool = mock(LarkMessageReplyTool.class);

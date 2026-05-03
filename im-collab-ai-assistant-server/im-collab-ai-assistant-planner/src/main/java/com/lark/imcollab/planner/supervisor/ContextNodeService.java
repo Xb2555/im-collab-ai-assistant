@@ -88,6 +88,9 @@ public class ContextNodeService {
         if (fallbackPlan != null && fallbackPlan.isNeedCollection()) {
             return ContextSufficiencyResult.collect(fallbackPlan, "available workspace source can be collected");
         }
+        if (isMissingSourceMaterialGuard(guardedResult)) {
+            return guardedResult;
+        }
         Optional<ContextSufficiencyResult> modelResult = invokeContextAgent(session, taskId, rawInstruction, workspaceContext);
         if (modelResult.isPresent()) {
             ContextSufficiencyResult result = modelResult.get();
@@ -175,6 +178,10 @@ public class ContextNodeService {
                 Decide whether the available context is enough to create an executable plan.
                 If workspace context only contains the user's latest instruction and no real source material, do NOT treat it as material to summarize.
                 However, if the user instruction itself includes a concrete content body, topic details, or source material after a colon/newline, treat that embedded text as usable context.
+                Treat words like "plan", "three steps", "do not execute yet", "outline", or "draft" as planning constraints, not as source material.
+                If the user asks for a project review, project summary, proposal, report, or stakeholder-facing document/PPT/summary but provides no project material,
+                selected messages, document refs, attachments, or retrievable message range, mark the context insufficient and ask for the missing material.
+                Only allow planning without source material when the user explicitly asks for a generic template, generic framework, or blank outline.
                 If the user asks to pull/read/filter/summarize messages from the current chat or group and workspace context has chatId/threadId,
                 return collectionRequired=true with an IM_HISTORY acquisitionPlan. Copy the whole message-selection criteria into selectionInstruction.
                 If the user asks to summarize "recent/prior discussion" or "the previous discussion about topic A/B/C",
@@ -217,6 +224,9 @@ public class ContextNodeService {
                 You are Planner's context acquisition planner.
                 Decide whether the task needs external context to be pulled before planning.
                 You may request only these sources: IM_HISTORY and LARK_DOC.
+                Treat words like "plan", "three steps", "do not execute yet", "outline", or "draft" as planning constraints, not source material.
+                If a task depends on project facts, review facts, prior discussion, a referenced document, or stakeholder-facing content and those facts are absent,
+                either request a concrete source or ask a natural clarification question. Do not let planning proceed on the user's request text alone.
                 Use IM_HISTORY when the user refers to recent/prior discussion, chat messages, "刚才", "群里", "聊天记录", and a matching chat/thread source is available.
                 Also use IM_HISTORY when the user says to summarize the previous/current discussion about named topics. Topic names are retrieval criteria, not collected content.
                 If the user refers to group messages but the current chat is p2p/private, do NOT request IM_HISTORY from the private chat; ask the user to provide the group, time range, selected messages, or paste the material.
@@ -465,6 +475,14 @@ public class ContextNodeService {
                 && result.reason() != null
                 && (result.reason().contains("embedded instruction context")
                 || result.reason().contains("external workspace context"));
+    }
+
+    private boolean isMissingSourceMaterialGuard(ContextSufficiencyResult result) {
+        return result != null
+                && !result.sufficient()
+                && !result.collectionRequired()
+                && result.reason() != null
+                && result.reason().contains("no source material");
     }
 
     private String normalize(String value) {

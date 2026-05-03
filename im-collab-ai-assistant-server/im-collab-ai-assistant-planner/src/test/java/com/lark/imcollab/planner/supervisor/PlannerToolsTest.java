@@ -70,7 +70,46 @@ class PlannerToolsTest {
         ContextSufficiencyResult result = tool.evaluateContext(null, "帮我整理一下，给老板看", null);
 
         assertThat(result.sufficient()).isFalse();
-        assertThat(result.clarificationQuestion()).contains("基于哪些内容");
+        assertThat(result.clarificationQuestion()).contains("基于哪些材料");
+    }
+
+    @Test
+    void contextToolAsksForSourceMaterialWhenPlanConstraintHasNoMaterial() {
+        PlannerContextTool tool = new PlannerContextTool();
+
+        ContextSufficiencyResult result = tool.evaluateContext(
+                null,
+                "请生成一份三步以内的项目复盘文档计划，先不要执行。",
+                WorkspaceContext.builder()
+                        .chatId("private-chat")
+                        .chatType("p2p")
+                        .inputSource("LARK_PRIVATE_CHAT")
+                        .build()
+        );
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("no source material");
+        assertThat(result.clarificationQuestion())
+                .contains("项目背景")
+                .contains("消息范围");
+    }
+
+    @Test
+    void contextToolDoesNotTreatTestLabelPrefixAsEmbeddedMaterial() {
+        PlannerContextTool tool = new PlannerContextTool();
+
+        ContextSufficiencyResult result = tool.evaluateContext(
+                null,
+                "IM澄清测试-121026：请生成一份三步以内的项目复盘文档计划，先不要执行。",
+                WorkspaceContext.builder()
+                        .chatId("private-chat")
+                        .chatType("p2p")
+                        .inputSource("LARK_PRIVATE_CHAT")
+                        .build()
+        );
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("no source material");
     }
 
     @Test
@@ -98,7 +137,7 @@ class PlannerToolsTest {
         ContextSufficiencyResult result = tool.evaluateContext(null, "把刚才讨论的内容整理成项目摘要", context);
 
         assertThat(result.sufficient()).isFalse();
-        assertThat(result.reason()).contains("instruction too short");
+        assertThat(result.reason()).contains("no source material");
     }
 
     @Test
@@ -136,6 +175,47 @@ class PlannerToolsTest {
         assertThat(result.sufficient()).isFalse();
         assertThat(result.collectionRequired()).isFalse();
         assertThat(result.clarificationQuestion()).contains("客户合同");
+    }
+
+    @Test
+    void contextNodeDoesNotLetModelOverrideMissingSourceGuard() throws Exception {
+        ReactAgent contextCollectorAgent = mock(ReactAgent.class);
+        ReactAgent contextAcquisitionAgent = mock(ReactAgent.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(contextAcquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.empty());
+        when(contextCollectorAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"sufficient":true,"contextSummary":"model tried to allow planning","missingItems":[],"clarificationQuestion":"","reason":"model semantic override","collectionRequired":false}
+                        """)
+        ))));
+        ContextNodeService service = new ContextNodeService(
+                contextCollectorAgent,
+                contextAcquisitionAgent,
+                new PlannerContextTool(),
+                runtimeTool,
+                memoryService,
+                new PlannerProperties(),
+                new ObjectMapper()
+        );
+
+        ContextSufficiencyResult result = service.check(
+                session,
+                "task-ctx",
+                "请生成一份三步以内的项目复盘文档计划，先不要执行。",
+                WorkspaceContext.builder()
+                        .chatId("private-chat")
+                        .chatType("p2p")
+                        .inputSource("LARK_PRIVATE_CHAT")
+                        .build()
+        );
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("no source material");
+        assertThat(result.clarificationQuestion()).contains("项目背景");
     }
 
     @Test

@@ -25,7 +25,7 @@ public class LarkIMListenerService {
 
     private static final Logger log = LoggerFactory.getLogger(LarkIMListenerService.class);
     private static final String RECEIPT_TEXT =
-            "\u4efb\u52a1\u5df2\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406\u3002\n\u8bf7\u7a0d\u7b49\uff0c\u6211\u4f1a\u5148\u5206\u6790\u5e76\u7ee7\u7eed\u56de\u590d\u4f60\u3002";
+            "\u6536\u5230\uff0c\u6211\u9a6c\u4e0a\u770b\u4e00\u4e0b\u3002";
     private static final String CONSUMER_ID = LarkIMListenerService.class.getName();
     private static final long GROUP_MENTION_MIRROR_SUPPRESSION_WINDOW_MILLIS = 15_000L;
     private static final long INBOUND_DEDUP_WINDOW_MILLIS = 2L * 60L * 1000L;
