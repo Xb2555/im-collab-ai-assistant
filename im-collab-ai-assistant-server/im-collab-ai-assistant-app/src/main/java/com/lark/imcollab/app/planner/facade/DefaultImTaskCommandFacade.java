@@ -111,11 +111,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             execution.timeoutFuture.cancel(false);
             log.info("Cancelled active execution: taskId={}", taskId);
         }
-        try {
-            harnessFacade.abortExecution(taskId);
-        } catch (RuntimeException exception) {
-            log.warn("Failed to abort harness execution: taskId={}, error={}", taskId, exception.getMessage());
-        }
+        submitAbort(taskId);
     }
 
     @Override
@@ -148,6 +144,20 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             executionExecutor.execute(future);
         } catch (RuntimeException exception) {
             markExecutionFailed(taskId, "Failed to submit IM execution task", exception);
+        }
+    }
+
+    private void submitAbort(String taskId) {
+        try {
+            executionExecutor.execute(() -> {
+                try {
+                    harnessFacade.abortExecution(taskId);
+                } catch (RuntimeException exception) {
+                    log.warn("Failed to abort harness execution: taskId={}, error={}", taskId, exception.getMessage());
+                }
+            });
+        } catch (RuntimeException exception) {
+            log.warn("Failed to submit harness abort task: taskId={}, error={}", taskId, exception.getMessage());
         }
     }
 
