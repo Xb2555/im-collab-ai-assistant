@@ -19,6 +19,11 @@ public class Artifact implements Serializable {
     private ArtifactType type;
     private String title;
     private String content;
+    private String documentId;
     private String externalUrl;
+    private String ownerScenario;
+    private boolean createdBySystem;
+    private String lastEditedBy;
+    private Instant lastEditedAt;
     private Instant createdAt;
 }

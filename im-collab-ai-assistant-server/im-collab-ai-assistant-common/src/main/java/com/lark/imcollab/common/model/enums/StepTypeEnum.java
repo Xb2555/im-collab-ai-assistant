@@ -6,6 +6,7 @@ public enum StepTypeEnum {
     PLAN_GENERATION,
     DOC_DRAFT,
     DOC_CREATE,
+    DOC_EDIT,
     PPT_OUTLINE,
     PPT_CREATE,
     WHITEBOARD_CREATE,

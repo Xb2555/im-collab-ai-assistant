@@ -40,27 +40,15 @@ public class ContextAcquisitionNodeService {
                     merged
             );
         }
-        String question = result == null || result.getMessage() == null || result.getMessage().isBlank()
-                ? firstNonBlank(plan.getClarificationQuestion(), "我没拿到可用上下文，你可以选中几条消息、指定时间范围，或发我文档链接。")
-                : "我没拿到可用上下文：" + readableFailure(result.getMessage()) + "。你可以选中几条消息、指定时间范围，或发我文档链接。";
+        String question = firstNonBlank(
+                result == null ? null : result.getClarificationQuestion(),
+                plan.getClarificationQuestion(),
+                "我按你给的范围查了一遍，但没有找到能用来总结的内容。你想扩大时间范围、换个筛选条件，还是直接贴几条要整理的消息给我？"
+        );
         return new ContextCollectionOutcome(
                 ContextSufficiencyResult.insufficient(List.of("source_context"), question, "context collection failed"),
                 workspaceContext
         );
-    }
-
-    private String readableFailure(String message) {
-        if (message == null || message.isBlank()) {
-            return "没有读取到可用内容";
-        }
-        String lower = message.toLowerCase();
-        if (message.contains("LARK_DOC") || lower.contains("document") || lower.contains("docx")) {
-            return "文档读取失败，可能是链接无效、机器人没有权限，或文档还没有分享给当前应用";
-        }
-        if (message.contains("IM_HISTORY") || lower.contains("message") || lower.contains("chat")) {
-            return "聊天记录读取失败，可能是机器人没有权限，或这个时间范围内没有可用消息";
-        }
-        return "没有读取到可用内容";
     }
 
     private String firstNonBlank(String... values) {

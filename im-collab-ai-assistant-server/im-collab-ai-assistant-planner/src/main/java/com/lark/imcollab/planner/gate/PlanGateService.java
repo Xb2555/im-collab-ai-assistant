@@ -116,13 +116,7 @@ public class PlanGateService {
         long pptSteps = steps.stream()
                 .filter(step -> step != null && step.getType() == StepTypeEnum.PPT_CREATE)
                 .count();
-        long summarySteps = steps.stream()
-                .filter(step -> step != null && step.getType() == StepTypeEnum.SUMMARY)
-                .count();
         List<String> reasons = new ArrayList<>();
-        if (summarySteps > 0) {
-            reasons.add("standalone SUMMARY steps are not executable in the current harness; merge the summary into a DOC or split it into a separate future capability");
-        }
         if (docSteps > 1) {
             reasons.add("multiple DOC steps are not executable in one run; merge extra sections into the main DOC");
         }

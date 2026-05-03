@@ -31,6 +31,7 @@ public class TaskIntakeService {
             boolean existingSession
     ) {
         String effectiveInput = firstText(userFeedback, rawInstruction);
+        effectiveInput = stripLeadingMentionPlaceholders(effectiveInput);
         IntentRoutingResult result = intentRouterService.classify(session, effectiveInput, existingSession);
         TaskIntakeTypeEnum intakeType = map(result.type());
         String assistantReply = intakeType == TaskIntakeTypeEnum.UNKNOWN
@@ -63,5 +64,19 @@ public class TaskIntakeService {
             return first.trim();
         }
         return second == null ? "" : second.trim();
+    }
+
+    private String stripLeadingMentionPlaceholders(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
+        }
+        String normalized = input.trim();
+        String previous;
+        do {
+            previous = normalized;
+            normalized = normalized.replaceFirst("^@[_a-zA-Z0-9\\-]+\\s+", "").trim();
+            normalized = normalized.replaceFirst("^<at\\b[^>]*>[^<]*</at>\\s*", "").trim();
+        } while (!normalized.equals(previous));
+        return normalized;
     }
 }

@@ -4,9 +4,12 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
 import com.lark.imcollab.common.model.entity.RequireInput;
 import com.lark.imcollab.common.model.entity.TaskEvent;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +21,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -149,12 +153,14 @@ public class PlannerSessionService {
             log.debug("[{}] Event already published: {} v{}", taskId, status, version);
             return;
         }
-        java.util.List<AgentTaskPlanCard> subtasks =
+        java.util.List<AgentTaskPlanCard> subtasks = applyRuntimeStepStatus(
+                taskId,
                 session != null && session.getPlanCards() != null
                         ? session.getPlanCards().stream()
-                            .flatMap(card -> normalizeSubtasks(card).stream())
-                            .toList()
-                        : java.util.List.of();
+                        .flatMap(card -> normalizeSubtasks(card).stream())
+                        .toList()
+                        : java.util.List.of()
+        );
 
         TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
@@ -167,6 +173,60 @@ public class PlannerSessionService {
                 .build();
         stateRepository.appendEvent(event);
         log.info("[{}] Event: {} v{}", taskId, status, version);
+    }
+
+    private List<AgentTaskPlanCard> applyRuntimeStepStatus(String taskId, List<AgentTaskPlanCard> subtasks) {
+        if (taskId == null || taskId.isBlank() || subtasks == null || subtasks.isEmpty()) {
+            return subtasks == null ? List.of() : subtasks;
+        }
+        List<TaskStepRecord> runtimeSteps = stateRepository.findStepsByTaskId(taskId);
+        if (runtimeSteps == null || runtimeSteps.isEmpty()) {
+            return subtasks;
+        }
+        Map<String, TaskStepRecord> stepsById = runtimeSteps.stream()
+                .filter(step -> step != null && step.getStepId() != null && !step.getStepId().isBlank())
+                .collect(java.util.stream.Collectors.toMap(
+                        TaskStepRecord::getStepId,
+                        step -> step,
+                        (left, ignored) -> left,
+                        java.util.LinkedHashMap::new
+                ));
+        for (AgentTaskPlanCard subtask : subtasks) {
+            if (subtask == null) {
+                continue;
+            }
+            TaskStepRecord step = firstMatchingStep(subtask, stepsById);
+            if (step == null) {
+                continue;
+            }
+            subtask.setStatus(toStreamStatus(step.getStatus()));
+            subtask.setOutput(step.getOutputSummary());
+            subtask.setRetryCount(step.getRetryCount());
+        }
+        return subtasks;
+    }
+
+    private TaskStepRecord firstMatchingStep(AgentTaskPlanCard subtask, Map<String, TaskStepRecord> stepsById) {
+        for (String candidate : new String[] {subtask.getParentCardId(), subtask.getId(), subtask.getTaskId()}) {
+            if (candidate != null && !candidate.isBlank() && stepsById.containsKey(candidate)) {
+                return stepsById.get(candidate);
+            }
+        }
+        return null;
+    }
+
+    private String toStreamStatus(StepStatusEnum status) {
+        if (status == null) {
+            return "pending";
+        }
+        return switch (status) {
+            case PENDING, READY -> "pending";
+            case RUNNING -> "running";
+            case WAITING_APPROVAL -> "waiting_approval";
+            case COMPLETED -> "completed";
+            case FAILED -> "failed";
+            case SKIPPED, SUPERSEDED -> status.name().toLowerCase(Locale.ROOT);
+        };
     }
 
     private boolean alreadyPublished(String taskId, String status, int version) {
@@ -190,13 +250,39 @@ public class PlannerSessionService {
     }
 
     private List<AgentTaskPlanCard> normalizeSubtasks(UserPlanCard card) {
-        if (card == null || card.getAgentTaskPlanCards() == null) {
+        if (card == null) {
             return List.of();
+        }
+        if (card.getAgentTaskPlanCards() == null || card.getAgentTaskPlanCards().isEmpty()) {
+            return List.of(synthesizeSubtask(card));
         }
         return card.getAgentTaskPlanCards().stream()
                 .map(subtask -> normalizeSubtask(card, subtask))
                 .filter(java.util.Objects::nonNull)
                 .toList();
+    }
+
+    private AgentTaskPlanCard synthesizeSubtask(UserPlanCard card) {
+        AgentTaskTypeEnum taskType = null;
+        if (card.getType() != null) {
+            taskType = switch (card.getType()) {
+                case PPT -> AgentTaskTypeEnum.WRITE_SLIDES;
+                case SUMMARY -> AgentTaskTypeEnum.GENERATE_SUMMARY;
+                case DOC -> AgentTaskTypeEnum.WRITE_DOC;
+            };
+        }
+        return AgentTaskPlanCard.builder()
+                .taskId(firstNonBlank(card.getCardId(), card.getTaskId()))
+                .id(firstNonBlank(card.getCardId(), card.getTaskId()))
+                .parentCardId(card.getCardId())
+                .taskType(taskType)
+                .type(taskType == null ? null : taskType.name())
+                .title(firstNonBlank(card.getTitle(), card.getDescription(), card.getCardId()))
+                .status(card.getStatus())
+                .input(card.getDescription())
+                .context(card.getDescription())
+                .tools(List.of())
+                .build();
     }
 
     private AgentTaskPlanCard normalizeSubtask(UserPlanCard card, AgentTaskPlanCard subtask) {

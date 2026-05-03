@@ -45,19 +45,12 @@ public class PlannerContextTool {
                     "empty instruction"
             );
         }
-        if (mentionsUnavailableSource(instruction)) {
-            return ContextSufficiencyResult.insufficient(
-                    List.of("source_context"),
-                    "你提到的材料我现在还没拿到。请把对应的文档链接、关键内容，或可查看的聊天范围发给我，我再继续整理。",
-                    "source explicitly unavailable"
-            );
-        }
         boolean hasEmbeddedContext = hasEmbeddedTaskMaterial(instruction);
-        if (!hasCollectedContext && !hasEmbeddedContext && instruction.length() < 24) {
+        if (!hasCollectedContext && !hasEmbeddedContext) {
             return ContextSufficiencyResult.insufficient(
                     List.of("source_context"),
-                    "你希望我基于哪些内容来整理？可以直接贴材料、文档链接，或说明要整理的消息范围；如果有偏好的产物形式也可以一起说。",
-                    "instruction too short and no external context"
+                    "这份内容要基于哪些材料来做？可以直接贴项目背景、文档链接，或说明要整理的消息范围；如果只是要一个通用模板，也可以直接告诉我。",
+                    "no source material or embedded content"
             );
         }
         String summary = "instruction=" + instruction
@@ -82,22 +75,21 @@ public class PlannerContextTool {
         }
         String normalized = instruction.trim();
         int delimiter = Math.max(normalized.lastIndexOf('：'), normalized.lastIndexOf(':'));
-        if (delimiter >= 0 && normalized.length() - delimiter - 1 >= 24) {
-            return true;
+        if (delimiter >= 0) {
+            return hasSubstantialInlineMaterial(normalized.substring(delimiter + 1));
         }
         return normalized.contains("\n") && normalized.length() >= 40;
     }
 
-    private boolean mentionsUnavailableSource(String instruction) {
-        String normalized = normalize(instruction);
-        return normalized.contains("没发给你")
-                || normalized.contains("没有发给你")
-                || normalized.contains("还没发给你")
-                || normalized.contains("没提供")
-                || normalized.contains("没有提供")
-                || normalized.contains("未提供")
-                || normalized.contains("没给你")
-                || normalized.contains("没有给你");
+    private boolean hasSubstantialInlineMaterial(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.trim();
+        if (normalized.contains("\n") && normalized.length() >= 40) {
+            return true;
+        }
+        return normalized.length() >= 48;
     }
 
     private boolean containsOnlyLatestInstruction(WorkspaceContext workspaceContext, String instruction) {

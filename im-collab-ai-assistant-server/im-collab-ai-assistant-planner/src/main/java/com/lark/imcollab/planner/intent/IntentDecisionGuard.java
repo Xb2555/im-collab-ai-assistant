@@ -44,11 +44,9 @@ public class IntentDecisionGuard {
             return rewrite(candidate, TaskCommandTypeEnum.START_TASK, "guard new conversation starts task", normalized, false);
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER
-                && candidate.type() != TaskCommandTypeEnum.CANCEL_TASK
-                && candidate.type() != TaskCommandTypeEnum.QUERY_STATUS
-                && candidate.type() != TaskCommandTypeEnum.CONFIRM_ACTION) {
+                && candidate.type() == TaskCommandTypeEnum.ANSWER_CLARIFICATION) {
             return rewrite(candidate, TaskCommandTypeEnum.ANSWER_CLARIFICATION,
-                    "guard session waiting clarification", normalized, false);
+                    "guard accepted explicit clarification answer", normalized, false);
         }
         if (candidate.type() == TaskCommandTypeEnum.START_TASK && hasExistingPlan(session)) {
             return rewrite(candidate, TaskCommandTypeEnum.START_TASK,

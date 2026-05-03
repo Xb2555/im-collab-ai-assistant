@@ -54,9 +54,10 @@ class PlannerRetryServiceTest {
             return failedSession;
         });
 
-        PlanTaskSession retrying = retryService.prepareRetry("task-1");
+        PlanTaskSession retrying = retryService.prepareRetry("task-1", "请用备用方案重试");
 
         assertThat(retrying.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        assertThat(retrying.getClarifiedInstruction()).contains("请用备用方案重试");
         assertThat(failed.getStatus()).isEqualTo(StepStatusEnum.READY);
         assertThat(failed.getRetryCount()).isEqualTo(3);
         assertThat(failed.getStartedAt()).isNull();

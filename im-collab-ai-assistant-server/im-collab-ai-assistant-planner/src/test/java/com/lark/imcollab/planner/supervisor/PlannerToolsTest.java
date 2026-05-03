@@ -70,7 +70,46 @@ class PlannerToolsTest {
         ContextSufficiencyResult result = tool.evaluateContext(null, "帮我整理一下，给老板看", null);
 
         assertThat(result.sufficient()).isFalse();
-        assertThat(result.clarificationQuestion()).contains("基于哪些内容");
+        assertThat(result.clarificationQuestion()).contains("基于哪些材料");
+    }
+
+    @Test
+    void contextToolAsksForSourceMaterialWhenPlanConstraintHasNoMaterial() {
+        PlannerContextTool tool = new PlannerContextTool();
+
+        ContextSufficiencyResult result = tool.evaluateContext(
+                null,
+                "请生成一份三步以内的项目复盘文档计划，先不要执行。",
+                WorkspaceContext.builder()
+                        .chatId("private-chat")
+                        .chatType("p2p")
+                        .inputSource("LARK_PRIVATE_CHAT")
+                        .build()
+        );
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("no source material");
+        assertThat(result.clarificationQuestion())
+                .contains("项目背景")
+                .contains("消息范围");
+    }
+
+    @Test
+    void contextToolDoesNotTreatTestLabelPrefixAsEmbeddedMaterial() {
+        PlannerContextTool tool = new PlannerContextTool();
+
+        ContextSufficiencyResult result = tool.evaluateContext(
+                null,
+                "IM澄清测试-121026：请生成一份三步以内的项目复盘文档计划，先不要执行。",
+                WorkspaceContext.builder()
+                        .chatId("private-chat")
+                        .chatType("p2p")
+                        .inputSource("LARK_PRIVATE_CHAT")
+                        .build()
+        );
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("no source material");
     }
 
     @Test
@@ -98,22 +137,7 @@ class PlannerToolsTest {
         ContextSufficiencyResult result = tool.evaluateContext(null, "把刚才讨论的内容整理成项目摘要", context);
 
         assertThat(result.sufficient()).isFalse();
-        assertThat(result.reason()).contains("instruction too short");
-    }
-
-    @Test
-    void contextToolAsksWhenUserSaysSourceWasNotProvided() {
-        PlannerContextTool tool = new PlannerContextTool();
-
-        ContextSufficiencyResult result = tool.evaluateContext(
-                null,
-                "根据我没发给你的那份客户合同，整理一份风险摘要给法务看",
-                WorkspaceContext.builder().chatId("chat-1").build()
-        );
-
-        assertThat(result.sufficient()).isFalse();
-        assertThat(result.reason()).contains("source explicitly unavailable");
-        assertThat(result.clarificationQuestion()).contains("材料");
+        assertThat(result.reason()).contains("no source material");
     }
 
     @Test
@@ -154,12 +178,60 @@ class PlannerToolsTest {
     }
 
     @Test
-    void contextNodeDoesNotUsePrivateChatHistoryForGroupMessageRequest() {
+    void contextNodeDoesNotLetModelOverrideMissingSourceGuard() throws Exception {
+        ReactAgent contextCollectorAgent = mock(ReactAgent.class);
+        ReactAgent contextAcquisitionAgent = mock(ReactAgent.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(contextAcquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.empty());
+        when(contextCollectorAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"sufficient":true,"contextSummary":"model tried to allow planning","missingItems":[],"clarificationQuestion":"","reason":"model semantic override","collectionRequired":false}
+                        """)
+        ))));
+        ContextNodeService service = new ContextNodeService(
+                contextCollectorAgent,
+                contextAcquisitionAgent,
+                new PlannerContextTool(),
+                runtimeTool,
+                memoryService,
+                new PlannerProperties(),
+                new ObjectMapper()
+        );
+
+        ContextSufficiencyResult result = service.check(
+                session,
+                "task-ctx",
+                "请生成一份三步以内的项目复盘文档计划，先不要执行。",
+                WorkspaceContext.builder()
+                        .chatId("private-chat")
+                        .chatType("p2p")
+                        .inputSource("LARK_PRIVATE_CHAT")
+                        .build()
+        );
+
+        assertThat(result.sufficient()).isFalse();
+        assertThat(result.reason()).contains("no source material");
+        assertThat(result.clarificationQuestion()).contains("项目背景");
+    }
+
+    @Test
+    void contextNodeUsesAcquisitionAgentForPrivateChatGroupContextDecision() throws Exception {
+        ReactAgent acquisitionAgent = mock(ReactAgent.class);
         PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
         PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        when(acquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"needCollection":false,"sources":[],"reason":"private chat is not the requested group context","clarificationQuestion":"你想总结哪个群、哪段时间的消息？可以在群里直接提我，或把要总结的消息范围发给我。"}
+                        """)
+        ))));
         ContextNodeService service = new ContextNodeService(
                 mock(ReactAgent.class),
-                mock(ReactAgent.class),
+                acquisitionAgent,
                 new PlannerContextTool(),
                 runtimeTool,
                 new PlannerConversationMemoryService(new PlannerProperties()),
@@ -185,12 +257,19 @@ class PlannerToolsTest {
     }
 
     @Test
-    void contextNodeCollectsGroupHistoryForGroupMessageRequest() {
+    void contextNodeUsesAcquisitionAgentForGroupHistoryCollection() throws Exception {
+        ReactAgent acquisitionAgent = mock(ReactAgent.class);
         PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
         PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        when(acquisitionAgent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"needCollection":true,"sources":[{"sourceType":"IM_HISTORY","chatId":"chat-group","threadId":"","timeRange":"","docRefs":[],"limit":30}],"reason":"user asks for available group chat history","clarificationQuestion":""}
+                        """)
+        ))));
         ContextNodeService service = new ContextNodeService(
                 mock(ReactAgent.class),
-                mock(ReactAgent.class),
+                acquisitionAgent,
                 new PlannerContextTool(),
                 runtimeTool,
                 new PlannerConversationMemoryService(new PlannerProperties()),
@@ -283,5 +362,33 @@ class PlannerToolsTest {
                 .contains("原始材料", "A：目标是生成技术方案", "文档《方案》摘录：背景和目标");
         assertThat(merged.getSelectedMessageIds()).containsExactly("om_1", "om_2");
         verify(memoryService).appendAssistantTurn(session, "已收集上下文：已读取 2 条聊天记录和 1 份文档摘录");
+    }
+
+    @Test
+    void contextAcquisitionNodeUsesToolClarificationWhenCollectionFindsNothing() {
+        PlannerContextAcquisitionTool acquisitionTool = mock(PlannerContextAcquisitionTool.class);
+        ContextAcquisitionNodeService service = new ContextAcquisitionNodeService(acquisitionTool);
+        ContextAcquisitionPlan plan = ContextAcquisitionPlan.builder()
+                .needCollection(true)
+                .build();
+        when(acquisitionTool.acquireContext(anyString(), anyString(), any(), any()))
+                .thenReturn(ContextAcquisitionResult.builder()
+                        .success(false)
+                        .sufficient(false)
+                        .message("没有读取到可用上下文。")
+                        .clarificationQuestion("我按你给的条件查了一遍，但没有找到符合条件的消息。你想扩大时间范围，还是换个关键词？")
+                        .build());
+
+        ContextCollectionOutcome outcome = service.collect(
+                "task-1",
+                "拉取最近5分钟带有某个标记的消息并总结",
+                WorkspaceContext.builder().chatId("chat-1").build(),
+                plan
+        );
+
+        assertThat(outcome.contextResult().sufficient()).isFalse();
+        assertThat(outcome.contextResult().clarificationQuestion())
+                .contains("没有找到符合条件的消息")
+                .doesNotContain("权限");
     }
 }

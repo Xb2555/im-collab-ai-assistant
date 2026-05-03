@@ -13,11 +13,14 @@ import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 @Component
 public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDispatcher {
@@ -30,10 +33,24 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
     private final LarkOutboundMessageRetryService retryService;
     private final LarkIMTaskReplyFormatter replyFormatter;
     private final DocRefExtractionService docRefExtractionService;
+    private final Executor plannerDispatchExecutor;
 
     public LoggingLarkInboundMessageDispatcher(PlannerPlanFacade plannerPlanFacade) {
         this(plannerPlanFacade, null, null, null, null, new LarkIMTaskReplyFormatter(),
                 new DocRefExtractionService(new com.fasterxml.jackson.databind.ObjectMapper()));
+    }
+
+    public LoggingLarkInboundMessageDispatcher(
+            PlannerPlanFacade plannerPlanFacade,
+            ImTaskCommandFacade taskCommandFacade,
+            LarkMessageReplyTool replyTool,
+            LarkIMMessageStreamService streamService,
+            LarkOutboundMessageRetryService retryService,
+            LarkIMTaskReplyFormatter replyFormatter,
+            DocRefExtractionService docRefExtractionService
+    ) {
+        this(plannerPlanFacade, taskCommandFacade, replyTool, streamService, retryService, replyFormatter,
+                docRefExtractionService, Runnable::run);
     }
 
     @Autowired
@@ -44,7 +61,8 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             LarkIMMessageStreamService streamService,
             LarkOutboundMessageRetryService retryService,
             LarkIMTaskReplyFormatter replyFormatter,
-            DocRefExtractionService docRefExtractionService
+            DocRefExtractionService docRefExtractionService,
+            @Qualifier("plannerTaskExecutor") Executor plannerDispatchExecutor
     ) {
         this.plannerPlanFacade = plannerPlanFacade;
         this.taskCommandFacade = taskCommandFacade;
@@ -53,6 +71,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         this.retryService = retryService;
         this.replyFormatter = replyFormatter == null ? new LarkIMTaskReplyFormatter() : replyFormatter;
         this.docRefExtractionService = docRefExtractionService;
+        this.plannerDispatchExecutor = plannerDispatchExecutor == null ? Runnable::run : plannerDispatchExecutor;
     }
 
     @Override
@@ -64,16 +83,37 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             return null;
         }
 
-        PlanTaskSession session = plannerPlanFacade.plan(
-                message.content(),
-                buildWorkspaceContext(message),
-                null,
-                null
-        );
+        PlanTaskSession accepted = acceptedSession(message);
+        try {
+            plannerDispatchExecutor.execute(() -> dispatchAndReply(message));
+        } catch (RejectedExecutionException exception) {
+            log.warn("Scenario A planner dispatch queue rejected inbound message: messageId={}, chatId={}",
+                    message.messageId(), message.chatId(), exception);
+            PlanTaskSession failed = failedSession(message, "Planner queue is full");
+            replyBySessionState(message, failed);
+            return failed;
+        }
+        return accepted;
+    }
+
+    private void dispatchAndReply(LarkInboundMessage message) {
+        PlanTaskSession session;
+        try {
+            session = plannerPlanFacade.plan(
+                    message.content(),
+                    buildWorkspaceContext(message),
+                    null,
+                    null
+            );
+        } catch (RuntimeException exception) {
+            log.warn("Scenario A planner dispatch failed: messageId={}, chatId={}",
+                    message.messageId(), message.chatId(), exception);
+            session = failedSession(message, humanizeFailure(exception));
+        }
         replyBySessionState(message, session);
         log.info("Scenario A inbound Lark message bridged to planner: messageId={}, chatId={}, taskId={}, phase={}",
-                message.messageId(), message.chatId(), session.getTaskId(), session.getPlanningPhase());
-        return session;
+                message.messageId(), message.chatId(), session == null ? null : session.getTaskId(),
+                session == null ? null : session.getPlanningPhase());
     }
 
     private void replyBySessionState(LarkInboundMessage message, PlanTaskSession session) {
@@ -144,7 +184,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
             return;
         }
-        PlanTaskSession retrying = taskCommandFacade.retryExecution(session.getTaskId());
+        PlanTaskSession retrying = taskCommandFacade.retryExecution(session.getTaskId(), message.content());
         if (retrying == null || retrying.getPlanningPhase() != PlanningPhaseEnum.EXECUTING) {
             replyText(message, session, replyFormatter.retryUnavailable(snapshot(session)), "retry unavailable");
             return;
@@ -183,6 +223,33 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                 .selectedMessages(java.util.List.of())
                 .docRefs(docRefs)
                 .build();
+    }
+
+    private PlanTaskSession acceptedSession(LarkInboundMessage message) {
+        return PlanTaskSession.builder()
+                .taskId("im-pending-" + UUID.nameUUIDFromBytes(
+                        safe(message == null ? null : message.messageId()).getBytes(StandardCharsets.UTF_8)))
+                .rawInstruction(message == null ? null : message.content())
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build();
+    }
+
+    private PlanTaskSession failedSession(LarkInboundMessage message, String reason) {
+        return PlanTaskSession.builder()
+                .taskId("im-failed-" + UUID.nameUUIDFromBytes(
+                        safe(message == null ? null : message.messageId()).getBytes(StandardCharsets.UTF_8)))
+                .rawInstruction(message == null ? null : message.content())
+                .planningPhase(PlanningPhaseEnum.FAILED)
+                .transitionReason(reason)
+                .build();
+    }
+
+    private String humanizeFailure(RuntimeException exception) {
+        String message = exception == null ? null : exception.getMessage();
+        if (!hasText(message)) {
+            return "处理消息时遇到异常";
+        }
+        return message.length() > 120 ? message.substring(0, 120) + "..." : message;
     }
 
     private LarkMessageEvent toSourceEvent(LarkInboundMessage message) {

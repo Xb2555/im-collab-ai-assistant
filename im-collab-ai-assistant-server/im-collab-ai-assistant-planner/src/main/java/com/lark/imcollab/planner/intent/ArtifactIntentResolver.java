@@ -2,10 +2,7 @@ package com.lark.imcollab.planner.intent;
 
 import org.springframework.stereotype.Component;
 
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Set;
 
 @Component
 public class ArtifactIntentResolver {
@@ -19,44 +16,24 @@ public class ArtifactIntentResolver {
     }
 
     public List<String> resolveArtifacts(String instruction) {
-        String text = safe(instruction).toLowerCase(Locale.ROOT);
-        Set<String> artifacts = new LinkedHashSet<>();
-
-        if (containsAny(text, "文档", "doc", "报告", "方案", "纪要", "prd")) {
-            artifacts.add("DOC");
-        }
-        if (containsAny(text, "ppt", "slide", "slides", "演示", "幻灯片", "汇报材料")) {
-            artifacts.add("PPT");
-        }
-        if (containsAny(text, "白板", "whiteboard", "流程图", "架构图", "脑图", "mermaid")) {
-            artifacts.add("WHITEBOARD");
-        }
-        if (!artifacts.isEmpty()) {
-            return List.copyOf(artifacts);
-        }
-
-        String choice = llmChoiceResolver.chooseOne(
-                instruction,
+        List<String> choices = llmChoiceResolver.chooseMany(
+                safe(instruction),
                 ALLOWED_ARTIFACTS,
                 """
-                你负责识别用户想要的主要交付物类型。
+                你负责识别用户明确想要的交付物类型。
                 规则：
-                1. 只能从给定可选值中选择一个。
-                2. 如果用户更像是要写文章、总结、方案、技术文档，选 DOC。
-                3. 如果用户更像是要做演示稿、汇报页、幻灯片，选 PPT。
-                4. 如果用户更像是要做图示、流程图、架构图、画板，选 WHITEBOARD。
+                1. 只能从给定可选值中选择，允许多选。
+                2. 只有用户确实要求对应交付物时才选择，不要因为标题、例子或上下文里偶然出现词汇就选择。
+                3. 写文章、总结、方案、技术文档、会议纪要、材料沉淀可选 DOC。
+                4. 演示稿、汇报页、幻灯片可选 PPT。
+                5. 白板、画板、流程图、架构图、脑图等可视化画布可选 WHITEBOARD。
                 """
         );
-        return ALLOWED_ARTIFACTS.contains(choice) ? List.of(choice) : List.of("DOC");
-    }
-
-    private boolean containsAny(String text, String... values) {
-        for (String value : values) {
-            if (text.contains(value)) {
-                return true;
-            }
-        }
-        return false;
+        List<String> allowed = choices.stream()
+                .filter(ALLOWED_ARTIFACTS::contains)
+                .distinct()
+                .toList();
+        return allowed.isEmpty() ? List.of("DOC") : allowed;
     }
 
     private String safe(String value) {

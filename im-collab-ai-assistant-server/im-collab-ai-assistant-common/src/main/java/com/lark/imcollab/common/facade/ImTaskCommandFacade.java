@@ -7,7 +7,9 @@ public interface ImTaskCommandFacade {
 
     PlanTaskSession confirmExecution(String taskId);
 
-    PlanTaskSession retryExecution(String taskId);
+    PlanTaskSession retryExecution(String taskId, String feedback);
+
+    void cancelExecution(String taskId);
 
     TaskRuntimeSnapshot getRuntimeSnapshot(String taskId);
 }

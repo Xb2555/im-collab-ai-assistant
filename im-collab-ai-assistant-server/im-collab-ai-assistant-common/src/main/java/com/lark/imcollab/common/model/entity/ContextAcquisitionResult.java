@@ -30,6 +30,8 @@ public class ContextAcquisitionResult implements Serializable {
 
     private String message;
 
+    private String clarificationQuestion;
+
     public static ContextAcquisitionResult failure(String message) {
         return ContextAcquisitionResult.builder()
                 .success(false)

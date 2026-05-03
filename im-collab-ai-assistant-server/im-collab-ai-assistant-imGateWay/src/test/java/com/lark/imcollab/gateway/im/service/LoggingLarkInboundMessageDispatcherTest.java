@@ -22,7 +22,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -47,6 +49,34 @@ class LoggingLarkInboundMessageDispatcherTest {
     );
 
     @Test
+    void asyncDispatcherReturnsReceiptSessionBeforePlannerFinishes() {
+        PlannerPlanFacade slowPlanner = mock(PlannerPlanFacade.class);
+        LarkMessageReplyTool asyncReplyTool = mock(LarkMessageReplyTool.class);
+        CapturingExecutor executor = new CapturingExecutor();
+        LoggingLarkInboundMessageDispatcher asyncDispatcher = new LoggingLarkInboundMessageDispatcher(
+                slowPlanner,
+                taskCommandFacade,
+                asyncReplyTool,
+                null,
+                null,
+                new LarkIMTaskReplyFormatter(),
+                new DocRefExtractionService(new ObjectMapper()),
+                executor
+        );
+        PlanTaskSession ready = session(TaskIntakeTypeEnum.NEW_TASK, PlanningPhaseEnum.PLAN_READY);
+        when(slowPlanner.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(ready);
+
+        PlanTaskSession accepted = asyncDispatcher.dispatch(message("生成一份技术方案文档"));
+
+        assertThat(accepted.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTAKE);
+        verify(slowPlanner, never()).plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        executor.runAll();
+        verify(slowPlanner).plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull());
+        verify(asyncReplyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), org.mockito.ArgumentMatchers.contains("我准备这样推进"), anyString());
+    }
+
+    @Test
     void confirmActionStartsExecutionFromIm() {
         PlanTaskSession ready = session(TaskIntakeTypeEnum.CONFIRM_ACTION, PlanningPhaseEnum.PLAN_READY);
         PlanTaskSession executing = session(TaskIntakeTypeEnum.CONFIRM_ACTION, PlanningPhaseEnum.EXECUTING);
@@ -69,12 +99,12 @@ class LoggingLarkInboundMessageDispatcherTest {
         PlanTaskSession retrying = session(TaskIntakeTypeEnum.CONFIRM_ACTION, PlanningPhaseEnum.EXECUTING);
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(failed);
-        when(taskCommandFacade.retryExecution("task-1")).thenReturn(retrying);
+        when(taskCommandFacade.retryExecution("task-1", "再试一次")).thenReturn(retrying);
         when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshot(TaskStatusEnum.EXECUTING));
 
         dispatcher.dispatch(message("再试一次"));
 
-        verify(taskCommandFacade).retryExecution("task-1");
+        verify(taskCommandFacade).retryExecution("task-1", "再试一次");
         verify(taskCommandFacade, never()).confirmExecution(anyString());
         ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
         verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
@@ -300,5 +330,19 @@ class LoggingLarkInboundMessageDispatcherTest {
                 "2026-04-30T00:00:00Z",
                 InputSourceEnum.LARK_PRIVATE_CHAT
         );
+    }
+
+    private static final class CapturingExecutor implements Executor {
+        private final List<Runnable> tasks = new ArrayList<>();
+
+        @Override
+        public void execute(Runnable command) {
+            tasks.add(command);
+        }
+
+        void runAll() {
+            List.copyOf(tasks).forEach(Runnable::run);
+            tasks.clear();
+        }
     }
 }

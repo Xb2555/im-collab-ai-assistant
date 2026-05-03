@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
@@ -19,7 +20,9 @@ import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -41,6 +44,7 @@ public class TaskRuntimeProjectionService {
         }
         Instant now = Instant.now();
         TaskRecord existing = stateStore.findTask(session.getTaskId()).orElse(null);
+        List<TaskStepRecord> existingSteps = stateStore.findStepsByTaskId(session.getTaskId());
         TaskRecord task = TaskRecord.builder()
                 .taskId(session.getTaskId())
                 .conversationKey(session.getIntakeState() == null ? null : session.getIntakeState().getContinuationKey())
@@ -50,10 +54,11 @@ public class TaskRuntimeProjectionService {
                 .threadId(firstNonBlank(inputThreadId(session), existing == null ? null : existing.getThreadId()))
                 .title(firstNonBlank(session.getPlanBlueprintSummary(), session.getClarifiedInstruction(), session.getRawInstruction(), session.getTaskId()))
                 .goal(firstNonBlank(session.getClarifiedInstruction(), session.getRawInstruction(), session.getPlanBlueprintSummary()))
-                .status(mapTaskStatus(session.getPlanningPhase()))
-                .currentStage(session.getPlanningPhase() == null ? null : session.getPlanningPhase().name())
-                .progress(existing == null ? 0 : existing.getProgress())
-                .artifactIds(existing == null || existing.getArtifactIds() == null ? List.of() : existing.getArtifactIds())
+                .status(mapTaskStatus(session.getPlanningPhase(), eventType))
+                .currentStage(resolveCurrentStage(session.getPlanningPhase(), eventType))
+                .progress(existing == null ? resolveProgress(existingSteps) : existing.getProgress())
+                .artifactIds(existing == null ? resolveArtifactIds(session.getTaskId())
+                        : existing.getArtifactIds() == null ? List.of() : existing.getArtifactIds())
                 .riskFlags(existing == null || existing.getRiskFlags() == null ? List.of() : existing.getRiskFlags())
                 .needUserAction(needsUserAction(session.getPlanningPhase()))
                 .version(session.getVersion())
@@ -100,12 +105,28 @@ public class TaskRuntimeProjectionService {
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
+        TaskRecord task = reconcileTaskVersion(taskId);
         return TaskRuntimeSnapshot.builder()
-                .task(stateStore.findTask(taskId).orElse(null))
+                .task(task)
                 .steps(activeSteps(stateStore.findStepsByTaskId(taskId)))
-                .artifacts(stateStore.findArtifactsByTaskId(taskId))
+                .artifacts(visibleArtifacts(taskId))
                 .events(stateStore.findRuntimeEventsByTaskId(taskId))
                 .build();
+    }
+
+    private TaskRecord reconcileTaskVersion(String taskId) {
+        TaskRecord task = stateStore.findTask(taskId).orElse(null);
+        if (task == null) {
+            return null;
+        }
+        PlanTaskSession session = stateStore.findSession(taskId).orElse(null);
+        if (session == null || task.getVersion() == session.getVersion()) {
+            return task;
+        }
+        task.setVersion(session.getVersion());
+        task.setUpdatedAt(Instant.now());
+        stateStore.saveTask(task);
+        return task;
     }
 
     private void markMissingStepsSuperseded(String taskId, List<TaskStepRecord> nextSteps) {
@@ -147,11 +168,45 @@ public class TaskRuntimeProjectionService {
     }
 
     private List<String> resolveArtifactIds(String taskId) {
-        List<ArtifactRecord> artifacts = stateStore.findArtifactsByTaskId(taskId);
+        List<ArtifactRecord> artifacts = visibleArtifacts(taskId);
         if (artifacts == null || artifacts.isEmpty()) {
             return List.of();
         }
         return artifacts.stream().map(ArtifactRecord::getArtifactId).toList();
+    }
+
+    private List<ArtifactRecord> visibleArtifacts(String taskId) {
+        return visibleArtifacts(stateStore.findArtifactsByTaskId(taskId));
+    }
+
+    private List<ArtifactRecord> visibleArtifacts(List<ArtifactRecord> artifacts) {
+        if (artifacts == null || artifacts.isEmpty()) {
+            return List.of();
+        }
+        Map<String, Boolean> hasFinalByDisplayKey = new LinkedHashMap<>();
+        for (ArtifactRecord artifact : artifacts) {
+            if (artifact == null) {
+                continue;
+            }
+            String key = artifactDisplayKey(artifact);
+            hasFinalByDisplayKey.merge(key, hasText(artifact.getUrl()), Boolean::logicalOr);
+        }
+        return artifacts.stream()
+                .filter(artifact -> artifact != null)
+                .filter(artifact -> {
+                    Boolean hasFinal = hasFinalByDisplayKey.get(artifactDisplayKey(artifact));
+                    return !Boolean.TRUE.equals(hasFinal) || hasText(artifact.getUrl());
+                })
+                .toList();
+    }
+
+    private String artifactDisplayKey(ArtifactRecord artifact) {
+        String title = artifact.getTitle();
+        if (!hasText(title)) {
+            return "artifact:" + artifact.getArtifactId();
+        }
+        String type = artifact.getType() == null ? "" : artifact.getType().name();
+        return type + "|" + title.trim();
     }
 
     private String resolvePlanTitle(
@@ -246,11 +301,41 @@ public class TaskRuntimeProjectionService {
             return List.of();
         }
         return cards.stream()
-                .filter(card -> card != null && card.getAgentTaskPlanCards() != null)
-                .flatMap(card -> card.getAgentTaskPlanCards().stream()
+                .filter(card -> card != null)
+                .flatMap(card -> subtasksFor(card).stream()
                         .map(subtask -> normalizeSubtask(card, subtask))
                         .filter(java.util.Objects::nonNull))
                 .toList();
+    }
+
+    private List<AgentTaskPlanCard> subtasksFor(UserPlanCard card) {
+        if (card.getAgentTaskPlanCards() != null && !card.getAgentTaskPlanCards().isEmpty()) {
+            return card.getAgentTaskPlanCards();
+        }
+        return List.of(synthesizeSubtask(card));
+    }
+
+    private AgentTaskPlanCard synthesizeSubtask(UserPlanCard card) {
+        AgentTaskTypeEnum taskType = null;
+        if (card.getType() != null) {
+            taskType = switch (card.getType()) {
+                case PPT -> AgentTaskTypeEnum.WRITE_SLIDES;
+                case SUMMARY -> AgentTaskTypeEnum.GENERATE_SUMMARY;
+                case DOC -> AgentTaskTypeEnum.WRITE_DOC;
+            };
+        }
+        return AgentTaskPlanCard.builder()
+                .taskId(firstNonBlank(card.getCardId(), card.getTaskId()))
+                .id(firstNonBlank(card.getCardId(), card.getTaskId()))
+                .parentCardId(card.getCardId())
+                .taskType(taskType)
+                .type(taskType == null ? null : taskType.name())
+                .title(firstNonBlank(card.getTitle(), card.getDescription(), card.getCardId()))
+                .status(card.getStatus())
+                .input(card.getDescription())
+                .context(card.getDescription())
+                .tools(List.of())
+                .build();
     }
 
     private AgentTaskPlanCard normalizeSubtask(UserPlanCard card, AgentTaskPlanCard subtask) {
@@ -291,6 +376,29 @@ public class TaskRuntimeProjectionService {
         return TaskStatusEnum.PLANNING;
     }
 
+    private TaskStatusEnum mapTaskStatus(PlanningPhaseEnum phase, TaskEventTypeEnum eventType) {
+        if (eventType == TaskEventTypeEnum.PLAN_REVIEWING
+                || eventType == TaskEventTypeEnum.PLAN_GATE_CHECKING) {
+            return TaskStatusEnum.REVIEWING;
+        }
+        return mapTaskStatus(phase);
+    }
+
+    private String resolveCurrentStage(PlanningPhaseEnum phase, TaskEventTypeEnum eventType) {
+        if (eventType == TaskEventTypeEnum.PLAN_REVIEWING
+                || eventType == TaskEventTypeEnum.PLAN_GATE_CHECKING
+                || eventType == TaskEventTypeEnum.CONTEXT_CHECKING
+                || eventType == TaskEventTypeEnum.CONTEXT_COLLECTING
+                || eventType == TaskEventTypeEnum.CONTEXT_COLLECTED
+                || eventType == TaskEventTypeEnum.INTENT_ROUTING
+                || eventType == TaskEventTypeEnum.PLANNING_STARTED
+                || eventType == TaskEventTypeEnum.CLARIFICATION_REQUIRED
+                || eventType == TaskEventTypeEnum.PLAN_FAILED) {
+            return eventType.name();
+        }
+        return phase == null ? null : phase.name();
+    }
+
     private boolean needsUserAction(PlanningPhaseEnum phase) {
         return phase == PlanningPhaseEnum.ASK_USER || phase == PlanningPhaseEnum.PLAN_READY;
     }
@@ -313,6 +421,10 @@ public class TaskRuntimeProjectionService {
             }
         }
         return null;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String inputSenderOpenId(PlanTaskSession session) {

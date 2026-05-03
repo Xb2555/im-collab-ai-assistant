@@ -150,9 +150,6 @@ public class ReviewGateNodeService {
             return "当前计划包含暂不支持的步骤或产物。请确认是否改成文档、PPT 或摘要。";
         }
         String first = reasons.get(0);
-        if (first.contains("standalone SUMMARY")) {
-            return "当前执行链路还不能把摘要作为独立步骤跑完。你可以改成把摘要并进文档里，或者先只生成文档。";
-        }
         if (first.contains("multiple DOC steps")) {
             return "当前执行链路一次只能稳定完成一个文档步骤。你可以把新增内容并进主文档，或者拆成后续单独任务。";
         }

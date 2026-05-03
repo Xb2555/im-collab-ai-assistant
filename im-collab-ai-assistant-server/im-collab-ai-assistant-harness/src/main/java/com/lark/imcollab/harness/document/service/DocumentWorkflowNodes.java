@@ -8,13 +8,19 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.domain.ArtifactType;
 import com.lark.imcollab.common.domain.TaskEventType;
+import com.lark.imcollab.common.model.entity.DocumentCompletenessReport;
+import com.lark.imcollab.common.model.entity.ComposedDocumentDraft;
+import com.lark.imcollab.common.model.entity.DocumentSectionCompleteness;
 import com.lark.imcollab.common.model.entity.DiagramRequirement;
+import com.lark.imcollab.common.model.entity.DocumentPlan;
+import com.lark.imcollab.common.model.entity.DocumentPlanSection;
 import com.lark.imcollab.common.model.entity.DocumentOutline;
 import com.lark.imcollab.common.model.entity.DocumentOutlineSection;
 import com.lark.imcollab.common.model.entity.DocumentReviewResult;
 import com.lark.imcollab.common.model.entity.DocumentSectionDraft;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.harness.document.support.DocumentExecutionSupport;
+import com.lark.imcollab.harness.document.template.DocumentBodyNormalizer;
 import com.lark.imcollab.harness.document.template.DocumentTemplateRenderer;
 import com.lark.imcollab.harness.document.template.DocumentTemplateStrategyResolver;
 import com.lark.imcollab.harness.document.template.DocumentTemplateType;
@@ -26,8 +32,13 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -35,10 +46,15 @@ import java.util.stream.Collectors;
 @Component
 public class DocumentWorkflowNodes {
 
+    private static final String[] CHINESE_SECTION_NUMBERS = {
+            "零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+            "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"
+    };
     private static final Pattern BODY_HEADING_PATTERN = Pattern.compile("(?m)^#+\\s*");
     private static final Pattern BODY_WHITESPACE_PATTERN = Pattern.compile("\\s+");
 
     private final DocumentExecutionSupport support;
+    private final DocumentBodyNormalizer bodyNormalizer;
     private final DocumentTemplateRenderer templateRenderer;
     private final DocumentTemplateStrategyResolver templateStrategyResolver;
     private final ReactAgent documentOutlineAgent;
@@ -50,6 +66,7 @@ public class DocumentWorkflowNodes {
 
     public DocumentWorkflowNodes(
             DocumentExecutionSupport support,
+            DocumentBodyNormalizer bodyNormalizer,
             DocumentTemplateRenderer templateRenderer,
             DocumentTemplateStrategyResolver templateStrategyResolver,
             @Qualifier("documentOutlineAgent") ReactAgent documentOutlineAgent,
@@ -59,6 +76,7 @@ public class DocumentWorkflowNodes {
             LarkDocTool larkDocTool,
             ObjectMapper objectMapper) {
         this.support = support;
+        this.bodyNormalizer = bodyNormalizer;
         this.templateRenderer = templateRenderer;
         this.templateStrategyResolver = templateStrategyResolver;
         this.documentOutlineAgent = documentOutlineAgent;
@@ -98,10 +116,12 @@ public class DocumentWorkflowNodes {
                 + buildExecutionContext(state)
                 + (userFeedback.isBlank() ? "" : "\n用户反馈：" + userFeedback);
         DocumentOutline outline = invokeOutline(prompt, taskId);
+        DocumentPlan plan = buildDocumentPlan(taskId, outline, state);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.OUTLINE_TASK_SUFFIX),
                 ArtifactType.DOC_OUTLINE, outline.getTitle(), support.writeJson(outline), null);
         return CompletableFuture.completedFuture(Map.of(
                 DocumentStateKeys.OUTLINE, outline,
+                DocumentStateKeys.DOCUMENT_PLAN, plan,
                 DocumentStateKeys.DONE_OUTLINE, true
         ));
     }
@@ -115,15 +135,18 @@ public class DocumentWorkflowNodes {
         }
         String taskId = state.value(DocumentStateKeys.TASK_ID, "");
         String clarifiedInstruction = state.value(DocumentStateKeys.CLARIFIED_INSTRUCTION, state.value(DocumentStateKeys.RAW_INSTRUCTION, ""));
-        DocumentOutline outline = requireValue(state, DocumentStateKeys.OUTLINE, DocumentOutline.class);
+        DocumentPlan plan = requireValue(state, DocumentStateKeys.DOCUMENT_PLAN, DocumentPlan.class);
         List<DocumentSectionDraft> drafts = new ArrayList<>();
-        for (DocumentOutlineSection section : outline.getSections()) {
+        for (DocumentPlanSection section : safePlanSections(plan)) {
             String prompt = "任务目标：" + clarifiedInstruction
                     + buildExecutionContext(state)
-                    + "\n文档标题：" + outline.getTitle()
+                    + "\n文档标题：" + plan.getTitle()
+                    + "\n全局写作约束：\n" + buildPlanContract(plan)
+                    + "\n已完成章节摘要：\n" + summarizeDrafts(drafts)
                     + "\n章节：" + section.getHeading()
-                    + "\n要点：" + String.join("；", section.getKeyPoints());
-            AssistantMessage response = callAgent(documentSectionAgent, prompt, taskId + ":section:" + section.getHeading());
+                    + "\n章节职责：" + defaultString(section.getPurpose())
+                    + "\n要点：" + String.join("；", safeList(section.getMustCover()));
+            AssistantMessage response = callAgent(documentSectionAgent, prompt, taskId + ":section:" + section.getSectionId());
             drafts.add(parseSectionDraft(response.getText(), section));
         }
         return CompletableFuture.completedFuture(Map.of(
@@ -216,7 +239,7 @@ public class DocumentWorkflowNodes {
             secondPass.setSupplementalSections(List.of());
             secondPass.setSummary(joinSummary(
                     reviewResult.getSummary(),
-                    "系统已自动合并补充章节并完成二次复审。",
+                    "系统已执行自动补充并完成二次复审，最终是否补齐以发布前完整性校验为准。",
                     secondPass.getSummary()
             ));
             reviewResult = secondPass;
@@ -244,36 +267,82 @@ public class DocumentWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of());
         }
         String taskId = state.value(DocumentStateKeys.TASK_ID, "");
-        DocumentOutline outline = requireValue(state, DocumentStateKeys.OUTLINE, DocumentOutline.class);
-        List<DocumentSectionDraft> drafts = mergeSupplementalSections(readSectionDrafts(state),
-                requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class).getSupplementalSections());
+        DocumentPlan plan = requireValue(state, DocumentStateKeys.DOCUMENT_PLAN, DocumentPlan.class);
+        ComposedDocumentDraft composedDraft = requireValue(state, DocumentStateKeys.COMPOSED_DRAFT, ComposedDocumentDraft.class);
         DocumentReviewResult reviewResult = requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class);
         String markdown = templateRenderer.render(
                 DocumentTemplateType.valueOf(state.value(DocumentStateKeys.TEMPLATE_TYPE, "REPORT")),
-                outline, drafts, reviewResult,
-                state.value(DocumentStateKeys.USER_FEEDBACK, ""),
-                state.value(DocumentStateKeys.MERMAID_DIAGRAM, ""),
-                state.value(DocumentStateKeys.DIAGRAM_PLAN, "")
+                plan,
+                composedDraft,
+                reviewResult,
+                state.value(DocumentStateKeys.USER_FEEDBACK, "")
         );
-        LarkDocCreateResult result = larkDocTool.createDoc(outline.getTitle(), markdown);
+        composedDraft.setComposedMarkdown(markdown);
+        ensurePublishable(plan, composedDraft);
+        LarkDocCreateResult result = larkDocTool.createDoc(plan.getTitle(), markdown);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.WRITE_TASK_SUFFIX),
-                ArtifactType.DOC_LINK, outline.getTitle(), null, result.getDocUrl());
+                ArtifactType.DOC_LINK, plan.getTitle(), null, result.getDocId(), result.getDocUrl());
+        saveSummaryArtifactIfRequested(taskId, plan, composedDraft, reviewResult, state);
         support.publishEvent(taskId, null, TaskEventType.ARTIFACT_CREATED);
         support.publishEvent(taskId, null, TaskEventType.TASK_COMPLETED);
         return CompletableFuture.completedFuture(Map.of(
+                DocumentStateKeys.DOC_MARKDOWN, markdown,
                 DocumentStateKeys.DOC_URL, result.getDocUrl(),
                 DocumentStateKeys.DOC_ID, result.getDocId(),
                 DocumentStateKeys.DONE_WRITE, true
         ));
     }
 
+    private void saveSummaryArtifactIfRequested(
+            String taskId,
+            DocumentPlan plan,
+            ComposedDocumentDraft composedDraft,
+            DocumentReviewResult reviewResult,
+            OverAllState state
+    ) {
+        if (readRequiredArtifacts(state).stream().noneMatch(value -> "SUMMARY".equalsIgnoreCase(value))) {
+            return;
+        }
+        String summary = buildSummaryArtifact(plan, composedDraft, reviewResult);
+        String stepId = support.findSummaryStepId(taskId)
+                .orElseGet(() -> support.subtaskId(taskId, "generate_summary"));
+        support.saveArtifact(taskId, stepId, ArtifactType.SUMMARY, plan.getTitle() + " - 摘要", summary, null);
+    }
+
     public CompletableFuture<String> routeAfterReview(OverAllState state, RunnableConfig config) {
         boolean waiting = Boolean.TRUE.equals(state.value(DocumentStateKeys.WAITING_HUMAN_REVIEW, Boolean.FALSE));
-        return CompletableFuture.completedFuture(waiting ? StateGraph.END : "write_doc_and_sync");
+        return CompletableFuture.completedFuture(waiting ? StateGraph.END : "compose_doc");
     }
 
     public CompletableFuture<String> routeAfterWrite(OverAllState state, RunnableConfig config) {
         return CompletableFuture.completedFuture(StateGraph.END);
+    }
+
+    public CompletableFuture<Map<String, Object>> composeDoc(OverAllState state, RunnableConfig config) {
+        if (Boolean.TRUE.equals(state.value(DocumentStateKeys.WAITING_HUMAN_REVIEW, Boolean.FALSE))) {
+            return CompletableFuture.completedFuture(Map.of());
+        }
+        String taskId = state.value(DocumentStateKeys.TASK_ID, "");
+        DocumentPlan plan = requireValue(state, DocumentStateKeys.DOCUMENT_PLAN, DocumentPlan.class);
+        DocumentReviewResult reviewResult = requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class);
+        List<DocumentSectionDraft> drafts = mergeSupplementalSections(readSectionDrafts(state), reviewResult.getSupplementalSections());
+        ComposedDocumentDraft composedDraft = composeDocumentDraft(
+                taskId,
+                plan,
+                drafts,
+                state.value(DocumentStateKeys.MERMAID_DIAGRAM, ""),
+                state.value(DocumentStateKeys.DIAGRAM_PLAN, ""),
+                reviewResult
+        );
+        DocumentReviewResult finalizedReview = reviseReviewSummary(reviewResult, composedDraft.getCompletenessReport());
+        ensurePublishable(plan, composedDraft);
+        support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.REVIEW_TASK_SUFFIX),
+                ArtifactType.DOC_DRAFT, plan.getTitle(), composedDraft.getComposedMarkdown(), null);
+        return CompletableFuture.completedFuture(Map.of(
+                DocumentStateKeys.SECTION_DRAFTS, composedDraft.getOrderedSections(),
+                DocumentStateKeys.COMPOSED_DRAFT, composedDraft,
+                DocumentStateKeys.REVIEW_RESULT, finalizedReview
+        ));
     }
 
     private DocumentOutline invokeOutline(String prompt, String taskId) {
@@ -290,11 +359,57 @@ public class DocumentWorkflowNodes {
         }
     }
 
-    private DocumentSectionDraft parseSectionDraft(String text, DocumentOutlineSection section) {
+    private DocumentPlan buildDocumentPlan(String taskId, DocumentOutline outline, OverAllState state) {
+        List<DocumentPlanSection> orderedSections = new ArrayList<>();
+        List<DocumentOutlineSection> outlineSections = outline.getSections() == null ? List.of() : outline.getSections();
+        for (int index = 0; index < outlineSections.size(); index++) {
+            DocumentOutlineSection section = outlineSections.get(index);
+            if (section == null || section.getHeading() == null || section.getHeading().isBlank()) {
+                continue;
+            }
+            orderedSections.add(DocumentPlanSection.builder()
+                    .sectionId("section-" + (index + 1))
+                    .index(index + 1)
+                    .heading(section.getHeading())
+                    .purpose(section.getHeading())
+                    .mustCover(safeList(section.getKeyPoints()))
+                    .acceptanceCriteria(safeList(section.getKeyPoints()))
+                    .build());
+        }
+        return DocumentPlan.builder()
+                .planId(taskId + ":plan")
+                .taskId(taskId)
+                .title(outline.getTitle())
+                .templateType(outline.getTemplateType())
+                .orderedSections(orderedSections)
+                .globalStyleGuide(List.of("章节顺序必须严格遵循冻结计划", "术语保持一致", "正文使用 Markdown 标题层级组织"))
+                .terminologyRules(List.of("不要改写任务中的核心模块命名", "不要引入上下文未出现的外部产品设定"))
+                .requiredArtifacts(readRequiredArtifacts(state))
+                .diagramPlan(state.value(DocumentStateKeys.DIAGRAM_PLAN, ""))
+                .version(1L)
+                .build();
+    }
+
+    private DocumentSectionDraft parseSectionDraft(String text, DocumentPlanSection section) {
         try {
-            return objectMapper.readValue(text, DocumentSectionDraft.class);
+            DocumentSectionDraft draft = objectMapper.readValue(text, DocumentSectionDraft.class);
+            draft.setSectionId(section.getSectionId());
+            draft.setHeading(section.getHeading());
+            draft.setInputSummary(String.join("；", safeList(section.getMustCover())));
+            draft.setUpstreamDependencies(safeList(section.getDependsOn()));
+            draft.setStatus("DRAFTED");
+            draft.setVersion(1L);
+            return draft;
         } catch (Exception e) {
-            return DocumentSectionDraft.builder().heading(section.getHeading()).body(text).build();
+            return DocumentSectionDraft.builder()
+                    .sectionId(section.getSectionId())
+                    .heading(section.getHeading())
+                    .body(text)
+                    .inputSummary(String.join("；", safeList(section.getMustCover())))
+                    .upstreamDependencies(safeList(section.getDependsOn()))
+                    .status("DRAFTED")
+                    .version(1L)
+                    .build();
         }
     }
 
@@ -524,8 +639,14 @@ public class DocumentWorkflowNodes {
                 DocumentSectionDraft existing = merged.get(matchedIndex);
                 String mergedBody = mergeBodies(existing == null ? "" : existing.getBody(), supplemental.getBody());
                 merged.set(matchedIndex, DocumentSectionDraft.builder()
+                        .sectionId(existing.getSectionId())
                         .heading(existing.getHeading())
                         .body(mergedBody)
+                        .inputSummary(existing.getInputSummary())
+                        .upstreamDependencies(existing.getUpstreamDependencies())
+                        .status("SUPPLEMENTED")
+                        .qualityFlags(existing.getQualityFlags())
+                        .version(Math.max(1L, existing.getVersion()))
                         .build());
             } else {
                 merged.add(supplemental);
@@ -557,6 +678,400 @@ public class DocumentWorkflowNodes {
     private String normalizeBodyForMerge(String body) {
         String normalized = BODY_HEADING_PATTERN.matcher(body == null ? "" : body).replaceAll("");
         return BODY_WHITESPACE_PATTERN.matcher(normalized).replaceAll("").toLowerCase();
+    }
+
+    ComposedDocumentDraft composeDocumentDraft(
+            String taskId,
+            DocumentPlan plan,
+            List<DocumentSectionDraft> drafts,
+            String mermaid,
+            String diagramPlan,
+            DocumentReviewResult reviewResult
+    ) {
+        Map<String, DocumentSectionDraft> draftBySectionId = new LinkedHashMap<>();
+        Map<String, DocumentSectionDraft> draftByNormalizedHeading = new LinkedHashMap<>();
+        for (DocumentSectionDraft draft : drafts == null ? List.<DocumentSectionDraft>of() : drafts) {
+            if (draft == null) {
+                continue;
+            }
+            if ((draft.getSectionId() == null || draft.getSectionId().isBlank()) && draft.getHeading() != null) {
+                String normalizedHeading = normalizeHeadingForMatch(draft.getHeading());
+                DocumentPlanSection matchedSection = safePlanSections(plan).stream()
+                        .filter(section -> normalizedHeading.equals(normalizeHeadingForMatch(section.getHeading())))
+                        .findFirst()
+                        .orElse(null);
+                if (matchedSection != null) {
+                    draft.setSectionId(matchedSection.getSectionId());
+                    draft.setHeading(matchedSection.getHeading());
+                }
+            }
+            if (draft == null || draft.getSectionId() == null || draft.getSectionId().isBlank()) {
+                if (draft != null && draft.getHeading() != null && !draft.getHeading().isBlank()) {
+                    draftByNormalizedHeading.put(normalizeHeadingForMatch(draft.getHeading()), draft);
+                }
+                continue;
+            }
+            draftBySectionId.put(draft.getSectionId(), draft);
+            if (draft.getHeading() != null && !draft.getHeading().isBlank()) {
+                draftByNormalizedHeading.put(normalizeHeadingForMatch(draft.getHeading()), draft);
+            }
+        }
+        String diagramSectionId = resolveDiagramSectionId(plan, diagramPlan);
+        List<DocumentSectionDraft> orderedDrafts = new ArrayList<>();
+        List<String> renderedSections = new ArrayList<>();
+        List<DocumentSectionCompleteness> completenessSections = new ArrayList<>();
+        Set<String> consumedSupplementals = new HashSet<>();
+        for (DocumentPlanSection section : safePlanSections(plan)) {
+            DocumentSectionDraft draft = draftBySectionId.get(section.getSectionId());
+            if (draft == null) {
+                draft = draftByNormalizedHeading.get(normalizeHeadingForMatch(section.getHeading()));
+            }
+            String body = draft == null ? "" : defaultString(draft.getBody()).strip();
+            boolean reviewSupplemented = draft != null && "SUPPLEMENTED".equalsIgnoreCase(defaultString(draft.getStatus()));
+            if (section.getSectionId().equals(diagramSectionId) && mermaid != null && !mermaid.isBlank()) {
+                body = appendMermaid(body, mermaid);
+            }
+            DocumentSectionDraft normalizedDraft = DocumentSectionDraft.builder()
+                    .sectionId(section.getSectionId())
+                    .heading(section.getHeading())
+                    .body(body)
+                    .inputSummary(draft == null ? String.join("；", safeList(section.getMustCover())) : draft.getInputSummary())
+                    .upstreamDependencies(draft == null ? safeList(section.getDependsOn()) : draft.getUpstreamDependencies())
+                    .status(reviewSupplemented ? "COMPOSED_SUPPLEMENTED" : "COMPOSED")
+                    .qualityFlags(draft == null ? List.of("EMPTY_DRAFT") : safeList(draft.getQualityFlags()))
+                    .version(draft == null ? 1L : Math.max(1L, draft.getVersion()))
+                    .build();
+            orderedDrafts.add(normalizedDraft);
+            if (draft != null && draft.getHeading() != null) {
+                consumedSupplementals.add(normalizeHeadingForMatch(draft.getHeading()));
+            }
+            String renderedSection = renderComposedSection(section, normalizedDraft);
+            renderedSections.add(renderedSection);
+            completenessSections.add(buildSectionCompleteness(section, normalizedDraft, renderedSection, reviewSupplemented));
+        }
+        DocumentCompletenessReport completenessReport = buildCompletenessReport(
+                completenessSections,
+                safeList(reviewResult == null ? null : reviewResult.getSupplementalSections()),
+                consumedSupplementals
+        );
+        return ComposedDocumentDraft.builder()
+                .taskId(taskId)
+                .planId(plan.getPlanId())
+                .orderedSections(orderedDrafts)
+                .composedMarkdown(String.join("\n\n", renderedSections))
+                .consistencyReport("ordered_sections=" + orderedDrafts.size() + ", incomplete=" + completenessReport.getIncompleteSectionHeadings().size())
+                .completenessReport(completenessReport)
+                .version(1L)
+                .build();
+    }
+
+    private String renderComposedSection(DocumentPlanSection section, DocumentSectionDraft draft) {
+        String normalizedBody = defaultString(draft.getBody()).isBlank()
+                ? ""
+                : supportMarkdownBody(defaultString(draft.getBody()), Integer.toString(section.getIndex()));
+        return "## " + sectionHeading(section) + (normalizedBody.isBlank() ? "" : "\n\n" + normalizedBody);
+    }
+
+    private DocumentSectionCompleteness buildSectionCompleteness(
+            DocumentPlanSection section,
+            DocumentSectionDraft draft,
+            String renderedSection,
+            boolean reviewSupplemented
+    ) {
+        String body = defaultString(draft.getBody());
+        boolean hasBody = !body.isBlank();
+        boolean diagramSection = isDiagramSection(section);
+        boolean diagramPresent = containsMermaid(body);
+        boolean meaningfulContent = hasMeaningfulContent(body, section.getHeading(), diagramSection, diagramPresent);
+        List<String> issues = new ArrayList<>();
+        if (!hasBody) {
+            issues.add("missing_body");
+        }
+        if (!meaningfulContent) {
+            issues.add("body_not_meaningful");
+        }
+        if (diagramSection && !diagramPresent) {
+            issues.add("diagram_missing");
+        }
+        if (renderedSection == null || renderedSection.isBlank()) {
+            issues.add("render_missing");
+        }
+        return DocumentSectionCompleteness.builder()
+                .sectionId(section.getSectionId())
+                .heading(sectionHeading(section))
+                .rendered(renderedSection != null && !renderedSection.isBlank())
+                .hasBody(hasBody)
+                .meaningfulContent(meaningfulContent)
+                .diagramSection(diagramSection)
+                .diagramPresent(diagramPresent)
+                .reviewSupplemented(reviewSupplemented)
+                .issues(issues)
+                .build();
+    }
+
+    private DocumentCompletenessReport buildCompletenessReport(
+            List<DocumentSectionCompleteness> sections,
+            List<DocumentSectionDraft> supplementalSections,
+            Set<String> consumedSupplementals
+    ) {
+        List<String> incompleteSectionHeadings = sections.stream()
+                .filter(section -> section.getIssues() != null && !section.getIssues().isEmpty())
+                .map(DocumentSectionCompleteness::getHeading)
+                .toList();
+        List<String> unmatchedSupplementalHeadings = safeList(supplementalSections).stream()
+                .filter(section -> section != null && section.getHeading() != null && !section.getHeading().isBlank())
+                .map(DocumentSectionDraft::getHeading)
+                .filter(heading -> !consumedSupplementals.contains(normalizeHeadingForMatch(heading)))
+                .distinct()
+                .toList();
+        List<String> issues = new ArrayList<>();
+        if (!incompleteSectionHeadings.isEmpty()) {
+            issues.add("incomplete_sections=" + String.join("、", incompleteSectionHeadings));
+        }
+        if (!unmatchedSupplementalHeadings.isEmpty()) {
+            issues.add("unmatched_supplementals=" + String.join("、", unmatchedSupplementalHeadings));
+        }
+        return DocumentCompletenessReport.builder()
+                .sections(sections)
+                .incompleteSectionHeadings(incompleteSectionHeadings)
+                .unmatchedSupplementalHeadings(unmatchedSupplementalHeadings)
+                .issues(issues)
+                .build();
+    }
+
+    private String supportMarkdownBody(String body, String sectionPrefix) {
+        return bodyNormalizer.normalizeBodyStructure(body, sectionPrefix);
+    }
+
+    private String sectionHeading(DocumentPlanSection section) {
+        return toChineseSectionNumber(section.getIndex()) + "、" + bodyNormalizer.displayHeading(section.getHeading());
+    }
+
+    private String appendMermaid(String body, String mermaid) {
+        String mermaidBlock = "```mermaid\n" + mermaid.strip() + "\n```";
+        if (body == null || body.isBlank()) {
+            return mermaidBlock;
+        }
+        if (body.contains(mermaidBlock)) {
+            return body;
+        }
+        return body.strip() + "\n\n" + mermaidBlock;
+    }
+
+    private boolean isDiagramSection(DocumentPlanSection section) {
+        String heading = defaultString(section.getHeading());
+        return heading.contains("图") || heading.toLowerCase().contains("mermaid");
+    }
+
+    private boolean containsMermaid(String body) {
+        return defaultString(body).contains("```mermaid");
+    }
+
+    private boolean hasMeaningfulContent(String body, String heading, boolean diagramSection, boolean diagramPresent) {
+        String trimmed = defaultString(body).trim();
+        if (trimmed.isBlank()) {
+            return false;
+        }
+        if (diagramSection && diagramPresent) {
+            return true;
+        }
+        for (String line : trimmed.split("\\R")) {
+            String normalizedLine = line.trim();
+            if (normalizedLine.isBlank()) {
+                continue;
+            }
+            if (normalizedLine.startsWith("#")) {
+                continue;
+            }
+            if (normalizedLine.startsWith("```")) {
+                continue;
+            }
+            if (normalizeHeadingForMatch(normalizedLine).equals(normalizeHeadingForMatch(heading))) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private String resolveDiagramSectionId(DocumentPlan plan, String diagramPlan) {
+        if (diagramPlan == null || diagramPlan.isBlank()) {
+            return "";
+        }
+        String keyword = switch (diagramPlan) {
+            case "DATA_FLOW" -> "数据流";
+            case "SEQUENCE" -> "时序";
+            case "STATE" -> "状态";
+            case "CONTEXT" -> "架构";
+            default -> "";
+        };
+        return safePlanSections(plan).stream()
+                .filter(section -> section.getHeading() != null)
+                .sorted(Comparator.comparingInt(DocumentPlanSection::getIndex))
+                .filter(section -> keyword.isBlank() || section.getHeading().contains(keyword))
+                .map(DocumentPlanSection::getSectionId)
+                .findFirst()
+                .orElseGet(() -> safePlanSections(plan).isEmpty() ? "" : safePlanSections(plan).get(0).getSectionId());
+    }
+
+    void ensurePublishable(DocumentPlan plan, ComposedDocumentDraft composedDraft) {
+        List<DocumentPlanSection> sections = safePlanSections(plan);
+        if (sections.isEmpty()) {
+            throw new IllegalStateException("Document plan has no ordered sections");
+        }
+        List<DocumentSectionDraft> drafts = composedDraft == null ? List.of() : safeList(composedDraft.getOrderedSections());
+        if (drafts == null || drafts.size() != sections.size()) {
+            throw new IllegalStateException("Draft completeness gate failed");
+        }
+        for (int index = 0; index < sections.size(); index++) {
+            DocumentPlanSection section = sections.get(index);
+            DocumentSectionDraft draft = drafts.get(index);
+            if (draft == null || !Objects.equals(section.getSectionId(), draft.getSectionId())) {
+                throw new IllegalStateException("Ordering gate failed at section index " + (index + 1));
+            }
+        }
+        DocumentCompletenessReport completenessReport = composedDraft == null ? null : composedDraft.getCompletenessReport();
+        if (completenessReport == null) {
+            throw new IllegalStateException("Missing completeness report");
+        }
+        if (completenessReport.getIncompleteSectionHeadings() != null && !completenessReport.getIncompleteSectionHeadings().isEmpty()) {
+            throw new IllegalStateException("Publish gate failed due to incomplete sections: "
+                    + String.join("、", completenessReport.getIncompleteSectionHeadings()));
+        }
+        if (completenessReport.getUnmatchedSupplementalHeadings() != null && !completenessReport.getUnmatchedSupplementalHeadings().isEmpty()) {
+            throw new IllegalStateException("Publish gate failed due to unmatched supplemental sections: "
+                    + String.join("、", completenessReport.getUnmatchedSupplementalHeadings()));
+        }
+        String markdown = composedDraft.getComposedMarkdown();
+        if (markdown == null || markdown.isBlank()) {
+            throw new IllegalStateException("Rendered markdown is empty");
+        }
+        int lastOffset = -1;
+        for (DocumentPlanSection section : sections) {
+            String heading = "## " + sectionHeading(section);
+            int currentOffset = markdown.indexOf(heading);
+            if (currentOffset < 0) {
+                throw new IllegalStateException("Heading consistency gate failed for " + section.getHeading());
+            }
+            if (currentOffset <= lastOffset) {
+                throw new IllegalStateException("Structure gate failed: heading order drifted");
+            }
+            lastOffset = currentOffset;
+        }
+    }
+
+    private DocumentReviewResult reviseReviewSummary(DocumentReviewResult reviewResult, DocumentCompletenessReport report) {
+        if (reviewResult == null || report == null) {
+            return reviewResult;
+        }
+        if ((report.getIncompleteSectionHeadings() == null || report.getIncompleteSectionHeadings().isEmpty())
+                && (report.getUnmatchedSupplementalHeadings() == null || report.getUnmatchedSupplementalHeadings().isEmpty())) {
+            return reviewResult;
+        }
+        List<String> messages = new ArrayList<>();
+        messages.add(defaultString(reviewResult.getSummary()));
+        if (report.getIncompleteSectionHeadings() != null && !report.getIncompleteSectionHeadings().isEmpty()) {
+            messages.add("发布前完整性校验未通过，以下章节仍未有效落盘：" + String.join("、", report.getIncompleteSectionHeadings()));
+        }
+        if (report.getUnmatchedSupplementalHeadings() != null && !report.getUnmatchedSupplementalHeadings().isEmpty()) {
+            messages.add("review 声称补齐但未成功映射的章节：" + String.join("、", report.getUnmatchedSupplementalHeadings()));
+        }
+        reviewResult.setSummary(messages.stream().filter(part -> part != null && !part.isBlank()).collect(Collectors.joining(" ")));
+        return reviewResult;
+    }
+
+    private List<DocumentPlanSection> safePlanSections(DocumentPlan plan) {
+        return plan == null || plan.getOrderedSections() == null ? List.of() : plan.getOrderedSections();
+    }
+
+    private List<String> readRequiredArtifacts(OverAllState state) {
+        Object raw = state.data().get(DocumentStateKeys.ALLOWED_ARTIFACTS);
+        if (raw == null) {
+            return List.of("DOC");
+        }
+        List<String> values = objectMapper.convertValue(raw, new TypeReference<List<String>>() { });
+        return values == null || values.isEmpty() ? List.of("DOC") : values;
+    }
+
+    private String buildPlanContract(DocumentPlan plan) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("章节顺序：");
+        builder.append(safePlanSections(plan).stream()
+                .map(section -> section.getIndex() + "." + sectionHeading(section))
+                .collect(Collectors.joining(" | ")));
+        if (plan.getGlobalStyleGuide() != null && !plan.getGlobalStyleGuide().isEmpty()) {
+            builder.append("\n风格约束：").append(String.join("；", plan.getGlobalStyleGuide()));
+        }
+        if (plan.getTerminologyRules() != null && !plan.getTerminologyRules().isEmpty()) {
+            builder.append("\n术语约束：").append(String.join("；", plan.getTerminologyRules()));
+        }
+        return builder.toString();
+    }
+
+    private String summarizeDrafts(List<DocumentSectionDraft> drafts) {
+        if (drafts == null || drafts.isEmpty()) {
+            return "暂无已完成章节。";
+        }
+        return drafts.stream()
+                .filter(Objects::nonNull)
+                .map(draft -> draft.getHeading() + "：" + excerpt(defaultString(draft.getBody())))
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String excerpt(String value) {
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 120) {
+            return normalized;
+        }
+        return normalized.substring(0, 120) + "...";
+    }
+
+    private String buildSummaryArtifact(
+            DocumentPlan plan,
+            ComposedDocumentDraft composedDraft,
+            DocumentReviewResult reviewResult
+    ) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("# ").append(plan.getTitle()).append(" - 摘要\n\n");
+        if (reviewResult != null && reviewResult.getSummary() != null && !reviewResult.getSummary().isBlank()) {
+            builder.append(reviewResult.getSummary().trim()).append("\n\n");
+        }
+        builder.append("## 关键内容\n");
+        List<DocumentSectionDraft> sections = composedDraft == null || composedDraft.getOrderedSections() == null
+                ? List.of()
+                : composedDraft.getOrderedSections();
+        for (DocumentSectionDraft section : sections) {
+            if (section == null || section.getHeading() == null || section.getHeading().isBlank()) {
+                continue;
+            }
+            builder.append("- ")
+                    .append(section.getHeading())
+                    .append("：")
+                    .append(excerpt(defaultString(section.getBody())))
+                    .append("\n");
+        }
+        return builder.toString().trim();
+    }
+
+    private String normalizeHeadingForMatch(String heading) {
+        return bodyNormalizer.stripLeadingOrdinal(bodyNormalizer.normalizeHeading(defaultString(heading)))
+                .replaceAll("[\\s:：,.，。;；、/\\\\()（）\\-]+", "")
+                .toLowerCase();
+    }
+
+    private <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private String defaultString(String value) {
+        return value == null ? "" : value;
+    }
+
+    private String toChineseSectionNumber(int index) {
+        if (index >= 0 && index < CHINESE_SECTION_NUMBERS.length) {
+            return CHINESE_SECTION_NUMBERS[index];
+        }
+        return Integer.toString(index);
     }
 
     private DocumentReviewResult evaluateReview(

@@ -14,12 +14,14 @@ import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.port.ArtifactRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.common.service.TaskCancellationRegistry;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,18 +40,21 @@ public class DocumentExecutionSupport {
     private final ArtifactRepository artifactRepository;
     private final PlannerStateStore plannerStateStore;
     private final ObjectMapper objectMapper;
+    private final TaskCancellationRegistry cancellationRegistry;
 
     public DocumentExecutionSupport(
             TaskRepository taskRepository,
             TaskEventRepository eventRepository,
             ArtifactRepository artifactRepository,
             PlannerStateStore plannerStateStore,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TaskCancellationRegistry cancellationRegistry) {
         this.taskRepository = taskRepository;
         this.eventRepository = eventRepository;
         this.artifactRepository = artifactRepository;
         this.plannerStateStore = plannerStateStore;
         this.objectMapper = objectMapper;
+        this.cancellationRegistry = cancellationRegistry;
     }
 
     public Task loadTask(String taskId) {
@@ -58,6 +63,21 @@ public class DocumentExecutionSupport {
     }
 
     public void saveArtifact(String taskId, String stepId, ArtifactType type, String title, String content, String url) {
+        saveArtifact(taskId, stepId, type, title, content, null, url);
+    }
+
+    public void saveArtifact(
+            String taskId,
+            String stepId,
+            ArtifactType type,
+            String title,
+            String content,
+            String documentId,
+            String url
+    ) {
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return;
+        }
         Artifact artifact = Artifact.builder()
                 .artifactId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -65,7 +85,10 @@ public class DocumentExecutionSupport {
                 .type(type)
                 .title(title)
                 .content(content)
+                .documentId(documentId)
                 .externalUrl(url)
+                .ownerScenario("SCENARIO_C_DOCUMENT_GENERATION")
+                .createdBySystem(true)
                 .createdAt(Instant.now())
                 .build();
         artifactRepository.save(artifact);
@@ -77,6 +100,9 @@ public class DocumentExecutionSupport {
     }
 
     public void publishEvent(String taskId, String stepId, TaskEventType type, String payload) {
+        if (cancellationRegistry.isCancelled(taskId) && type != TaskEventType.TASK_ABORTED) {
+            return;
+        }
         TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -90,6 +116,9 @@ public class DocumentExecutionSupport {
     }
 
     public void publishApprovalRequest(String taskId, String stepId, String prompt) {
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return;
+        }
         TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -103,6 +132,9 @@ public class DocumentExecutionSupport {
     }
 
     public <T> T execute(Supplier<T> executor) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new IllegalStateException("Task execution interrupted");
+        }
         return executor.get();
     }
 
@@ -126,7 +158,7 @@ public class DocumentExecutionSupport {
         plannerStateStore.saveArtifact(ArtifactRecord.builder()
                 .artifactId(artifact.getArtifactId())
                 .taskId(artifact.getTaskId())
-                .sourceStepId(resolvePlannerStepId(artifact.getTaskId()))
+                .sourceStepId(resolveArtifactStepId(artifact))
                 .type(mapArtifactType(artifact.getType()))
                 .title(artifact.getTitle())
                 .url(blankToNull(artifact.getExternalUrl()))
@@ -206,30 +238,40 @@ public class DocumentExecutionSupport {
     }
 
     private void markPrimaryStepFailed(String taskId, String reason) {
+        String userFacingReason = userFacingFailureReason(reason);
         updatePrimaryDocStep(taskId, step -> {
             step.setStatus(StepStatusEnum.FAILED);
-            step.setOutputSummary(blankToNull(reason));
+            step.setOutputSummary(blankToNull(userFacingReason));
             step.setEndedAt(Instant.now());
         });
     }
 
     private void markTaskCompleted(String taskId) {
-        updatePrimaryDocStep(taskId, step -> {
+        List<TaskStepRecord> steps = plannerStateStore.findStepsByTaskId(taskId);
+        for (TaskStepRecord step : steps) {
+            if (step == null || !isDocumentWorkflowStep(step) || isTerminalNonSuccess(step)) {
+                continue;
+            }
             step.setStatus(StepStatusEnum.COMPLETED);
             step.setProgress(100);
             if (step.getStartedAt() == null) {
                 step.setStartedAt(Instant.now());
             }
             step.setEndedAt(Instant.now());
-        });
-        plannerStateStore.findTask(taskId).ifPresent(task -> {
-            task.setStatus(TaskStatusEnum.COMPLETED);
-            task.setCurrentStage(TaskStatusEnum.COMPLETED.name());
-            task.setProgress(100);
-            task.setNeedUserAction(false);
-            task.setUpdatedAt(Instant.now());
-            plannerStateStore.saveTask(task);
-        });
+            step.setVersion(step.getVersion() + 1);
+            plannerStateStore.saveStep(step);
+        }
+        List<TaskStepRecord> refreshed = plannerStateStore.findStepsByTaskId(taskId);
+        if (allExecutableStepsFinished(refreshed)) {
+            plannerStateStore.findTask(taskId).ifPresent(task -> {
+                task.setStatus(TaskStatusEnum.COMPLETED);
+                task.setCurrentStage(TaskStatusEnum.COMPLETED.name());
+                task.setProgress(100);
+                task.setNeedUserAction(false);
+                task.setUpdatedAt(Instant.now());
+                plannerStateStore.saveTask(task);
+            });
+        }
     }
 
     private void markTaskFailed(String taskId, String reason) {
@@ -241,6 +283,35 @@ public class DocumentExecutionSupport {
             task.setUpdatedAt(Instant.now());
             plannerStateStore.saveTask(task);
         });
+    }
+
+    private String userFacingFailureReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "文档生成失败，请稍后重试。";
+        }
+        String trimmed = reason.trim();
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (isTechnicalRuntimeError(lower)) {
+            return "飞书文档创建失败，请检查 lark-cli 可执行配置、登录状态或文档权限后重试。";
+        }
+        String firstLine = trimmed.lines()
+                .map(String::trim)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("文档生成失败，请稍后重试。");
+        return firstLine.length() <= 220 ? firstLine : firstLine.substring(0, 220) + "...";
+    }
+
+    private boolean isTechnicalRuntimeError(String lowerReason) {
+        return lowerReason.contains("powershell")
+                || lowerReason.contains(".ps1")
+                || lowerReason.contains("command line is too long")
+                || lowerReason.contains("commandline is too long")
+                || lowerReason.contains("parameterbinding")
+                || lowerReason.contains("processbuilder")
+                || lowerReason.contains("java.lang.")
+                || lowerReason.contains("org.springframework.")
+                || lowerReason.contains("exception:");
     }
 
     private void markTaskCancelled(String taskId, String reason) {
@@ -270,7 +341,9 @@ public class DocumentExecutionSupport {
         List<TaskStepRecord> steps = plannerStateStore.findStepsByTaskId(taskId);
         return steps.stream()
                 .filter(Objects::nonNull)
-                .filter(step -> step.getType() == StepTypeEnum.DOC_CREATE || step.getType() == StepTypeEnum.DOC_DRAFT)
+                .filter(step -> step.getType() == StepTypeEnum.DOC_CREATE
+                        || step.getType() == StepTypeEnum.DOC_DRAFT
+                        || step.getType() == StepTypeEnum.DOC_EDIT)
                 .filter(step -> step.getStatus() != StepStatusEnum.COMPLETED
                         && step.getStatus() != StepStatusEnum.SKIPPED
                         && step.getStatus() != StepStatusEnum.SUPERSEDED)
@@ -280,6 +353,48 @@ public class DocumentExecutionSupport {
 
     private String resolvePlannerStepId(String taskId) {
         return findPrimaryDocStep(taskId).map(TaskStepRecord::getStepId).orElse(null);
+    }
+
+    public Optional<String> findSummaryStepId(String taskId) {
+        return plannerStateStore.findStepsByTaskId(taskId).stream()
+                .filter(Objects::nonNull)
+                .filter(step -> step.getType() == StepTypeEnum.SUMMARY)
+                .map(TaskStepRecord::getStepId)
+                .findFirst();
+    }
+
+    private String resolveArtifactStepId(Artifact artifact) {
+        if (artifact != null
+                && artifact.getStepId() != null
+                && !artifact.getStepId().isBlank()
+                && plannerStateStore.findStepsByTaskId(artifact.getTaskId()).stream()
+                .anyMatch(step -> artifact.getStepId().equals(step.getStepId()))) {
+            return artifact.getStepId();
+        }
+        return artifact == null ? null : resolvePlannerStepId(artifact.getTaskId());
+    }
+
+    private boolean isDocumentWorkflowStep(TaskStepRecord step) {
+        return step.getType() == StepTypeEnum.DOC_CREATE
+                || step.getType() == StepTypeEnum.DOC_DRAFT
+                || step.getType() == StepTypeEnum.DOC_EDIT
+                || step.getType() == StepTypeEnum.SUMMARY;
+    }
+
+    private boolean isTerminalNonSuccess(TaskStepRecord step) {
+        return step.getStatus() == StepStatusEnum.SKIPPED
+                || step.getStatus() == StepStatusEnum.SUPERSEDED;
+    }
+
+    private boolean allExecutableStepsFinished(List<TaskStepRecord> steps) {
+        if (steps == null || steps.isEmpty()) {
+            return true;
+        }
+        return steps.stream()
+                .filter(Objects::nonNull)
+                .filter(step -> step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .allMatch(step -> step.getStatus() == StepStatusEnum.COMPLETED
+                        || step.getStatus() == StepStatusEnum.SKIPPED);
     }
 
     private ArtifactTypeEnum mapArtifactType(ArtifactType type) {

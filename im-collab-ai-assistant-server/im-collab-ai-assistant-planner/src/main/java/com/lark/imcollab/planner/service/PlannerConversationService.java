@@ -63,7 +63,10 @@ public class PlannerConversationService {
             session = transientSession(resolution.taskId(), workspaceContext);
         }
         String userInput = firstText(userFeedback, rawInstruction);
-        String graphInstruction = userInput.isBlank() ? intakeDecision.effectiveInput() : userInput;
+        String graphInstruction = stripLeadingMentionPlaceholders(userInput);
+        if (graphInstruction.isBlank()) {
+            graphInstruction = intakeDecision.effectiveInput();
+        }
         if (shouldShortCircuitWithoutTask(resolution, intakeDecision)) {
             updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution, graphInstruction);
             return session;
@@ -214,5 +217,19 @@ public class PlannerConversationService {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String stripLeadingMentionPlaceholders(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
+        }
+        String normalized = input.trim();
+        String previous;
+        do {
+            previous = normalized;
+            normalized = normalized.replaceFirst("^@[_a-zA-Z0-9\\-]+\\s+", "").trim();
+            normalized = normalized.replaceFirst("^<at\\b[^>]*>[^<]*</at>\\s*", "").trim();
+        } while (!normalized.equals(previous));
+        return normalized;
     }
 }

@@ -60,6 +60,10 @@ public class ReplanNodeService {
         if (patchIntent.getOperation() == PlanPatchOperation.REGENERATE_ALL) {
             return planningNodeService.plan(taskId, adjustmentInstruction, workspaceContext, adjustmentInstruction);
         }
+        session.setClarifiedInstruction(appendSupplement(
+                firstNonBlank(session.getClarifiedInstruction(), session.getRawInstruction()),
+                adjustmentInstruction
+        ));
         String beforeSignature = visiblePlanSignature(session.getPlanBlueprint());
         int beforeCardCount = activeCardCount(session.getPlanBlueprint());
         log.info("Planner replan patch selected task={} operation={} confidence={} targetCards={} newDrafts={} reason={}",
@@ -117,6 +121,18 @@ public class ReplanNodeService {
         return count;
     }
 
+    private String appendSupplement(String base, String supplement) {
+        String safeBase = normalize(base);
+        String safeSupplement = normalize(supplement);
+        if (safeSupplement.isBlank() || safeBase.contains(safeSupplement)) {
+            return safeBase;
+        }
+        if (safeBase.isBlank()) {
+            return safeSupplement;
+        }
+        return safeBase + "\n补充说明：" + safeSupplement;
+    }
+
     private String firstNonBlank(String... values) {
         if (values == null) {
             return null;
@@ -127,5 +143,9 @@ public class ReplanNodeService {
             }
         }
         return null;
+    }
+
+    private String normalize(String value) {
+        return value == null ? "" : value.trim();
     }
 }

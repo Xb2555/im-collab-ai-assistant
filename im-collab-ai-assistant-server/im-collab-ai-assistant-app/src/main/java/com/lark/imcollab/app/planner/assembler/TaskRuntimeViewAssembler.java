@@ -132,6 +132,7 @@ public class TaskRuntimeViewAssembler {
             case STEP_COMPLETED -> "步骤执行完成";
             case STEP_FAILED -> "步骤执行失败";
             case STEP_RETRY_SCHEDULED -> "步骤已进入重试";
+            case USER_INTERVENTION -> "用户人工干预";
             case ARTIFACT_CREATED -> "已生成产物";
             case TASK_COMPLETED -> "任务已完成";
             case TASK_FAILED -> "任务执行失败";

@@ -12,14 +12,16 @@ import java.io.Serializable;
 @NoArgsConstructor
 @AllArgsConstructor
 public class LarkDocFetchResult implements Serializable {
+    private String docId;
+    private String docUrl;
+    private long revisionId;
+    private String content;
+    private String docFormat;
+    private String detail;
+    private String scope;
 
     private boolean success;
-
     private String docRef;
-
     private String title;
-
-    private String content;
-
     private String message;
 }

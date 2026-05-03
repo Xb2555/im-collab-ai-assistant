@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.service.TaskCancellationRegistry;
 import com.lark.imcollab.planner.config.PlannerExecutionProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
@@ -42,6 +43,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     private final AsyncTaskExecutor executionExecutor;
     private final ScheduledExecutorService executionTimeoutScheduler;
     private final PlannerExecutionProperties executionProperties;
+    private final TaskCancellationRegistry cancellationRegistry;
     private final ConcurrentHashMap<String, ActiveExecution> activeExecutions = new ConcurrentHashMap<>();
 
     public DefaultImTaskCommandFacade(
@@ -54,7 +56,8 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             List<TaskUserNotificationFacade> notificationFacades,
             @Qualifier("executionTaskExecutor") AsyncTaskExecutor executionExecutor,
             ScheduledExecutorService executionTimeoutScheduler,
-            PlannerExecutionProperties executionProperties
+            PlannerExecutionProperties executionProperties,
+            TaskCancellationRegistry cancellationRegistry
     ) {
         this.sessionService = sessionService;
         this.taskBridgeService = taskBridgeService;
@@ -66,6 +69,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         this.executionExecutor = executionExecutor;
         this.executionTimeoutScheduler = executionTimeoutScheduler;
         this.executionProperties = executionProperties;
+        this.cancellationRegistry = cancellationRegistry;
     }
 
     @Override
@@ -74,6 +78,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         if (session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
             return session;
         }
+        cancellationRegistry.clear(taskId);
         taskBridgeService.ensureTask(session);
         session.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
         session.setTransitionReason("User confirmed execution from IM");
@@ -85,15 +90,32 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     }
 
     @Override
-    public PlanTaskSession retryExecution(String taskId) {
+    public PlanTaskSession retryExecution(String taskId, String feedback) {
         PlanTaskSession session = sessionService.get(taskId);
         if (!plannerRetryService.isRetryable(taskId, session)) {
             return session;
         }
-        taskBridgeService.ensureTask(session);
-        PlanTaskSession retrying = plannerRetryService.prepareRetry(taskId);
+        cancellationRegistry.clear(taskId);
+        PlanTaskSession retrying = plannerRetryService.prepareRetry(taskId, feedback);
+        taskBridgeService.ensureTask(retrying);
         submitExecution(taskId);
         return retrying;
+    }
+
+    @Override
+    public void cancelExecution(String taskId) {
+        cancellationRegistry.markCancelled(taskId);
+        ActiveExecution execution = activeExecutions.remove(taskId);
+        if (execution != null) {
+            execution.future.cancel(true);
+            execution.timeoutFuture.cancel(false);
+            log.info("Cancelled active execution: taskId={}", taskId);
+        }
+        try {
+            harnessFacade.abortExecution(taskId);
+        } catch (RuntimeException exception) {
+            log.warn("Failed to abort harness execution: taskId={}, error={}", taskId, exception.getMessage());
+        }
     }
 
     @Override
@@ -131,13 +153,21 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
 
     private void startHarness(String taskId) {
         try {
+            if (cancellationRegistry.isCancelled(taskId)) {
+                log.info("Skip harness start because task is already cancelled: taskId={}", taskId);
+                return;
+            }
             harnessFacade.startExecution(taskId);
-            if (activeExecutions.containsKey(taskId)) {
+            if (!cancellationRegistry.isCancelled(taskId) && activeExecutions.containsKey(taskId)) {
                 reviewService.reviewAndNotify(taskId);
             } else {
                 log.warn("Skip execution review because task already timed out or finalized: taskId={}", taskId);
             }
         } catch (RuntimeException exception) {
+            if (cancellationRegistry.isCancelled(taskId)) {
+                log.info("Skip failure projection because task was cancelled: taskId={}", taskId);
+                return;
+            }
             markExecutionFailed(taskId, "Harness execution failed after IM confirmation", exception);
         } finally {
             clearActiveExecution(taskId);
@@ -169,7 +199,10 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         sessionService.save(failed);
         sessionService.publishEvent(taskId, "FAILED");
         TaskRuntimeSnapshot snapshot = loadRuntimeSnapshot(taskId);
-        if (!runtimeAlreadyFailed(snapshot)) {
+        if (runtimeAlreadyFailed(snapshot)) {
+            taskRuntimeService.syncTaskState(taskId, PlanningPhaseEnum.FAILED);
+            snapshot = loadRuntimeSnapshot(taskId);
+        } else {
             taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.FAILED, TaskEventTypeEnum.TASK_FAILED);
             snapshot = loadRuntimeSnapshot(taskId);
         }

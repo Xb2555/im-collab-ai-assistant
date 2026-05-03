@@ -10,9 +10,9 @@ public class TermDisambiguationPolicyRegistry {
 
     private final List<TermDisambiguationPolicy> policies;
 
-    public TermDisambiguationPolicyRegistry(PlannerProperties properties) {
+    public TermDisambiguationPolicyRegistry(PlannerProperties properties, LlmChoiceResolver choiceResolver) {
         this.policies = properties.getDisambiguation().getTermPolicies().stream()
-                .map(ConfigurableTermDisambiguationPolicy::new)
+                .map(definition -> new ConfigurableTermDisambiguationPolicy(definition, choiceResolver))
                 .map(policy -> (TermDisambiguationPolicy) policy)
                 .toList();
     }

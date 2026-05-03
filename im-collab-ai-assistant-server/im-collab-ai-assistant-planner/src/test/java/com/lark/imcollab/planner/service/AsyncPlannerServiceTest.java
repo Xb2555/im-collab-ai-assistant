@@ -142,7 +142,9 @@ class AsyncPlannerServiceTest {
 
         assertThat(reply.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.UNKNOWN);
         assertThat(reply.getIntakeState().getAssistantReply()).contains("我在");
-        assertThat(store.session).isNull();
+        assertThat(store.session).isNotNull();
+        assertThat(store.session.getTaskId()).isEqualTo(reply.getTaskId());
+        assertThat(store.session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTAKE);
         assertThat(store.task).isNull();
         assertThat(executor.submitted).isEmpty();
     }

@@ -109,9 +109,15 @@ public class LlmIntentClassifier {
         builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, or regenerate plan steps.\n");
         builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
         builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
+        builder.append("- In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material. Meta questions, identity/capability questions, greetings, or a standalone new task request are not clarification answers.\n");
         builder.append("- START_TASK requires a real task request with a work goal or deliverable. Casual chat, greetings, mood sharing, jokes, and meta questions are UNKNOWN.\n");
+        builder.append("- A request to summarize, organize, write, generate, extract, or convert workspace/chat/document context into a document, PPT, summary, report, outline, risk list, or follow-up note is START_TASK.\n");
+        builder.append("- If the user asks to pull recent/prior/group/chat messages and turn them into an output, classify as START_TASK. Context acquisition details like time range, topics, exclusions, or audience do not make it UNKNOWN.\n");
         builder.append("- Even when existingSession=true and hasPlan=true, choose START_TASK for a standalone new work request with a concrete deliverable; choose ADJUST_PLAN only when the user explicitly modifies the current plan.\n");
+        builder.append("- If phase=COMPLETED, a new concrete work request should usually be START_TASK. Do not treat it as ADJUST_PLAN unless the user explicitly says they want to revise/change the just-completed plan or artifact.\n");
+        builder.append("- Phrases like 新开一个任务 / 另起一个任务 / 再开一个任务 are strong signals for START_TASK when paired with a concrete deliverable or work goal.\n");
         builder.append("- Do not classify a concrete deliverable request as UNKNOWN just because another task is already active in the chat.\n");
+        builder.append("- The user message may begin with a Feishu mention placeholder like @_user_1. Ignore that prefix and classify the remaining sentence.\n");
         builder.append("- Identity or capability questions like 你是谁 / 你能做什么 are UNKNOWN unless the user also asks for a concrete deliverable.\n");
         builder.append("- UNKNOWN means the message cannot be safely mapped to one fixed intent, including small talk or non-task chat.\n\n");
         builder.append("Session:\n");

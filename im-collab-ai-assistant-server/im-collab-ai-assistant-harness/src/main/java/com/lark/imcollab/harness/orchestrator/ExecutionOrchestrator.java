@@ -4,6 +4,7 @@ import com.lark.imcollab.common.domain.*;
 import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.StepRepository;
+import com.lark.imcollab.common.service.TaskCancellationRegistry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -19,6 +20,7 @@ public class ExecutionOrchestrator {
     private final TaskEventRepository eventRepository;
     private final StepDispatcher stepDispatcher;
     private final ExecutionIntakeGate executionIntakeGate;
+    private final TaskCancellationRegistry cancellationRegistry;
 
     public Task start(String taskId) {
         Task task = taskRepository.findById(taskId).orElseGet(() -> {
@@ -34,13 +36,22 @@ public class ExecutionOrchestrator {
             taskRepository.save(fallback);
             return fallback;
         });
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return abort(taskId);
+        }
 
         task = executionIntakeGate.freeze(task);
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return abort(taskId);
+        }
         task.setStatus(TaskStatus.EXECUTING);
         task.setUpdatedAt(Instant.now());
         taskRepository.save(task);
         publishEvent(taskId, null, TaskEventType.STEP_STARTED);
 
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return abort(taskId);
+        }
         stepDispatcher.dispatch(task);
         return taskRepository.findById(taskId).orElse(task);
     }

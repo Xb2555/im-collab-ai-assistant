@@ -35,6 +35,12 @@ imcollab:
       working-directory: ${LARK_CLI_WORKING_DIR:}
       doc-identity: ${LARK_DOC_IDENTITY:bot}
       timeout-seconds: ${LARK_CLI_TIMEOUT_SECONDS:60}
+    lark-doc:
+      folder-token: ${LARK_DOC_FOLDER_TOKEN:}
+      web-base-url: ${LARK_DOC_WEB_BASE_URL:${LARK_OPEN_DOMAIN:}}
+      request-timeout-seconds: ${LARK_DOC_REQUEST_TIMEOUT_SECONDS:30}
+      max-blocks-per-request: ${LARK_DOC_MAX_BLOCKS_PER_REQUEST:40}
+      max-text-chars-per-block: ${LARK_DOC_MAX_TEXT_CHARS_PER_BLOCK:1600}
   gateway:
     lark:
       app-id: ${LARK_APP_ID:}
@@ -73,6 +79,13 @@ planner:
     max-pool-size: ${PLANNER_EXECUTION_MAX_POOL_SIZE:4}
     queue-capacity: ${PLANNER_EXECUTION_QUEUE_CAPACITY:100}
     timeout-seconds: ${PLANNER_EXECUTION_TIMEOUT_SECONDS:300}
+  intent:
+    model-enabled: ${PLANNER_INTENT_MODEL_ENABLED:true}
+    timeout-seconds: ${PLANNER_INTENT_TIMEOUT_SECONDS:8}
+    pass-threshold: ${PLANNER_INTENT_PASS_THRESHOLD:0.65}
+    fallback-to-local-rules: ${PLANNER_INTENT_FALLBACK_TO_LOCAL_RULES:true}
+    unknown-reply-model-enabled: ${PLANNER_INTENT_UNKNOWN_REPLY_MODEL_ENABLED:true}
+    unknown-reply-timeout-seconds: ${PLANNER_INTENT_UNKNOWN_REPLY_TIMEOUT_SECONDS:3}
   prompt:
     profile: ${PLANNER_PROMPT_PROFILE:default}
     version: ${PLANNER_PROMPT_VERSION:v1}

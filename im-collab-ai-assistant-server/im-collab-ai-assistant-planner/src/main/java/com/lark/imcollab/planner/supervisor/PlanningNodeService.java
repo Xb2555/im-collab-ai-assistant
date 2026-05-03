@@ -5,12 +5,15 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionPlan;
+import com.lark.imcollab.common.model.entity.ContextSourceRequest;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
+import com.lark.imcollab.common.model.enums.ContextSourceTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
@@ -23,6 +26,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -44,8 +48,10 @@ public class PlanningNodeService {
     private final TaskRuntimeProjectionService projectionService;
     private final PlannerConversationMemoryService memoryService;
     private final PlannerQuestionTool questionTool;
+    private final ContextAcquisitionNodeService contextAcquisitionNodeService;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public PlanningNodeService(
             @Qualifier("intentAgent") ReactAgent intentAgent,
             @Qualifier("planningAgent") ReactAgent planningAgent,
@@ -54,6 +60,7 @@ public class PlanningNodeService {
             TaskRuntimeProjectionService projectionService,
             PlannerConversationMemoryService memoryService,
             PlannerQuestionTool questionTool,
+            ContextAcquisitionNodeService contextAcquisitionNodeService,
             ObjectMapper objectMapper
     ) {
         this.intentAgent = intentAgent;
@@ -63,7 +70,22 @@ public class PlanningNodeService {
         this.projectionService = projectionService;
         this.memoryService = memoryService;
         this.questionTool = questionTool;
+        this.contextAcquisitionNodeService = contextAcquisitionNodeService;
         this.objectMapper = objectMapper;
+    }
+
+    PlanningNodeService(
+            ReactAgent intentAgent,
+            ReactAgent planningAgent,
+            PlannerSessionService sessionService,
+            PlanQualityService qualityService,
+            TaskRuntimeProjectionService projectionService,
+            PlannerConversationMemoryService memoryService,
+            PlannerQuestionTool questionTool,
+            ObjectMapper objectMapper
+    ) {
+        this(intentAgent, planningAgent, sessionService, qualityService, projectionService, memoryService,
+                questionTool, null, objectMapper);
     }
 
     public PlanTaskSession plan(String taskId, String rawInstruction, WorkspaceContext workspaceContext, String userFeedback) {
@@ -87,6 +109,24 @@ public class PlanningNodeService {
         qualityService.applyIntentReady(session, intent.get());
         sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(taskId, "INTENT_READY");
+        ContextCollectionOutcome intentCollection = collectContextFromIntentSource(
+                taskId,
+                rawInstruction,
+                workspaceContext,
+                intent.get()
+        );
+        if (intentCollection != null) {
+            if (intentCollection.contextResult() != null && !intentCollection.contextResult().sufficient()) {
+                questionTool.askUser(session, List.of(firstNonBlank(
+                        intentCollection.contextResult().clarificationQuestion(),
+                        "我还需要你提供要整理的聊天内容或文档链接。"
+                )));
+                return sessionService.get(taskId);
+            }
+            workspaceContext = intentCollection.workspaceContext();
+            workspacePromptContext = renderWorkspaceContext(workspaceContext, rawInstruction);
+            planningInput = buildPlanningInput(session, rawInstruction, workspaceContext, userFeedback, conversationMemory);
+        }
         if (shouldPauseForMissingSlots(session, intent.get(), planningInput)) {
             questionTool.askUser(session, List.of(buildMissingSlotQuestion(intent.get())));
             return sessionService.get(taskId);
@@ -115,9 +155,82 @@ public class PlanningNodeService {
             questionTool.askUser(session, java.util.List.of("我还需要补充一点信息，才能生成稳定计划：你希望最终交付物是什么？"));
             return sessionService.get(taskId);
         }
-        qualityService.applyPlanReady(session, blueprint.get());
+        PlanBlueprint readyBlueprint = blueprint.get();
+        attachCollectedSourceScope(readyBlueprint, workspaceContext);
+        qualityService.applyPlanReady(session, readyBlueprint);
         sessionService.saveWithoutVersionChange(session);
         return session;
+    }
+
+    private ContextCollectionOutcome collectContextFromIntentSource(
+            String taskId,
+            String rawInstruction,
+            WorkspaceContext workspaceContext,
+            IntentSnapshot intentSnapshot
+    ) {
+        if (contextAcquisitionNodeService == null
+                || hasWorkspaceContextMaterial(workspaceContext)
+                || intentSnapshot == null
+                || intentSnapshot.getSourceScope() == null) {
+            return null;
+        }
+        WorkspaceContext intentScope = intentSnapshot.getSourceScope();
+        List<ContextSourceRequest> sources = new ArrayList<>();
+        if ((hasText(workspaceContext == null ? null : workspaceContext.getChatId())
+                || hasText(workspaceContext == null ? null : workspaceContext.getThreadId()))
+                && hasIntentSourceRequest(intentScope)) {
+            sources.add(ContextSourceRequest.builder()
+                    .sourceType(ContextSourceTypeEnum.IM_HISTORY)
+                    .chatId(workspaceContext == null ? "" : workspaceContext.getChatId())
+                    .threadId(workspaceContext == null ? "" : workspaceContext.getThreadId())
+                    .timeRange(firstNonBlank(intentScope.getTimeRange(), intentSnapshot.getTimeRange(), workspaceContext == null ? null : workspaceContext.getTimeRange()))
+                    .selectionInstruction(rawInstruction)
+                    .build());
+        }
+        if (intentScope.getDocRefs() != null && !intentScope.getDocRefs().isEmpty()) {
+            sources.add(ContextSourceRequest.builder()
+                    .sourceType(ContextSourceTypeEnum.LARK_DOC)
+                    .docRefs(intentScope.getDocRefs())
+                    .selectionInstruction(rawInstruction)
+                    .build());
+        }
+        if (sources.isEmpty()) {
+            return null;
+        }
+        ContextAcquisitionPlan plan = ContextAcquisitionPlan.builder()
+                .needCollection(true)
+                .sources(sources)
+                .reason("intent source scope requires context acquisition")
+                .clarificationQuestion("")
+                .build();
+        return contextAcquisitionNodeService.collect(taskId, rawInstruction, workspaceContext, plan);
+    }
+
+    private boolean hasIntentSourceRequest(WorkspaceContext sourceScope) {
+        if (sourceScope == null) {
+            return false;
+        }
+        return hasText(sourceScope.getSelectionType())
+                || hasText(sourceScope.getTimeRange())
+                || (sourceScope.getSelectedMessageIds() != null && !sourceScope.getSelectedMessageIds().isEmpty());
+    }
+
+    private void attachCollectedSourceScope(PlanBlueprint blueprint, WorkspaceContext workspaceContext) {
+        if (blueprint == null || workspaceContext == null || !hasWorkspaceContextMaterial(workspaceContext)) {
+            return;
+        }
+        WorkspaceContext sourceScope = blueprint.getSourceScope();
+        if (sourceScope == null || !hasWorkspaceContextMaterial(sourceScope)) {
+            blueprint.setSourceScope(workspaceContext);
+        }
+    }
+
+    private boolean hasWorkspaceContextMaterial(WorkspaceContext workspaceContext) {
+        return workspaceContext != null
+                && ((workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty())
+                || (workspaceContext.getSelectedMessageIds() != null && !workspaceContext.getSelectedMessageIds().isEmpty())
+                || (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty())
+                || (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty()));
     }
 
     private Optional<PlanBlueprint> repairPlanBlueprint(
@@ -201,14 +314,12 @@ public class PlanningNodeService {
     ) {
         String cardId = "card-" + String.format("%03d", existingCards.size() + 1);
         String title = switch (type) {
-            case DOC -> containsMermaid(planningInput) ? "生成技术方案文档（含 Mermaid 架构图）" : "生成结构化文档";
+            case DOC -> "生成结构化文档";
             case PPT -> "生成汇报 PPT 初稿";
             case SUMMARY -> "生成任务摘要";
         };
         String description = switch (type) {
-            case DOC -> containsMermaid(planningInput)
-                    ? "基于用户提供的飞书项目协作方案，撰写结构化技术方案文档，并在文档中包含 Mermaid 架构图"
-                    : "基于用户提供的上下文，撰写结构化文档";
+            case DOC -> "基于用户提供的上下文，撰写结构化文档";
             case PPT -> hasCardOfType(existingCards, PlanCardTypeEnum.DOC)
                     ? "基于技术方案文档，整理一份用于汇报的 PPT 初稿"
                     : "基于用户目标和已有上下文，整理一份用于汇报的 PPT 初稿";
@@ -249,32 +360,7 @@ public class PlanningNodeService {
                 toPlanCardType(target).ifPresent(resolved::add);
             }
         }
-        String text = normalize(planningInput + " " + (intentSnapshot == null ? "" : intentSnapshot.getUserGoal()));
-        if (asksForSummaryDocument(text)) {
-            resolved.remove(PlanCardTypeEnum.SUMMARY);
-            resolved.add(PlanCardTypeEnum.DOC);
-        }
-        if (resolved.isEmpty()) {
-            if (text.contains("文档") || text.contains("方案") || text.contains("doc")) {
-                resolved.add(PlanCardTypeEnum.DOC);
-            }
-            if (text.contains("ppt") || text.contains("演示稿") || text.contains("汇报")) {
-                resolved.add(PlanCardTypeEnum.PPT);
-            }
-            if (text.contains("摘要") || text.contains("总结") || text.contains("summary")) {
-                resolved.add(PlanCardTypeEnum.SUMMARY);
-            }
-        }
         return new ArrayList<>(resolved);
-    }
-
-    private boolean asksForSummaryDocument(String normalizedText) {
-        return hasText(normalizedText)
-                && (normalizedText.contains("总结文档")
-                || normalizedText.contains("总结成文档")
-                || normalizedText.contains("总结为文档")
-                || normalizedText.contains("总结并生成文档")
-                || normalizedText.contains("生成总结文档"));
     }
 
     private boolean hasMissingSlots(IntentSnapshot intentSnapshot) {
@@ -335,9 +421,7 @@ public class PlanningNodeService {
                     : "可以，我还差一点上下文。你可以直接贴材料、文档链接，或告诉我想做成文档、PPT 还是摘要。";
         }
         String joinedSlots = String.join("、", missingSlots);
-        if (hasDeliverable && missingSlots.stream().anyMatch(slot -> normalize(slot).contains("内容")
-                || normalize(slot).contains("材料")
-                || normalize(slot).contains("范围"))) {
+        if (hasDeliverable) {
             return "可以，产物形式我记下了。我还差要整理的内容：你可以直接贴材料、文档链接，或告诉我取哪段消息。";
         }
         return "我还差一点信息：" + joinedSlots + suffix;
@@ -355,16 +439,6 @@ public class PlanningNodeService {
     private Optional<PlanCardTypeEnum> toPlanCardType(String raw) {
         if (!hasText(raw)) {
             return Optional.empty();
-        }
-        String normalized = normalize(raw);
-        if (normalized.contains("doc") || normalized.contains("文档") || normalized.contains("方案")) {
-            return Optional.of(PlanCardTypeEnum.DOC);
-        }
-        if (normalized.contains("ppt") || normalized.contains("slide") || normalized.contains("演示稿") || normalized.contains("汇报")) {
-            return Optional.of(PlanCardTypeEnum.PPT);
-        }
-        if (normalized.contains("summary") || normalized.contains("摘要") || normalized.contains("总结")) {
-            return Optional.of(PlanCardTypeEnum.SUMMARY);
         }
         try {
             return Optional.of(PlanCardTypeEnum.valueOf(raw.trim().toUpperCase(Locale.ROOT)));
@@ -410,10 +484,6 @@ public class PlanningNodeService {
         return cards != null && cards.stream().anyMatch(card -> card != null && card.getType() == type);
     }
 
-    private boolean containsMermaid(String text) {
-        return normalize(text).contains("mermaid");
-    }
-
     private boolean hasEmbeddedTaskMaterial(String planningInput) {
         if (!hasText(planningInput)) {
             return false;
@@ -423,10 +493,21 @@ public class PlanningNodeService {
             return false;
         }
         int delimiter = Math.max(instruction.lastIndexOf('：'), instruction.lastIndexOf(':'));
-        if (delimiter >= 0 && instruction.length() - delimiter - 1 >= 24) {
-            return true;
+        if (delimiter >= 0) {
+            return hasSubstantialInlineMaterial(instruction.substring(delimiter + 1));
         }
         return instruction.contains("\n") && instruction.length() >= 40;
+    }
+
+    private boolean hasSubstantialInlineMaterial(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.trim();
+        if (normalized.contains("\n") && normalized.length() >= 40) {
+            return true;
+        }
+        return normalized.length() >= 48;
     }
 
     private boolean hasWorkspaceMaterial(String planningInput) {
@@ -448,7 +529,7 @@ public class PlanningNodeService {
     private List<String> defaultSuccessCriteria(List<PlanCardTypeEnum> deliverables, String planningInput) {
         List<String> criteria = new ArrayList<>();
         if (deliverables.contains(PlanCardTypeEnum.DOC)) {
-            criteria.add(containsMermaid(planningInput) ? "文档包含可渲染的 Mermaid 架构图" : "文档结构清晰、内容可交付");
+            criteria.add("文档结构清晰、内容可交付");
         }
         if (deliverables.contains(PlanCardTypeEnum.PPT)) {
             criteria.add("PPT 初稿与文档或任务目标保持一致");
@@ -460,9 +541,7 @@ public class PlanningNodeService {
     }
 
     private List<String> defaultRisks(String planningInput) {
-        return hasText(planningInput) && planningInput.contains("飞书项目协作方案")
-                ? List.of("缺少飞书项目协作方案的详细原始材料时，部分架构细节需要用户确认")
-                : List.of();
+        return List.of();
     }
 
     private List<String> safeList(List<String> values) {

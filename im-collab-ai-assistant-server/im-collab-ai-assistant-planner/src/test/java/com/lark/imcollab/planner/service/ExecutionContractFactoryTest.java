@@ -33,6 +33,20 @@ class ExecutionContractFactoryTest {
     }
 
     @Test
+    void buildPreservesLatestClarifiedInstructionFromUserIntervention() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .rawInstruction("生成客户访谈纪要")
+                .clarifiedInstruction("生成客户访谈纪要\n补充说明：请用备用方案重试，先给简版")
+                .build();
+
+        var contract = factory.build(session);
+
+        assertThat(contract.getClarifiedInstruction())
+                .contains("请用备用方案重试，先给简版");
+    }
+
+    @Test
     void buildIncludesCurrentPlanRequirementsForExecutionContext() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")

@@ -112,7 +112,7 @@ class PlanGateServiceTest {
     }
 
     @Test
-    void rejectsStandaloneSummaryExecutionInCurrentHarness() {
+    void acceptsSummaryStepWithSummaryWorker() {
         TaskStepRecord step = step("summary-1", List.of());
         step.setType(StepTypeEnum.SUMMARY);
         step.setAssignedWorker("summary-worker");
@@ -130,9 +130,8 @@ class PlanGateServiceTest {
                 .allowedArtifacts(List.of("SUMMARY"))
                 .build());
 
-        assertThat(result.passed()).isFalse();
-        assertThat(result.reasons()).contains(
-                "standalone SUMMARY steps are not executable in the current harness; merge the summary into a DOC or split it into a separate future capability");
+        assertThat(result.passed()).isTrue();
+        assertThat(result.reasons()).isEmpty();
     }
 
     @Test

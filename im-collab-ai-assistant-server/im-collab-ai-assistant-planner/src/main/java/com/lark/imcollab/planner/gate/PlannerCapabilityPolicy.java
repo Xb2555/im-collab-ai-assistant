@@ -37,15 +37,10 @@ public class PlannerCapabilityPolicy {
             return Optional.empty();
         }
         String normalized = artifact.trim().toUpperCase(Locale.ROOT);
-        if (normalized.contains("SLIDE")) {
-            return Optional.of("PPT");
-        }
-        if (normalized.contains("DOC")) {
-            return Optional.of("DOC");
-        }
-        if (normalized.contains("SUMMARY")) {
-            return Optional.of("SUMMARY");
-        }
-        return Optional.of(normalized);
+        return Optional.of(switch (normalized) {
+            case "SLIDE", "SLIDES", "PRESENTATION" -> "PPT";
+            case "DOCUMENT" -> "DOC";
+            default -> normalized;
+        });
     }
 }
