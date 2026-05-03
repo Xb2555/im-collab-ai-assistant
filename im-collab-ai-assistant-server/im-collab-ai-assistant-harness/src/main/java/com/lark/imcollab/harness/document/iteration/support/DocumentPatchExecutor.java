@@ -30,7 +30,9 @@ public class DocumentPatchExecutor {
         }
         long beforeRevision = -1L;
         long afterRevision = -1L;
+        String lastNewBlockId = null;
         for (DocumentPatchOperation operation : plan.getPatchOperations()) {
+            operation = resolveNewBlockPlaceholder(operation, lastNewBlockId);
             LarkDocFetchResult beforeMarkdown = larkDocTool.fetchDocFullMarkdown(docRef);
             LarkDocFetchResult beforeXml = larkDocTool.fetchDocFull(docRef, "with-ids");
             if (beforeRevision < 0) {
@@ -82,6 +84,15 @@ public class DocumentPatchExecutor {
                         null,
                         beforeMarkdown.getRevisionId()
                 );
+                case BLOCK_MOVE_AFTER -> larkDocTool.updateByCommand(
+                        docRef,
+                        "block_move_after",
+                        null,
+                        null,
+                        operation.getBlockId(),
+                        operation.getTargetBlockId(),
+                        beforeMarkdown.getRevisionId()
+                );
                 default -> throw new IllegalStateException("Unsupported patch operation: " + operation.getOperationType());
             };
             LarkDocFetchResult afterMarkdownFetch = larkDocTool.fetchDocFullMarkdown(docRef);
@@ -89,8 +100,37 @@ public class DocumentPatchExecutor {
             verifyOperation(operation, result, beforeMarkdown, beforeXml, afterMarkdownFetch, afterXmlFetch);
             afterRevision = afterMarkdownFetch.getRevisionId();
             collectModifiedBlocks(modifiedBlocks, operation, result);
+            lastNewBlockId = extractFirstNewBlockId(result);
         }
         return new PatchExecutionResult(modifiedBlocks, beforeRevision, afterRevision);
+    }
+
+    private DocumentPatchOperation resolveNewBlockPlaceholder(DocumentPatchOperation operation, String lastNewBlockId) {
+        if (lastNewBlockId == null || !"__new__".equals(operation.getBlockId())) {
+            return operation;
+        }
+        return DocumentPatchOperation.builder()
+                .operationType(operation.getOperationType())
+                .blockId(lastNewBlockId)
+                .targetBlockId(operation.getTargetBlockId())
+                .startBlockId(operation.getStartBlockId())
+                .endBlockId(operation.getEndBlockId())
+                .oldText(operation.getOldText())
+                .newContent(operation.getNewContent())
+                .docFormat(operation.getDocFormat())
+                .justification(operation.getJustification())
+                .build();
+    }
+
+    private String extractFirstNewBlockId(LarkDocUpdateResult result) {
+        if (result == null || result.getNewBlocks() == null || result.getNewBlocks().isEmpty()) {
+            return null;
+        }
+        return result.getNewBlocks().stream()
+                .map(LarkDocBlockRef::getBlockId)
+                .filter(id -> id != null && !id.isBlank())
+                .findFirst()
+                .orElse(null);
     }
 
     private void verifyOperation(

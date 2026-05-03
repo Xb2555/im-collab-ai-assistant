@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
-@Component
+@Deprecated
 public class DocumentEditPlanBuilder {
 
     private static final Pattern STRUCTURED_HEADING_PATTERN = Pattern.compile(

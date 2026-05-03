@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Locale;
 
-@Component
+@Deprecated
 public class DocumentTargetLocator {
 
     private enum HeadingGranularity {
