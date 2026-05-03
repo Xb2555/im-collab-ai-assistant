@@ -2,8 +2,11 @@ package com.lark.imcollab.app.planner.service;
 
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
 import com.lark.imcollab.planner.service.PlannerRetryService;
+import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
@@ -19,19 +22,22 @@ public class PlannerCommandApplicationService {
     private final PlannerRetryService plannerRetryService;
     private final ImTaskCommandFacade taskCommandFacade;
     private final TaskRuntimeService taskRuntimeService;
+    private final PlannerSessionService sessionService;
 
     public PlannerCommandApplicationService(
             PlannerSupervisorGraphRunner graphRunner,
             TaskBridgeService taskBridgeService,
             PlannerRetryService plannerRetryService,
             ImTaskCommandFacade taskCommandFacade,
-            TaskRuntimeService taskRuntimeService
+            TaskRuntimeService taskRuntimeService,
+            PlannerSessionService sessionService
     ) {
         this.graphRunner = graphRunner;
         this.taskBridgeService = taskBridgeService;
         this.plannerRetryService = plannerRetryService;
         this.taskCommandFacade = taskCommandFacade;
         this.taskRuntimeService = taskRuntimeService;
+        this.sessionService = sessionService;
     }
 
     public PlanTaskSession resume(String taskId, String feedback, boolean replanFromRoot) {
@@ -62,25 +68,14 @@ public class PlannerCommandApplicationService {
     }
 
     public PlanTaskSession confirmExecution(String taskId, PlanTaskSession currentSession) {
-        taskBridgeService.ensureTask(currentSession);
-        return graphRunner.run(
-                new PlannerSupervisorDecision(PlannerSupervisorAction.CONFIRM_ACTION, "user confirmed execution"),
-                taskId,
-                "开始执行",
-                null,
-                null
-        );
+        return taskCommandFacade.confirmExecution(taskId);
     }
 
     public PlanTaskSession cancel(String taskId) {
         taskCommandFacade.cancelExecution(taskId);
-        return graphRunner.run(
-                new PlannerSupervisorDecision(PlannerSupervisorAction.CANCEL_TASK, "user cancelled task"),
-                taskId,
-                "取消任务",
-                null,
-                null
-        );
+        sessionService.markAborted(taskId, "User cancelled from GUI command");
+        taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.ABORTED, TaskEventTypeEnum.TASK_CANCELLED);
+        return sessionService.get(taskId);
     }
 
     public PlanTaskSession retryFailed(String taskId, PlanTaskSession currentSession, String feedback) {

@@ -6,8 +6,11 @@ import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
+import com.lark.imcollab.common.model.enums.StepTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
 import org.junit.jupiter.api.Test;
@@ -112,6 +115,47 @@ class LarkIMPlannerReviewNotifierTest {
     }
 
     @Test
+    void reviewNoticeIncludesSummaryPreviewBody() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("d2f254d0-48b7-4520-a652-a454a291cbdb")
+                .inputContext(TaskInputContext.builder()
+                        .chatType("p2p")
+                        .senderOpenId("ou-user")
+                        .build())
+                .build();
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().taskId("task-1").status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(
+                        ArtifactRecord.builder()
+                                .artifactId("doc-1")
+                                .type(ArtifactTypeEnum.DOC)
+                                .title("技术方案文档")
+                                .url("https://doc.example")
+                                .build(),
+                        ArtifactRecord.builder()
+                                .artifactId("summary-1")
+                                .type(ArtifactTypeEnum.SUMMARY)
+                                .title("项目进展摘要")
+                                .preview("# 项目进展摘要\n\n项目已完成IM入口、Planner编排和PPT生成链路验证，可同步给群内成员。")
+                                .build()))
+                .build();
+
+        notifier.notifyExecutionReviewed(session, snapshot, TaskResultEvaluation.builder()
+                .verdict(ResultVerdictEnum.PASS)
+                .build());
+
+        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool).sendPrivateText(
+                org.mockito.ArgumentMatchers.eq("ou-user"),
+                textCaptor.capture(),
+                org.mockito.ArgumentMatchers.anyString()
+        );
+        assertThat(textCaptor.getValue())
+                .contains("技术方案文档", "https://doc.example", "项目进展摘要：", "项目已完成IM入口")
+                .doesNotContain("# 项目进展摘要", "摘要内容");
+    }
+
+    @Test
     void sendsExecutionFailureNoticeToP2PUser() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("d2f254d0-48b7-4520-a652-a454a291cbdb")
@@ -125,6 +169,14 @@ class LarkIMPlannerReviewNotifierTest {
                         .taskId("task-1")
                         .status(TaskStatusEnum.FAILED)
                         .build())
+                .steps(List.of(TaskStepRecord.builder()
+                        .stepId("ppt-step")
+                        .taskId("task-1")
+                        .type(StepTypeEnum.PPT_CREATE)
+                        .name("生成汇报PPT")
+                        .status(StepStatusEnum.FAILED)
+                        .outputSummary("飞书 Slides 创建失败：用户授权已过期")
+                        .build()))
                 .build();
 
         notifier.notifyExecutionFailed(
@@ -141,7 +193,8 @@ class LarkIMPlannerReviewNotifierTest {
                 idempotencyKeyCaptor.capture()
         );
         assertThat(textCaptor.getValue())
-                .contains("任务执行失败了", "飞书文档创建超时", "暂时没有拿到可展示的产物", "重试", "重新执行");
+                .contains("任务执行失败了", "飞书文档创建超时", "失败位置", "生成汇报PPT",
+                        "飞书 Slides 创建失败：用户授权已过期", "暂时没有拿到可展示的产物", "重试", "重新执行");
         assertThat(idempotencyKeyCaptor.getValue())
                 .startsWith("pr-")
                 .hasSizeLessThanOrEqualTo(50);

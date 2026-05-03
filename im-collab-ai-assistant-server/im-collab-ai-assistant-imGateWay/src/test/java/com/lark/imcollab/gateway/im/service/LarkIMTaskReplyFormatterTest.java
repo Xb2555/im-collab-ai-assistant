@@ -38,7 +38,10 @@ class LarkIMTaskReplyFormatterTest {
 
         assertThat(text).contains("我准备这样推进", "开始执行");
         assertThat(text).contains("生成技术方案文档", "生成汇报 PPT");
-        assertThat(text).contains("补一段风险清单");
+        assertThat(text).contains("你还可以指定");
+        assertThat(text).contains("文档目前支持基于已选消息", "PPT 目前支持创建新的飞书演示稿");
+        assertThat(text).contains("基于文档摘要生成 PPT");
+        assertThat(text).contains("文档里补一段风险清单");
         assertThat(text).doesNotContain("成功标准", "交付物");
     }
 
@@ -77,6 +80,27 @@ class LarkIMTaskReplyFormatterTest {
     }
 
     @Test
+    void multiStepPlanUsesLastOnlyForFinalStep() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planBlueprint(PlanBlueprint.builder()
+                        .planCards(List.of(
+                                card("技术方案文档", PlanCardTypeEnum.DOC),
+                                card("可直接发群的进展摘要", PlanCardTypeEnum.SUMMARY),
+                                card("5页以内中文汇报PPT", PlanCardTypeEnum.PPT)
+                        ))
+                        .build())
+                .build();
+
+        String text = formatter.planReady(session);
+
+        assertThat(text).contains("1. 先生成技术方案文档");
+        assertThat(text).contains("2. 再生成可直接发群的进展摘要");
+        assertThat(text).contains("3. 最后生成5页以内中文汇报PPT");
+        assertThat(text).doesNotContain("2. 最后生成可直接发群的进展摘要");
+    }
+
+    @Test
     void planReadySuggestsCurrentCapabilityScopedEdits() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
@@ -90,8 +114,8 @@ class LarkIMTaskReplyFormatterTest {
         String text = formatter.planReady(session);
 
         assertThat(text).contains("比如");
-        assertThat(text).contains("补一段风险清单");
-        assertThat(text).contains("再加一份汇报PPT初稿");
+        assertThat(text).contains("文档里补一段风险清单");
+        assertThat(text).contains("文档里加一段行动项");
         assertThat(text).doesNotContain("加一段群内摘要");
     }
 
@@ -189,6 +213,27 @@ class LarkIMTaskReplyFormatterTest {
 
         assertThat(text).contains("任务状态：已完成", "主执行链路已完成", "计划项：2 个");
         assertThat(text).doesNotContain("当前步骤：项目风险评估表", "步骤进度：1/2");
+    }
+
+    @Test
+    void failureIncludesFailedStepDetails() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .transitionReason("执行链路失败")
+                .build();
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .steps(List.of(
+                        TaskStepRecord.builder()
+                                .name("生成项目汇报 PPT")
+                                .status(StepStatusEnum.FAILED)
+                                .outputSummary("飞书 Slides 创建失败：用户授权已过期")
+                                .build()))
+                .build();
+
+        String text = formatter.failure(session, snapshot);
+
+        assertThat(text)
+                .contains("这次处理没有成功：执行链路失败", "具体原因", "生成项目汇报 PPT",
+                        "飞书 Slides 创建失败：用户授权已过期");
     }
 
     private static UserPlanCard card(String title, PlanCardTypeEnum type) {

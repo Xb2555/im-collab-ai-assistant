@@ -1,9 +1,14 @@
 package com.lark.imcollab.gateway.im.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.gateway.im.dto.LarkMessageHistoryViewResponse;
 import com.lark.imcollab.gateway.im.dto.LarkRealtimeMessage;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
+import com.lark.imcollab.skills.lark.im.LarkMessageHistoryItem;
+import com.lark.imcollab.skills.lark.im.LarkMessageHistoryResponse;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -61,5 +66,48 @@ class LarkIMMessageProjectionServiceTests {
         ));
 
         assertThat(message.content()).isEqualTo("张三 创建了群聊，并邀请了 李四");
+    }
+
+    @Test
+    void shouldKeepHistorySystemContentRawAndReturnUserMap() {
+        String content = "{\"template\":\"{from_user} 创建了群聊，并邀请了 {members}\","
+                + "\"from_user\":{\"id\":\"ou_zhang\"},\"members\":[{\"id\":\"ou_li\"}]}";
+        when(userProfileHydrationService.resolveByUserAccessToken("user-token", "ou_zhang"))
+                .thenReturn(new LarkUserProfile("ou_zhang", "张三", "https://avatar.example/zhang.png"));
+        when(userProfileHydrationService.resolveByUserAccessToken("user-token", "ou_li"))
+                .thenReturn(new LarkUserProfile("ou_li", "李四", "https://avatar.example/li.png"));
+
+        LarkMessageHistoryViewResponse response = service.projectHistory(new LarkMessageHistoryResponse(
+                List.of(new LarkMessageHistoryItem(
+                        "om_1",
+                        null,
+                        null,
+                        null,
+                        "system",
+                        null,
+                        null,
+                        false,
+                        false,
+                        "oc_1",
+                        null,
+                        null,
+                        null,
+                        null,
+                        content,
+                        List.of(),
+                        null,
+                        null,
+                        null
+                )),
+                false,
+                null
+        ), "user-token");
+
+        assertThat(response.items()).hasSize(1);
+        assertThat(response.items().get(0).content()).isEqualTo(content);
+        assertThat(response.userMap()).containsOnlyKeys("ou_zhang", "ou_li");
+        assertThat(response.userMap().get("ou_zhang").name()).isEqualTo("张三");
+        assertThat(response.userMap().get("ou_zhang").avatar()).isEqualTo("https://avatar.example/zhang.png");
+        assertThat(response.userMap().get("ou_li").name()).isEqualTo("李四");
     }
 }

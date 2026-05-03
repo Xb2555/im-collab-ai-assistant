@@ -13,10 +13,12 @@ import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -75,10 +77,11 @@ public class ContextNodeService {
         if (acquisitionPlan.isPresent() && acquisitionPlan.get().isNeedCollection()) {
             return ContextSufficiencyResult.collect(acquisitionPlan.get(), acquisitionPlan.get().getReason());
         }
+        ContextSufficiencyResult acquisitionClarification = null;
         if (acquisitionPlan.isPresent()
                 && hasText(acquisitionPlan.get().getClarificationQuestion())
                 && !(guardedResult.sufficient() && isStrongLocalContext(guardedResult))) {
-            return ContextSufficiencyResult.insufficient(
+            acquisitionClarification = ContextSufficiencyResult.insufficient(
                     List.of("source_context"),
                     acquisitionPlan.get().getClarificationQuestion(),
                     firstNonBlank(acquisitionPlan.get().getReason(), "context acquisition needs user input")
@@ -87,9 +90,6 @@ public class ContextNodeService {
         ContextAcquisitionPlan fallbackPlan = defaultAcquisitionPlan(workspaceContext);
         if (fallbackPlan != null && fallbackPlan.isNeedCollection()) {
             return ContextSufficiencyResult.collect(fallbackPlan, "available workspace source can be collected");
-        }
-        if (isMissingSourceMaterialGuard(guardedResult)) {
-            return guardedResult;
         }
         Optional<ContextSufficiencyResult> modelResult = invokeContextAgent(session, taskId, rawInstruction, workspaceContext);
         if (modelResult.isPresent()) {
@@ -104,6 +104,9 @@ public class ContextNodeService {
         }
         if (guardedResult.sufficient() && isStrongLocalContext(guardedResult)) {
             return guardedResult;
+        }
+        if (acquisitionClarification != null) {
+            return acquisitionClarification;
         }
         return guardedResult;
     }
@@ -124,14 +127,7 @@ public class ContextNodeService {
             }
             Map<String, Object> data = state.get().data();
             Object structured = data.get("messages") == null ? data.get("message") : data.get("messages");
-            if (structured instanceof ContextSufficiencyResult result) {
-                return Optional.of(result);
-            }
-            String text = structuredText(structured);
-            if (text != null && !text.isBlank()) {
-                return Optional.ofNullable(objectMapper.readValue(extractJson(text), ContextSufficiencyResult.class));
-            }
-            return Optional.empty();
+            return extractStructured(structured, ContextSufficiencyResult.class);
         } catch (Exception ignored) {
             return Optional.empty();
         }
@@ -158,14 +154,7 @@ public class ContextNodeService {
             }
             Map<String, Object> data = state.get().data();
             Object structured = data.get("messages") == null ? data.get("message") : data.get("messages");
-            if (structured instanceof ContextAcquisitionPlan plan) {
-                return Optional.of(plan);
-            }
-            String text = structuredText(structured);
-            if (text != null && !text.isBlank()) {
-                return Optional.ofNullable(objectMapper.readValue(extractJson(text), ContextAcquisitionPlan.class));
-            }
-            return Optional.empty();
+            return extractStructured(structured, ContextAcquisitionPlan.class);
         } catch (Exception ignored) {
             return Optional.empty();
         }
@@ -178,6 +167,13 @@ public class ContextNodeService {
                 Decide whether the available context is enough to create an executable plan.
                 If workspace context only contains the user's latest instruction and no real source material, do NOT treat it as material to summarize.
                 However, if the user instruction itself includes a concrete content body, topic details, or source material after a colon/newline, treat that embedded text as usable context.
+                This embedded-material decision is semantic: judge the whole user message, not only keywords or punctuation.
+                Inline task context is enough when it contains concrete facts such as goals, completed work, current progress, risks, decisions, next steps, metrics, requirements, or source excerpts.
+                Example sufficient inline context: "请生成项目进展摘要。上下文：目标是验证 SUMMARY；已完成 A/B；风险是 C；下一步做 D。"
+                Example insufficient request: "帮我整理一下，给老板看" without selected messages, document refs, retrievable chat range, or embedded facts.
+                Conversation memory is only background for continuity; it is not source material for a new task.
+                If the current user message starts a new task but only says a generic action like organizing or summarizing, do not infer a concrete topic from old memory.
+                Ask what material/range/topic/output the user wants instead.
                 Treat words like "plan", "three steps", "do not execute yet", "outline", or "draft" as planning constraints, not as source material.
                 If the user asks for a project review, project summary, proposal, report, or stakeholder-facing document/PPT/summary but provides no project material,
                 selected messages, document refs, attachments, or retrievable message range, mark the context insufficient and ask for the missing material.
@@ -188,6 +184,10 @@ public class ContextNodeService {
                 the topic names are only retrieval criteria, not source material. With chatId/threadId available, return collectionRequired=true.
                 Do not treat the pull instruction itself as the messages to summarize.
                 For vague requests like organizing, summarizing, or showing something to a stakeholder, the context is insufficient unless there are selected messages, document refs, attachments, or a concrete topic/material embedded in the instruction.
+                Decision examples:
+                - "新开一个任务：帮我整理一下" => insufficient, ask what material/range/topic/output to organize; do not collect IM history.
+                - "帮我整理一下刚才关于供应商评审的讨论" with chatId => collectionRequired=true for IM_HISTORY, selectionInstruction copies the whole request.
+                - "把本群最近 10 分钟关于风险的消息整理成摘要" with chatId => collectionRequired=true for IM_HISTORY.
                 If insufficient, return sufficient=false, missingItems, and one natural Chinese clarificationQuestion.
                 Do not create plan steps.
 
@@ -225,8 +225,13 @@ public class ContextNodeService {
                 Decide whether the task needs external context to be pulled before planning.
                 You may request only these sources: IM_HISTORY and LARK_DOC.
                 Treat words like "plan", "three steps", "do not execute yet", "outline", or "draft" as planning constraints, not source material.
+                If the user instruction itself includes concrete task context, background facts, current progress, risks, decisions, or source material, treat that as inline material and do not ask for external source just because workspace refs are empty.
+                Judge inline material semantically from the whole message; do not rely on keywords or a single delimiter.
+                Inline task context is enough when it contains goals, completed work, current progress, risks, decisions, next steps, metrics, requirements, or source excerpts.
                 If a task depends on project facts, review facts, prior discussion, a referenced document, or stakeholder-facing content and those facts are absent,
                 either request a concrete source or ask a natural clarification question. Do not let planning proceed on the user's request text alone.
+                Conversation memory is not an external source to collect. For a new task, do not reuse the previous task topic from memory unless the current user message explicitly points to that previous task or a specific recent discussion/topic/range.
+                If the current request is only a generic action such as "help me organize/summarize it" and gives no source, range, topic, document, selected messages, or embedded facts, return needCollection=false with a clarificationQuestion.
                 Use IM_HISTORY when the user refers to recent/prior discussion, chat messages, "刚才", "群里", "聊天记录", and a matching chat/thread source is available.
                 Also use IM_HISTORY when the user says to summarize the previous/current discussion about named topics. Topic names are retrieval criteria, not collected content.
                 If the user refers to group messages but the current chat is p2p/private, do NOT request IM_HISTORY from the private chat; ask the user to provide the group, time range, selected messages, or paste the material.
@@ -234,6 +239,10 @@ public class ContextNodeService {
                 If selectedMessages already contain real source material, do not request collection.
                 The current user message itself is not selected source material unless selectedMessages contains additional real material.
                 If no usable source id/ref exists, return needCollection=false and put a natural clarificationQuestion.
+                Decision examples:
+                - User says "新开一个任务：帮我整理一下" in a group: {"needCollection":false,"sources":[],"reason":"generic task without source scope","clarificationQuestion":"你想整理哪部分材料？可以告诉我时间范围、主题，或直接贴几条消息。"}
+                - User says "帮我整理一下刚才关于供应商评审的讨论" in a group with chatId: request IM_HISTORY with the full sentence as selectionInstruction.
+                - User says "本群最近 10 分钟带有 A 标记的风险消息整理成摘要" in a group with chatId: request IM_HISTORY with that full filter.
                 Do not create plan steps and do not answer the user.
                 For IM_HISTORY, copy the user's exact message selection criteria into selectionInstruction.
                 Examples of selection criteria include time window, topics, required marker/text, excluded marker/text, sender constraints, and "if none found then ask me".
@@ -477,14 +486,6 @@ public class ContextNodeService {
                 || result.reason().contains("external workspace context"));
     }
 
-    private boolean isMissingSourceMaterialGuard(ContextSufficiencyResult result) {
-        return result != null
-                && !result.sufficient()
-                && !result.collectionRequired()
-                && result.reason() != null
-                && result.reason().contains("no source material");
-    }
-
     private String normalize(String value) {
         return value == null ? "" : value.trim().replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
     }
@@ -509,14 +510,52 @@ public class ContextNodeService {
         return value == null ? "" : value;
     }
 
-    private String structuredText(Object structured) {
-        if (structured instanceof String text) {
-            return text;
+    private <T> Optional<T> extractStructured(Object value, Class<T> type) {
+        if (value == null) {
+            return Optional.empty();
         }
-        if (structured instanceof AssistantMessage message) {
-            return message.getText();
+        if (type.isInstance(value)) {
+            return Optional.of(type.cast(value));
         }
-        return null;
+        if (value instanceof AssistantMessage assistantMessage) {
+            return parseText(assistantMessage.getText(), type);
+        }
+        if (value instanceof Message message) {
+            return parseText(message.getText(), type);
+        }
+        if (value instanceof CharSequence text) {
+            return parseText(text.toString(), type);
+        }
+        if (value instanceof Map<?, ?> map) {
+            try {
+                return Optional.of(objectMapper.convertValue(map, type));
+            } catch (IllegalArgumentException ignored) {
+                return Optional.empty();
+            }
+        }
+        if (value instanceof Iterable<?> iterable) {
+            List<Object> values = new ArrayList<>();
+            iterable.forEach(values::add);
+            Collections.reverse(values);
+            for (Object item : values) {
+                Optional<T> parsed = extractStructured(item, type);
+                if (parsed.isPresent()) {
+                    return parsed;
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private <T> Optional<T> parseText(String text, Class<T> type) {
+        if (text == null || text.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(objectMapper.readValue(extractJson(text), type));
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
     }
 
     private String extractJson(String text) {

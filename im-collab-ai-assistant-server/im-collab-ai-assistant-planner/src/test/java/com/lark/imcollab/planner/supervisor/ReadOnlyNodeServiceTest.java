@@ -3,12 +3,17 @@ package com.lark.imcollab.planner.supervisor;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
+import com.lark.imcollab.common.model.enums.StepTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import org.junit.jupiter.api.Test;
@@ -114,5 +119,60 @@ class ReadOnlyNodeServiceTest {
         assertThat(result.getIntakeState().getAssistantReply()).contains("https://example.feishu.cn/docx/doc");
         verify(memoryService).appendAssistantTurn(session, result.getIntakeState().getAssistantReply());
         verify(sessionService).saveWithoutVersionChange(session);
+    }
+
+    @Test
+    void statusReadOnlyReplyDoesNotAskFollowUp() {
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        ReadOnlyNodeService service = new ReadOnlyNodeService(
+                sessionService,
+                memoryService,
+                runtimeTool,
+                null
+        );
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-status")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .planCards(List.of(UserPlanCard.builder()
+                        .cardId("card-001")
+                        .title("生成摘要")
+                        .type(PlanCardTypeEnum.SUMMARY)
+                        .build()))
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .readOnlyView("STATUS")
+                        .lastUserMessage("任务状态")
+                        .build())
+                .build();
+        when(sessionService.get("task-status")).thenReturn(session);
+        when(runtimeTool.getSnapshot("task-status")).thenReturn(TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .steps(List.of(TaskStepRecord.builder()
+                        .stepId("card-001")
+                        .name("生成摘要")
+                        .type(StepTypeEnum.SUMMARY)
+                        .status(StepStatusEnum.COMPLETED)
+                        .build()))
+                .artifacts(List.of(ArtifactRecord.builder()
+                        .type(ArtifactTypeEnum.SUMMARY)
+                        .title("项目摘要")
+                        .preview("项目摘要内容")
+                        .build()))
+                .build());
+
+        PlanTaskSession result = service.readOnly(
+                "task-status",
+                "任务状态",
+                PlannerSupervisorDecisionResult.builder()
+                        .action(PlannerSupervisorAction.QUERY_STATUS)
+                        .confidence(1.0d)
+                        .build()
+        );
+
+        assertThat(result.getIntakeState().getAssistantReply())
+                .contains("任务状态：已完成", "步骤进度：1/1", "已有产物：1 个")
+                .doesNotContain("需要我", "吗？");
     }
 }

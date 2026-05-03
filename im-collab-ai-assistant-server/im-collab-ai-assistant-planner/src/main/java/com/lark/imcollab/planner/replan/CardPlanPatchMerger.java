@@ -76,15 +76,18 @@ public class CardPlanPatchMerger {
         if (targets.isEmpty()) {
             return;
         }
-        PlanPatchCardDraft draft = intent.getNewCardDrafts() == null || intent.getNewCardDrafts().isEmpty()
-                ? null
-                : intent.getNewCardDrafts().get(0);
-        if (draft == null) {
+        List<PlanPatchCardDraft> drafts = intent.getNewCardDrafts() == null ? List.of() : intent.getNewCardDrafts();
+        if (drafts.isEmpty() || drafts.stream().allMatch(draft -> draft == null)) {
             return;
         }
+        Map<String, PlanPatchCardDraft> draftByTarget = draftsByTarget(targets, drafts);
         Map<String, CardTextChange> textChanges = new LinkedHashMap<>();
         for (UserPlanCard card : cards) {
             if (card == null || !targets.contains(card.getCardId())) {
+                continue;
+            }
+            PlanPatchCardDraft draft = draftByTarget.get(card.getCardId());
+            if (draft == null) {
                 continue;
             }
             String oldTitle = card.getTitle();
@@ -102,6 +105,32 @@ public class CardPlanPatchMerger {
             textChanges.put(card.getCardId(), new CardTextChange(oldTitle, oldDescription, card.getTitle(), card.getDescription()));
         }
         refreshDependentReferences(cards, textChanges);
+    }
+
+    private Map<String, PlanPatchCardDraft> draftsByTarget(LinkedHashSet<String> targets, List<PlanPatchCardDraft> drafts) {
+        Map<String, PlanPatchCardDraft> result = new LinkedHashMap<>();
+        if (targets == null || targets.isEmpty()) {
+            return result;
+        }
+        List<PlanPatchCardDraft> safeDrafts = drafts == null
+                ? List.of()
+                : drafts.stream().filter(draft -> draft != null).toList();
+        if (safeDrafts.isEmpty()) {
+            return result;
+        }
+        List<String> targetList = new ArrayList<>(targets);
+        if (safeDrafts.size() == 1) {
+            PlanPatchCardDraft draft = safeDrafts.get(0);
+            for (String target : targetList) {
+                result.put(target, draft);
+            }
+            return result;
+        }
+        int limit = Math.min(targetList.size(), safeDrafts.size());
+        for (int index = 0; index < limit; index++) {
+            result.put(targetList.get(index), safeDrafts.get(index));
+        }
+        return result;
     }
 
     private void mergeCards(List<UserPlanCard> cards, PlanPatchIntent intent) {

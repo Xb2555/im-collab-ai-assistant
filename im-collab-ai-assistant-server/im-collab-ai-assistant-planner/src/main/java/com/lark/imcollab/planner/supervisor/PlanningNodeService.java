@@ -157,6 +157,7 @@ public class PlanningNodeService {
         }
         PlanBlueprint readyBlueprint = blueprint.get();
         attachCollectedSourceScope(readyBlueprint, workspaceContext);
+        normalizeCollectedContextWording(readyBlueprint, workspaceContext);
         qualityService.applyPlanReady(session, readyBlueprint);
         sessionService.saveWithoutVersionChange(session);
         return session;
@@ -223,6 +224,50 @@ public class PlanningNodeService {
         if (sourceScope == null || !hasWorkspaceContextMaterial(sourceScope)) {
             blueprint.setSourceScope(workspaceContext);
         }
+    }
+
+    private void normalizeCollectedContextWording(PlanBlueprint blueprint, WorkspaceContext workspaceContext) {
+        if (blueprint == null || !isAutoCollectedContext(workspaceContext) || blueprint.getPlanCards() == null) {
+            return;
+        }
+        for (UserPlanCard card : blueprint.getPlanCards()) {
+            if (card == null) {
+                continue;
+            }
+            card.setTitle(neutralizeSelectedMessageWording(card.getTitle()));
+            card.setDescription(neutralizeSelectedMessageWording(card.getDescription()));
+            if (card.getAgentTaskPlanCards() == null) {
+                continue;
+            }
+            for (AgentTaskPlanCard taskCard : card.getAgentTaskPlanCards()) {
+                if (taskCard == null) {
+                    continue;
+                }
+                taskCard.setTitle(neutralizeSelectedMessageWording(taskCard.getTitle()));
+                taskCard.setInput(neutralizeSelectedMessageWording(taskCard.getInput()));
+                taskCard.setContext(neutralizeSelectedMessageWording(taskCard.getContext()));
+            }
+        }
+    }
+
+    private boolean isAutoCollectedContext(WorkspaceContext workspaceContext) {
+        if (!hasWorkspaceContextMaterial(workspaceContext)) {
+            return false;
+        }
+        String selectionType = normalize(workspaceContext.getSelectionType());
+        return !("message".equals(selectionType)
+                || "cherrypick".equals(selectionType)
+                || "cherry_pick".equals(selectionType)
+                || "selected_messages".equals(selectionType));
+    }
+
+    private String neutralizeSelectedMessageWording(String value) {
+        if (!hasText(value)) {
+            return value;
+        }
+        return value.replace("选中的", "已读取的")
+                .replace("用户选中的", "已读取的")
+                .replace("精选的", "已读取的");
     }
 
     private boolean hasWorkspaceContextMaterial(WorkspaceContext workspaceContext) {
@@ -552,12 +597,21 @@ public class PlanningNodeService {
         if (!hasText(planningInput)) {
             return "";
         }
-        for (String line : planningInput.split("\\R")) {
-            if (line.startsWith("User instruction:")) {
-                return line.substring("User instruction:".length()).trim();
+        String marker = "User instruction:";
+        int start = planningInput.indexOf(marker);
+        if (start < 0) {
+            return planningInput.trim();
+        }
+        String instructionBlock = planningInput.substring(start + marker.length());
+        List<String> nextMarkers = List.of("\nUser feedback:", "\nWorkspace context:", "\nConversation memory:");
+        int end = instructionBlock.length();
+        for (String nextMarker : nextMarkers) {
+            int index = instructionBlock.indexOf(nextMarker);
+            if (index >= 0 && index < end) {
+                end = index;
             }
         }
-        return planningInput.trim();
+        return instructionBlock.substring(0, end).trim();
     }
 
     private RunnableConfig config(

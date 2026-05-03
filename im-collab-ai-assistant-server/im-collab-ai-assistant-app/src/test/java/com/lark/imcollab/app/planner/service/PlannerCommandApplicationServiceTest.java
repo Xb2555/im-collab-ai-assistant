@@ -2,7 +2,10 @@ package com.lark.imcollab.app.planner.service;
 
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.service.PlannerRetryService;
+import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
@@ -18,6 +21,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -28,6 +33,7 @@ class PlannerCommandApplicationServiceTest {
     @Mock private PlannerRetryService plannerRetryService;
     @Mock private ImTaskCommandFacade taskCommandFacade;
     @Mock private TaskRuntimeService taskRuntimeService;
+    @Mock private PlannerSessionService sessionService;
 
     private PlannerCommandApplicationService service;
 
@@ -38,8 +44,46 @@ class PlannerCommandApplicationServiceTest {
                 taskBridgeService,
                 plannerRetryService,
                 taskCommandFacade,
-                taskRuntimeService
+                taskRuntimeService,
+                sessionService
         );
+    }
+
+    @Test
+    void confirmExecutionUsesAsyncCommandFacadeWithoutRunningGraph() {
+        PlanTaskSession executing = new PlanTaskSession();
+        executing.setTaskId("task-1");
+        executing.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        when(taskCommandFacade.confirmExecution("task-1")).thenReturn(executing);
+
+        PlanTaskSession result = service.confirmExecution("task-1", new PlanTaskSession());
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(executing);
+        verify(taskCommandFacade).confirmExecution("task-1");
+        verify(graphRunner, never()).run(any(), eq("task-1"), any(), any(), any());
+        verify(taskBridgeService, never()).ensureTask(any());
+    }
+
+    @Test
+    void cancelFlipsStateAndProjectsRuntimeWithoutRunningGraph() {
+        PlanTaskSession aborted = new PlanTaskSession();
+        aborted.setTaskId("task-1");
+        aborted.setPlanningPhase(PlanningPhaseEnum.ABORTED);
+        when(sessionService.get("task-1")).thenReturn(aborted);
+
+        PlanTaskSession result = service.cancel("task-1");
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(aborted);
+        InOrder inOrder = inOrder(taskCommandFacade, sessionService, taskRuntimeService);
+        inOrder.verify(taskCommandFacade).cancelExecution("task-1");
+        inOrder.verify(sessionService).markAborted("task-1", "User cancelled from GUI command");
+        inOrder.verify(taskRuntimeService).projectPhaseTransition(
+                "task-1",
+                PlanningPhaseEnum.ABORTED,
+                TaskEventTypeEnum.TASK_CANCELLED
+        );
+        inOrder.verify(sessionService).get("task-1");
+        verify(graphRunner, never()).run(any(), eq("task-1"), any(), any(), any());
     }
 
     @Test

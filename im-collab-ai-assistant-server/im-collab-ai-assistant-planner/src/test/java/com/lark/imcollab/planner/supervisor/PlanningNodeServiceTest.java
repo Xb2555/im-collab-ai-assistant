@@ -450,4 +450,52 @@ class PlanningNodeServiceTest {
         verify(questionTool, never()).askUser(any(PlanTaskSession.class), any());
         verify(planningAgent).invoke(anyString(), any());
     }
+
+    @Test
+    void continuesPlanningWhenImInstructionEmbedsMultilineMaterial() throws Exception {
+        ReactAgent intentAgent = mock(ReactAgent.class);
+        ReactAgent planningAgent = mock(ReactAgent.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
+        String instruction = """
+                请根据下面材料生成一份3页以内的中文项目汇报PPT，直接生成飞书幻灯片，不要生成文档。
+                材料：Planner已经支持GUI接口创建任务、确认执行、生成飞书Slides artifact；本轮要验证IM入口也能从自然语言到PPT链接完成闭环。
+                """;
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-im-ppt")
+                .rawInstruction(instruction)
+                .build();
+        when(sessionService.getOrCreate("task-im-ppt")).thenReturn(session);
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(intentAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"userGoal":"生成项目汇报PPT","deliverableTargets":["PPT"],"missingSlots":["缺少可整理材料"]}
+                        """)
+        ))));
+        when(planningAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"planCards":[{"cardId":"card-001","title":"生成项目汇报PPT","type":"PPT"}]}
+                        """)
+        ))));
+        PlanningNodeService planningService = new PlanningNodeService(
+                intentAgent,
+                planningAgent,
+                sessionService,
+                new PlanQualityService(new ObjectMapper(), List.of(), new ExecutionContractFactory()),
+                projectionService,
+                memoryService,
+                questionTool,
+                new ObjectMapper()
+        );
+
+        PlanTaskSession result = planningService.plan("task-im-ppt", instruction, null, "");
+
+        assertThat(result.getPlanCards()).hasSize(1);
+        verify(questionTool, never()).askUser(any(PlanTaskSession.class), any());
+        verify(planningAgent).invoke(contains("生成飞书Slides artifact"), any());
+    }
 }

@@ -71,9 +71,14 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         assertThat(accepted.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTAKE);
         verify(slowPlanner, never()).plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        assertThat(sentPrivateTexts(asyncReplyTool)).containsExactly("收到，我先帮你看一下。");
         executor.runAll();
         verify(slowPlanner).plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull());
-        verify(asyncReplyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), org.mockito.ArgumentMatchers.contains("我准备这样推进"), anyString());
+        assertThat(sentPrivateTexts(asyncReplyTool))
+                .hasSize(2)
+                .first()
+                .isEqualTo("收到，我先帮你看一下。");
+        assertThat(sentPrivateTexts(asyncReplyTool).get(1)).contains("我准备这样推进");
     }
 
     @Test
@@ -88,9 +93,28 @@ class LoggingLarkInboundMessageDispatcherTest {
         dispatcher.dispatch(message("没问题，执行"));
 
         verify(taskCommandFacade).confirmExecution("task-1");
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("好的，开始执行");
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
+                        .contains("好的，我现在开始执行")
+                        .contains("任务状态：正在执行")
+                        .contains("步骤进度：0/2"));
+    }
+
+    @Test
+    void confirmActionAlreadyExecutingRepliesConfirmationAndStatusTogether() {
+        PlanTaskSession executing = session(TaskIntakeTypeEnum.CONFIRM_ACTION, PlanningPhaseEnum.EXECUTING);
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(executing);
+        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshot(TaskStatusEnum.EXECUTING));
+
+        dispatcher.dispatch(message("开始执行"));
+
+        verify(taskCommandFacade, never()).confirmExecution(anyString());
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
+                        .contains("好的，我现在开始执行")
+                        .contains("任务状态：正在执行")
+                        .contains("步骤进度：0/2"));
     }
 
     @Test
@@ -106,9 +130,11 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         verify(taskCommandFacade).retryExecution("task-1", "再试一次");
         verify(taskCommandFacade, never()).confirmExecution(anyString());
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("重新试一次");
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
+                        .contains("好的，我现在从失败的步骤重新试一次")
+                        .contains("任务状态：正在执行")
+                        .contains("步骤进度：0/2"));
     }
 
     @Test
@@ -122,9 +148,8 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         verify(taskCommandFacade).getRuntimeSnapshot("task-1");
         verify(taskCommandFacade, never()).confirmExecution(anyString());
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("任务状态：正在执行", "步骤进度：0/2");
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply).contains("任务状态：正在执行", "步骤进度：0/2"));
     }
 
     @Test
@@ -135,10 +160,11 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         dispatcher.dispatch(message("再加一条群内摘要"));
 
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("计划已更新", "开始执行");
-        assertThat(textCaptor.getValue()).doesNotContain("成功标准", "风险关注");
+        List<String> replies = sentPrivateTexts(replyTool);
+        assertThat(replies).hasSize(2);
+        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(1)).contains("计划已更新", "开始执行");
+        assertThat(replies.get(1)).doesNotContain("成功标准", "风险关注");
     }
 
     @Test
@@ -193,10 +219,11 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         dispatcher.dispatch(message("顺手处理一下"));
 
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("我还没完全判断清楚");
-        assertThat(textCaptor.getValue()).doesNotContain("计划已更新");
+        List<String> replies = sentPrivateTexts(replyTool);
+        assertThat(replies).hasSize(2);
+        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(1)).contains("我还没完全判断清楚");
+        assertThat(replies.get(1)).doesNotContain("计划已更新");
     }
 
     @Test
@@ -209,10 +236,11 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         dispatcher.dispatch(message("再加一条：最后还要输出一句话总结"));
 
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("这次处理没有成功", "计划调整失败");
-        assertThat(textCaptor.getValue()).doesNotContain("任务已收到，正在处理");
+        List<String> replies = sentPrivateTexts(replyTool);
+        assertThat(replies).hasSize(2);
+        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(1)).contains("这次处理没有成功", "计划调整失败");
+        assertThat(replies).allSatisfy(reply -> assertThat(reply).doesNotContain("任务已收到，正在处理"));
     }
 
     @Test
@@ -224,10 +252,11 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         dispatcher.dispatch(message("帮我看看这个"));
 
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("我有点没对上你的意思");
-        assertThat(textCaptor.getValue()).doesNotContain("我准备这样推进", "计划已更新");
+        List<String> replies = sentPrivateTexts(replyTool);
+        assertThat(replies).hasSize(2);
+        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(1)).contains("我有点没对上你的意思");
+        assertThat(replies.get(1)).doesNotContain("我准备这样推进", "计划已更新");
     }
 
     @Test
@@ -239,9 +268,8 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         dispatcher.dispatch(message("详细计划"));
 
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("详细计划如下", "[DOC]", "[PPT]");
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply).contains("详细计划如下", "[DOC]", "[PPT]"));
     }
 
     @Test
@@ -253,11 +281,10 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         dispatcher.dispatch(message("计划是什么"));
 
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue())
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
                 .contains("详细计划如下", "[DOC]", "[PPT]")
-                .doesNotContain("任务状态：");
+                .doesNotContain("任务状态："));
     }
 
     @Test
@@ -269,9 +296,10 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         dispatcher.dispatch(message("我想要的是完整的计划"));
 
-        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
-        verify(replyTool).sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
-        assertThat(textCaptor.getValue()).contains("详细计划如下", "[DOC]", "[PPT]");
+        List<String> replies = sentPrivateTexts(replyTool);
+        assertThat(replies).hasSize(2);
+        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(1)).contains("详细计划如下", "[DOC]", "[PPT]");
     }
 
     private static PlanTaskSession session(TaskIntakeTypeEnum intakeType, PlanningPhaseEnum phase) {
@@ -330,6 +358,13 @@ class LoggingLarkInboundMessageDispatcherTest {
                 "2026-04-30T00:00:00Z",
                 InputSourceEnum.LARK_PRIVATE_CHAT
         );
+    }
+
+    private static List<String> sentPrivateTexts(LarkMessageReplyTool replyTool) {
+        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool, org.mockito.Mockito.atLeastOnce())
+                .sendPrivateText(org.mockito.ArgumentMatchers.eq("ou-user"), textCaptor.capture(), anyString());
+        return textCaptor.getAllValues();
     }
 
     private static final class CapturingExecutor implements Executor {

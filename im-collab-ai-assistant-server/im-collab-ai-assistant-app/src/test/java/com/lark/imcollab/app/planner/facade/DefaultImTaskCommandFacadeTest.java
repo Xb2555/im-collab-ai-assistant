@@ -218,6 +218,7 @@ class DefaultImTaskCommandFacadeTest {
 
         facade.confirmExecution("task-1");
         facade.cancelExecution("task-1");
+        verify(harnessFacade, never()).abortExecution("task-1");
         executor.runAll();
 
         assertThat(cancellationRegistry.isCancelled("task-1")).isTrue();

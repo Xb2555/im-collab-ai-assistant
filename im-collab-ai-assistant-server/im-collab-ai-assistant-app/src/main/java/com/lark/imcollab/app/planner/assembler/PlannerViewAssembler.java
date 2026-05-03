@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.PlanCardVO;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.common.model.vo.TaskActionVO;
+import com.lark.imcollab.common.util.PlanCapabilityHints;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -45,7 +46,8 @@ public class PlannerViewAssembler {
                 !transientReply,
                 !transientReply,
                 transientReply,
-                session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply()
+                session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply(),
+                PlanCapabilityHints.fromPlanCards(session.getPlanCards())
         );
     }
 

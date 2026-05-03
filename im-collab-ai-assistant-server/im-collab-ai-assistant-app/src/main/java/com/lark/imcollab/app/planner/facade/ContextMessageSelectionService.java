@@ -10,6 +10,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -17,6 +19,9 @@ public class ContextMessageSelectionService {
 
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
+    private static final Pattern EXACT_CONSTRAINT_PATTERN = Pattern.compile(
+            "【[^】]{2,60}】|\\b[A-Z][A-Z0-9_-]{2,}\\d{2,}[A-Z0-9_-]*\\b"
+    );
 
     public ContextMessageSelectionService(ChatModel chatModel, ObjectMapper objectMapper) {
         this.chatModel = chatModel;
@@ -31,7 +36,7 @@ public class ContextMessageSelectionService {
         if (candidates == null || candidates.isEmpty()) {
             return List.of();
         }
-        String criteria = firstNonBlank(selectionInstruction, rawInstruction);
+        String criteria = mergeCriteria(rawInstruction, selectionInstruction);
         if (criteria.isBlank()) {
             return candidates;
         }
@@ -43,7 +48,11 @@ public class ContextMessageSelectionService {
             }
             Set<String> selectedIds = new LinkedHashSet<>(decision.selectedMessageIds);
             selectedIds.addAll(auditMissingSelections(criteria, candidates, selectedIds));
-            Set<String> finalSelectedIds = pruneInvalidSelections(criteria, candidates, selectedIds);
+            Set<String> finalSelectedIds = enforceExactConstraints(
+                    criteria,
+                    candidates,
+                    pruneInvalidSelections(criteria, candidates, selectedIds)
+            );
             return candidates.stream()
                     .filter(item -> item != null && item.messageId() != null && finalSelectedIds.contains(item.messageId()))
                     .toList();
@@ -116,10 +125,13 @@ public class ContextMessageSelectionService {
                 筛选要求：
                 - 严格保留“同时满足用户全部筛选条件”的所有消息，不要只挑最重要的几条。
                 - 用户可能同时给出时间、标记、包含词、排除词、主题类别、输出范围等多个条件；必须按整句合取判断。
+                - 用户原句里的项目代号、测试标记、编号、专有名词、括号内标签等精确限定是强约束；候选消息没有这些精确限定时，不能只因为主题相近就入选。
                 - 如果用户说“只总结其中属于 X 的消息 / 只要 X 类消息 / 仅提取 X”，那么只有内容本身属于 X 的消息能进入 selectedMessageIds；其他消息即使有相同标记，也只能作为约束参考，不能作为原始材料入选。
                 - 说明输出范围、交付物形式、排除项、验证方式的消息属于任务约束；如果它没有描述 X 类事实本身，不要因为提到 X 这个词就入选。
                 - 判断“属于 X”时看消息要表达的事实类别，而不是只看是否出现 X 字样。比如“这轮只验证风险摘要”是在说明输出约束，不是风险事实。
                 - 如果用户只是说“总结这些消息”且没有进一步限定类别，则带标记且不违反排除条件的候选都应进入 selectedMessageIds。
+                - 如果用户条件只是泛化动作，没有给出消息来源、时间范围、主题、标记、包含/排除条件、sender 约束或明确的“这些消息/刚才讨论”等指向，不要猜测候选消息；返回空数组，让主控继续澄清。
+                - 不要用上一轮任务主题或候选列表里最显眼的主题来补全用户没有说出的筛选条件。
                 - 如果候选消息与用户条件大体匹配但你不确定是否该保留，先判断它是否满足全部硬性限定；满足才保留，不满足就不要保留。
                 - 用户要求排除的消息必须排除。
                 - 机器人/app 消息、当前任务指令、明显无关闲聊默认不选。
@@ -164,6 +176,7 @@ public class ContextMessageSelectionService {
 
                 审计原则：
                 - 高召回优先，但只能补回“同时满足用户全部筛选条件”的未选候选。
+                - 用户原句里的项目代号、测试标记、编号、专有名词、括号内标签等精确限定是强约束；候选消息没有这些精确限定时，不能只因为主题相近就补回。
                 - 如果用户限定“只总结/只要/仅提取”某类消息，不属于该类的未选候选不要补回，即使它有相同标记。
                 - 输出范围、交付物形式、排除项、验证方式等任务约束不要补回为正文材料，除非它本身描述的是用户限定的事实类别。
                 - 不要按重要性压缩；待办、风险、决策、需求、后续验证等都可能是有效材料，前提是符合用户整句条件。
@@ -198,6 +211,7 @@ public class ContextMessageSelectionService {
                 复核原则：
                 - 用户的排除条件优先级最高；违反排除条件的消息必须剔除，即使它同时满足包含词、标记或时间范围。
                 - 用户的限定条件必须全部满足；只满足部分条件的消息必须剔除。
+                - 用户原句里的项目代号、测试标记、编号、专有名词、括号内标签等精确限定是强约束；候选消息没有这些精确限定时，必须剔除。
                 - 如果用户限定“只总结/只要/仅提取”某类消息，消息正文表达的事实类别必须属于该类才保留。
                 - 任务约束、输出形式、验证范围、噪声说明、当前任务指令本身都不能作为正文材料保留，除非用户明确要总结这些约束本身。
                 - 如果没有仍然符合条件的消息，selectedMessageIds 返回空数组。
@@ -241,6 +255,70 @@ public class ContextMessageSelectionService {
             }
         }
         return "";
+    }
+
+    private String mergeCriteria(String rawInstruction, String selectionInstruction) {
+        String raw = rawInstruction == null ? "" : rawInstruction.trim();
+        String selection = selectionInstruction == null ? "" : selectionInstruction.trim();
+        if (raw.isBlank()) {
+            return selection;
+        }
+        if (selection.isBlank() || raw.equals(selection)) {
+            return raw;
+        }
+        return "用户原句：" + raw + "\n上下文筛选要求：" + selection;
+    }
+
+    private Set<String> enforceExactConstraints(
+            String criteria,
+            List<LarkMessageHistoryItem> candidates,
+            Set<String> selectedIds
+    ) {
+        if (selectedIds == null || selectedIds.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> constraints = exactConstraints(criteria);
+        if (constraints.isEmpty()) {
+            return selectedIds;
+        }
+        boolean hasMatchingCandidate = candidates.stream()
+                .filter(item -> item != null && item.content() != null)
+                .anyMatch(item -> containsAnyExactConstraint(item.content(), constraints));
+        if (!hasMatchingCandidate) {
+            return selectedIds;
+        }
+        Set<String> filtered = new LinkedHashSet<>();
+        for (LarkMessageHistoryItem item : candidates) {
+            if (item == null || item.messageId() == null || !selectedIds.contains(item.messageId())) {
+                continue;
+            }
+            if (containsAnyExactConstraint(item.content(), constraints)) {
+                filtered.add(item.messageId());
+            }
+        }
+        return filtered;
+    }
+
+    private Set<String> exactConstraints(String criteria) {
+        if (criteria == null || criteria.isBlank()) {
+            return Set.of();
+        }
+        Set<String> constraints = new LinkedHashSet<>();
+        Matcher matcher = EXACT_CONSTRAINT_PATTERN.matcher(criteria);
+        while (matcher.find()) {
+            String value = matcher.group();
+            if (value != null && !value.isBlank()) {
+                constraints.add(value.trim());
+            }
+        }
+        return constraints;
+    }
+
+    private boolean containsAnyExactConstraint(String content, Set<String> constraints) {
+        if (content == null || constraints == null || constraints.isEmpty()) {
+            return false;
+        }
+        return constraints.stream().anyMatch(content::contains);
     }
 
     private String nullToEmpty(String value) {

@@ -15,6 +15,7 @@ public class LarkCliProperties {
     private List<String> args = List.of();
     private String workingDirectory = "";
     private String docIdentity = "user";
+    private String slidesIdentity = "user";
     private int timeoutSeconds = 60;
 
 }
