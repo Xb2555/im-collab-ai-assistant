@@ -140,9 +140,9 @@ public class ExecutionContractFactory {
         List<String> constraints = resolveConstraints(session);
         List<String> planRequirements = resolvePlanRequirements(session);
         StringBuilder builder = new StringBuilder(safe(firstNonBlank(
-                rawInstruction,
+                session.getClarifiedInstruction(),
                 session.getRawInstruction(),
-                session.getClarifiedInstruction()
+                rawInstruction
         )));
         appendUniqueSection(builder, "补充说明：", answers);
         appendUniqueSection(builder, "当前计划要求：", planRequirements);

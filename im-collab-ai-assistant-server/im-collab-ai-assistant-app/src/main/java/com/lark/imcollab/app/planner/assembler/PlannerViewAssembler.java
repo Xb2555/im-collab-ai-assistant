@@ -1,51 +1,86 @@
 package com.lark.imcollab.app.planner.assembler;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.PlanCardVO;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.common.model.vo.TaskActionVO;
+import com.lark.imcollab.common.util.PlanCapabilityHints;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Component
 public class PlannerViewAssembler {
 
     public PlanPreviewVO toPlanPreview(PlanTaskSession session) {
+        return toPlanPreview(session, null);
+    }
+
+    public PlanPreviewVO toPlanPreview(PlanTaskSession session, TaskRuntimeSnapshot snapshot) {
         if (session == null) {
             return null;
         }
+        boolean transientReply = isTransientReply(session);
         return new PlanPreviewVO(
                 session.getTaskId(),
                 session.getVersion(),
                 enumName(session.getPlanningPhase()),
                 resolveTitle(session),
                 session.getPlanBlueprintSummary(),
-                toPlanCards(session.getPlanCards()),
+                toPlanCards(session.getPlanCards(), snapshot),
                 defaultList(session.getClarificationQuestions()),
                 defaultList(session.getClarificationAnswers()),
-                resolveActions(session.getPlanningPhase(), session.isAborted())
+                transientReply
+                        ? new TaskActionVO(false, false, false, false, false, false)
+                        : resolveActions(session.getPlanningPhase(), session.isAborted()),
+                !transientReply,
+                !transientReply,
+                transientReply,
+                session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply(),
+                PlanCapabilityHints.fromPlanCards(session.getPlanCards())
         );
     }
 
     public List<PlanCardVO> toPlanCards(List<UserPlanCard> cards) {
+        return toPlanCards(cards, null);
+    }
+
+    public List<PlanCardVO> toPlanCards(List<UserPlanCard> cards, TaskRuntimeSnapshot snapshot) {
+        Map<String, TaskStepRecord> stepById = defaultList(snapshot == null ? null : snapshot.getSteps()).stream()
+                .filter(step -> step != null && step.getStepId() != null)
+                .collect(Collectors.toMap(TaskStepRecord::getStepId, Function.identity(), (left, right) -> right));
         return defaultList(cards).stream()
-                .map(this::toPlanCard)
+                .map(card -> toPlanCard(card, stepById.get(card.getCardId())))
                 .toList();
     }
 
-    private PlanCardVO toPlanCard(UserPlanCard card) {
+    private PlanCardVO toPlanCard(UserPlanCard card, TaskStepRecord step) {
         return new PlanCardVO(
                 card.getCardId(),
                 card.getTitle(),
                 card.getDescription(),
                 card.getType() == null ? null : card.getType().name(),
-                card.getStatus(),
-                card.getProgress(),
+                step == null ? card.getStatus() : planCardStatus(step.getStatus()),
+                step == null ? card.getProgress() : step.getProgress(),
                 defaultList(card.getDependsOn())
         );
+    }
+
+    private String planCardStatus(StepStatusEnum status) {
+        if (status == null) {
+            return "pending";
+        }
+        return status.name().toLowerCase();
     }
 
     private TaskActionVO resolveActions(PlanningPhaseEnum phase, boolean aborted) {
@@ -61,6 +96,20 @@ public class PlannerViewAssembler {
         boolean canInterrupt = phase == PlanningPhaseEnum.EXECUTING;
         boolean canRetry = phase == PlanningPhaseEnum.FAILED;
         return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry);
+    }
+
+    private boolean isTransientReply(PlanTaskSession session) {
+        TaskIntakeState intakeState = session.getIntakeState();
+        TaskIntakeTypeEnum intakeType = intakeState == null ? null : intakeState.getIntakeType();
+        if (intakeType == null) {
+            return false;
+        }
+        return (intakeType == TaskIntakeTypeEnum.UNKNOWN
+                || intakeType == TaskIntakeTypeEnum.STATUS_QUERY
+                || intakeType == TaskIntakeTypeEnum.CANCEL_TASK
+                || intakeType == TaskIntakeTypeEnum.CONFIRM_ACTION)
+                && session.getPlanBlueprint() == null
+                && defaultList(session.getPlanCards()).isEmpty();
     }
 
     private String resolveTitle(PlanTaskSession session) {

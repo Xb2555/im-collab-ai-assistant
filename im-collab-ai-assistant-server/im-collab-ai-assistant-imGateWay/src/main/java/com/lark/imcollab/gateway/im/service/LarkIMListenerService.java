@@ -1,9 +1,6 @@
 package com.lark.imcollab.gateway.im.service;
 
-import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
-import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
-import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
 import com.lark.imcollab.gateway.im.event.LarkEventSubscriptionStatus;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
@@ -14,27 +11,20 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class LarkIMListenerService {
 
     private static final Logger log = LoggerFactory.getLogger(LarkIMListenerService.class);
-    private static final String RECEIPT_TEXT =
-            "\u4efb\u52a1\u5df2\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406\u3002\n\u8bf7\u7a0d\u7b49\uff0c\u6211\u4f1a\u5148\u5206\u6790\u5e76\u7ee7\u7eed\u56de\u590d\u4f60\u3002";
     private static final String CONSUMER_ID = LarkIMListenerService.class.getName();
     private static final long GROUP_MENTION_MIRROR_SUPPRESSION_WINDOW_MILLIS = 15_000L;
     private static final long INBOUND_DEDUP_WINDOW_MILLIS = 2L * 60L * 1000L;
 
     private final LarkMessageEventSubscriptionService subscriptionService;
-    private final LarkMessageReplyTool replyTool;
     private final LarkInboundMessageDispatcher dispatcher;
-    private final LarkIMMessageStreamService streamService;
-    private final LarkOutboundMessageRetryService retryService;
     private final LarkIMListenerProperties properties;
     private final Map<String, Long> recentGroupMentions = new ConcurrentHashMap<>();
     private final Map<String, Long> processedInboundMessages = new ConcurrentHashMap<>();
@@ -68,10 +58,7 @@ public class LarkIMListenerService {
             LarkIMListenerProperties properties
     ) {
         this.subscriptionService = subscriptionService;
-        this.replyTool = replyTool;
         this.dispatcher = dispatcher;
-        this.streamService = streamService;
-        this.retryService = retryService;
         this.properties = properties;
     }
 
@@ -110,52 +97,11 @@ public class LarkIMListenerService {
         }
 
         String inboundDedupKey = buildInboundDedupKey(event);
-        PlanTaskSession session;
         try {
-            session = dispatcher.dispatch(mapInboundMessage(event));
+            dispatcher.dispatch(mapInboundMessage(event));
         } catch (RuntimeException exception) {
             releaseInboundDedupKey(inboundDedupKey);
             log.warn("Failed to dispatch inbound Lark message to planner: messageId={}", event.messageId(), exception);
-            return;
-        }
-        if (!shouldSendReceipt(session)) {
-            return;
-        }
-        safeSendReceiptReply(event);
-        safePublishReceiptReply(event);
-    }
-
-    private void sendReceiptReply(LarkMessageEvent event) {
-        String idempotencyKey = buildReceiptIdempotencyKey(event);
-        if (isP2P(event) && hasText(event.senderOpenId())) {
-            replyTool.sendPrivateText(event.senderOpenId(), RECEIPT_TEXT, idempotencyKey);
-            return;
-        }
-        replyTool.replyText(event.messageId(), RECEIPT_TEXT, idempotencyKey);
-    }
-
-    private void publishReceiptReply(LarkMessageEvent sourceEvent) {
-        if (streamService != null) {
-            streamService.publishBotReply(sourceEvent, RECEIPT_TEXT);
-        }
-    }
-
-    private void safeSendReceiptReply(LarkMessageEvent event) {
-        try {
-            sendReceiptReply(event);
-        } catch (RuntimeException exception) {
-            log.warn("Failed to send Lark receipt reply: messageId={}, chatId={}",
-                    event.messageId(), event.chatId(), exception);
-            enqueueReceiptRetry(event);
-        }
-    }
-
-    private void safePublishReceiptReply(LarkMessageEvent sourceEvent) {
-        try {
-            publishReceiptReply(sourceEvent);
-        } catch (RuntimeException exception) {
-            log.warn("Failed to publish receipt reply to frontend stream: messageId={}, chatId={}",
-                    sourceEvent.messageId(), sourceEvent.chatId(), exception);
         }
     }
 
@@ -323,31 +269,6 @@ public class LarkIMListenerService {
         return event != null && "p2p".equalsIgnoreCase(event.chatType());
     }
 
-    private boolean shouldSendReceipt(PlanTaskSession session) {
-        if (session != null
-                && session.getIntakeState() != null
-                && hasText(session.getIntakeState().getAssistantReply())) {
-            return false;
-        }
-        TaskIntakeTypeEnum intakeType = session == null || session.getIntakeState() == null
-                ? null
-                : session.getIntakeState().getIntakeType();
-        if (intakeType == TaskIntakeTypeEnum.STATUS_QUERY
-                || intakeType == TaskIntakeTypeEnum.UNKNOWN
-                || intakeType == TaskIntakeTypeEnum.CANCEL_TASK
-                || intakeType == TaskIntakeTypeEnum.CONFIRM_ACTION
-                || intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
-            return false;
-        }
-        return session == null
-                || (session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
-                && session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY
-                && session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING
-                && session.getPlanningPhase() != PlanningPhaseEnum.COMPLETED
-                && session.getPlanningPhase() != PlanningPhaseEnum.FAILED
-                && session.getPlanningPhase() != PlanningPhaseEnum.ABORTED);
-    }
-
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
@@ -361,32 +282,6 @@ public class LarkIMListenerService {
         } catch (NumberFormatException ignored) {
             return null;
         }
-    }
-
-    private void enqueueReceiptRetry(LarkMessageEvent event) {
-        if (retryService == null || event == null) {
-            return;
-        }
-        String idempotencyKey = buildReceiptIdempotencyKey(event);
-        if (isP2P(event) && hasText(event.senderOpenId())) {
-            retryService.enqueuePrivateText(event.senderOpenId(), RECEIPT_TEXT, idempotencyKey);
-            return;
-        }
-        if (hasText(event.messageId())) {
-            retryService.enqueueReplyText(event.messageId(), RECEIPT_TEXT, idempotencyKey);
-        }
-    }
-
-    private String buildReceiptIdempotencyKey(LarkMessageEvent event) {
-        String seed = "receipt::"
-                + safe(event == null ? null : event.messageId())
-                + "::" + safe(event == null ? null : event.chatId())
-                + "::" + safe(event == null ? null : event.threadId());
-        return UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8)).toString();
-    }
-
-    private String safe(String value) {
-        return value == null ? "" : value;
     }
 
     private LarkIMListenerStatusResponse mapStatus(LarkEventSubscriptionStatus status) {

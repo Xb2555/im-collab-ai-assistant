@@ -8,12 +8,16 @@ import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
 import com.lark.imcollab.common.model.entity.BaseResponse;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.TaskRecord;
+import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.common.model.vo.TaskDetailVO;
 import com.lark.imcollab.common.model.vo.TaskListVO;
+import com.lark.imcollab.common.model.vo.TaskSummaryVO;
 import com.lark.imcollab.gateway.auth.dto.LarkFrontendUserResponse;
 import com.lark.imcollab.gateway.auth.service.LarkOAuthService;
 import com.lark.imcollab.planner.service.AsyncPlannerService;
@@ -161,6 +165,64 @@ class PlannerControllerCommandTest {
     }
 
     @Test
+    void replanWithDifferentReturnedTaskIdFailsFast() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        session.setVersion(1);
+        PlanTaskSession wrongTask = new PlanTaskSession();
+        wrongTask.setTaskId("task-2");
+        wrongTask.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        wrongTask.setVersion(2);
+
+        when(repository.findSession("task-1")).thenReturn(Optional.of(session));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.WAITING_APPROVAL)));
+        when(plannerCommandApplicationService.replan("task-1", "change it")).thenReturn(wrongTask);
+
+        PlanCommandRequest request = new PlanCommandRequest();
+        request.setAction("REPLAN");
+        request.setVersion(1);
+        request.setFeedback("change it");
+
+        BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
+
+        assertThat(response.getCode()).isEqualTo(50001);
+        assertThat(response.getMessage()).contains("inconsistent task id");
+        verify(taskRuntimeService, never()).ensureRuntimeProjection(anyString());
+    }
+
+    @Test
+    void resumeCommandPassesFeedbackThroughPlannerResumePath() {
+        PlanTaskSession asking = new PlanTaskSession();
+        asking.setTaskId("task-1");
+        asking.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        asking.setVersion(2);
+        PlanTaskSession ready = new PlanTaskSession();
+        ready.setTaskId("task-1");
+        ready.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        ready.setVersion(3);
+
+        when(repository.findSession("task-1")).thenReturn(Optional.of(asking));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.CLARIFYING)));
+        when(plannerCommandApplicationService.resume("task-1", "使用通用知识即可", false)).thenReturn(ready);
+        when(plannerViewAssembler.toPlanPreview(ready)).thenReturn(new PlanPreviewVO(
+                "task-1", 3, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+        ));
+
+        PlanCommandRequest request = new PlanCommandRequest();
+        request.setAction("RESUME");
+        request.setVersion(2);
+        request.setFeedback("使用通用知识即可");
+
+        BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
+
+        assertThat(response.getCode()).isZero();
+        verify(plannerCommandApplicationService).resume("task-1", "使用通用知识即可", false);
+        verify(plannerCommandApplicationService, never()).replan(anyString(), anyString());
+        verify(plannerViewAssembler).toPlanPreview(ready);
+    }
+
+    @Test
     void cancelProjectsRuntimeCancelledState() {
         PlanTaskSession session = new PlanTaskSession();
         session.setTaskId("task-1");
@@ -201,7 +263,7 @@ class PlannerControllerCommandTest {
 
         when(repository.findSession("task-1")).thenReturn(Optional.of(failed));
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.FAILED)));
-        when(plannerCommandApplicationService.retryFailed("task-1", failed)).thenReturn(retrying);
+        when(plannerCommandApplicationService.retryFailed("task-1", failed, "请用备用方案重试")).thenReturn(retrying);
         when(plannerViewAssembler.toPlanPreview(retrying)).thenReturn(new PlanPreviewVO(
                 "task-1", 5, "EXECUTING", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
@@ -209,11 +271,12 @@ class PlannerControllerCommandTest {
         PlanCommandRequest request = new PlanCommandRequest();
         request.setAction("RETRY_FAILED");
         request.setVersion(4);
+        request.setFeedback("请用备用方案重试");
 
         BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
 
         assertThat(response.getCode()).isZero();
-        verify(plannerCommandApplicationService).retryFailed("task-1", failed);
+        verify(plannerCommandApplicationService).retryFailed("task-1", failed, "请用备用方案重试");
         verify(plannerCommandApplicationService, never()).replan(anyString(), anyString());
     }
 
@@ -310,7 +373,68 @@ class PlannerControllerCommandTest {
         BaseResponse<TaskDetailVO> response = controller.getRuntimeSnapshot("task-other", AUTHORIZATION);
 
         assertThat(response.getCode()).isEqualTo(40400);
-        verify(taskRuntimeService, never()).getSnapshot("task-other");
+        verify(taskRuntimeService, never()).ensureRuntimeProjection("task-other");
+    }
+
+    @Test
+    void runtimeQueryUsesSelfHealingProjectionWhenTaskRecordIsMissing() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-heal");
+        session.setPlanningPhase(PlanningPhaseEnum.INTAKE);
+        session.setVersion(0);
+        TaskRuntimeSnapshot healedSnapshot = TaskRuntimeSnapshot.builder()
+                .task(ownedTask("task-heal", TaskStatusEnum.PLANNING))
+                .steps(java.util.List.of())
+                .artifacts(java.util.List.of())
+                .events(java.util.List.of())
+                .build();
+        TaskDetailVO detail = new TaskDetailVO(
+                new TaskSummaryVO("task-heal", 0, "title", "goal", "PLANNING", "INTAKE", 0, false,
+                        java.util.List.of(), null, null),
+                java.util.List.of(),
+                java.util.List.of(),
+                java.util.List.of(),
+                null
+        );
+
+        when(repository.findTask("task-heal")).thenReturn(Optional.empty());
+        when(repository.findSession("task-heal")).thenReturn(Optional.of(session));
+        when(taskRuntimeService.ensureRuntimeProjection("task-heal")).thenReturn(healedSnapshot);
+        when(taskRuntimeViewAssembler.toTaskDetail(healedSnapshot)).thenReturn(detail);
+
+        BaseResponse<TaskDetailVO> response = controller.getRuntimeSnapshot("task-heal", AUTHORIZATION);
+
+        assertThat(response.getCode()).isZero();
+        assertThat(response.getData()).isEqualTo(detail);
+        verify(taskRuntimeService).ensureRuntimeProjection("task-heal");
+    }
+
+    @Test
+    void transientRuntimeQueryDoesNotReturnNotFoundWhenSessionExists() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-transient");
+        session.setPlanningPhase(PlanningPhaseEnum.INTAKE);
+        session.setIntakeState(TaskIntakeState.builder()
+                .intakeType(TaskIntakeTypeEnum.UNKNOWN)
+                .assistantReply("我在")
+                .build());
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(null)
+                .steps(java.util.List.of())
+                .artifacts(java.util.List.of())
+                .events(java.util.List.of())
+                .build();
+        TaskDetailVO detail = new TaskDetailVO(null, java.util.List.of(), java.util.List.of(), java.util.List.of(), null);
+
+        when(repository.findTask("task-transient")).thenReturn(Optional.empty());
+        when(repository.findSession("task-transient")).thenReturn(Optional.of(session));
+        when(taskRuntimeService.ensureRuntimeProjection("task-transient")).thenReturn(snapshot);
+        when(taskRuntimeViewAssembler.toTaskDetail(snapshot)).thenReturn(detail);
+
+        BaseResponse<TaskDetailVO> response = controller.getRuntimeSnapshot("task-transient", AUTHORIZATION);
+
+        assertThat(response.getCode()).isZero();
+        assertThat(response.getData()).isEqualTo(detail);
     }
 
     private static TaskRecord ownedTask(String taskId, TaskStatusEnum status) {

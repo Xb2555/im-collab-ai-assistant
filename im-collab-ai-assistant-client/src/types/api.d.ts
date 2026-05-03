@@ -97,6 +97,12 @@ export interface PlanPreviewVO {
   clarificationQuestions?: string[];
   clarificationAnswers?: string[];
   actions?: TaskActionVO;
+
+  // ✨ 新增：后端最新契约补充的闲聊与任务状态字段
+  accepted?: boolean;          // 是否被 Planner 接受立项
+  runtimeAvailable?: boolean;  // 是否有底层的 Runtime 任务流
+  transientReply?: boolean;    // 是否为瞬时闲聊回复
+  assistantReply?: string;     // 大模型直接返回的闲聊文本
 }
 
 export interface RuntimeTaskVO {

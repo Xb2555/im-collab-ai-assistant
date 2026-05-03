@@ -74,6 +74,30 @@ class LarkIMListenerServiceTest {
     }
 
     @Test
+    void acceptedAsyncSessionDoesNotSendGenericReceipt() {
+        LarkMessageEventSubscriptionService subscriptionService = mock(LarkMessageEventSubscriptionService.class);
+        LarkMessageReplyTool replyTool = mock(LarkMessageReplyTool.class);
+        LarkInboundMessageDispatcher dispatcher = mock(LarkInboundMessageDispatcher.class);
+        ArgumentCaptor<Consumer<LarkMessageEvent>> consumerCaptor = ArgumentCaptor.forClass(Consumer.class);
+
+        when(subscriptionService.startMessageSubscription(anyString(), consumerCaptor.capture()))
+                .thenReturn(new LarkEventSubscriptionStatus(true, "running", "now", null));
+        when(dispatcher.dispatch(any())).thenReturn(PlanTaskSession.builder()
+                .taskId("im-pending-1")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build());
+
+        LarkIMListenerService listener = new LarkIMListenerService(subscriptionService, replyTool, dispatcher);
+        listener.start();
+        consumerCaptor.getValue().accept(event());
+
+        verify(dispatcher).dispatch(any());
+        verify(replyTool, never()).sendPrivateText(anyString(), anyString(), anyString());
+        verify(replyTool, never()).replyText(anyString(), anyString(), anyString());
+    }
+
+
+    @Test
     void botAuthoredMessageIsIgnoredBeforeDispatch() {
         LarkMessageEventSubscriptionService subscriptionService = mock(LarkMessageEventSubscriptionService.class);
         LarkMessageReplyTool replyTool = mock(LarkMessageReplyTool.class);

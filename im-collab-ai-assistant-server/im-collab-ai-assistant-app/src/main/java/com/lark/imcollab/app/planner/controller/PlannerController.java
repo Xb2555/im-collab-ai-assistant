@@ -41,6 +41,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -59,7 +61,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RequiredArgsConstructor
 public class PlannerController {
 
-    private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "CANCEL", "RETRY_FAILED");
+    private static final Logger log = LoggerFactory.getLogger(PlannerController.class);
+
+    private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "RESUME", "CANCEL", "RETRY_FAILED");
     private static final List<TaskStatusEnum> GUI_RECOVERABLE_TASK_STATUSES = List.of(
             TaskStatusEnum.RECEIVED,
             TaskStatusEnum.CLARIFYING,
@@ -273,7 +277,7 @@ public class PlannerController {
         }
         Optional<PlanTaskSession> session = repository.findSession(taskId);
         return session
-                .map(value -> ResultUtils.success(plannerViewAssembler.toPlanPreview(value)))
+                .map(value -> ResultUtils.success(toPlanPreview(value, taskId)))
                 .orElseGet(() -> error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId));
     }
 
@@ -289,7 +293,7 @@ public class PlannerController {
         if (!canAccessTask(taskId, user.get().openId())) {
             return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
         }
-        TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(taskId);
+        TaskRuntimeSnapshot snapshot = taskRuntimeService.ensureRuntimeProjection(taskId);
         if ((snapshot == null || snapshot.getTask() == null) && repository.findSession(taskId).isEmpty()) {
             return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
         }
@@ -310,7 +314,7 @@ public class PlannerController {
         }
         Optional<PlanTaskSession> session = repository.findSession(taskId);
         return session
-                .map(value -> ResultUtils.success(plannerViewAssembler.toPlanCards(value.getPlanCards())))
+                .map(value -> ResultUtils.success(toPlanCards(value, taskId)))
                 .orElseGet(() -> error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId));
     }
 
@@ -373,19 +377,28 @@ public class PlannerController {
         return switch (request.getAction()) {
             case "CONFIRM_EXECUTE" -> {
                 PlanTaskSession updated = plannerCommandApplicationService.confirmExecution(taskId, session);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "REPLAN" -> {
                 PlanTaskSession updated = plannerCommandApplicationService.replan(taskId, request.getFeedback());
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+                if (!sameTaskId(taskId, updated)) {
+                    log.error("Planner REPLAN returned a different task id: requested={}, returned={}",
+                            taskId, updated == null ? null : updated.getTaskId());
+                    yield error(BusinessCode.OPERATION_ERROR, "Replan returned inconsistent task id");
+                }
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
+            }
+            case "RESUME" -> {
+                PlanTaskSession updated = plannerCommandApplicationService.resume(taskId, request.getFeedback(), false);
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "CANCEL" -> {
                 PlanTaskSession updated = plannerCommandApplicationService.cancel(taskId);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "RETRY_FAILED" -> {
-                PlanTaskSession updated = plannerCommandApplicationService.retryFailed(taskId, session);
-                yield ResultUtils.success(plannerViewAssembler.toPlanPreview(updated));
+                PlanTaskSession updated = plannerCommandApplicationService.retryFailed(taskId, session, request.getFeedback());
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             default -> error(BusinessCode.PARAMS_ERROR, "Unsupported planner command: " + request.getAction());
         };
@@ -425,6 +438,20 @@ public class PlannerController {
 
     private <T> BaseResponse<T> error(BusinessCode code, String message) {
         return new BaseResponse<>(code.getCode(), null, message);
+    }
+
+    private PlanPreviewVO toPlanPreview(PlanTaskSession session, String taskId) {
+        TaskRuntimeSnapshot snapshot = taskRuntimeService.ensureRuntimeProjection(taskId);
+        return snapshot == null
+                ? plannerViewAssembler.toPlanPreview(session)
+                : plannerViewAssembler.toPlanPreview(session, snapshot);
+    }
+
+    private List<PlanCardVO> toPlanCards(PlanTaskSession session, String taskId) {
+        TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(taskId);
+        return snapshot == null
+                ? plannerViewAssembler.toPlanCards(session.getPlanCards())
+                : plannerViewAssembler.toPlanCards(session.getPlanCards(), snapshot);
     }
 
     private Optional<LarkFrontendUserResponse> currentUser(String authorization) {
@@ -491,6 +518,12 @@ public class PlannerController {
                 .map(context -> context == null ? null : context.getSenderOpenId())
                 .orElse(null);
         return !hasText(sessionOwner) || ownerOpenId.equals(sessionOwner);
+    }
+
+    private boolean sameTaskId(String requestedTaskId, PlanTaskSession session) {
+        return session != null
+                && hasText(requestedTaskId)
+                && requestedTaskId.equals(session.getTaskId());
     }
 
     private List<TaskStatusEnum> parseStatuses(List<String> statuses) {

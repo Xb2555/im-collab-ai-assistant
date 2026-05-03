@@ -14,12 +14,14 @@ import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.port.ArtifactRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.common.service.TaskCancellationRegistry;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,18 +40,21 @@ public class DocumentExecutionSupport {
     private final ArtifactRepository artifactRepository;
     private final PlannerStateStore plannerStateStore;
     private final ObjectMapper objectMapper;
+    private final TaskCancellationRegistry cancellationRegistry;
 
     public DocumentExecutionSupport(
             TaskRepository taskRepository,
             TaskEventRepository eventRepository,
             ArtifactRepository artifactRepository,
             PlannerStateStore plannerStateStore,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TaskCancellationRegistry cancellationRegistry) {
         this.taskRepository = taskRepository;
         this.eventRepository = eventRepository;
         this.artifactRepository = artifactRepository;
         this.plannerStateStore = plannerStateStore;
         this.objectMapper = objectMapper;
+        this.cancellationRegistry = cancellationRegistry;
     }
 
     public Task loadTask(String taskId) {
@@ -70,6 +75,9 @@ public class DocumentExecutionSupport {
             String documentId,
             String url
     ) {
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return;
+        }
         Artifact artifact = Artifact.builder()
                 .artifactId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -92,6 +100,9 @@ public class DocumentExecutionSupport {
     }
 
     public void publishEvent(String taskId, String stepId, TaskEventType type, String payload) {
+        if (cancellationRegistry.isCancelled(taskId) && type != TaskEventType.TASK_ABORTED) {
+            return;
+        }
         TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -105,6 +116,9 @@ public class DocumentExecutionSupport {
     }
 
     public void publishApprovalRequest(String taskId, String stepId, String prompt) {
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return;
+        }
         TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -118,6 +132,9 @@ public class DocumentExecutionSupport {
     }
 
     public <T> T execute(Supplier<T> executor) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new IllegalStateException("Task execution interrupted");
+        }
         return executor.get();
     }
 
@@ -138,10 +155,14 @@ public class DocumentExecutionSupport {
     }
 
     private void syncPlannerArtifact(Artifact artifact) {
+        if (!isUserVisibleArtifact(artifact)) {
+            return;
+        }
+        String stepId = resolveArtifactStepId(artifact);
         plannerStateStore.saveArtifact(ArtifactRecord.builder()
                 .artifactId(artifact.getArtifactId())
                 .taskId(artifact.getTaskId())
-                .sourceStepId(resolvePlannerStepId(artifact.getTaskId()))
+                .sourceStepId(stepId)
                 .type(mapArtifactType(artifact.getType()))
                 .title(artifact.getTitle())
                 .url(blankToNull(artifact.getExternalUrl()))
@@ -163,11 +184,22 @@ public class DocumentExecutionSupport {
         });
     }
 
+    private boolean isUserVisibleArtifact(Artifact artifact) {
+        if (artifact == null || artifact.getType() == null) {
+            return false;
+        }
+        return switch (artifact.getType()) {
+            case DOC_LINK, SLIDES_LINK, WHITEBOARD_LINK, DIAGRAM_SOURCE, SUMMARY -> true;
+            case DOC_OUTLINE, DOC_DRAFT -> false;
+        };
+    }
+
     private void syncPlannerEvent(TaskEvent event) {
+        String plannerStepId = resolveEventStepId(event);
         plannerStateStore.appendRuntimeEvent(TaskEventRecord.builder()
                 .eventId(event.getEventId())
                 .taskId(event.getTaskId())
-                .stepId(resolvePlannerStepId(event.getTaskId()))
+                .stepId(plannerStepId)
                 .artifactId(null)
                 .type(mapEventType(event.getType()))
                 .payloadJson(toPayloadJson(event.getPayload()))
@@ -176,12 +208,13 @@ public class DocumentExecutionSupport {
                 .build());
 
         switch (event.getType()) {
-            case STEP_STARTED -> markPrimaryStepRunning(event.getTaskId());
-            case APPROVAL_REQUESTED -> markPrimaryStepWaitingApproval(event.getTaskId());
-            case TASK_COMPLETED -> markTaskCompleted(event.getTaskId());
-            case TASK_FAILED -> markTaskFailed(event.getTaskId(), event.getPayload());
+            case STEP_STARTED -> markStepRunning(event.getTaskId(), plannerStepId);
+            case STEP_COMPLETED -> markStepCompleted(event.getTaskId(), plannerStepId);
+            case APPROVAL_REQUESTED -> markStepWaitingApproval(event.getTaskId(), plannerStepId);
+            case TASK_COMPLETED -> markTaskCompletedIfAllExecutableStepsDone(event.getTaskId());
+            case TASK_FAILED -> markTaskFailed(event.getTaskId(), plannerStepId, event.getPayload());
             case TASK_ABORTED -> markTaskCancelled(event.getTaskId(), event.getPayload());
-            case STEP_FAILED -> markPrimaryStepFailed(event.getTaskId(), event.getPayload());
+            case STEP_FAILED -> markStepFailed(event.getTaskId(), plannerStepId, event.getPayload());
             default -> {
             }
         }
@@ -204,6 +237,26 @@ public class DocumentExecutionSupport {
         });
     }
 
+    private void markStepRunning(String taskId, String stepId) {
+        if (updateResolvedStep(taskId, stepId, step -> {
+            if (step.getStartedAt() == null) {
+                step.setStartedAt(Instant.now());
+            }
+            step.setStatus(StepStatusEnum.RUNNING);
+            step.setProgress(Math.max(step.getProgress(), 10));
+        })) {
+            plannerStateStore.findTask(taskId).ifPresent(task -> {
+                task.setStatus(TaskStatusEnum.EXECUTING);
+                task.setCurrentStage(TaskStatusEnum.EXECUTING.name());
+                task.setNeedUserAction(false);
+                task.setUpdatedAt(Instant.now());
+                plannerStateStore.saveTask(task);
+            });
+            return;
+        }
+        markPrimaryStepRunning(taskId);
+    }
+
     private void markPrimaryStepWaitingApproval(String taskId) {
         updatePrimaryDocStep(taskId, step -> {
             if (step.getStartedAt() == null) {
@@ -220,15 +273,47 @@ public class DocumentExecutionSupport {
         });
     }
 
+    private void markStepWaitingApproval(String taskId, String stepId) {
+        if (updateResolvedStep(taskId, stepId, step -> {
+            if (step.getStartedAt() == null) {
+                step.setStartedAt(Instant.now());
+            }
+            step.setStatus(StepStatusEnum.WAITING_APPROVAL);
+        })) {
+            plannerStateStore.findTask(taskId).ifPresent(task -> {
+                task.setStatus(TaskStatusEnum.WAITING_APPROVAL);
+                task.setCurrentStage(TaskStatusEnum.WAITING_APPROVAL.name());
+                task.setNeedUserAction(true);
+                task.setUpdatedAt(Instant.now());
+                plannerStateStore.saveTask(task);
+            });
+            return;
+        }
+        markPrimaryStepWaitingApproval(taskId);
+    }
+
     private void markPrimaryStepFailed(String taskId, String reason) {
+        String userFacingReason = userFacingFailureReason(reason);
         updatePrimaryDocStep(taskId, step -> {
             step.setStatus(StepStatusEnum.FAILED);
-            step.setOutputSummary(blankToNull(reason));
+            step.setOutputSummary(blankToNull(userFacingReason));
             step.setEndedAt(Instant.now());
         });
     }
 
-    private void markTaskCompleted(String taskId) {
+    private void markStepFailed(String taskId, String stepId, String reason) {
+        String userFacingReason = userFacingFailureReason(reason);
+        if (updateResolvedStep(taskId, stepId, step -> {
+            step.setStatus(StepStatusEnum.FAILED);
+            step.setOutputSummary(blankToNull(userFacingReason));
+            step.setEndedAt(Instant.now());
+        })) {
+            return;
+        }
+        markPrimaryStepFailed(taskId, reason);
+    }
+
+    private void markPrimaryStepCompleted(String taskId) {
         updatePrimaryDocStep(taskId, step -> {
             step.setStatus(StepStatusEnum.COMPLETED);
             step.setProgress(100);
@@ -237,6 +322,34 @@ public class DocumentExecutionSupport {
             }
             step.setEndedAt(Instant.now());
         });
+        markTaskCompletedIfAllExecutableStepsDone(taskId);
+    }
+
+    private void markStepCompleted(String taskId, String stepId) {
+        if (updateResolvedStep(taskId, stepId, step -> {
+            step.setStatus(StepStatusEnum.COMPLETED);
+            step.setProgress(100);
+            if (step.getStartedAt() == null) {
+                step.setStartedAt(Instant.now());
+            }
+            step.setEndedAt(Instant.now());
+        })) {
+            markTaskCompletedIfAllExecutableStepsDone(taskId);
+            return;
+        }
+        markPrimaryStepCompleted(taskId);
+    }
+
+    public void markTaskCompletedIfAllExecutableStepsDone(String taskId) {
+        List<TaskStepRecord> executableSteps = plannerStateStore.findStepsByTaskId(taskId).stream()
+                .filter(Objects::nonNull)
+                .filter(this::isExecutableStep)
+                .filter(step -> step.getStatus() != StepStatusEnum.SKIPPED
+                        && step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .toList();
+        if (executableSteps.isEmpty() || executableSteps.stream().anyMatch(step -> step.getStatus() != StepStatusEnum.COMPLETED)) {
+            return;
+        }
         plannerStateStore.findTask(taskId).ifPresent(task -> {
             task.setStatus(TaskStatusEnum.COMPLETED);
             task.setCurrentStage(TaskStatusEnum.COMPLETED.name());
@@ -245,10 +358,11 @@ public class DocumentExecutionSupport {
             task.setUpdatedAt(Instant.now());
             plannerStateStore.saveTask(task);
         });
+        taskRepository.updateStatus(taskId, TaskStatus.COMPLETED);
     }
 
-    private void markTaskFailed(String taskId, String reason) {
-        markPrimaryStepFailed(taskId, reason);
+    private void markTaskFailed(String taskId, String stepId, String reason) {
+        markStepFailed(taskId, stepId, reason);
         plannerStateStore.findTask(taskId).ifPresent(task -> {
             task.setStatus(TaskStatusEnum.FAILED);
             task.setCurrentStage(TaskStatusEnum.FAILED.name());
@@ -256,6 +370,35 @@ public class DocumentExecutionSupport {
             task.setUpdatedAt(Instant.now());
             plannerStateStore.saveTask(task);
         });
+    }
+
+    private String userFacingFailureReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "文档生成失败，请稍后重试。";
+        }
+        String trimmed = reason.trim();
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (isTechnicalRuntimeError(lower)) {
+            return "飞书文档创建失败，请检查 lark-cli 可执行配置、登录状态或文档权限后重试。";
+        }
+        String firstLine = trimmed.lines()
+                .map(String::trim)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("文档生成失败，请稍后重试。");
+        return firstLine.length() <= 220 ? firstLine : firstLine.substring(0, 220) + "...";
+    }
+
+    private boolean isTechnicalRuntimeError(String lowerReason) {
+        return lowerReason.contains("powershell")
+                || lowerReason.contains(".ps1")
+                || lowerReason.contains("command line is too long")
+                || lowerReason.contains("commandline is too long")
+                || lowerReason.contains("parameterbinding")
+                || lowerReason.contains("processbuilder")
+                || lowerReason.contains("java.lang.")
+                || lowerReason.contains("org.springframework.")
+                || lowerReason.contains("exception:");
     }
 
     private void markTaskCancelled(String taskId, String reason) {
@@ -281,6 +424,21 @@ public class DocumentExecutionSupport {
         });
     }
 
+    private boolean updateResolvedStep(String taskId, String stepId, java.util.function.Consumer<TaskStepRecord> updater) {
+        if (stepId == null || stepId.isBlank()) {
+            return false;
+        }
+        Optional<TaskStepRecord> maybeStep = findRuntimeStep(taskId, stepId);
+        if (maybeStep.isEmpty()) {
+            return false;
+        }
+        TaskStepRecord step = maybeStep.get();
+        updater.accept(step);
+        step.setVersion(step.getVersion() + 1);
+        plannerStateStore.saveStep(step);
+        return true;
+    }
+
     private Optional<TaskStepRecord> findPrimaryDocStep(String taskId) {
         List<TaskStepRecord> steps = plannerStateStore.findStepsByTaskId(taskId);
         return steps.stream()
@@ -292,11 +450,164 @@ public class DocumentExecutionSupport {
                         && step.getStatus() != StepStatusEnum.SKIPPED
                         && step.getStatus() != StepStatusEnum.SUPERSEDED)
                 .findFirst()
-                .or(() -> steps.stream().filter(Objects::nonNull).findFirst());
+                .or(() -> steps.stream()
+                        .filter(Objects::nonNull)
+                        .filter(step -> step.getType() == StepTypeEnum.DOC_CREATE
+                                || step.getType() == StepTypeEnum.DOC_DRAFT
+                                || step.getType() == StepTypeEnum.DOC_EDIT)
+                        .findFirst());
+    }
+
+    private boolean isExecutableStep(TaskStepRecord step) {
+        return step.getType() == StepTypeEnum.DOC_CREATE
+                || step.getType() == StepTypeEnum.DOC_DRAFT
+                || step.getType() == StepTypeEnum.DOC_EDIT
+                || step.getType() == StepTypeEnum.PPT_CREATE
+                || step.getType() == StepTypeEnum.PPT_OUTLINE
+                || step.getType() == StepTypeEnum.WHITEBOARD_CREATE
+                || step.getType() == StepTypeEnum.SUMMARY;
     }
 
     private String resolvePlannerStepId(String taskId) {
         return findPrimaryDocStep(taskId).map(TaskStepRecord::getStepId).orElse(null);
+    }
+
+    private String resolveEventStepId(TaskEvent event) {
+        if (event != null
+                && event.getStepId() != null
+                && !event.getStepId().isBlank()
+                && findRuntimeStep(event.getTaskId(), event.getStepId()).isPresent()) {
+            return event.getStepId();
+        }
+        return event == null ? null : resolvePlannerStepId(event.getTaskId());
+    }
+
+    private Optional<TaskStepRecord> findRuntimeStep(String taskId, String stepId) {
+        if (taskId == null || taskId.isBlank() || stepId == null || stepId.isBlank()) {
+            return Optional.empty();
+        }
+        return plannerStateStore.findStepsByTaskId(taskId).stream()
+                .filter(Objects::nonNull)
+                .filter(step -> stepId.equals(step.getStepId()))
+                .findFirst();
+    }
+
+    public Optional<String> findSummaryStepId(String taskId) {
+        return plannerStateStore.findStepsByTaskId(taskId).stream()
+                .filter(Objects::nonNull)
+                .filter(step -> step.getType() == StepTypeEnum.SUMMARY)
+                .map(TaskStepRecord::getStepId)
+                .findFirst();
+    }
+
+    public void markSummaryStepRunning(String taskId) {
+        findSummaryStep(taskId).ifPresent(step -> {
+            if (step.getStartedAt() == null) {
+                step.setStartedAt(Instant.now());
+            }
+            step.setStatus(StepStatusEnum.RUNNING);
+            step.setProgress(Math.max(step.getProgress(), 10));
+            step.setVersion(step.getVersion() + 1);
+            plannerStateStore.saveStep(step);
+        });
+        plannerStateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.EXECUTING);
+            task.setCurrentStage(TaskStatusEnum.EXECUTING.name());
+            task.setNeedUserAction(false);
+            task.setUpdatedAt(Instant.now());
+            plannerStateStore.saveTask(task);
+        });
+        taskRepository.updateStatus(taskId, TaskStatus.EXECUTING);
+    }
+
+    public void markSummaryStepCompleted(String taskId, String summary) {
+        findSummaryStep(taskId).ifPresent(step -> {
+            if (step.getStartedAt() == null) {
+                step.setStartedAt(Instant.now());
+            }
+            step.setStatus(StepStatusEnum.COMPLETED);
+            step.setProgress(100);
+            step.setOutputSummary(shorten(summary, 240));
+            step.setEndedAt(Instant.now());
+            step.setVersion(step.getVersion() + 1);
+            plannerStateStore.saveStep(step);
+        });
+        markTaskCompletedIfAllExecutableStepsDone(taskId);
+    }
+
+    public void markSummaryStepFailed(String taskId, String reason) {
+        findSummaryStep(taskId).ifPresent(step -> {
+            step.setStatus(StepStatusEnum.FAILED);
+            step.setProgress(Math.min(step.getProgress(), 90));
+            step.setOutputSummary(shorten(reason, 240));
+            step.setEndedAt(Instant.now());
+            step.setVersion(step.getVersion() + 1);
+            plannerStateStore.saveStep(step);
+        });
+        plannerStateStore.findTask(taskId).ifPresent(task -> {
+            task.setStatus(TaskStatusEnum.FAILED);
+            task.setCurrentStage(TaskStatusEnum.FAILED.name());
+            task.setNeedUserAction(false);
+            task.setUpdatedAt(Instant.now());
+            plannerStateStore.saveTask(task);
+        });
+        taskRepository.updateStatus(taskId, TaskStatus.FAILED);
+    }
+
+    private Optional<TaskStepRecord> findSummaryStep(String taskId) {
+        return plannerStateStore.findStepsByTaskId(taskId).stream()
+                .filter(Objects::nonNull)
+                .filter(step -> step.getType() == StepTypeEnum.SUMMARY)
+                .filter(step -> step.getStatus() != StepStatusEnum.COMPLETED
+                        && step.getStatus() != StepStatusEnum.SKIPPED
+                        && step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .findFirst()
+                .or(() -> plannerStateStore.findStepsByTaskId(taskId).stream()
+                        .filter(Objects::nonNull)
+                        .filter(step -> step.getType() == StepTypeEnum.SUMMARY)
+                        .findFirst());
+    }
+
+    private String resolveArtifactStepId(Artifact artifact) {
+        if (artifact != null
+                && artifact.getStepId() != null
+                && !artifact.getStepId().isBlank()
+                && plannerStateStore.findStepsByTaskId(artifact.getTaskId()).stream()
+                .anyMatch(step -> artifact.getStepId().equals(step.getStepId()))) {
+            return artifact.getStepId();
+        }
+        return artifact == null ? null : resolvePlannerStepId(artifact.getTaskId());
+    }
+
+    private String shorten(String value, int maxLength) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.length() <= maxLength ? trimmed : trimmed.substring(0, maxLength) + "...";
+    }
+
+    private boolean isDocumentWorkflowStep(TaskStepRecord step) {
+        return step.getType() == StepTypeEnum.DOC_CREATE
+                || step.getType() == StepTypeEnum.DOC_DRAFT
+                || step.getType() == StepTypeEnum.DOC_EDIT
+                || step.getType() == StepTypeEnum.SUMMARY;
+    }
+
+    private boolean isTerminalNonSuccess(TaskStepRecord step) {
+        return step.getStatus() == StepStatusEnum.SKIPPED
+                || step.getStatus() == StepStatusEnum.SUPERSEDED;
+    }
+
+    private boolean allExecutableStepsFinished(List<TaskStepRecord> steps) {
+        if (steps == null || steps.isEmpty()) {
+            return true;
+        }
+        return steps.stream()
+                .filter(Objects::nonNull)
+                .filter(step -> step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .allMatch(step -> step.getStatus() == StepStatusEnum.COMPLETED
+                        || step.getStatus() == StepStatusEnum.SKIPPED);
     }
 
     private ArtifactTypeEnum mapArtifactType(ArtifactType type) {

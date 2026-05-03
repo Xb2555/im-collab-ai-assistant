@@ -154,7 +154,7 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     @Override
     public void saveStep(TaskStepRecord step) {
         try {
-            String stepKey = STEP_KEY_PREFIX + step.getStepId();
+            String stepKey = stepKey(step.getTaskId(), step.getStepId());
             String taskStepsKey = TASK_STEP_KEY_PREFIX + step.getTaskId();
             redisTemplate.opsForValue().set(stepKey, objectMapper.writeValueAsString(step), SESSION_TTL);
             redisTemplate.opsForSet().add(taskStepsKey, step.getStepId());
@@ -172,7 +172,7 @@ public class RedisPlannerStateStore implements PlannerStateStore {
                 return List.of();
             }
             return stepIds.stream()
-                    .map(this::findStep)
+                    .map(stepId -> findStep(taskId, stepId))
                     .flatMap(Optional::stream)
                     .toList();
         } catch (Exception e) {
@@ -303,6 +303,26 @@ public class RedisPlannerStateStore implements PlannerStateStore {
         } catch (Exception e) {
             throw new RuntimeException("Failed to parse runtime artifact", e);
         }
+    }
+
+    private Optional<TaskStepRecord> findStep(String taskId, String stepId) {
+        try {
+            String json = redisTemplate.opsForValue().get(stepKey(taskId, stepId));
+            if (json == null) {
+                json = redisTemplate.opsForValue().get(STEP_KEY_PREFIX + stepId);
+            }
+            if (json == null) {
+                return Optional.empty();
+            }
+            TaskStepRecord step = objectMapper.readValue(json, TaskStepRecord.class);
+            return taskId.equals(step.getTaskId()) ? Optional.of(step) : Optional.empty();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load runtime step: " + taskId + "/" + stepId, e);
+        }
+    }
+
+    private String stepKey(String taskId, String stepId) {
+        return STEP_KEY_PREFIX + taskId + ":" + stepId;
     }
 
     private TaskEventRecord readRuntimeEvent(String json) {

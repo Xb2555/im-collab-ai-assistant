@@ -71,6 +71,7 @@ class ReplanNodeServiceTest {
         assertThat(result.getPlanCards())
                 .extracting(UserPlanCard::getTitle)
                 .containsExactly("生成技术方案文档（含Mermaid架构图）", "基于技术方案文档生成汇报PPT初稿", "生成群内项目进展摘要");
+        assertThat(result.getClarifiedInstruction()).contains("最后输出一段可以直接发到群里的项目进展摘要");
         verify(questionTool, never()).askUser(any(), any());
     }
 

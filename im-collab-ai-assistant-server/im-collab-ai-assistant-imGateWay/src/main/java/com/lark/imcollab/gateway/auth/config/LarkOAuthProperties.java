@@ -11,6 +11,8 @@ public class LarkOAuthProperties {
 
     private String redirectUri;
 
+    private String desktopRedirectUri;
+
     private String authorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
 
     private String qrAuthorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
@@ -47,6 +49,14 @@ public class LarkOAuthProperties {
 
     public void setRedirectUri(String redirectUri) {
         this.redirectUri = redirectUri;
+    }
+
+    public String getDesktopRedirectUri() {
+        return desktopRedirectUri;
+    }
+
+    public void setDesktopRedirectUri(String desktopRedirectUri) {
+        this.desktopRedirectUri = desktopRedirectUri;
     }
 
     public String getAuthorizeUrl() {

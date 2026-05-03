@@ -43,14 +43,23 @@ public class PlannerRetryService {
                 .orElse(false);
     }
 
-    public PlanTaskSession prepareRetry(String taskId) {
+    public PlanTaskSession prepareRetry(String taskId, String feedback) {
         PlanTaskSession session = sessionService.get(taskId);
         if (!isRetryable(taskId, session)) {
             throw new RetryNotAllowedException("当前任务不是失败状态，不需要重试。");
         }
 
+        String retryFeedback = normalize(feedback);
+        if (!retryFeedback.isBlank()) {
+            session.setClarifiedInstruction(appendSupplement(
+                    firstNonBlank(session.getClarifiedInstruction(), session.getRawInstruction()),
+                    retryFeedback
+            ));
+        }
         session.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
-        session.setTransitionReason("Retrying failed task");
+        session.setTransitionReason(retryFeedback.isBlank()
+                ? "Retrying failed task"
+                : "Retrying failed task: " + retryFeedback);
         session.setAborted(false);
         sessionService.save(session);
 
@@ -127,5 +136,34 @@ public class PlannerRetryService {
         } catch (Exception exception) {
             return String.valueOf(payload);
         }
+    }
+
+    private String appendSupplement(String base, String supplement) {
+        String safeBase = normalize(base);
+        String safeSupplement = normalize(supplement);
+        if (safeSupplement.isBlank() || safeBase.contains(safeSupplement)) {
+            return safeBase;
+        }
+        if (safeBase.isBlank()) {
+            return safeSupplement;
+        }
+        return safeBase + "\n补充说明：" + safeSupplement;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            String normalized = normalize(value);
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+        }
+        return "";
+    }
+
+    private String normalize(String value) {
+        return value == null ? "" : value.trim();
     }
 }

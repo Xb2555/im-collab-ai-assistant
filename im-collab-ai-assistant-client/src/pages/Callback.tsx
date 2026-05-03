@@ -1,5 +1,5 @@
 // src/pages/Callback.tsx
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { authApi } from '@/services/api/auth';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -11,6 +11,7 @@ export default function Callback() {
   
   // 使用 useRef 防止 React 18 严格模式下的开发环境双次触发
   const hasFetched = useRef(false);
+  const [statusText, setStatusText] = useState('正在安全验证身份，请稍候...');
 
   useEffect(() => {
     if (hasFetched.current) return;
@@ -30,8 +31,11 @@ export default function Callback() {
       .then((data) => {
         // 成功！将 token 和用户信息写入 Zustand 全局状态
         setAuth(data.accessToken, data.user);
-        // 替换历史记录，跳回仪表盘
-        navigate('/', { replace: true });
+        setStatusText('登录成功，正在进入...');
+        // 给用户一个短暂的成功过渡感
+        window.setTimeout(() => {
+          navigate('/', { replace: true });
+        }, 500);
       })
       .catch((err) => {
         console.error('授权换 Token 失败:', err);
@@ -47,7 +51,7 @@ export default function Callback() {
         {/* 一个简单的 Tailwind 纯 CSS Loading 动画 */}
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
         <p className="text-sm text-muted-foreground animate-pulse">
-          正在安全验证身份，请稍候...
+          {statusText}
         </p>
       </div>
     </div>

@@ -32,6 +32,8 @@ public class LarkOAuthService {
     private static final Duration MIN_SESSION_TTL = Duration.ofMinutes(1);
     private static final String STATE_KEY_PREFIX = "imcollab:auth:lark:state:";
     private static final String SESSION_KEY_PREFIX = "imcollab:auth:lark:session:";
+    private static final String CLIENT_WEB = "web";
+    private static final String CLIENT_DESKTOP = "desktop";
 
     private final LarkOAuthProperties properties;
     private final LarkAppProperties appProperties;
@@ -62,41 +64,35 @@ public class LarkOAuthService {
     }
 
     public LarkOAuthLoginResult startLoginForWebRedirect() {
+        return startLoginByClient(CLIENT_WEB);
+    }
+
+    public LarkOAuthLoginResult startLoginByClient(String client) {
+        String normalizedClient = normalizeClient(client);
         validateRequired(appProperties.getAppId(), "appId");
-        validateRequired(properties.getRedirectUri(), "redirectUri");
+
+        String redirectUri = resolveRedirectUriByClient(normalizedClient);
+        validateRequired(redirectUri, "redirectUri");
 
         String state = randomToken();
-        redisStringStore.set(stateKey(state), "1", properties.getStateTtl());
+        redisStringStore.set(stateKey(state), normalizedClient, properties.getStateTtl());
+
         Optional<String> scope = authorizationScope();
-        URI authorizationUri = buildAuthorizationUri(properties.getAuthorizeUrl(), "client_id", state, scope);
-        log.info("Lark OAuth Web redirect login init: authorizeDomain={}, scope={}",
-                properties.getAuthorizeUrl(), scope.orElse("<empty>"));
+        URI authorizationUri = buildAuthorizationUri(properties.getQrAuthorizeUrl(), "client_id", redirectUri, state, scope);
+        log.info("Lark OAuth login init: client={}, authorizeDomain={}, scope={}",
+                normalizedClient, properties.getQrAuthorizeUrl(), scope.orElse("<empty>"));
         return new LarkOAuthLoginResult(authorizationUri, state);
     }
 
     public LarkOAuthLoginResult startLoginForQrEmbed() {
-        validateRequired(appProperties.getAppId(), "appId");
-        validateRequired(properties.getRedirectUri(), "redirectUri");
-        validateRequired(properties.getQrAuthorizeUrl(), "qrAuthorizeUrl");
-
-        String state = randomToken();
-        redisStringStore.set(stateKey(state), "1", properties.getStateTtl());
-        String clientIdParamName = (properties.getQrClientIdParam() == null || properties.getQrClientIdParam().isBlank())
-                ? "client_id"
-                : properties.getQrClientIdParam().trim();
-
-        Optional<String> scope = authorizationScope();
-        URI authorizationUri = buildAuthorizationUri(properties.getQrAuthorizeUrl(), clientIdParamName, state, scope);
-        log.info("Lark OAuth QR embed login init: authorizeDomain={}, clientIdParam={}, scope={}",
-                properties.getQrAuthorizeUrl(), clientIdParamName, scope.orElse("<empty>"));
-        return new LarkOAuthLoginResult(authorizationUri, state);
+        return startLoginByClient(CLIENT_WEB);
     }
 
-    private URI buildAuthorizationUri(String authorizeUrl, String clientIdParamName, String state, Optional<String> scope) {
+    private URI buildAuthorizationUri(String authorizeUrl, String clientIdParamName, String redirectUri, String state, Optional<String> scope) {
         StringBuilder builder = new StringBuilder(authorizeUrl);
         appendQuery(builder, true, clientIdParamName, appProperties.getAppId());
         appendQuery(builder, false, "response_type", "code");
-        appendQuery(builder, false, "redirect_uri", properties.getRedirectUri());
+        appendQuery(builder, false, "redirect_uri", redirectUri);
         appendQuery(builder, false, "state", state);
         scope.ifPresent(value -> appendQuery(builder, false, "scope", value));
         return URI.create(builder.toString());
@@ -123,7 +119,8 @@ public class LarkOAuthService {
         }
 
         String appAccessToken = oauthClient.getAppAccessToken();
-        LarkOAuthTokenPayload payload = oauthClient.exchangeAuthorizationCode(appAccessToken, code.trim());
+        String redirectUri = resolveRedirectUriByState(state);
+        LarkOAuthTokenPayload payload = oauthClient.exchangeAuthorizationCode(appAccessToken, code.trim(), redirectUri);
         log.info("Lark OAuth token exchanged: scope={}, tokenType={}, expiresIn={}, refreshExpiresIn={}",
                 payload.scope(), payload.tokenType(), payload.expiresIn(), payload.refreshExpiresIn());
         LarkOAuthUserResponse userInfo = null;
@@ -257,6 +254,30 @@ public class LarkOAuthService {
         }
         redisStringStore.delete(key);
         return true;
+    }
+
+    private String resolveRedirectUriByState(String state) {
+        if (state == null || state.isBlank()) {
+            return properties.getRedirectUri();
+        }
+        Optional<String> client = redisStringStore.get(stateKey(state.trim()));
+        return resolveRedirectUriByClient(client.orElse(CLIENT_WEB));
+    }
+
+    private String resolveRedirectUriByClient(String client) {
+        String normalizedClient = normalizeClient(client);
+        if (CLIENT_DESKTOP.equals(normalizedClient)) {
+            return properties.getDesktopRedirectUri();
+        }
+        return properties.getRedirectUri();
+    }
+
+    private String normalizeClient(String client) {
+        if (client == null || client.isBlank()) {
+            return CLIENT_WEB;
+        }
+        String normalized = client.trim().toLowerCase();
+        return CLIENT_DESKTOP.equals(normalized) ? CLIENT_DESKTOP : CLIENT_WEB;
     }
 
     private String stateKey(String state) {

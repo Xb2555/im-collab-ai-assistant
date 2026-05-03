@@ -44,6 +44,7 @@ public class TaskRuntimeProjectionService {
         }
         Instant now = Instant.now();
         TaskRecord existing = stateStore.findTask(session.getTaskId()).orElse(null);
+        List<TaskStepRecord> existingSteps = stateStore.findStepsByTaskId(session.getTaskId());
         TaskRecord task = TaskRecord.builder()
                 .taskId(session.getTaskId())
                 .conversationKey(session.getIntakeState() == null ? null : session.getIntakeState().getContinuationKey())
@@ -55,8 +56,9 @@ public class TaskRuntimeProjectionService {
                 .goal(firstNonBlank(session.getClarifiedInstruction(), session.getRawInstruction(), session.getPlanBlueprintSummary()))
                 .status(mapTaskStatus(session.getPlanningPhase(), eventType))
                 .currentStage(resolveCurrentStage(session.getPlanningPhase(), eventType))
-                .progress(existing == null ? 0 : existing.getProgress())
-                .artifactIds(existing == null || existing.getArtifactIds() == null ? List.of() : existing.getArtifactIds())
+                .progress(existing == null ? resolveProgress(existingSteps) : existing.getProgress())
+                .artifactIds(existing == null ? resolveArtifactIds(session.getTaskId())
+                        : existing.getArtifactIds() == null ? List.of() : existing.getArtifactIds())
                 .riskFlags(existing == null || existing.getRiskFlags() == null ? List.of() : existing.getRiskFlags())
                 .needUserAction(needsUserAction(session.getPlanningPhase()))
                 .version(session.getVersion())
@@ -103,12 +105,28 @@ public class TaskRuntimeProjectionService {
     }
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
+        TaskRecord task = reconcileTaskVersion(taskId);
         return TaskRuntimeSnapshot.builder()
-                .task(stateStore.findTask(taskId).orElse(null))
+                .task(task)
                 .steps(activeSteps(stateStore.findStepsByTaskId(taskId)))
                 .artifacts(visibleArtifacts(taskId))
                 .events(stateStore.findRuntimeEventsByTaskId(taskId))
                 .build();
+    }
+
+    private TaskRecord reconcileTaskVersion(String taskId) {
+        TaskRecord task = stateStore.findTask(taskId).orElse(null);
+        if (task == null) {
+            return null;
+        }
+        PlanTaskSession session = stateStore.findSession(taskId).orElse(null);
+        if (session == null || task.getVersion() == session.getVersion()) {
+            return task;
+        }
+        task.setVersion(session.getVersion());
+        task.setUpdatedAt(Instant.now());
+        stateStore.saveTask(task);
+        return task;
     }
 
     private void markMissingStepsSuperseded(String taskId, List<TaskStepRecord> nextSteps) {

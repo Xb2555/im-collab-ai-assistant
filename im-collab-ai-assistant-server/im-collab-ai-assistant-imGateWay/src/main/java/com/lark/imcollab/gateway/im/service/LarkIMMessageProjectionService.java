@@ -2,15 +2,22 @@ package com.lark.imcollab.gateway.im.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.gateway.im.dto.LarkMessageHistoryViewResponse;
 import com.lark.imcollab.gateway.im.dto.LarkRealtimeMessage;
+import com.lark.imcollab.gateway.im.dto.LarkUserDisplayInfo;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
 import com.lark.imcollab.skills.lark.im.LarkMessageHistoryItem;
+import com.lark.imcollab.skills.lark.im.LarkMessageMention;
 import com.lark.imcollab.skills.lark.im.LarkMessageHistoryResponse;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,15 +38,17 @@ public class LarkIMMessageProjectionService {
         this.objectMapper = objectMapper;
     }
 
-    public LarkMessageHistoryResponse projectHistory(LarkMessageHistoryResponse response, String userAccessToken) {
+    public LarkMessageHistoryViewResponse projectHistory(LarkMessageHistoryResponse response, String userAccessToken) {
         if (response == null) {
             return null;
         }
         List<LarkMessageHistoryItem> items = new ArrayList<>();
+        Set<String> openIds = collectOpenIds(response.items());
+        Map<String, LarkUserDisplayInfo> userMap = hydrateUserMap(openIds, userAccessToken);
         for (LarkMessageHistoryItem item : response.items()) {
-            items.add(projectHistoryItem(item, userAccessToken));
+            items.add(projectHistoryItem(item, userMap));
         }
-        return new LarkMessageHistoryResponse(items, response.hasMore(), response.pageToken());
+        return new LarkMessageHistoryViewResponse(items, response.hasMore(), response.pageToken(), userMap);
     }
 
     public LarkRealtimeMessage projectRealtime(LarkMessageEvent event) {
@@ -66,15 +75,13 @@ public class LarkIMMessageProjectionService {
         );
     }
 
-    private LarkMessageHistoryItem projectHistoryItem(LarkMessageHistoryItem item, String userAccessToken) {
-        LarkUserProfile sender = shouldHydrateSender(item.msgType())
-                ? userProfileHydrationService.resolveByUserAccessToken(userAccessToken, item.senderId())
+    private LarkMessageHistoryItem projectHistoryItem(
+            LarkMessageHistoryItem item,
+            Map<String, LarkUserDisplayInfo> userMap
+    ) {
+        LarkUserDisplayInfo sender = shouldHydrateSender(item.msgType())
+                ? userMap.get(normalizeOpenId(item.senderId()))
                 : null;
-        String content = renderContent(
-                item.msgType(),
-                item.content(),
-                openId -> userProfileHydrationService.resolveByUserAccessToken(userAccessToken, openId)
-        );
         return new LarkMessageHistoryItem(
                 item.messageId(),
                 item.rootId(),
@@ -90,12 +97,84 @@ public class LarkIMMessageProjectionService {
                 item.senderIdType(),
                 item.senderType(),
                 item.tenantKey(),
-                content,
+                item.content(),
                 item.mentions(),
                 item.upperMessageId(),
                 sender == null ? null : sender.name(),
-                sender == null ? null : sender.avatarUrl()
+                sender == null ? null : sender.avatar()
         );
+    }
+
+    private Set<String> collectOpenIds(List<LarkMessageHistoryItem> items) {
+        Set<String> openIds = new LinkedHashSet<>();
+        if (items == null) {
+            return openIds;
+        }
+        for (LarkMessageHistoryItem item : items) {
+            if (item == null) {
+                continue;
+            }
+            addOpenId(openIds, item.senderId());
+            if (item.mentions() != null) {
+                for (LarkMessageMention mention : item.mentions()) {
+                    if (mention != null) {
+                        addOpenId(openIds, mention.id());
+                    }
+                }
+            }
+            collectOpenIdsFromContent(openIds, item.content());
+        }
+        return openIds;
+    }
+
+    private void collectOpenIdsFromContent(Set<String> openIds, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        try {
+            collectOpenIdsFromJson(openIds, objectMapper.readTree(content));
+        } catch (IOException ignored) {
+            // Message content can be arbitrary user text. Only JSON system/card payloads are scanned for ids.
+        }
+    }
+
+    private void collectOpenIdsFromJson(Set<String> openIds, JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return;
+        }
+        if (node.isTextual()) {
+            addOpenId(openIds, node.asText());
+            return;
+        }
+        if (node.isArray()) {
+            node.forEach(child -> collectOpenIdsFromJson(openIds, child));
+            return;
+        }
+        if (node.isObject()) {
+            node.fields().forEachRemaining(entry -> collectOpenIdsFromJson(openIds, entry.getValue()));
+        }
+    }
+
+    private Map<String, LarkUserDisplayInfo> hydrateUserMap(Set<String> openIds, String userAccessToken) {
+        Map<String, LarkUserDisplayInfo> userMap = new LinkedHashMap<>();
+        if (openIds == null) {
+            return userMap;
+        }
+        for (String openId : openIds) {
+            LarkUserProfile profile = userProfileHydrationService.resolveByUserAccessToken(userAccessToken, openId);
+            if (profile == null) {
+                continue;
+            }
+            userMap.put(openId, new LarkUserDisplayInfo(profile.name(), profile.avatarUrl()));
+        }
+        return userMap;
+    }
+
+    private void addOpenId(Set<String> openIds, String value) {
+        String normalized = normalizeOpenId(value);
+        if (normalized != null) {
+            openIds.add(normalized);
+        }
     }
 
     private boolean shouldHydrateSender(String messageType) {
@@ -212,7 +291,15 @@ public class LarkIMMessageProjectionService {
     }
 
     private boolean looksLikeOpenId(String value) {
-        return value != null && value.startsWith("ou_");
+        return normalizeOpenId(value) != null;
+    }
+
+    private String normalizeOpenId(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim();
+        return normalized.startsWith("ou_") ? normalized : null;
     }
 
     private String text(JsonNode node, String fieldName) {

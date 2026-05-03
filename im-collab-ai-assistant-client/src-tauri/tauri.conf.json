@@ -21,6 +21,9 @@
     ],
     "security": {
       "csp": null
+    },
+    "deepLink": {
+      "schemes": ["agentpilot"]
     }
   },
   "bundle": {

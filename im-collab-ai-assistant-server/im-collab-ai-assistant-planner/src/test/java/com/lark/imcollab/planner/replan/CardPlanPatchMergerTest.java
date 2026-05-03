@@ -123,6 +123,33 @@ class CardPlanPatchMergerTest {
                 .doesNotContain("基于竞品分析与销售应答话术文档");
     }
 
+    @Test
+    void updateMultipleStepsAppliesDraftsByTargetOrder() {
+        PlanBlueprint result = merger.merge(blueprint(), PlanPatchIntent.builder()
+                .operation(PlanPatchOperation.UPDATE_STEP)
+                .targetCardIds(List.of("card-001", "card-002"))
+                .newCardDrafts(List.of(
+                        PlanPatchCardDraft.builder()
+                                .title("生成技术方案文档（含责任人风险清单）")
+                                .description("文档风险清单增加责任人和缓解措施字段")
+                                .type(PlanCardTypeEnum.DOC)
+                                .build(),
+                        PlanPatchCardDraft.builder()
+                                .title("生成3页以内配套 PPT")
+                                .description("基于技术方案文档生成3页以内的PPT")
+                                .type(PlanCardTypeEnum.PPT)
+                                .build()
+                ))
+                .confidence(0.95d)
+                .build(), "task-1");
+
+        assertThat(result.getPlanCards())
+                .extracting(UserPlanCard::getType)
+                .containsExactly(PlanCardTypeEnum.DOC, PlanCardTypeEnum.PPT, PlanCardTypeEnum.SUMMARY, PlanCardTypeEnum.PPT);
+        assertThat(result.getPlanCards().get(0).getTitle()).contains("责任人风险清单");
+        assertThat(result.getPlanCards().get(1).getTitle()).contains("3页以内配套 PPT");
+    }
+
     private static PlanBlueprint blueprint() {
         return PlanBlueprint.builder()
                 .planCards(List.of(

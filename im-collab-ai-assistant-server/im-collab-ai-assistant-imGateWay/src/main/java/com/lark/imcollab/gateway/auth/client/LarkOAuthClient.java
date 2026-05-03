@@ -7,7 +7,7 @@ public interface LarkOAuthClient {
 
     String getAppAccessToken();
 
-    LarkOAuthTokenPayload exchangeAuthorizationCode(String appAccessToken, String code);
+    LarkOAuthTokenPayload exchangeAuthorizationCode(String appAccessToken, String code, String redirectUri);
 
     LarkOAuthTokenPayload refreshUserAccessToken(String appAccessToken, String refreshToken);
 

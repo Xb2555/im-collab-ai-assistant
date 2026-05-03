@@ -1,8 +1,15 @@
 // src/App.tsx
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+// ✨ 补全了 useNavigate 的导入
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/useAuthStore';
 import { authApi } from '@/services/api/auth';
+
+// ✨ 补全了移动端和桌面端底层插件的导入
+import { Capacitor } from '@capacitor/core';
+import { App as CapacitorApp } from '@capacitor/app';
+import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
+
 import Login from '@/pages/Login';
 import Callback from '@/pages/Callback';
 import Dashboard from '@/pages/Dashboard';
@@ -15,18 +22,15 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const clearAuth = useAuthStore((state) => state.clearAuth);
   
-  //新增：增加一个校验状态，防止在校验完成前页面闪烁
   const [isVerifying, setIsVerifying] = useState(true);
 
   useEffect(() => {
     const verifyToken = async () => {
-      // 只有在本地以为自己登录了的时候，才去向后端确认
       if (isAuthenticated) {
         try {
           await authApi.getMe();
         } catch (error) {
           console.warn('应用初始化 Token 校验失败，自动清理状态');
-          // 这里的 clearAuth 会把 isAuthenticated 设为 false，从而触发重定向
           clearAuth(); 
         }
       }
@@ -36,7 +40,6 @@ function RequireAuth({ children }: { children: JSX.Element }) {
     verifyToken();
   }, [isAuthenticated, clearAuth]);
 
-  // ✨ 新增：在校验请求返回前，展示一个友好的 Loading 动画
   if (isVerifying && isAuthenticated) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-zinc-50">
@@ -51,29 +54,59 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return isAuthenticated ? children : <Navigate to="/login" replace />;
 }
 
+// ✨ 全局 Deep Link 监听组件
+function DeepLinkListener({ children }: { children: JSX.Element }) {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // 1. 桌面端 (Tauri) 监听
+    if (typeof window !== 'undefined' && '__TAURI__' in window) {
+      let unlisten: () => void;
+      const setupDeepLink = async () => {
+        unlisten = await onOpenUrl((urls) => {
+          const urlStr = urls[0];
+          if (urlStr && urlStr.includes('callback')) {
+             const urlObj = new URL(urlStr, 'http://dummy.com'); // dummy base 帮助解析
+             const code = urlObj.searchParams.get('code');
+             const state = urlObj.searchParams.get('state');
+             if (code) navigate(`/auth-callback?code=${code}&state=${state || ''}`);
+          }
+        });
+      };
+      setupDeepLink();
+      return () => { if (unlisten) unlisten(); };
+    }
+    
+    // 2. 移动端 (Capacitor) 监听
+    if (Capacitor.isNativePlatform()) {
+      const listener = CapacitorApp.addListener('appUrlOpen', (data) => {
+        if (data.url.includes('callback')) {
+          const urlObj = new URL(data.url);
+          const code = urlObj.searchParams.get('code');
+          const state = urlObj.searchParams.get('state');
+          if (code) navigate(`/auth-callback?code=${code}&state=${state || ''}`);
+        }
+      });
+      // ✨ 这里加了 (l: any) 修复了参数隐式 any 的报错
+      return () => { listener.then((l: any) => l.remove()); };
+    }
+  }, [navigate]);
+
+  return children;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        {/* 公开路由 */}
-        <Route path="/login" element={<Login />} />
-        
-        {/* 这个路由必须和你们飞书后台配置的回调地址路径一致 */}
-        <Route path="/auth-callback" element={<Callback />} /> 
-
-        {/* 保护路由 */}
-        <Route
-          path="/"
-          element={
-            <RequireAuth>
-              <Dashboard />
-            </RequireAuth>
-          }
-        />
-        
-        {/* 兜底：未匹配到的路径统统回首页 */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      {/* ✨ 用监听器包裹 Routes，这样它就被使用起来了！ */}
+      <DeepLinkListener>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/auth-callback" element={<Callback />} /> 
+          <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </DeepLinkListener>
     </BrowserRouter>
   );
 }

@@ -45,12 +45,11 @@ public class PlannerContextTool {
                     "empty instruction"
             );
         }
-        boolean hasEmbeddedContext = hasEmbeddedTaskMaterial(instruction);
-        if (!hasCollectedContext && !hasEmbeddedContext && instruction.length() < 24) {
+        if (!hasCollectedContext) {
             return ContextSufficiencyResult.insufficient(
                     List.of("source_context"),
-                    "你希望我基于哪些内容来整理？可以直接贴材料、文档链接，或说明要整理的消息范围；如果有偏好的产物形式也可以一起说。",
-                    "instruction too short and no external context"
+                    "这份内容要基于哪些材料来做？可以直接贴项目背景、文档链接，或说明要整理的消息范围；如果只是要一个通用模板，也可以直接告诉我。",
+                    "no source material or embedded content"
             );
         }
         String summary = "instruction=" + instruction
@@ -61,24 +60,10 @@ public class PlannerContextTool {
         String reason;
         if (hasCollectedContext) {
             reason = "external workspace context accepted for planner";
-        } else if (hasEmbeddedContext) {
-            reason = "embedded instruction context accepted for planner";
         } else {
             reason = "context accepted for planner";
         }
         return ContextSufficiencyResult.sufficient(summary, reason);
-    }
-
-    private boolean hasEmbeddedTaskMaterial(String instruction) {
-        if (instruction == null || instruction.isBlank()) {
-            return false;
-        }
-        String normalized = instruction.trim();
-        int delimiter = Math.max(normalized.lastIndexOf('：'), normalized.lastIndexOf(':'));
-        if (delimiter >= 0 && normalized.length() - delimiter - 1 >= 24) {
-            return true;
-        }
-        return normalized.contains("\n") && normalized.length() >= 40;
     }
 
     private boolean containsOnlyLatestInstruction(WorkspaceContext workspaceContext, String instruction) {

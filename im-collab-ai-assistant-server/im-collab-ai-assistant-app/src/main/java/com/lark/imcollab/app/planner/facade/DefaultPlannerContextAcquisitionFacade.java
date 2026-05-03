@@ -202,7 +202,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         if (!matcher.find()) {
             if (normalized.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论).*")) {
                 Instant end = Instant.now();
-                Instant start = end.minusSeconds(10 * 60L);
+                Instant start = end.minusSeconds(Math.max(1, plannerProperties.getContextCollection().getDefaultLookbackMinutes()) * 60L);
                 return new TimeRange(String.valueOf(start.getEpochSecond()), String.valueOf(end.getEpochSecond()));
             }
             return null;
