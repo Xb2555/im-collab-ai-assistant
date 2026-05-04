@@ -94,7 +94,7 @@ class LarkIMChatServiceMessageHistoryTests {
     }
 
     @Test
-    void shouldKeepSystemMessageContentRawAndReturnUserMap() throws Exception {
+    void shouldNormalizeSystemMessageVariablesAndReturnUserMap() throws Exception {
         when(oauthService.resolveAuthenticatedSessionByBusinessToken("biz-token"))
                 .thenReturn(Optional.of(new LarkAuthenticatedSession(
                         "user-access-token",
@@ -135,8 +135,10 @@ class LarkIMChatServiceMessageHistoryTests {
         );
 
         assertThat(response.items()).hasSize(1);
-        assertThat(response.items().get(0).content())
-                .isEqualTo("{\"template\":\"{from_user} 创建了群聊，并邀请了 {members}\",\"from_user\":{\"id\":\"ou_zhang\"},\"members\":[{\"id\":\"ou_li\"}]}");
+        assertThat(objectMapper.readTree(response.items().get(0).content()))
+                .isEqualTo(objectMapper.readTree("{\"template\":\"{from_user} 创建了群聊，并邀请了 {members}\","
+                        + "\"from_user\":{\"id\":\"ou_zhang\"},\"members\":[{\"id\":\"ou_li\"}],"
+                        + "\"variables\":{\"from_user\":[\"张三\"],\"members\":[\"李四\"]}}"));
         assertThat(response.userMap()).containsOnlyKeys("ou_zhang", "ou_li");
         assertThat(response.userMap().get("ou_zhang").name()).isEqualTo("张三");
         assertThat(response.userMap().get("ou_zhang").avatar()).isEqualTo("https://avatar.example/zhang.png");
