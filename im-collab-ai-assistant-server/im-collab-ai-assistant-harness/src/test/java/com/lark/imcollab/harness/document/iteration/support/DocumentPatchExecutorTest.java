@@ -4,6 +4,8 @@ import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.DocumentPatchOperation;
 import com.lark.imcollab.skills.lark.doc.LarkDocBlockRef;
 import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
+import com.lark.imcollab.skills.lark.doc.LarkDocFetchResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocReadGateway;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
 import com.lark.imcollab.skills.lark.doc.LarkDocWriteGateway;
 import org.junit.jupiter.api.Test;
@@ -22,11 +24,12 @@ class DocumentPatchExecutorTest {
 
     @Test
     void failedResultThrowsIllegalState() {
+        LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
         LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
         when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder().success(false).message("权限不足").revisionId(1L).build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(readGateway, writeGateway, new DocumentStructureParser());
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.STR_REPLACE)
@@ -43,6 +46,7 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockInsertCollectsNewBlockIds() {
+        LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
         LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
         when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder()
@@ -50,7 +54,7 @@ class DocumentPatchExecutorTest {
                         .newBlocks(List.of(LarkDocBlockRef.builder().blockId("blk-new").build()))
                         .build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(readGateway, writeGateway, new DocumentStructureParser());
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
@@ -68,11 +72,12 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockInsertFallsBackToInsertAfterLabelWhenNoNewBlocks() {
+        LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
         LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
         when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(2L).newBlocks(List.of()).build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(readGateway, writeGateway, new DocumentStructureParser());
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
@@ -89,6 +94,7 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockReplaceCollectsNewBlockIds() {
+        LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
         LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
         when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder()
@@ -99,7 +105,7 @@ class DocumentPatchExecutorTest {
                         ))
                         .build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(readGateway, writeGateway, new DocumentStructureParser());
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
@@ -117,6 +123,7 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockGroupMoveUsesExplicitRuntimeGroupKey() {
+        LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
         LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
         when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder()
@@ -129,7 +136,7 @@ class DocumentPatchExecutorTest {
                 .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(3L).newBlocks(List.of()).build())
                 .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(4L).newBlocks(List.of()).build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(readGateway, writeGateway, new DocumentStructureParser());
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(
                         DocumentPatchOperation.builder()
@@ -155,8 +162,9 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockGroupMoveFailsFastWhenRuntimeGroupIsMissing() {
+        LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
         LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(readGateway, writeGateway, new DocumentStructureParser());
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
@@ -168,5 +176,44 @@ class DocumentPatchExecutorTest {
         assertThatThrownBy(() -> executor.execute("doc123", plan))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("未找到可移动的新建 block group");
+    }
+
+    @Test
+    void appendWithoutNewBlocksRecoversRuntimeGroupFromDocumentDiff() {
+        LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        when(readGateway.fetchDocFull("doc123", "with-ids"))
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("<doc><h2 id=\"heading-1\">1.1</h2><h2 id=\"heading-3\">1.3</h2></doc>")
+                        .build())
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("<doc><h2 id=\"heading-1\">1.1</h2><h2 id=\"heading-3\">1.3</h2><h2 id=\"heading-2\">1.2</h2><p id=\"body-2\">正文</p></doc>")
+                        .build());
+        when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(2L).newBlocks(List.of()).build())
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(3L).newBlocks(List.of()).build())
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(4L).newBlocks(List.of()).build());
+
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(readGateway, writeGateway, new DocumentStructureParser());
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .patchOperations(List.of(
+                        DocumentPatchOperation.builder()
+                                .operationType(DocumentPatchOperationType.APPEND)
+                                .runtimeGroupKey("group-new-section")
+                                .newContent("### 1.2 游客偏好分析\n\n正文")
+                                .docFormat("markdown")
+                                .build(),
+                        DocumentPatchOperation.builder()
+                                .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
+                                .runtimeGroupKey("group-new-section")
+                                .targetBlockId("heading-1")
+                                .build()
+                ))
+                .build();
+
+        DocumentPatchExecutor.PatchExecutionResult result = executor.execute("doc123", plan);
+
+        assertThat(result.getModifiedBlocks()).contains("append", "heading-2", "body-2");
+        assertThat(result.getAfterRevision()).isEqualTo(4L);
     }
 }
