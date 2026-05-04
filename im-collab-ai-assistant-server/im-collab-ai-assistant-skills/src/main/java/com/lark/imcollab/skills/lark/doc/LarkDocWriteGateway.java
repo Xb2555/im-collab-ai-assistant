@@ -46,8 +46,8 @@ public class LarkDocWriteGateway {
         return switch (normalizedCommand) {
             case "append" -> updateDoc(docRef, "append", content);
             case "str_replace" -> legacyUpdate(docRef, "str_replace", content, docFormat, null, pattern, revisionId, timeoutMillis);
-            case "block_insert_after" -> updateByBlockAnchor(docRef, "insert_after", content, docFormat, blockId);
-            case "block_replace" -> updateByBlockAnchor(docRef, "replace_range", content, docFormat, blockId);
+            case "block_insert_after" -> legacyUpdate(docRef, "block_insert_after", content, docFormat, blockId, null, revisionId, timeoutMillis);
+            case "block_replace" -> legacyUpdate(docRef, "block_replace", content, docFormat, blockId, null, revisionId, timeoutMillis);
             case "block_delete" -> directBlockDelete(docRef, blockId);
             case "create_whiteboard" -> appendWhiteboard(docRef);
             default -> legacyUpdate(docRef, normalizedCommand, content, docFormat, blockId, pattern, revisionId, timeoutMillis);
@@ -64,15 +64,6 @@ public class LarkDocWriteGateway {
         Set<String> supportedFlags = readGateway.supportedFlags("+update");
         List<DocCommandAttempt> attempts = v1UpdateAttempts(docRef, mode, markdown, titleSelection, ellipsisSelection, null, supportedFlags);
         return parseUpdateResult(readGateway.executeJsonWithCompat("+update", attempts), mode);
-    }
-
-    private LarkDocUpdateResult updateByBlockAnchor(String docRef, String mode, String content, String docFormat, String blockId) {
-        requireValue(blockId, "blockId");
-        LarkDocFetchResult anchorFetch = readGateway.fetchDocSectionMarkdown(docRef, blockId.trim());
-        String anchorSelection = firstMeaningfulLine(anchorFetch.getContent());
-        if (!readGateway.hasText(anchorSelection)) throw new IllegalStateException("无法从目标 block 提取可定位文本，无法执行文档更新。");
-        String markdown = toV1Markdown(content, docFormat);
-        return updateBySelection(docRef, mode, markdown, "markdown", null, anchorSelection);
     }
 
     private LarkDocUpdateResult directBlockDelete(String docRef, String blockId) {
