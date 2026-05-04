@@ -2,17 +2,17 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.model.entity.ExecutionStep;
 import com.lark.imcollab.common.model.entity.TableModel;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocWriteGateway;
 import org.springframework.stereotype.Component;
 
 @Component
 public class InsertTableBlockStepHandler implements ExecutionStepHandler {
 
-    private final LarkDocTool larkDocTool;
+    private final LarkDocWriteGateway writeGateway;
 
-    public InsertTableBlockStepHandler(LarkDocTool larkDocTool) {
-        this.larkDocTool = larkDocTool;
+    public InsertTableBlockStepHandler(LarkDocWriteGateway writeGateway) {
+        this.writeGateway = writeGateway;
     }
 
     @Override
@@ -27,7 +27,7 @@ public class InsertTableBlockStepHandler implements ExecutionStepHandler {
         int cols = tableModel != null && tableModel.getColumns() != null ? tableModel.getColumns().size() : 2;
         int rows = tableModel != null && tableModel.getRows() != null ? tableModel.getRows().size() + 1 : 2;
         String spec = cols + "x" + rows;
-        LarkDocUpdateResult result = larkDocTool.updateByCommand(
+        LarkDocUpdateResult result = writeGateway.updateByCommand(
                 docRef, "block_insert_after", spec, "table", anchorBlockId, null, null);
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("INSERT_TABLE_BLOCK: insert failed");

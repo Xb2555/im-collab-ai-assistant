@@ -4,8 +4,8 @@ import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.DocumentPatchOperation;
 import com.lark.imcollab.skills.lark.doc.LarkDocBlockRef;
 import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocWriteGateway;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -22,11 +22,11 @@ class DocumentPatchExecutorTest {
 
     @Test
     void failedResultThrowsIllegalState() {
-        LarkDocTool tool = mock(LarkDocTool.class);
-        when(tool.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder().success(false).message("权限不足").revisionId(1L).build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.STR_REPLACE)
@@ -43,14 +43,14 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockInsertCollectsNewBlockIds() {
-        LarkDocTool tool = mock(LarkDocTool.class);
-        when(tool.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder()
                         .success(true).revisionId(2L)
                         .newBlocks(List.of(LarkDocBlockRef.builder().blockId("blk-new").build()))
                         .build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
@@ -68,11 +68,11 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockInsertFallsBackToInsertAfterLabelWhenNoNewBlocks() {
-        LarkDocTool tool = mock(LarkDocTool.class);
-        when(tool.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(2L).newBlocks(List.of()).build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
@@ -89,8 +89,8 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockReplaceCollectsNewBlockIds() {
-        LarkDocTool tool = mock(LarkDocTool.class);
-        when(tool.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder()
                         .success(true).revisionId(3L)
                         .newBlocks(List.of(
@@ -99,7 +99,7 @@ class DocumentPatchExecutorTest {
                         ))
                         .build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
@@ -117,8 +117,8 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockGroupMoveUsesExplicitRuntimeGroupKey() {
-        LarkDocTool tool = mock(LarkDocTool.class);
-        when(tool.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder()
                         .success(true).revisionId(2L)
                         .newBlocks(List.of(
@@ -129,7 +129,7 @@ class DocumentPatchExecutorTest {
                 .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(3L).newBlocks(List.of()).build())
                 .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(4L).newBlocks(List.of()).build());
 
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(
                         DocumentPatchOperation.builder()
@@ -155,8 +155,8 @@ class DocumentPatchExecutorTest {
 
     @Test
     void blockGroupMoveFailsFastWhenRuntimeGroupIsMissing() {
-        LarkDocTool tool = mock(LarkDocTool.class);
-        DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(writeGateway);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(DocumentPatchOperation.builder()
                         .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)

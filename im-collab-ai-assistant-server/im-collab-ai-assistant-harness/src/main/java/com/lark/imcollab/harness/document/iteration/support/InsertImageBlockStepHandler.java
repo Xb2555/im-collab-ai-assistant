@@ -1,17 +1,17 @@
 package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.model.entity.ExecutionStep;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocWriteGateway;
 import org.springframework.stereotype.Component;
 
 @Component
 public class InsertImageBlockStepHandler implements ExecutionStepHandler {
 
-    private final LarkDocTool larkDocTool;
+    private final LarkDocWriteGateway writeGateway;
 
-    public InsertImageBlockStepHandler(LarkDocTool larkDocTool) {
-        this.larkDocTool = larkDocTool;
+    public InsertImageBlockStepHandler(LarkDocWriteGateway writeGateway) {
+        this.writeGateway = writeGateway;
     }
 
     @Override
@@ -27,7 +27,7 @@ public class InsertImageBlockStepHandler implements ExecutionStepHandler {
             fileToken = anchorBlockId;
         }
         String altText = firstNonBlank(ctx.getString("imageAltText"), ctx.getString("imageCaption"), "image");
-        LarkDocUpdateResult result = larkDocTool.updateByCommand(
+        LarkDocUpdateResult result = writeGateway.updateByCommand(
                 docRef, "block_insert_after", toMarkdownImage(altText, fileToken), "markdown", anchorBlockId, null, null);
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("INSERT_IMAGE_BLOCK: insert failed");

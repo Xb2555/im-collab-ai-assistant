@@ -1,17 +1,10 @@
 package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.model.entity.ExecutionStep;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import org.springframework.stereotype.Component;
 
 @Component
 public class UploadImageStepHandler implements ExecutionStepHandler {
-
-    private final LarkDocTool larkDocTool;
-
-    public UploadImageStepHandler(LarkDocTool larkDocTool) {
-        this.larkDocTool = larkDocTool;
-    }
 
     @Override
     public String stepType() {

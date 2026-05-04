@@ -3,7 +3,7 @@ package com.lark.imcollab.harness.document.iteration.support;
 import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.ExecutionStep;
 import com.lark.imcollab.common.model.entity.RichContentExecutionResult;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
+import com.lark.imcollab.skills.lark.doc.LarkDocReadGateway;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -12,11 +12,11 @@ import java.util.List;
 public class RichContentExecutionEngine {
 
     private final ExecutionStepHandlerRegistry registry;
-    private final LarkDocTool larkDocTool;
+    private final LarkDocReadGateway readGateway;
 
-    public RichContentExecutionEngine(ExecutionStepHandlerRegistry registry, LarkDocTool larkDocTool) {
+    public RichContentExecutionEngine(ExecutionStepHandlerRegistry registry, LarkDocReadGateway readGateway) {
         this.registry = registry;
-        this.larkDocTool = larkDocTool;
+        this.readGateway = readGateway;
     }
 
     public RichContentExecutionResult execute(String docRef, DocumentEditPlan plan) {
@@ -41,7 +41,7 @@ public class RichContentExecutionEngine {
 
     private long fetchRevision(String docRef) {
         try {
-            var outline = larkDocTool.fetchDocOutline(docRef);
+            var outline = readGateway.fetchDocOutline(docRef);
             Long rev = outline.getRevisionId();
             return rev != null ? rev : -1L;
         } catch (Exception ignored) {

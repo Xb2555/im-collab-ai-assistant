@@ -2,8 +2,8 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.model.entity.ExecutionStep;
 import com.lark.imcollab.common.model.entity.TableModel;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocWriteGateway;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -13,10 +13,10 @@ import java.util.stream.Collectors;
 @Component
 public class WriteTableDataStepHandler implements ExecutionStepHandler {
 
-    private final LarkDocTool larkDocTool;
+    private final LarkDocWriteGateway writeGateway;
 
-    public WriteTableDataStepHandler(LarkDocTool larkDocTool) {
-        this.larkDocTool = larkDocTool;
+    public WriteTableDataStepHandler(LarkDocWriteGateway writeGateway) {
+        this.writeGateway = writeGateway;
     }
 
     @Override
@@ -35,7 +35,7 @@ public class WriteTableDataStepHandler implements ExecutionStepHandler {
             return;
         }
         String csv = buildCsv(tableModel);
-        LarkDocUpdateResult result = larkDocTool.updateByCommand(
+        LarkDocUpdateResult result = writeGateway.updateByCommand(
                 docRef, "table_write", csv, "csv", tableBlockId, null, null);
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("WRITE_TABLE_DATA: write failed");

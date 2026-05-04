@@ -1,17 +1,17 @@
 package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.model.entity.ExecutionStep;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocWriteGateway;
 import org.springframework.stereotype.Component;
 
 @Component
 public class InsertWhiteboardRefStepHandler implements ExecutionStepHandler {
 
-    private final LarkDocTool larkDocTool;
+    private final LarkDocWriteGateway writeGateway;
 
-    public InsertWhiteboardRefStepHandler(LarkDocTool larkDocTool) {
-        this.larkDocTool = larkDocTool;
+    public InsertWhiteboardRefStepHandler(LarkDocWriteGateway writeGateway) {
+        this.writeGateway = writeGateway;
     }
 
     @Override
@@ -26,7 +26,7 @@ public class InsertWhiteboardRefStepHandler implements ExecutionStepHandler {
         if (whiteboardToken == null || whiteboardToken.isBlank()) {
             throw new IllegalStateException("INSERT_WHITEBOARD_REF: whiteboardToken not found in context");
         }
-        LarkDocUpdateResult result = larkDocTool.updateByCommand(
+        LarkDocUpdateResult result = writeGateway.updateByCommand(
                 docRef, "block_insert_after", whiteboardToken, "whiteboard", anchorBlockId, null, null);
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("INSERT_WHITEBOARD_REF: insert failed");

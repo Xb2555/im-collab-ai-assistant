@@ -1,17 +1,17 @@
 package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.model.entity.ExecutionStep;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocWriteGateway;
 import org.springframework.stereotype.Component;
 
 @Component
 public class CreateWhiteboardStepHandler implements ExecutionStepHandler {
 
-    private final LarkDocTool larkDocTool;
+    private final LarkDocWriteGateway writeGateway;
 
-    public CreateWhiteboardStepHandler(LarkDocTool larkDocTool) {
-        this.larkDocTool = larkDocTool;
+    public CreateWhiteboardStepHandler(LarkDocWriteGateway writeGateway) {
+        this.writeGateway = writeGateway;
     }
 
     @Override
@@ -22,7 +22,7 @@ public class CreateWhiteboardStepHandler implements ExecutionStepHandler {
     @Override
     public void handle(ExecutionStep step, String docRef, RichContentExecutionContext ctx) {
         String dsl = step.getInput() == null ? null : String.valueOf(step.getInput());
-        LarkDocUpdateResult result = larkDocTool.updateByCommand(
+        LarkDocUpdateResult result = writeGateway.updateByCommand(
                 docRef, "create_whiteboard", dsl, null, null, null, null);
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("CREATE_WHITEBOARD: creation failed");

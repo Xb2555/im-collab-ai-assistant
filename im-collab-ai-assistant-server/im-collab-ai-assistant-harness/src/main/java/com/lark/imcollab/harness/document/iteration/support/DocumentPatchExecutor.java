@@ -4,8 +4,8 @@ import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.DocumentPatchOperation;
 import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
 import com.lark.imcollab.skills.lark.doc.LarkDocBlockRef;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocWriteGateway;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import org.springframework.stereotype.Component;
@@ -18,10 +18,10 @@ import java.util.Map;
 @Component
 public class DocumentPatchExecutor {
 
-    private final LarkDocTool larkDocTool;
+    private final LarkDocWriteGateway writeGateway;
 
-    public DocumentPatchExecutor(LarkDocTool larkDocTool) {
-        this.larkDocTool = larkDocTool;
+    public DocumentPatchExecutor(LarkDocWriteGateway writeGateway) {
+        this.writeGateway = writeGateway;
     }
 
     public PatchExecutionResult execute(String docRef, DocumentEditPlan plan) {
@@ -41,7 +41,7 @@ public class DocumentPatchExecutor {
                 String targetBlockId = operation.getTargetBlockId();
                 String currentTarget = targetBlockId;
                 for (String blockId : groupBlockIds) {
-                    LarkDocUpdateResult moveResult = larkDocTool.updateByCommand(
+                    LarkDocUpdateResult moveResult = writeGateway.updateByCommand(
                             docRef, "block_move_after", null, null, blockId, currentTarget, null);
                     if (!moveResult.isSuccess()) {
                         throw new IllegalStateException("block_group_move_after 失败: blockId=" + blockId + ", msg=" + moveResult.getMessage());
@@ -55,21 +55,21 @@ public class DocumentPatchExecutor {
                 continue;
             }
             LarkDocUpdateResult result = switch (operation.getOperationType()) {
-                case STR_REPLACE -> larkDocTool.updateByCommand(
+                case STR_REPLACE -> writeGateway.updateByCommand(
                         docRef, "str_replace", operation.getNewContent(),
                         operation.getDocFormat(), null, operation.getOldText(), null);
-                case BLOCK_INSERT_AFTER -> larkDocTool.updateByCommand(
+                case BLOCK_INSERT_AFTER -> writeGateway.updateByCommand(
                         docRef, "block_insert_after", operation.getNewContent(),
                         operation.getDocFormat(), operation.getBlockId(), null, null);
-                case BLOCK_DELETE -> larkDocTool.updateByCommand(
+                case BLOCK_DELETE -> writeGateway.updateByCommand(
                         docRef, "block_delete", null, null, operation.getBlockId(), null, null);
-                case BLOCK_REPLACE -> larkDocTool.updateByCommand(
+                case BLOCK_REPLACE -> writeGateway.updateByCommand(
                         docRef, "block_replace", operation.getNewContent(),
                         operation.getDocFormat(), operation.getBlockId(), null, null);
-                case APPEND -> larkDocTool.updateByCommand(
+                case APPEND -> writeGateway.updateByCommand(
                         docRef, "append", operation.getNewContent(),
                         operation.getDocFormat(), null, null, null);
-                case BLOCK_MOVE_AFTER -> larkDocTool.updateByCommand(
+                case BLOCK_MOVE_AFTER -> writeGateway.updateByCommand(
                         docRef, "block_move_after", null, null,
                         operation.getBlockId(), operation.getTargetBlockId(), null);
                 default -> throw new IllegalStateException("Unsupported patch operation: " + operation.getOperationType());
