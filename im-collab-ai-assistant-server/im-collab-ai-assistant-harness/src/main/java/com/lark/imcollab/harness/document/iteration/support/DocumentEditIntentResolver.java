@@ -162,6 +162,7 @@ public class DocumentEditIntentResolver {
             return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
         }
         intent = normalizeSectionInsertIntent(intent);
+        intent = normalizeSectionAnchorIntent(intent);
         intent = normalizeSectionIntent(intent);
         if (intent.isClarificationNeeded()) {
             log.info("DOC_ITER_INTENT validation_clarification instruction='{}' hint='{}'",
@@ -443,6 +444,29 @@ public class DocumentEditIntentResolver {
         boolean hasDirection = INSERT_AFTER_PATTERN.matcher(instruction).find()
                 || INSERT_BEFORE_PATTERN.matcher(instruction).find();
         return hasDirection && INSERTED_SECTION_CANDIDATE_PATTERN.matcher(instruction).find();
+    }
+
+    private DocumentEditIntent normalizeSectionAnchorIntent(DocumentEditIntent intent) {
+        if (intent == null || !hasText(intent.getUserInstruction()) || !expectsSectionAnchor(intent.getSemanticAction())) {
+            return intent;
+        }
+        SectionReference sectionReference = extractSectionReference(intent.getUserInstruction());
+        if (sectionReference == null) {
+            return intent;
+        }
+        DocumentAnchorSpec anchorSpec = intent.getAnchorSpec();
+        if (anchorSpec != null && anchorSpec.getMatchMode() != DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL) {
+            return intent;
+        }
+        log.info("DOC_ITER_INTENT normalize_section_anchor instruction='{}' action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                intent.getUserInstruction(),
+                intent.getSemanticAction(),
+                sectionReference.headingTitle(),
+                sectionReference.outlinePath(),
+                sectionReference.structuralOrdinal(),
+                sectionReference.structuralOrdinalScope());
+        intent.setAnchorSpec(buildSectionAnchor(sectionReference));
+        return intent;
     }
 
     private boolean looksLikeSectionBodyRewrite(DocumentEditIntent intent) {

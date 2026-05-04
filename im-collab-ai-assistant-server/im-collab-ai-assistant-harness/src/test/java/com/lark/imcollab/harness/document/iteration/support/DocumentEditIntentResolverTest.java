@@ -384,4 +384,33 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
         assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.3 客源市场结构");
     }
+
+    @Test
+    void deleteWholeSectionInstructionNormalizesOrdinalAnchorToHeadingTitle() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "DELETE",
+                  "semanticAction": "DELETE_WHOLE_SECTION",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_STRUCTURAL_ORDINAL",
+                    "structuralOrdinal": 3,
+                    "structuralOrdinalScope": "TOP_LEVEL_SECTION"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("删1.3 客源市场结构");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getIntentType()).isEqualTo(com.lark.imcollab.common.model.enums.DocumentIterationIntentType.DELETE);
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.DELETE_WHOLE_SECTION);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
+        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.3 客源市场结构");
+    }
 }
