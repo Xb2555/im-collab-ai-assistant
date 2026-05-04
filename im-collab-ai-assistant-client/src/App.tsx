@@ -1,6 +1,5 @@
 // src/App.tsx
 import { useEffect, useState } from 'react';
-// ✨ 补全了 useNavigate 的导入
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/useAuthStore';
 import { authApi } from '@/services/api/auth';
@@ -9,7 +8,7 @@ import { authApi } from '@/services/api/auth';
 import { Capacitor } from '@capacitor/core';
 import { App as CapacitorApp } from '@capacitor/app';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
-
+import { listen } from '@tauri-apps/api/event';
 import Login from '@/pages/Login';
 import Callback from '@/pages/Callback';
 import Dashboard from '@/pages/Dashboard';
@@ -29,7 +28,7 @@ function RequireAuth({ children }: { children: JSX.Element }) {
       if (isAuthenticated) {
         try {
           await authApi.getMe();
-        } catch (error) {
+        } catch {
           console.warn('应用初始化 Token 校验失败，自动清理状态');
           clearAuth(); 
         }
@@ -54,41 +53,80 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return isAuthenticated ? children : <Navigate to="/login" replace />;
 }
 
-// ✨ 全局 Deep Link 监听组件
 function DeepLinkListener({ children }: { children: JSX.Element }) {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // 1. 桌面端 (Tauri) 监听
-    if (typeof window !== 'undefined' && '__TAURI__' in window) {
-      let unlisten: () => void;
+    const parseAndNavigate = (urlStr: string, source: string) => {
+      if (!urlStr || !urlStr.includes('callback')) {
+        return;
+      }
+      try {
+        const queryString = urlStr.includes('?') ? urlStr.split('?')[1] : '';
+        const urlParams = new URLSearchParams(queryString);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+        const error = urlParams.get('error');
+
+        console.log(`[DeepLink:${source}] 收到 URL:`, urlStr);
+
+        if (error) {
+          console.error(`[DeepLink:${source}] 授权错误:`, error);
+          navigate(`/auth-callback?error=${encodeURIComponent(error)}`, { replace: true });
+          return;
+        }
+
+        if (code) {
+          console.log(`[DeepLink:${source}] 解析到 code，准备跳转 /auth-callback`);
+          navigate(`/auth-callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state || '')}`, { replace: true });
+          return;
+        }
+
+        console.warn(`[DeepLink:${source}] 未解析到 code`);
+      } catch (e) {
+        console.error(`[DeepLink:${source}] URL 解析失败:`, e);
+      }
+    };
+
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+      let unlistenDeepLink: (() => void) | undefined;
+      let unlistenSingleInstance: (() => void) | undefined;
+
       const setupDeepLink = async () => {
-        unlisten = await onOpenUrl((urls) => {
-          const urlStr = urls[0];
-          if (urlStr && urlStr.includes('callback')) {
-             const urlObj = new URL(urlStr, 'http://dummy.com'); // dummy base 帮助解析
-             const code = urlObj.searchParams.get('code');
-             const state = urlObj.searchParams.get('state');
-             if (code) navigate(`/auth-callback?code=${code}&state=${state || ''}`);
+        console.log('[DeepLink] 初始化 Tauri deep link 监听');
+
+        unlistenDeepLink = await onOpenUrl((urls) => {
+          const urlStr = urls?.[0];
+          if (urlStr) {
+            parseAndNavigate(urlStr, 'onOpenUrl');
           }
         });
+
+        unlistenSingleInstance = await listen<string>('oauth-deep-link', (event) => {
+          const urlStr = event.payload;
+          parseAndNavigate(urlStr, 'single-instance');
+        });
+
+        console.log('[DeepLink] 监听注册完成');
       };
-      setupDeepLink();
-      return () => { if (unlisten) unlisten(); };
+
+      setupDeepLink().catch((err) => {
+        console.error('[DeepLink] 监听初始化失败:', err);
+      });
+
+      return () => {
+        unlistenDeepLink?.();
+        unlistenSingleInstance?.();
+      };
     }
-    
-    // 2. 移动端 (Capacitor) 监听
+
     if (Capacitor.isNativePlatform()) {
       const listener = CapacitorApp.addListener('appUrlOpen', (data) => {
-        if (data.url.includes('callback')) {
-          const urlObj = new URL(data.url);
-          const code = urlObj.searchParams.get('code');
-          const state = urlObj.searchParams.get('state');
-          if (code) navigate(`/auth-callback?code=${code}&state=${state || ''}`);
-        }
+        parseAndNavigate(data.url, 'capacitor-appUrlOpen');
       });
-      // ✨ 这里加了 (l: any) 修复了参数隐式 any 的报错
-      return () => { listener.then((l: any) => l.remove()); };
+      return () => {
+        listener.then((l) => l.remove());
+      };
     }
   }, [navigate]);
 

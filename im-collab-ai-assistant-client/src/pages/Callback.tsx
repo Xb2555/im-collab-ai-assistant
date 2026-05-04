@@ -29,17 +29,16 @@ export default function Callback() {
     // 调用我们在第一步写的 API
     authApi.callback({ code, state })
       .then((data) => {
-        // 成功！将 token 和用户信息写入 Zustand 全局状态
         setAuth(data.accessToken, data.user);
         setStatusText('登录成功，正在进入...');
-        // 给用户一个短暂的成功过渡感
         window.setTimeout(() => {
           navigate('/', { replace: true });
         }, 500);
       })
       .catch((err) => {
         console.error('授权换 Token 失败:', err);
-        // TODO: 后续可以接入 shadcn 的 Toast 提示错误
+        // ✨ 新增这行弹窗，让内鬼原形毕露！
+        alert('【换取 Token 失败，请截图发给后端】: ' + err.message); 
         navigate('/login', { replace: true });
       });
 
