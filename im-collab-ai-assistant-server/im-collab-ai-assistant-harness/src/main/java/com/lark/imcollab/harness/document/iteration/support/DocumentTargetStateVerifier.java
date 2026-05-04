@@ -51,25 +51,27 @@ public class DocumentTargetStateVerifier {
     }
 
     private void verifyNewSectionBefore(DocumentEditPlan plan, DocumentStructureSnapshot before, DocumentStructureSnapshot after) {
-        DocumentSectionAnchor target = plan.getResolvedAnchor() == null ? null : plan.getResolvedAnchor().getSectionAnchor();
-        if (target == null || target.getHeadingBlockId() == null) return;
         List<String> afterTopLevel = after == null ? null : after.getTopLevelSequence();
-        if (afterTopLevel == null) return;
-        int targetIdx = afterTopLevel.indexOf(target.getHeadingBlockId());
+        if (afterTopLevel == null || afterTopLevel.isEmpty() || after.getHeadingIndex() == null) {
+            throw new IllegalStateException("目标状态校验失败：after 快照缺少 heading 顺序信息");
+        }
+        String targetHeadingText = expectedAttribute(plan, "targetHeadingText");
+        String newSectionHeadingText = expectedAttribute(plan, "newSectionHeadingText");
+        if (!hasText(targetHeadingText) || !hasText(newSectionHeadingText)) {
+            throw new IllegalStateException("目标状态校验失败：缺少章节前插校验所需的 heading 语义");
+        }
+        int targetIdx = findTopLevelHeadingIndex(after, targetHeadingText);
         if (targetIdx < 0) {
-            throw new IllegalStateException("目标状态校验失败：目标章节 heading 在 after 快照中消失");
+            throw new IllegalStateException("目标状态校验失败：after 快照中未找到目标章节标题 " + targetHeadingText);
         }
-        String newContent = firstNewContent(plan);
-        String insertedBlockId = findBlockIdContaining(after, newContent);
-        if (insertedBlockId == null) {
-            throw new IllegalStateException("目标状态校验失败：after 快照中未找到新插入章节");
+        int insertedIdx = findTopLevelHeadingIndex(after, newSectionHeadingText);
+        if (insertedIdx < 0) {
+            throw new IllegalStateException("目标状态校验失败：after 快照中未找到新增章节标题 " + newSectionHeadingText);
         }
-        String insertedTopLevel = resolveTopLevelAncestor(after, insertedBlockId);
-        int insertedIdx = insertedTopLevel == null ? -1 : afterTopLevel.indexOf(insertedTopLevel);
-        if (insertedIdx >= 0 && insertedIdx < targetIdx) {
+        if (insertedIdx < targetIdx) {
             return;
         }
-        throw new IllegalStateException("目标状态校验失败：新章节未成功插入到目标章节之前");
+        throw new IllegalStateException("目标状态校验失败：新增章节标题未出现在目标章节之前");
     }
 
     private void verifyTextReplaced(DocumentEditPlan plan, DocumentStructureSnapshot before, DocumentStructureSnapshot after) {
@@ -211,30 +213,33 @@ public class DocumentTargetStateVerifier {
         return sb.toString();
     }
 
-    private String findBlockIdContaining(DocumentStructureSnapshot snapshot, String content) {
-        if (!hasText(content) || snapshot == null || snapshot.getBlockIndex() == null) {
-            return null;
+    private int findTopLevelHeadingIndex(DocumentStructureSnapshot snapshot, String headingText) {
+        if (snapshot == null || snapshot.getTopLevelSequence() == null || snapshot.getHeadingIndex() == null || !hasText(headingText)) {
+            return -1;
         }
-        for (DocumentStructureNode node : snapshot.getBlockIndex().values()) {
-            if (node != null && hasText(node.getPlainText()) && content.contains(node.getPlainText())) {
-                return node.getBlockId();
+        for (int i = 0; i < snapshot.getTopLevelSequence().size(); i++) {
+            String headingId = snapshot.getTopLevelSequence().get(i);
+            DocumentStructureNode node = snapshot.getHeadingIndex().get(headingId);
+            String actual = node == null ? null : node.getTitleText();
+            if (normalize(actual).equals(normalize(headingText))) {
+                return i;
             }
         }
-        return null;
+        return -1;
     }
 
-    private String resolveTopLevelAncestor(DocumentStructureSnapshot snapshot, String blockId) {
-        if (snapshot == null || snapshot.getBlockIndex() == null || blockId == null) {
+    private String expectedAttribute(DocumentEditPlan plan, String key) {
+        if (plan == null || plan.getExpectedState() == null || plan.getExpectedState().getAttributes() == null) {
             return null;
         }
-        DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
-        if (node == null) {
-            return null;
-        }
-        return hasText(node.getTopLevelAncestorId()) ? node.getTopLevelAncestorId() : node.getBlockId();
+        return plan.getExpectedState().getAttributes().get(key);
     }
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String normalize(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", "").trim();
     }
 }

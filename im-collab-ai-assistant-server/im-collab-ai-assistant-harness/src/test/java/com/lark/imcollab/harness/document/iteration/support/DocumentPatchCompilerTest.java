@@ -33,7 +33,7 @@ import static org.mockito.Mockito.when;
 class DocumentPatchCompilerTest {
 
     @Test
-    void insertBeforeSectionUsesExplicitBlockReplaceMatrix() {
+    void insertBeforeSectionCarriesSemanticExpectedStateForStructuralVerify() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("## 前言\n\n这是新增章节");
         DocumentPatchCompiler compiler = new DocumentPatchCompiler(chatModel);
@@ -60,13 +60,13 @@ class DocumentPatchCompilerTest {
                 strategy(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT, DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
         );
 
-        assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);
-        assertThat(plan.getPatchOperations()).singleElement().satisfies(operation -> {
-            assertThat(operation.getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);
-            assertThat(operation.getBlockId()).isEqualTo("heading-block");
-            assertThat(operation.getNewContent()).startsWith("## 前言");
-            assertThat(operation.getNewContent()).contains("一、项目背景");
-        });
+        assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.APPEND);
+        assertThat(plan.getPatchOperations()).hasSize(2);
+        assertThat(plan.getPatchOperations().get(0).getOperationType()).isEqualTo(DocumentPatchOperationType.APPEND);
+        assertThat(plan.getPatchOperations().get(1).getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER);
+        assertThat(plan.getExpectedState().getAttributes())
+                .containsEntry("targetHeadingText", "一、项目背景")
+                .containsEntry("newSectionHeadingText", "前言");
         assertThat(plan.getStrategyType()).isEqualTo(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT);
     }
 

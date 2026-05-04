@@ -88,21 +88,29 @@ public class DocumentPatchCompiler {
     private DocumentEditPlan buildInsertBeforeSectionPlan(String taskId, DocumentEditIntent intent,
             DocumentStructureSnapshot snapshot, ResolvedDocumentAnchor anchor, DocumentEditStrategy strategy) {
         String excerpt = anchorExcerpt(anchor, snapshot);
-        String generated = normalizeHeadingLevel(insertAfter(excerpt, intent.getUserInstruction()), excerpt);
+        DocumentSectionAnchor sectionAnchor = requireSectionAnchor(anchor);
+        String generated = normalizeHeadingLevel(
+                insertAfter(excerpt, intent.getUserInstruction()),
+                anchorHeadingContext(excerpt, sectionAnchor)
+        );
         if (generated.isBlank()) throw new IllegalStateException("新增章节为空");
         if (headingOnly(generated)) throw new IllegalStateException("新增章节只有标题无正文");
-        DocumentSectionAnchor sectionAnchor = requireSectionAnchor(anchor);
         String headingBlockId = sectionAnchor.getHeadingBlockId();
         String insertContent = generated;
         if (!insertContent.endsWith("\n")) {
             insertContent = insertContent + "\n";
         }
+        String newSectionHeading = headingTextOf(insertContent);
         return base(taskId, intent, snapshot, anchor, strategy)
                 .reasoningSummary("章节前插入：append + block_move_after")
                 .generatedContent(generated)
                 .toolCommandType(DocumentPatchOperationType.APPEND)
                 .requiresApproval(true)
                 .riskLevel(DocumentRiskLevel.HIGH)
+                .expectedState(mergeExpectedState(strategy, java.util.Map.of(
+                        "targetHeadingText", defaultString(sectionAnchor.getHeadingText()),
+                        "newSectionHeadingText", defaultString(newSectionHeading)
+                )))
                 .patchOperations(List.of(
                         DocumentPatchOperation.builder()
                                 .operationType(DocumentPatchOperationType.APPEND)
@@ -355,6 +363,30 @@ public class DocumentPatchCompiler {
                 .strategyType(strategy.getStrategyType());
     }
 
+    private ExpectedDocumentState mergeExpectedState(DocumentEditStrategy strategy, java.util.Map<String, String> extraAttributes) {
+        ExpectedDocumentState current = strategy == null ? null : strategy.getExpectedState();
+        if (current == null) {
+            return ExpectedDocumentState.builder()
+                    .attributes(extraAttributes)
+                    .build();
+        }
+        java.util.Map<String, String> merged = new java.util.LinkedHashMap<>();
+        if (current.getAttributes() != null) {
+            merged.putAll(current.getAttributes());
+        }
+        if (extraAttributes != null) {
+            extraAttributes.forEach((key, value) -> {
+                if (value != null && !value.isBlank()) {
+                    merged.put(key, value);
+                }
+            });
+        }
+        return ExpectedDocumentState.builder()
+                .stateType(current.getStateType())
+                .attributes(java.util.Map.copyOf(merged))
+                .build();
+    }
+
     // ---- prompt helpers ----
 
     private String explain(String excerpt, String instruction) {
@@ -485,7 +517,7 @@ public class DocumentPatchCompiler {
         if (first.startsWith("#")) {
             String text = first.replaceFirst("^#+\\s*", "");
             lines[0] = "#".repeat(anchorLevel) + " " + text;
-        } else {
+        } else if (looksLikeSectionDraft(lines)) {
             lines[0] = "#".repeat(anchorLevel) + " " + first;
         }
         return trim(String.join("\n", lines));
@@ -504,6 +536,10 @@ public class DocumentPatchCompiler {
         if (markdown == null || markdown.isBlank()) return "";
         String first = markdown.trim().split("\\R", 2)[0].trim();
         return first.startsWith("#") ? first.replaceFirst("^#+\\s*", "") : "";
+    }
+
+    private String defaultString(String value) {
+        return value == null ? "" : value;
     }
 
     private String stripLeadingHeading(String markdown, String headingText) {
@@ -527,11 +563,38 @@ public class DocumentPatchCompiler {
         return true;
     }
 
+    private boolean looksLikeSectionDraft(String[] lines) {
+        if (lines == null || lines.length < 2) {
+            return false;
+        }
+        String first = lines[0] == null ? "" : lines[0].trim();
+        if (first.isEmpty()) {
+            return false;
+        }
+        for (int i = 1; i < lines.length; i++) {
+            if (lines[i] != null && !lines[i].isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String normalize(String v) {
         return v == null ? "" : v.replaceAll("\\s+", "").trim();
     }
 
     private String trim(String v) {
         return v == null ? "" : v.trim();
+    }
+
+    private String anchorHeadingContext(String excerpt, DocumentSectionAnchor sectionAnchor) {
+        int explicitLevel = extractHeadingLevel(excerpt);
+        if (explicitLevel > 0) {
+            return excerpt;
+        }
+        if (sectionAnchor == null || sectionAnchor.getHeadingLevel() == null || sectionAnchor.getHeadingLevel() <= 0) {
+            return excerpt;
+        }
+        return "#".repeat(sectionAnchor.getHeadingLevel()) + " " + defaultString(sectionAnchor.getHeadingText());
     }
 }
