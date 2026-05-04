@@ -12,7 +12,7 @@ import java.util.Arrays;
 import java.util.Locale;
 import java.util.stream.Collectors;
 
-@Component
+@Deprecated
 public class DocumentAnchorIntentService {
 
     private final ChatModel chatModel;

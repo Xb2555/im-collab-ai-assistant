@@ -1,0 +1,15 @@
+package com.lark.imcollab.common.model.enums;
+
+public enum DocumentStrategyType {
+    TEXT_REPLACE,
+    BLOCK_INSERT_AFTER,
+    BLOCK_REPLACE,
+    BLOCK_DELETE,
+    BLOCK_MOVE_AFTER,
+    APPEND,
+    CONTROLLED_HEAD_INSERT,
+    CONTROLLED_HEAD_REWRITE,
+    CONTROLLED_HEAD_DELETE,
+    CONTROLLED_BEFORE_SECTION_INSERT,
+    EXPLAIN_ONLY
+}
