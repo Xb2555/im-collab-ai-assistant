@@ -6,13 +6,19 @@ import com.lark.imcollab.skills.framework.cli.CliCommand;
 import com.lark.imcollab.skills.framework.cli.CliCommandExecutor;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
+@Slf4j
 @Component
 public class LarkCliClient {
 
@@ -40,10 +46,11 @@ public class LarkCliClient {
 
     public CliCommandResult execute(List<String> args, String stdin, long timeoutMillis) {
         try {
-            List<String> fullArgs = new ArrayList<>(properties.getArgs());
+            ResolvedCliCommand resolved = resolveCommand(properties.getExecutable(), properties.getArgs());
+            List<String> fullArgs = new ArrayList<>(resolved.args());
             fullArgs.addAll(args);
             return cliCommandExecutor.execute(new CliCommand(
-                    properties.getExecutable(),
+                    resolved.executable(),
                     fullArgs,
                     normalizeWorkingDirectory(properties.getWorkingDirectory()),
                     stdin,
@@ -159,5 +166,52 @@ public class LarkCliClient {
             }
         }
         return -1;
+    }
+
+    private ResolvedCliCommand resolveCommand(String executable, List<String> configuredArgs) {
+        String normalizedExecutable = executable == null ? null : executable.trim();
+        List<String> normalizedArgs = configuredArgs == null ? List.of() : new ArrayList<>(configuredArgs);
+        if (!isWindows()) {
+            return new ResolvedCliCommand(normalizedExecutable, normalizedArgs);
+        }
+        if (isPowerShellWrapper(normalizedExecutable, normalizedArgs)) {
+            String scriptPath = normalizedArgs.get(normalizedArgs.size() - 1).trim();
+            Path cmdPath = cmdSibling(scriptPath);
+            if (Files.exists(cmdPath)) {
+                log.info("Rewriting Lark CLI invocation from PowerShell wrapper to cmd shim: ps1='{}', cmd='{}'", scriptPath, cmdPath);
+                return new ResolvedCliCommand(cmdPath.toString(), List.of());
+            }
+        }
+        return new ResolvedCliCommand(normalizedExecutable, normalizedArgs);
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private boolean isPowerShellWrapper(String executable, List<String> args) {
+        if (executable == null || args == null || args.size() < 2) {
+            return false;
+        }
+        String normalizedExecutable = executable.toLowerCase(Locale.ROOT);
+        if (!normalizedExecutable.endsWith("powershell")
+                && !normalizedExecutable.endsWith("powershell.exe")
+                && !normalizedExecutable.endsWith("pwsh")
+                && !normalizedExecutable.endsWith("pwsh.exe")) {
+            return false;
+        }
+        return "-file".equalsIgnoreCase(args.get(args.size() - 2))
+                && args.get(args.size() - 1) != null
+                && args.get(args.size() - 1).toLowerCase(Locale.ROOT).endsWith(".ps1");
+    }
+
+    private Path cmdSibling(String ps1Path) {
+        Path ps1 = Paths.get(ps1Path);
+        String fileName = ps1.getFileName() == null ? ps1Path : ps1.getFileName().toString();
+        String cmdName = fileName.substring(0, fileName.length() - 4) + ".cmd";
+        return ps1.resolveSibling(cmdName);
+    }
+
+    private record ResolvedCliCommand(String executable, List<String> args) {
     }
 }

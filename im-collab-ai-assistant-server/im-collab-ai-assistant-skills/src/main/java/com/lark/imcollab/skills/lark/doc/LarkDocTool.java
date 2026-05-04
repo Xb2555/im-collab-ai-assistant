@@ -44,6 +44,8 @@ public class LarkDocTool {
     private static final Set<String> FETCH_FALLBACK_FLAGS = Set.of(
             "--as", "--doc", "--format", "--limit", "--offset", "--profile"
     );
+    private static final long DEFAULT_UPDATE_TIMEOUT_MILLIS = 180_000L;
+    private static final long RICH_MEDIA_UPDATE_TIMEOUT_MILLIS = 300_000L;
 
 
     public LarkDocTool(
@@ -327,6 +329,72 @@ public class LarkDocTool {
         return value == null ? null : String.valueOf(value);
     }
 
+    private String firstMeaningfulLine(String content) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+        return content.lines()
+                .map(String::trim)
+                .filter(this::hasText)
+                .filter(line -> !line.startsWith("<"))
+                .findFirst()
+                .orElseGet(() -> {
+                    String normalized = content.replaceAll("\\s+", " ").trim();
+                    return normalized.isBlank() ? null : normalized;
+                });
+    }
+
+    private String toV1Markdown(String content, String docFormat) {
+        if (content == null) {
+            return null;
+        }
+        String normalizedFormat = docFormat == null ? "" : docFormat.trim().toLowerCase(Locale.ROOT);
+        return switch (normalizedFormat) {
+            case "", "markdown" -> content;
+            case "whiteboard" -> "<whiteboard token=\"" + content.trim() + "\"/>";
+            case "image" -> "![image](" + content.trim() + ")";
+            case "table" -> tableSpecToMarkdown(content);
+            default -> content;
+        };
+    }
+
+    private String tableSpecToMarkdown(String spec) {
+        if (spec == null || spec.isBlank()) {
+            return "| Col1 |\n| --- |\n| Val1 |";
+        }
+        String[] parts = spec.toLowerCase(Locale.ROOT).split("x");
+        int cols = safePositive(parts, 0, 2);
+        int rows = safePositive(parts, 1, 2);
+        List<String> header = new ArrayList<>();
+        List<String> separator = new ArrayList<>();
+        for (int index = 0; index < cols; index++) {
+            header.add("Col" + (index + 1));
+            separator.add("---");
+        }
+        StringBuilder markdown = new StringBuilder();
+        markdown.append("| ").append(String.join(" | ", header)).append(" |\n");
+        markdown.append("| ").append(String.join(" | ", separator)).append(" |\n");
+        for (int row = 1; row < rows; row++) {
+            List<String> cells = new ArrayList<>();
+            for (int col = 0; col < cols; col++) {
+                cells.add(" ");
+            }
+            markdown.append("| ").append(String.join(" | ", cells)).append(" |\n");
+        }
+        return markdown.toString().trim();
+    }
+
+    private int safePositive(String[] parts, int index, int fallback) {
+        if (parts == null || index >= parts.length) {
+            return fallback;
+        }
+        try {
+            return Math.max(1, Integer.parseInt(parts[index].trim()));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
     private int docRequestTimeoutSeconds() {
         return docProperties == null || docProperties.getRequestTimeoutSeconds() <= 0
                 ? 30
@@ -399,28 +467,18 @@ public class LarkDocTool {
         if (!"delete_range".equals(mode) && !"block_delete".equals(mode)) {
             requireValue(markdown, "markdown");
         }
-
-        List<String> args = new ArrayList<>();
-        args.add("docs");
-        args.add("+update");
-        args.add("--api-version");
-        args.add("v2");
-        args.add("--as");
-        args.add(resolveDocIdentity());
-        args.add("--doc");
-        args.add(docIdOrUrl.trim());
-        args.add("--command");
-        args.add(mode.trim());
-        String stdin = null;
-        if (markdown != null && !markdown.isBlank()) {
-            args.add("--doc-format");
-            args.add("markdown");
-            args.add("--content");
-            args.add(CONTENT_STDIN_MARKER);
-            stdin = markdown;
-        }
-
-        return parseUpdateResult(executeJson(args, stdin), mode);
+        Set<String> supportedFlags = supportedFlags("+update");
+        List<DocCommandAttempt> attempts = updateDocAttempts(
+                docIdOrUrl.trim(),
+                mode.trim(),
+                markdown,
+                "markdown",
+                null,
+                null,
+                null,
+                supportedFlags
+        );
+        return parseUpdateResult(executeJsonWithCompat("+update", attempts), mode);
     }
 
     public LarkDocFetchResult fetchDocOutline(String docIdOrUrl) {
@@ -467,41 +525,20 @@ public class LarkDocTool {
     ) {
         requireValue(docIdOrUrl, "docIdOrUrl");
         requireValue(command, "command");
-
-        List<String> args = new ArrayList<>();
-        args.add("docs");
-        args.add("+update");
-        args.add("--api-version");
-        args.add("v2");
-        args.add("--as");
-        args.add(resolveDocIdentity());
-        args.add("--doc");
-        args.add(docIdOrUrl.trim());
-        args.add("--command");
-        args.add(command.trim());
-        if (hasText(docFormat)) {
-            args.add("--doc-format");
-            args.add(docFormat.trim());
-        }
-        String stdin = null;
-        if (content != null) {
-            args.add("--content");
-            args.add(CONTENT_STDIN_MARKER);
-            stdin = content;
-        }
-        if (hasText(blockId)) {
-            args.add("--block-id");
-            args.add(blockId.trim());
-        }
-        if (hasText(pattern)) {
-            args.add("--pattern");
-            args.add(pattern);
-        }
-        if (revisionId != null && revisionId >= 0) {
-            args.add("--revision-id");
-            args.add(String.valueOf(revisionId));
-        }
-        return parseUpdateResult(executeJson(args, stdin), command);
+        String normalizedCommand = command.trim();
+        String docRef = docIdOrUrl.trim();
+        long timeoutMillis = isRichMediaCommand(normalizedCommand)
+                ? richMediaCommandTimeoutMillis()
+                : commandTimeoutMillis();
+        return switch (normalizedCommand) {
+            case "append" -> updateDoc(docRef, "append", content);
+            case "str_replace" -> updateBySelection(docRef, "replace_all", content, docFormat, null, pattern);
+            case "block_insert_after" -> updateByBlockAnchor(docRef, "insert_after", content, docFormat, blockId);
+            case "block_replace" -> updateByBlockAnchor(docRef, "replace_range", content, docFormat, blockId);
+            case "block_delete" -> deleteByBlockAnchor(docRef, blockId);
+            case "create_whiteboard" -> appendWhiteboard(docRef);
+            default -> legacyUpdateByCommand(docRef, normalizedCommand, content, docFormat, blockId, pattern, revisionId, timeoutMillis);
+        };
     }
 
     public String extractDocumentId(String docIdOrUrl) {
@@ -519,9 +556,9 @@ public class LarkDocTool {
     }
 
     private JsonNode executeJson(List<String> args, String stdin) {
-        CliCommandResult result = executeContentCommand(args, stdin);
+        CliCommandResult result = executeContentCommand(args, stdin, commandTimeoutMillis());
         if (!result.isSuccess()) {
-            throw new IllegalStateException(readableCliError(result.output()));
+            throw new IllegalStateException(readableCliError(args, result.output()));
         }
         try {
             return larkCliClient.readJsonOutput(result.output());
@@ -530,9 +567,9 @@ public class LarkDocTool {
         }
     }
 
-    private CliCommandResult executeContentCommand(List<String> args, String content) {
+    private CliCommandResult executeContentCommand(List<String> args, String content, long timeoutMillis) {
         if (content == null) {
-            return larkCliClient.execute(args, null, commandTimeoutMillis());
+            return larkCliClient.execute(args, null, timeoutMillis);
         }
         Path contentFile = null;
         try {
@@ -541,7 +578,7 @@ public class LarkDocTool {
             Files.createDirectories(tempDirectory);
             contentFile = Files.createTempFile(tempDirectory, "content-", ".md");
             Files.writeString(contentFile, content, StandardCharsets.UTF_8);
-            return larkCliClient.execute(withContentFileArg(args, baseDirectory.relativize(contentFile)), null, commandTimeoutMillis());
+            return larkCliClient.execute(withContentFileArg(args, baseDirectory.relativize(contentFile)), null, timeoutMillis);
         } catch (Exception exception) {
             throw new IllegalStateException("飞书文档内容暂存失败，请稍后重试。", exception);
         } finally {
@@ -578,11 +615,15 @@ public class LarkDocTool {
     }
 
     private JsonNode executeJsonWithCompat(String docsCommand, List<DocCommandAttempt> attempts) {
+        return executeJsonWithCompat(docsCommand, attempts, commandTimeoutMillis());
+    }
+
+    private JsonNode executeJsonWithCompat(String docsCommand, List<DocCommandAttempt> attempts, long timeoutMillis) {
         IllegalStateException lastError = null;
         for (int index = 0; index < attempts.size(); index++) {
             DocCommandAttempt attempt = attempts.get(index);
             List<String> args = attempt.args();
-            CliCommandResult result = executeContentCommand(args, attempt.stdin());
+            CliCommandResult result = executeContentCommand(args, attempt.stdin(), timeoutMillis);
             if (result.isSuccess()) {
                 try {
                     return larkCliClient.readJsonOutput(result.output());
@@ -591,7 +632,7 @@ public class LarkDocTool {
                 }
             }
             String output = result.output();
-            String message = readableCliError(output);
+            String message = readableCliError(args, output);
             lastError = new IllegalStateException(message);
             if (!isUnknownFlagError(output) || index == attempts.size() - 1) {
                 throw lastError;
@@ -659,6 +700,141 @@ public class LarkDocTool {
         return distinctAttempts(attempts);
     }
 
+    private List<DocCommandAttempt> updateDocAttempts(
+            String docRef,
+            String command,
+            String content,
+            String docFormat,
+            String blockId,
+            String pattern,
+            Long revisionId,
+            Set<String> supportedFlags
+    ) {
+        Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
+        attempts.put("preferred", updateDocAttempt(
+                docRef,
+                command,
+                content,
+                docFormat,
+                blockId,
+                pattern,
+                revisionId,
+                supportedFlags,
+                true,
+                true
+        ));
+        attempts.put("no-api-version", updateDocAttempt(
+                docRef,
+                command,
+                content,
+                docFormat,
+                blockId,
+                pattern,
+                revisionId,
+                supportedFlags,
+                false,
+                true
+        ));
+        attempts.put("basic", updateDocAttempt(
+                docRef,
+                command,
+                content,
+                docFormat,
+                blockId,
+                pattern,
+                revisionId,
+                Set.of("--as", "--doc", "--command", "--content", "--doc-format", "--block-id", "--pattern", "--revision-id"),
+                false,
+                false
+        ));
+        return distinctAttempts(attempts);
+    }
+
+    private LarkDocUpdateResult updateBySelection(
+            String docRef,
+            String mode,
+            String markdown,
+            String docFormat,
+            String titleSelection,
+            String ellipsisSelection
+    ) {
+        Set<String> supportedFlags = supportedFlags("+update");
+        List<DocCommandAttempt> attempts = v1UpdateAttempts(
+                docRef,
+                mode,
+                markdown,
+                titleSelection,
+                ellipsisSelection,
+                null,
+                supportedFlags
+        );
+        return parseUpdateResult(executeJsonWithCompat("+update", attempts), mode);
+    }
+
+    private LarkDocUpdateResult updateByBlockAnchor(
+            String docRef,
+            String mode,
+            String content,
+            String docFormat,
+            String blockId
+    ) {
+        requireValue(blockId, "blockId");
+        LarkDocFetchResult anchorFetch = fetchDocSectionMarkdown(docRef, blockId.trim());
+        String anchorSelection = firstMeaningfulLine(anchorFetch.getContent());
+        if (!hasText(anchorSelection)) {
+            throw new IllegalStateException("无法从目标 block 提取可定位文本，无法执行文档更新。");
+        }
+        String markdown = toV1Markdown(content, docFormat);
+        return updateBySelection(docRef, mode, markdown, "markdown", null, anchorSelection);
+    }
+
+    private LarkDocUpdateResult deleteByBlockAnchor(String docRef, String blockId) {
+        requireValue(blockId, "blockId");
+        LarkDocFetchResult anchorFetch = fetchDocSectionMarkdown(docRef, blockId.trim());
+        String anchorSelection = firstMeaningfulLine(anchorFetch.getContent());
+        if (!hasText(anchorSelection)) {
+            throw new IllegalStateException("无法从目标 block 提取可定位文本，无法执行删除。");
+        }
+        return updateBySelection(docRef, "delete_range", null, null, null, anchorSelection);
+    }
+
+    private LarkDocUpdateResult appendWhiteboard(String docRef) {
+        LarkDocUpdateResult result = updateDoc(docRef, "append", "<whiteboard type=\"blank\"></whiteboard>");
+        if (result.getBoardTokens() != null && !result.getBoardTokens().isEmpty()
+                && (result.getNewBlocks() == null || result.getNewBlocks().isEmpty())) {
+            List<LarkDocBlockRef> newBlocks = result.getBoardTokens().stream()
+                    .filter(this::hasText)
+                    .map(token -> LarkDocBlockRef.builder().blockId(token).blockToken(token).blockType("whiteboard").build())
+                    .toList();
+            result.setNewBlocks(newBlocks);
+        }
+        return result;
+    }
+
+    private LarkDocUpdateResult legacyUpdateByCommand(
+            String docRef,
+            String command,
+            String content,
+            String docFormat,
+            String blockId,
+            String pattern,
+            Long revisionId,
+            long timeoutMillis
+    ) {
+        Set<String> supportedFlags = supportedFlags("+update");
+        List<DocCommandAttempt> attempts = updateDocAttempts(
+                docRef,
+                command,
+                content,
+                docFormat,
+                blockId,
+                pattern,
+                revisionId,
+                supportedFlags
+        );
+        return parseUpdateResult(executeJsonWithCompat("+update", attempts, timeoutMillis), command);
+    }
+
     private List<String> fetchDocArgs(
             String docRef,
             String scope,
@@ -684,6 +860,109 @@ public class LarkDocTool {
         return args;
     }
 
+    private DocCommandAttempt updateDocAttempt(
+            String docRef,
+            String command,
+            String content,
+            String docFormat,
+            String blockId,
+            String pattern,
+            Long revisionId,
+            Set<String> supportedFlags,
+            boolean withApiVersion,
+            boolean includeIdentity
+    ) {
+        List<String> args = new ArrayList<>();
+        args.add("docs");
+        args.add("+update");
+        if (withApiVersion) {
+            appendIfSupported(args, supportedFlags, "--api-version", "v2");
+        }
+        if (includeIdentity) {
+            appendIfSupported(args, supportedFlags, "--as", resolveDocIdentity());
+        }
+        appendIfSupported(args, supportedFlags, "--doc", docRef);
+        appendIfSupported(args, supportedFlags, "--command", command);
+        if (hasText(docFormat)) {
+            appendIfSupported(args, supportedFlags, "--doc-format", docFormat.trim());
+        }
+        String stdin = null;
+        if (content != null) {
+            if (supportedFlags.contains("--content")) {
+                args.add("--content");
+                args.add(CONTENT_STDIN_MARKER);
+                stdin = content;
+            }
+        }
+        if (hasText(blockId)) {
+            appendIfSupported(args, supportedFlags, "--block-id", blockId.trim());
+        }
+        if (hasText(pattern)) {
+            appendIfSupported(args, supportedFlags, "--pattern", pattern);
+        }
+        if (revisionId != null && revisionId >= 0) {
+            appendIfSupported(args, supportedFlags, "--revision-id", String.valueOf(revisionId));
+        }
+        return new DocCommandAttempt(args, stdin);
+    }
+
+    private List<DocCommandAttempt> v1UpdateAttempts(
+            String docRef,
+            String mode,
+            String markdown,
+            String titleSelection,
+            String ellipsisSelection,
+            String newTitle,
+            Set<String> supportedFlags
+    ) {
+        Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
+        attempts.put("preferred", v1UpdateAttempt(docRef, mode, markdown, titleSelection, ellipsisSelection, newTitle, supportedFlags, true, true));
+        attempts.put("no-api-version", v1UpdateAttempt(docRef, mode, markdown, titleSelection, ellipsisSelection, newTitle, supportedFlags, false, true));
+        attempts.put("basic", v1UpdateAttempt(
+                docRef,
+                mode,
+                markdown,
+                titleSelection,
+                ellipsisSelection,
+                newTitle,
+                Set.of("--as", "--doc", "--mode", "--markdown", "--selection-by-title", "--selection-with-ellipsis", "--new-title"),
+                false,
+                false
+        ));
+        return distinctAttempts(attempts);
+    }
+
+    private DocCommandAttempt v1UpdateAttempt(
+            String docRef,
+            String mode,
+            String markdown,
+            String titleSelection,
+            String ellipsisSelection,
+            String newTitle,
+            Set<String> supportedFlags,
+            boolean withApiVersion,
+            boolean includeIdentity
+    ) {
+        List<String> args = new ArrayList<>();
+        args.add("docs");
+        args.add("+update");
+        if (withApiVersion) {
+            appendIfSupported(args, supportedFlags, "--api-version", "v1");
+        }
+        if (includeIdentity) {
+            appendIfSupported(args, supportedFlags, "--as", resolveDocIdentity());
+        }
+        appendIfSupported(args, supportedFlags, "--doc", docRef);
+        appendIfSupported(args, supportedFlags, "--mode", mode);
+        if (hasText(markdown)) {
+            appendIfSupported(args, supportedFlags, "--markdown", CONTENT_STDIN_MARKER);
+        }
+        appendIfSupported(args, supportedFlags, "--selection-by-title", titleSelection);
+        appendIfSupported(args, supportedFlags, "--selection-with-ellipsis", ellipsisSelection);
+        appendIfSupported(args, supportedFlags, "--new-title", newTitle);
+        return new DocCommandAttempt(args, hasText(markdown) ? markdown : null);
+    }
+
     private List<DocCommandAttempt> distinctAttempts(Map<String, DocCommandAttempt> attempts) {
         List<DocCommandAttempt> result = new ArrayList<>();
         Set<String> fingerprints = new LinkedHashSet<>();
@@ -707,10 +986,13 @@ public class LarkDocTool {
         args.add(value);
     }
 
-    private String readableCliError(String output) {
+    private String readableCliError(List<String> args, String output) {
         String extracted = larkCliClient.extractErrorMessage(output);
         if (extracted == null || extracted.isBlank()) {
             return "飞书文档工具调用失败，请稍后重试。";
+        }
+        if (output != null && output.contains("lark-cli command timed out")) {
+            return "lark-cli command timed out while running " + String.join(" ", args);
         }
         String lower = extracted.toLowerCase(Locale.ROOT);
         if (lower.contains("unknown flag")) {
@@ -766,7 +1048,25 @@ public class LarkDocTool {
 
     private long commandTimeoutMillis() {
         int timeoutSeconds = properties.getTimeoutSeconds();
-        return timeoutSeconds <= 0 ? 0 : timeoutSeconds * 1000L;
+        if (timeoutSeconds <= 0) {
+            return DEFAULT_UPDATE_TIMEOUT_MILLIS;
+        }
+        return timeoutSeconds * 1000L;
+    }
+
+    private long richMediaCommandTimeoutMillis() {
+        long configured = commandTimeoutMillis();
+        return Math.max(configured, RICH_MEDIA_UPDATE_TIMEOUT_MILLIS);
+    }
+
+    private boolean isRichMediaCommand(String command) {
+        if (command == null) {
+            return false;
+        }
+        return switch (command) {
+            case "upload_image", "create_whiteboard", "table_write", "block_insert_after" -> true;
+            default -> false;
+        };
     }
 
     private String text(JsonNode node, String fieldName) {
@@ -774,7 +1074,7 @@ public class LarkDocTool {
         return field.isMissingNode() || field.isNull() ? "" : field.asText("");
     }
 
-    private LarkDocFetchResult fetchDoc(
+    public LarkDocFetchResult fetchDoc(
             String docIdOrUrl,
             String scope,
             String docFormat,
@@ -784,52 +1084,91 @@ public class LarkDocTool {
             String keyword
     ) {
         requireValue(docIdOrUrl, "docIdOrUrl");
-        List<String> args = new ArrayList<>();
-        args.add("docs");
-        args.add("+fetch");
-        args.add("--api-version");
-        args.add("v2");
-        args.add("--as");
-        args.add(resolveDocIdentity());
-        args.add("--doc");
-        args.add(docIdOrUrl.trim());
-        if (hasText(docFormat)) {
-            args.add("--doc-format");
-            args.add(docFormat.trim());
+        Set<String> supportedFlags = supportedFlags("+fetch");
+        if (!supportedFlags.contains("--doc")) {
+            throw new IllegalStateException("当前 lark-cli docs +fetch 不支持 --doc 参数，请升级 lark-cli 后重试。");
         }
-        if (hasText(detail)) {
-            args.add("--detail");
-            args.add(detail.trim());
-        }
-        if (hasText(scope)) {
-            args.add("--scope");
-            args.add(scope.trim());
-        }
-        if (hasText(startBlockId)) {
-            args.add("--start-block-id");
-            args.add(startBlockId.trim());
-        }
-        if (hasText(endBlockId)) {
-            args.add("--end-block-id");
-            args.add(endBlockId.trim());
-        }
-        if (hasText(keyword)) {
-            args.add("--keyword");
-            args.add(keyword);
-        }
-
-        JsonNode root = executeJson(args);
-        JsonNode data = root.path("data");
+        List<DocCommandAttempt> attempts = fetchDocFullAttempts(
+                docIdOrUrl.trim(), scope, docFormat, detail, startBlockId, endBlockId, keyword, supportedFlags
+        );
+        JsonNode root = executeJsonWithCompat("+fetch", attempts);
+        JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
         JsonNode document = data.path("document").isMissingNode() ? data : data.path("document");
         return LarkDocFetchResult.builder()
                 .docId(firstNonBlank(text(document, "document_id"), text(data, "doc_id"), text(data, "document_id")))
                 .docUrl(firstNonBlank(text(document, "url"), text(data, "doc_url"), text(data, "url"), docIdOrUrl))
                 .revisionId(document.path("revision_id").asLong(data.path("revision_id").asLong(-1L)))
-                .content(text(document, "content"))
+                .content(firstNonBlank(
+                        text(data, "content"), text(document, "content"),
+                        text(data, "markdown"), text(document, "markdown"),
+                        text(data, "xml"), text(document, "xml"),
+                        text(data, "text"), text(document, "text"),
+                        text(data, "raw_content"), text(document, "raw_content")
+                ))
                 .docFormat(docFormat)
                 .detail(detail)
                 .scope(scope)
                 .build();
+    }
+
+    private List<DocCommandAttempt> fetchDocFullAttempts(
+            String docRef,
+            String scope,
+            String docFormat,
+            String detail,
+            String startBlockId,
+            String endBlockId,
+            String keyword,
+            Set<String> supportedFlags
+    ) {
+        Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
+        attempts.put("preferred", fetchDocFullAttempt(docRef, scope, docFormat, detail, startBlockId, endBlockId, keyword, supportedFlags, true, true));
+        attempts.put("no-api-version", fetchDocFullAttempt(docRef, scope, docFormat, detail, startBlockId, endBlockId, keyword, supportedFlags, false, true));
+        attempts.put("basic", fetchDocFullAttempt(docRef, null, null, null, null, null, null, Set.of("--as", "--doc"), false, false));
+        return distinctAttempts(attempts);
+    }
+
+    private DocCommandAttempt fetchDocFullAttempt(
+            String docRef,
+            String scope,
+            String docFormat,
+            String detail,
+            String startBlockId,
+            String endBlockId,
+            String keyword,
+            Set<String> supportedFlags,
+            boolean withApiVersion,
+            boolean includeIdentity
+    ) {
+        List<String> args = new ArrayList<>();
+        args.add("docs");
+        args.add("+fetch");
+        if (withApiVersion) {
+            appendIfSupported(args, supportedFlags, "--api-version", "v2");
+        }
+        if (includeIdentity) {
+            appendIfSupported(args, supportedFlags, "--as", resolveDocIdentity());
+        }
+        appendIfSupported(args, supportedFlags, "--doc", docRef);
+        if (hasText(docFormat)) {
+            appendIfSupported(args, supportedFlags, "--doc-format", docFormat.trim());
+        }
+        if (hasText(detail)) {
+            appendIfSupported(args, supportedFlags, "--detail", detail.trim());
+        }
+        if (hasText(scope)) {
+            appendIfSupported(args, supportedFlags, "--scope", scope.trim());
+        }
+        if (hasText(startBlockId)) {
+            appendIfSupported(args, supportedFlags, "--start-block-id", startBlockId.trim());
+        }
+        if (hasText(endBlockId)) {
+            appendIfSupported(args, supportedFlags, "--end-block-id", endBlockId.trim());
+        }
+        if (hasText(keyword)) {
+            appendIfSupported(args, supportedFlags, "--keyword", keyword);
+        }
+        return new DocCommandAttempt(args, null);
     }
 
     private LarkDocUpdateResult parseUpdateResult(JsonNode root, String command) {

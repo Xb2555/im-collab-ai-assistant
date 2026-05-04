@@ -29,11 +29,18 @@ public class DocumentStructureSnapshotBuilder {
                 : artifact.getDocumentId();
         String docId = larkDocTool.extractDocumentId(docRef);
         LarkDocFetchResult outline = larkDocTool.fetchDocOutline(docRef);
-        LarkDocFetchResult fullXml = larkDocTool.fetchDocFull(docRef, "with-ids");
         LarkDocFetchResult fullMarkdown = larkDocTool.fetchDocFullMarkdown(docRef);
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(outline.getContent());
-        List<String> allBlockIds = structureParser.parseBlockIds(fullXml.getContent());
-        List<DocumentStructureParser.BlockNode> blocks = structureParser.parseBlockNodes(fullXml.getContent());
+        LarkDocFetchResult fullXml = null;
+        try {
+            fullXml = larkDocTool.fetchDocFull(docRef, "with-ids");
+        } catch (RuntimeException exception) {
+            // 轻量降级：富媒体路径优先保证可执行，不因为整篇 XML 抓取失败而中断。
+        }
+        List<String> allBlockIds = fullXml == null ? List.of() : structureParser.parseBlockIds(fullXml.getContent());
+        List<DocumentStructureParser.BlockNode> blocks = fullXml == null
+                ? List.of()
+                : structureParser.parseBlockNodes(fullXml.getContent());
         Map<String, DocumentStructureNode> headingIndex = new LinkedHashMap<>();
         Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
         List<DocumentStructureNode> rootNodes = new ArrayList<>();
@@ -67,8 +74,8 @@ public class DocumentStructureSnapshotBuilder {
                 topLevelSequence.add(heading.getBlockId());
             }
         }
-        for (String blockId : allBlockIds) {
-            DocumentStructureParser.BlockNode parsedBlock = blocks.stream()
+            for (String blockId : allBlockIds) {
+                DocumentStructureParser.BlockNode parsedBlock = blocks.stream()
                     .filter(block -> blockId.equals(block.getBlockId()))
                     .findFirst()
                     .orElse(null);
@@ -86,7 +93,7 @@ public class DocumentStructureSnapshotBuilder {
                 .blockIndex(blockIndex)
                 .topLevelSequence(topLevelSequence)
                 .rawOutlineXml(outline.getContent())
-                .rawFullXml(fullXml.getContent())
+                .rawFullXml(fullXml == null ? null : fullXml.getContent())
                 .rawFullMarkdown(fullMarkdown.getContent())
                 .build();
     }

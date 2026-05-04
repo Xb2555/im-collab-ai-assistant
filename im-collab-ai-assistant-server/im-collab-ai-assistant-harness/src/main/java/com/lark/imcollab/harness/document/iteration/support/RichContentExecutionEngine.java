@@ -27,21 +27,19 @@ public class RichContentExecutionEngine {
         List<ExecutionStep> steps = plan.getExecutionPlan().getSteps();
         RichContentExecutionContext ctx = new RichContentExecutionContext();
         seedContext(ctx, plan);
-
         long beforeRevision = fetchRevision(docRef);
         ctx.setBeforeRevision(beforeRevision);
 
         for (ExecutionStep step : steps) {
             registry.dispatch(step, docRef, ctx);
         }
-
         long afterRevision = fetchRevision(docRef);
         ctx.setAfterRevision(afterRevision);
 
         return RichContentExecutionResult.builder()
                 .createdBlockIds(ctx.getCreatedBlockIds())
                 .createdAssetRefs(ctx.getCreatedAssetRefs())
-                .beforeRevision(ctx.getBeforeRevision())
+                .beforeRevision(beforeRevision)
                 .afterRevision(afterRevision)
                 .build();
     }
@@ -61,7 +59,7 @@ public class RichContentExecutionEngine {
 
     private long fetchRevision(String docRef) {
         try {
-            var result = larkDocTool.fetchDocFullMarkdown(docRef);
+            var result = larkDocTool.fetchDoc(docRef, null, "markdown", "simple", null, null, null);
             return result == null ? -1L : result.getRevisionId();
         } catch (Exception ignored) {
             return -1L;

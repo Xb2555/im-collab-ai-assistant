@@ -93,6 +93,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             String operator = context == null ? null : context.getSenderOpenId();
             Artifact ownedArtifact = ownershipGuard.assertEditable(request.getDocUrl(), operator, request.getTaskId());
             DocumentEditIntent editIntent = intentResolver.resolve(request.getInstruction());
+            validateRichMediaPrerequisites(request, editIntent);
             DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
             ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, editIntent);
             DocumentEditStrategy strategy = strategyPlanner.plan(editIntent, anchor);
@@ -333,6 +334,34 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                  RELAYOUT_SECTION, CONVERT_TEXT_TO_TABLE, CONVERT_TEXT_TO_IMAGE_CARD -> true;
             default -> false;
         };
+    }
+
+    private void validateRichMediaPrerequisites(DocumentIterationRequest request, DocumentEditIntent editIntent) {
+        if (editIntent == null || editIntent.getIntentType() != DocumentIterationIntentType.INSERT_MEDIA) {
+            return;
+        }
+        if (editIntent.getAssetSpec() == null || editIntent.getAssetSpec().getAssetType() == null) {
+            return;
+        }
+        if (editIntent.getAssetSpec().getAssetType() != com.lark.imcollab.common.model.enums.MediaAssetType.IMAGE) {
+            return;
+        }
+
+        boolean hasAttachment = request != null
+                && request.getWorkspaceContext() != null
+                && request.getWorkspaceContext().getAttachmentRefs() != null
+                && !request.getWorkspaceContext().getAttachmentRefs().isEmpty();
+        boolean hasSourceRef = editIntent.getAssetSpec().getSourceRef() != null
+                && !editIntent.getAssetSpec().getSourceRef().isBlank();
+        boolean hasGenerationPrompt = editIntent.getAssetSpec().getGenerationPrompt() != null
+                && !editIntent.getAssetSpec().getGenerationPrompt().isBlank();
+
+        if (!hasAttachment && !hasSourceRef && !hasGenerationPrompt) {
+            throw new AiAssistantException(
+                    BusinessCode.PARAMS_ERROR,
+                    "插入图片需要提供图片附件、图片链接或生成描述，不能只给出插入位置。"
+            );
+        }
     }
 
     private String defaultIfBlank(String value, String defaultValue) {

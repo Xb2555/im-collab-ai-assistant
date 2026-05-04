@@ -162,6 +162,90 @@ class LarkDocToolTest {
         assertThat(commands.get(commands.size() - 1).arguments()).contains("docs", "+fetch", "--doc");
     }
 
+    @Test
+    void updateDocRetriesWithoutAsWhenCliRejectsFlag() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            List<String> args = command.arguments();
+            if (args.contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --doc string
+                              --command string
+                              --doc-format string
+                              --content string
+                        """);
+            }
+            if (args.contains("--as")) {
+                return new CliCommandResult(1, """
+                        {"error":{"message":"unknown flag: --as"}}
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"data":{"document_id":"doc-1","url":"https://example.feishu.cn/docx/doc-1","title":"文档","message":"ok"}} 
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.updateDoc("doc-1", "append", "新增内容");
+
+        assertThat(result.getDocId()).isEqualTo("doc-1");
+        assertThat(commands).hasSizeGreaterThanOrEqualTo(4);
+        assertThat(commands.get(2).arguments()).contains("--as");
+        assertThat(commands.get(commands.size() - 1).arguments()).doesNotContain("--as");
+    }
+
+    @Test
+    void updateByCommandAppendUsesV1ModeAndMarkdownProtocol() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --doc string
+                              --mode string
+                              --markdown string
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"success":true,"data":{"doc_id":"doc-append","mode":"append","message":"ok","revision_id":2}}
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.updateByCommand("doc-append", "append", "新增内容", "markdown", null, null, null);
+
+        assertThat(result.getDocId()).isEqualTo("doc-append");
+        CliCommand updateCommand = commands.get(commands.size() - 1);
+        assertThat(updateCommand.arguments()).contains("docs", "+update", "--mode", "append", "--markdown", "-");
+        assertThat(updateCommand.arguments()).doesNotContain("--command");
+        assertThat(updateCommand.stdin()).isEqualTo("新增内容");
+    }
+
     private LarkCliClient dummyCliClient(List<CliCommand> commands) {
         CliCommandExecutor executor = command -> {
             commands.add(command);
