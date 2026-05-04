@@ -11,6 +11,8 @@ import java.util.stream.Collectors;
 @Component
 public class DocumentTargetStateVerifier {
 
+    private static final java.util.regex.Pattern MARKDOWN_HEADING_PATTERN = java.util.regex.Pattern.compile("^#+\\s+(.+)$");
+
     public void verify(DocumentEditPlan plan, DocumentStructureSnapshot before, DocumentStructureSnapshot after) {
         if (plan == null || plan.getExpectedState() == null || plan.getExpectedState().getStateType() == null) return;
         switch (plan.getExpectedState().getStateType()) {
@@ -96,7 +98,11 @@ public class DocumentTargetStateVerifier {
 
     private void verifyBlockInsertedAfter(DocumentEditPlan plan, DocumentStructureSnapshot before, DocumentStructureSnapshot after) {
         String newContent = firstNewContent(plan);
-        if (hasText(newContent) && fullText(after).contains(newContent)) {
+        String insertedHeading = extractInsertedHeading(newContent);
+        if (hasText(insertedHeading) && containsHeading(after, insertedHeading)) {
+            return;
+        }
+        if (hasText(newContent) && containsContentFragments(after, newContent)) {
             return;
         }
         // 兜底判据：after block 数量 > before
@@ -211,6 +217,58 @@ public class DocumentTargetStateVerifier {
         StringBuilder sb = new StringBuilder();
         snapshot.getBlockIndex().values().forEach(n -> { if (n.getPlainText() != null) sb.append(n.getPlainText()); });
         return sb.toString();
+    }
+
+    private boolean containsHeading(DocumentStructureSnapshot snapshot, String headingText) {
+        if (snapshot == null || snapshot.getHeadingIndex() == null || !hasText(headingText)) {
+            return false;
+        }
+        return snapshot.getHeadingIndex().values().stream()
+                .map(DocumentStructureNode::getTitleText)
+                .anyMatch(title -> normalize(title).equals(normalize(headingText)));
+    }
+
+    private boolean containsContentFragments(DocumentStructureSnapshot snapshot, String newContent) {
+        if (snapshot == null || !hasText(newContent)) {
+            return false;
+        }
+        String afterText = normalize(fullText(snapshot));
+        if (afterText.isEmpty()) {
+            return false;
+        }
+        return splitMeaningfulLines(newContent).stream()
+                .map(this::normalize)
+                .filter(this::hasText)
+                .anyMatch(afterText::contains);
+    }
+
+    private java.util.List<String> splitMeaningfulLines(String content) {
+        if (!hasText(content)) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(content.split("\\R"))
+                .map(String::trim)
+                .filter(this::hasText)
+                .map(line -> line.replaceFirst("^#+\\s*", "").trim())
+                .filter(line -> line.length() >= 6)
+                .toList();
+    }
+
+    private String extractInsertedHeading(String newContent) {
+        if (!hasText(newContent)) {
+            return null;
+        }
+        for (String line : newContent.split("\\R")) {
+            String trimmed = line.trim();
+            if (!hasText(trimmed)) {
+                continue;
+            }
+            java.util.regex.Matcher matcher = MARKDOWN_HEADING_PATTERN.matcher(trimmed);
+            if (matcher.matches()) {
+                return matcher.group(1).trim();
+            }
+        }
+        return null;
     }
 
     private int findTopLevelHeadingIndex(DocumentStructureSnapshot snapshot, String headingText) {
