@@ -60,6 +60,8 @@ imcollab:
       # 二维码授权地址中的 client id 参数名
       qr-client-id-param: ${LARK_OAUTH_QR_CLIENT_ID_PARAM:client_id}
       redirect-uri: ${LARK_OAUTH_REDIRECT_URI:http://localhost:5173/auth-callback}
+      # 桌面端专用的回调地址
+      desktop-redirect-uri: ${LARK_OAUTH_DESKTOP_REDIRECT_URI:http://81.71.143.236:18080/api/auth/lark/desktop-callback}
       session-ttl: ${LARK_AUTH_SESSION_TTL:12h}
       jwt-ttl: ${LARK_AUTH_JWT_TTL:2h}
       jwt-secret: ${IMCOLLAB_JWT_SECRET:change-this-jwt-secret}
