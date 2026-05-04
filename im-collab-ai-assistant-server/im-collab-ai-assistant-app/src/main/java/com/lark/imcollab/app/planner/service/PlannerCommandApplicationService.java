@@ -105,8 +105,8 @@ public class PlannerCommandApplicationService {
     }
 
     public PlanTaskSession cancel(String taskId) {
-        taskCommandFacade.cancelExecution(taskId);
         sessionService.markAborted(taskId, "User cancelled from GUI command");
+        taskCommandFacade.cancelExecution(taskId);
         taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.ABORTED, TaskEventTypeEnum.TASK_CANCELLED);
         return sessionService.get(taskId);
     }

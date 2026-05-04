@@ -17,6 +17,11 @@ public interface PlannerStateStore {
 
     void saveSession(PlanTaskSession session);
 
+    default boolean saveSessionIfStateRevision(PlanTaskSession session, long expectedStateRevision) {
+        saveSession(session);
+        return true;
+    }
+
     Optional<PlanTaskSession> findSession(String taskId);
 
     Optional<String> findConversationTaskId(String conversationKey);
