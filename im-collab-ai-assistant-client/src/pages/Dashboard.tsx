@@ -26,28 +26,76 @@ import type { RuntimeArtifactVO, RuntimeStepVO } from '@/types/api';
 
 const parseFeishuContent = (rawContent: string | null | undefined, msgType?: string) => {
   if (!rawContent) return '';
+
+  if (msgType !== 'system') {
+    try {
+      const json = JSON.parse(rawContent);
+      if (json.text) return json.text;
+      return rawContent;
+    } catch {
+      return rawContent;
+    }
+  }
+
+  const fallbackSystemText = (template?: string) => {
+    if (!template) return '[系统消息] 系统通知';
+    if (template.includes('group administrators')) return '[系统消息] 系统更新了管理员设置';
+    if (template.includes('started the group chat')) return '[系统消息] 系统创建了群聊';
+    if (template.includes('invited') && template.includes('to the group')) return '[系统消息] 系统更新了群成员';
+    if (template.includes('revoked') || template.includes('removed from the group')) return '[系统消息] 系统调整了群成员';
+    if (template.includes('Welcome to')) return '[系统消息] 欢迎加入群聊';
+    return '[系统消息] 系统通知';
+  };
+
   try {
     const json = JSON.parse(rawContent);
-    if (json.text) return json.text;
-    if (json.template) return `[系统消息] ${json.template.replace(/\{.*?\}/g, '某人')}`;
-    return '[未知 JSON 格式]';
-  } catch {
-    let text = rawContent;
-    if (msgType === 'system') {
-      if (text.includes('started the group chat')) {
-        text = text.replace('started the group chat, assigned', '创建了群聊，指定')
-          .replace('as the group owner, and invited', '为群主，并邀请')
-          .replace('to the group.', '入群。');
+    if (json.text) return `[系统消息] ${json.text}`;
+
+    const template: string | undefined = json.template;
+    if (!template) return '[系统消息] 系统通知';
+
+    const variables = json.variables && typeof json.variables === 'object' ? json.variables : {};
+
+    let hasMeaningfulValue = false;
+    const rendered = template.replace(/\{([^{}]+)\}/g, (_m: string, key: string) => {
+      const fromVariables = variables?.[key];
+      const fromTopLevel = json?.[key];
+      const rawValue = fromVariables ?? fromTopLevel;
+
+      let values: string[] = [];
+      if (Array.isArray(rawValue)) {
+        values = rawValue.filter((v: unknown) => typeof v === 'string' && v.trim()).map((v: string) => v.trim());
+      } else if (typeof rawValue === 'string' && rawValue.trim()) {
+        values = [rawValue.trim()];
       }
-      if (text.includes('added') && text.includes('to group administrators')) {
-        text = text.replace('added', '将').replace('to group administrators.', '设为了群管理员。');
+
+      if (values.length > 0) {
+        hasMeaningfulValue = true;
+        return values.join('、');
       }
-      if (text.includes('Welcome to')) {
-        text = text.replace('Welcome to', '欢迎来到');
-      }
-      return `[系统] ${text}`;
+
+      if (key === 'group_type') return '群聊';
+      return '某人';
+    });
+
+    if (!hasMeaningfulValue) {
+      return fallbackSystemText(template);
     }
-    return text;
+
+    const localized = rendered
+      .replace(' invited ', ' 邀请了 ')
+      .replace(' to the group. New members can view all chat history.', ' 入群，新成员可查看全部聊天记录。')
+      .replace(' revoked the group invitation, ', ' 撤销了群邀请，')
+      .replace(' was removed from the group chat.', ' 已被移出群聊。')
+      .replace(' started the group chat and assigned ', ' 创建了群聊，并指定 ')
+      .replace(' as the group owner.', ' 为群主。')
+      .replace(' added ', ' 将 ')
+      .replace(' to group administrators.', ' 设为了群管理员。')
+      .replace('Welcome to 群聊', '欢迎加入群聊');
+
+    return `[系统消息] ${localized}`;
+  } catch {
+    return `[系统] ${rawContent}`;
   }
 };
 
@@ -641,9 +689,18 @@ const taskToRecover = res.tasks.find(t =>
               <div className="m-auto text-zinc-400 text-sm">暂无消息记录</div>
             ) : (
               messages.map((msg, index) => {
+                const messageType = (msg.messageType || msg.msgType || '').toLowerCase();
+                const isSystem = messageType === 'system' || (typeof msg.content === 'string' && msg.content.startsWith('[系统消息]'));
                 const isBot = msg.senderType === 'app' || msg.senderOpenId?.includes('bot');
-                const isMe = msg.senderName ? msg.senderName === user?.name : false;
-                const displayName = isBot ? 'Agent Pilot' : (msg.senderName || '系统通知');
+                const senderId = msg.senderOpenId || msg.senderId;
+                const currentUserOpenId = (user as any)?.openId || (user as any)?.userId || (user as any)?.id;
+                const isMeById = !!senderId && !!currentUserOpenId && senderId === currentUserOpenId;
+                const isMeByName = !!user?.name && !!msg.senderName && msg.senderName === user.name;
+                const isMe = !isSystem && (isMeById || isMeByName);
+                const resolvedName = msg.senderName || (isMe ? user?.name : null);
+                const displayName = isSystem
+                  ? '系统通知'
+                  : (isBot ? 'Agent Pilot' : (resolvedName || '未知成员'));
 
                 return (
                   <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} group relative`}>
@@ -665,10 +722,12 @@ const taskToRecover = res.tasks.find(t =>
                       <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm overflow-hidden ${isBot ? 'bg-blue-600 text-white' : 'bg-zinc-200 text-zinc-600'}`}>
                         {isBot ? (
                           <Bot className="h-4 w-4" />
-                        ) : msg.senderAvatar ? (
-                          <img src={msg.senderAvatar} alt="avatar" className="h-full w-full object-cover" />
+                        ) : (msg.senderAvatar || (isMe ? user?.avatarUrl : null)) ? (
+                          <img src={msg.senderAvatar || user?.avatarUrl} alt="avatar" className="h-full w-full object-cover" />
                         ) : (
-                          <User className="h-4 w-4" />
+                          <div className="flex h-full w-full items-center justify-center bg-blue-600 text-white">
+                            <Bot className="h-4 w-4" />
+                          </div>
                         )}
                       </div>
 
