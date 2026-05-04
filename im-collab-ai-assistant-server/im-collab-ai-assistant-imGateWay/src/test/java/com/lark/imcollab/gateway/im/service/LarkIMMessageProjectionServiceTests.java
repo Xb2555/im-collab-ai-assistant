@@ -69,7 +69,7 @@ class LarkIMMessageProjectionServiceTests {
     }
 
     @Test
-    void shouldKeepHistorySystemContentRawAndReturnUserMap() {
+    void shouldNormalizeHistorySystemVariablesAndReturnUserMap() throws Exception {
         String content = "{\"template\":\"{from_user} 创建了群聊，并邀请了 {members}\","
                 + "\"from_user\":{\"id\":\"ou_zhang\"},\"members\":[{\"id\":\"ou_li\"}]}";
         when(userProfileHydrationService.resolveByUserAccessToken("user-token", "ou_zhang"))
@@ -104,10 +104,17 @@ class LarkIMMessageProjectionServiceTests {
         ), "user-token");
 
         assertThat(response.items()).hasSize(1);
-        assertThat(response.items().get(0).content()).isEqualTo(content);
+        assertThat(objectMapper.readTree(response.items().get(0).content()))
+                .isEqualTo(objectMapper.readTree(contentWithVariables()));
         assertThat(response.userMap()).containsOnlyKeys("ou_zhang", "ou_li");
         assertThat(response.userMap().get("ou_zhang").name()).isEqualTo("张三");
         assertThat(response.userMap().get("ou_zhang").avatar()).isEqualTo("https://avatar.example/zhang.png");
         assertThat(response.userMap().get("ou_li").name()).isEqualTo("李四");
+    }
+
+    private String contentWithVariables() {
+        return "{\"template\":\"{from_user} 创建了群聊，并邀请了 {members}\","
+                + "\"from_user\":{\"id\":\"ou_zhang\"},\"members\":[{\"id\":\"ou_li\"}],"
+                + "\"variables\":{\"from_user\":[\"张三\"],\"members\":[\"李四\"]}}";
     }
 }
