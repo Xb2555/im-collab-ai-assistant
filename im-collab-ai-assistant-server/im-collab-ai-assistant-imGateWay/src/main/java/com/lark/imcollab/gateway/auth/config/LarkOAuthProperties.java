@@ -28,6 +28,7 @@ public class LarkOAuthProperties {
             "im:chat:read",
             "im:chat.members:write_only",
             "im:message.send_as_user",
+            "search:message",
             "offline_access",
             "im:message",
             "im:message:send_as_bot"

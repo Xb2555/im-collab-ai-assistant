@@ -88,6 +88,19 @@ public class PlannerContextAcquisitionTool {
                 .filter(value -> value != null && !value.isBlank())
                 .distinct()
                 .toList());
+        if ((merged.getInputSource() == null || merged.getInputSource().isBlank())
+                && result.getSourceRefs() != null
+                && !result.getSourceRefs().isEmpty()) {
+            result.getSourceRefs().stream()
+                    .filter(value -> value != null && !value.isBlank())
+                    .findFirst()
+                    .ifPresent(merged::setInputSource);
+        } else if (result.getSourceRefs() != null && !result.getSourceRefs().isEmpty()) {
+            result.getSourceRefs().stream()
+                    .filter(value -> value != null && value.startsWith("im-search:"))
+                    .findFirst()
+                    .ifPresent(merged::setInputSource);
+        }
         return merged;
     }
 

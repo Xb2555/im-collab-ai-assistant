@@ -12,6 +12,7 @@ class LarkOAuthPropertiesTests {
 
         assertThat(properties.getScopes())
                 .contains("contact:contact.base:readonly")
-                .contains("contact:user.base:readonly");
+                .contains("contact:user.base:readonly")
+                .contains("search:message");
     }
 }

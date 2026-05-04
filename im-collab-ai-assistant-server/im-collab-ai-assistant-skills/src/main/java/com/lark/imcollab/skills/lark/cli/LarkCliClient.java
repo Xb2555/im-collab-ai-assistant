@@ -10,8 +10,11 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 @Component
 public class LarkCliClient {
@@ -40,10 +43,11 @@ public class LarkCliClient {
 
     public CliCommandResult execute(List<String> args, String stdin, long timeoutMillis) {
         try {
-            List<String> fullArgs = new ArrayList<>(properties.getArgs());
+            CliExecutable executable = resolveExecutable(stdin != null);
+            List<String> fullArgs = new ArrayList<>(executable.prefixArgs());
             fullArgs.addAll(args);
             return cliCommandExecutor.execute(new CliCommand(
-                    properties.getExecutable(),
+                    executable.executable(),
                     fullArgs,
                     normalizeWorkingDirectory(properties.getWorkingDirectory()),
                     stdin,
@@ -95,6 +99,61 @@ public class LarkCliClient {
             return null;
         }
         return workingDirectory.trim();
+    }
+
+    private CliExecutable resolveExecutable(boolean requiresStdin) {
+        String executable = properties.getExecutable();
+        List<String> args = properties.getArgs();
+        if (args == null || args.isEmpty() || !isWindows()) {
+            return new CliExecutable(executable, args == null ? List.of() : args);
+        }
+        if (!isPowerShell(executable) || args.size() < 3) {
+            return new CliExecutable(executable, args);
+        }
+        int fileIndex = findPowerShellFileArg(args);
+        if (fileIndex < 0 || fileIndex >= args.size() - 1) {
+            return new CliExecutable(executable, args);
+        }
+        String ps1Path = args.get(fileIndex + 1);
+        if (ps1Path == null || !ps1Path.toLowerCase(Locale.ROOT).endsWith(".ps1")) {
+            return new CliExecutable(executable, args);
+        }
+        if (requiresStdin) {
+            return new CliExecutable(ps1Path, List.of());
+        }
+        String cmdPath = ps1Path.substring(0, ps1Path.length() - 4) + ".cmd";
+        if (Files.exists(Path.of(cmdPath))) {
+            return new CliExecutable(cmdPath, List.of());
+        }
+        return new CliExecutable(ps1Path, List.of());
+    }
+
+    private int findPowerShellFileArg(List<String> args) {
+        for (int index = 0; index < args.size(); index++) {
+            String arg = args.get(index);
+            if ("-File".equalsIgnoreCase(arg)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private boolean isPowerShell(String executable) {
+        if (executable == null) {
+            return false;
+        }
+        String normalized = executable.toLowerCase(Locale.ROOT);
+        return normalized.endsWith("powershell")
+                || normalized.endsWith("powershell.exe")
+                || normalized.endsWith("pwsh")
+                || normalized.endsWith("pwsh.exe");
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private record CliExecutable(String executable, List<String> prefixArgs) {
     }
 
     public JsonNode readJsonOutput(String output) throws IOException {

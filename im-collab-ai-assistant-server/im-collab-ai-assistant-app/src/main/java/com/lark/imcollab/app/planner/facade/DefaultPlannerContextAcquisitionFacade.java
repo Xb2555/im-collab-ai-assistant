@@ -9,13 +9,18 @@ import com.lark.imcollab.common.model.enums.ContextSourceTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.skills.lark.doc.LarkDocFetchResult;
 import com.lark.imcollab.skills.lark.doc.LarkDocTool;
-import com.lark.imcollab.skills.lark.im.LarkMessageHistoryItem;
-import com.lark.imcollab.skills.lark.im.LarkMessageHistoryResponse;
-import com.lark.imcollab.skills.lark.im.LarkMessageHistoryTool;
+import com.lark.imcollab.skills.lark.im.LarkMessageSearchItem;
+import com.lark.imcollab.skills.lark.im.LarkMessageSearchResult;
+import com.lark.imcollab.skills.lark.im.LarkMessageSearchTool;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,20 +29,21 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Component
+@Slf4j
 public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcquisitionFacade {
 
-    private final LarkMessageHistoryTool messageHistoryTool;
+    private final LarkMessageSearchTool messageSearchTool;
     private final LarkDocTool docTool;
     private final PlannerProperties plannerProperties;
     private final ContextMessageSelectionService messageSelectionService;
 
     public DefaultPlannerContextAcquisitionFacade(
-            LarkMessageHistoryTool messageHistoryTool,
+            LarkMessageSearchTool messageSearchTool,
             LarkDocTool docTool,
             PlannerProperties plannerProperties,
             ContextMessageSelectionService messageSelectionService
     ) {
-        this.messageHistoryTool = messageHistoryTool;
+        this.messageSearchTool = messageSearchTool;
         this.docTool = docTool;
         this.plannerProperties = plannerProperties;
         this.messageSelectionService = messageSelectionService;
@@ -64,11 +70,15 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             }
             try {
                 if (source.getSourceType() == ContextSourceTypeEnum.IM_HISTORY) {
-                    collectIm(source, workspaceContext, rawInstruction, selectedMessages, selectedMessageIds, sourceRefs);
+                    collectImSearch(source, workspaceContext, rawInstruction, selectedMessages, selectedMessageIds, sourceRefs);
+                } else if (source.getSourceType() == ContextSourceTypeEnum.IM_MESSAGE_SEARCH) {
+                    collectImSearch(source, workspaceContext, rawInstruction, selectedMessages, selectedMessageIds, sourceRefs);
                 } else if (source.getSourceType() == ContextSourceTypeEnum.LARK_DOC) {
                     collectDocs(source, workspaceContext, docFragments, sourceRefs);
                 }
             } catch (RuntimeException exception) {
+                log.warn("Planner context acquisition failed: sourceType={}, chatId={}, query={}, timeRange={}, reason={}",
+                        source.getSourceType(), source.getChatId(), source.getQuery(), source.getTimeRange(), safeMessage(exception));
                 failures.add(readableSourceName(source) + "读取失败：" + safeMessage(exception));
             }
         }
@@ -89,7 +99,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                 .build();
     }
 
-    private void collectIm(
+    private void collectImSearch(
             ContextSourceRequest source,
             WorkspaceContext workspaceContext,
             String rawInstruction,
@@ -97,36 +107,40 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             List<String> selectedMessageIds,
             Set<String> sourceRefs
     ) {
-        String threadId = firstNonBlank(source.getThreadId(), workspaceContext == null ? null : workspaceContext.getThreadId());
         String chatId = firstNonBlank(source.getChatId(), workspaceContext == null ? null : workspaceContext.getChatId());
-        String containerId = firstNonBlank(threadId, chatId);
-        if (containerId == null || containerId.isBlank()) {
+        String query = firstNonBlank(source.getQuery(), extractKeywordFromSelection(source.getSelectionInstruction()));
+        if (chatId == null || chatId.isBlank()) {
             return;
         }
-        String containerIdType = threadId == null || threadId.isBlank() ? "chat" : "thread";
-        TimeRange range = resolveTimeRange(source, workspaceContext, rawInstruction);
-        int limit = normalizeLimit(source.getLimit(), plannerProperties.getContextCollection().getMaxImMessages());
-        LarkMessageHistoryResponse response = messageHistoryTool.fetchHistory(
-                containerIdType,
-                containerId,
-                range.start(),
-                range.end(),
-                "ByCreateTimeAsc",
-                limit,
-                null
+        TimeRange range = hasTimeConstraint(source, workspaceContext, rawInstruction)
+                ? resolveTimeRange(source, workspaceContext, rawInstruction)
+                : null;
+        int pageSize = normalizeLimit(firstNonNull(source.getPageSize(), source.getLimit()), 50);
+        int pageLimit = firstNonNull(source.getPageLimit(), hasText(query) ? 5 : 1);
+        LarkMessageSearchResult result = messageSearchTool.searchMessages(
+                query,
+                chatId,
+                range == null ? null : range.start(),
+                range == null ? null : range.end(),
+                pageSize,
+                pageLimit
         );
-        if (response == null || response.items() == null) {
+        if (result == null || result.items() == null || result.items().isEmpty()) {
             return;
         }
-        sourceRefs.add("im:" + containerIdType + ":" + containerId);
-        List<LarkMessageHistoryItem> candidates = response.items().stream()
-                .filter(item -> item != null && !item.deleted() && item.content() != null && !item.content().isBlank())
-                .filter(item -> !"app".equalsIgnoreCase(item.senderType()))
-                .filter(item -> workspaceContext == null
+        sourceRefs.add(buildImSearchSourceRef(chatId, query, range));
+        List<LarkMessageSearchItem> candidates = result.items().stream()
+                .filter(item -> item != null
+                        && !item.deleted()
+                        && item.content() != null
+                        && !item.content().isBlank()
+                        && !"app".equalsIgnoreCase(item.senderType())
+                        && !"bot".equalsIgnoreCase(item.senderType())
+                        && (workspaceContext == null
                         || workspaceContext.getMessageId() == null
                         || !workspaceContext.getMessageId().equals(item.messageId()))
-                .filter(item -> !sameText(item.content(), rawInstruction))
-                .filter(item -> !containsUserInstruction(item.content(), rawInstruction))
+                        && !sameText(item.content(), rawInstruction)
+                        && !containsUserInstruction(item.content(), rawInstruction))
                 .toList();
         Set<String> explicitMessageIds = selectedMessageIds(workspaceContext);
         if (!explicitMessageIds.isEmpty()) {
@@ -134,15 +148,24 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                     .filter(item -> item.messageId() != null && explicitMessageIds.contains(item.messageId()))
                     .toList();
         }
-        List<LarkMessageHistoryItem> selected = source.getSelectionInstruction() != null && !source.getSelectionInstruction().isBlank()
-                ? messageSelectionService.select(rawInstruction, source.getSelectionInstruction(), candidates)
-                : candidates;
-        for (LarkMessageHistoryItem item : selected) {
+        for (LarkMessageSearchItem item : candidates) {
             selectedMessages.add(renderMessage(item));
             if (item.messageId() != null && !item.messageId().isBlank()) {
                 selectedMessageIds.add(item.messageId());
             }
         }
+    }
+
+    private String buildImSearchSourceRef(String chatId, String query, TimeRange range) {
+        List<String> parts = new ArrayList<>();
+        parts.add("im-search:chat:" + chatId);
+        if (hasText(query)) {
+            parts.add("query:" + query);
+        }
+        if (range != null) {
+            parts.add("time:" + range.start() + "/" + range.end());
+        }
+        return String.join(":", parts);
     }
 
     private void collectDocs(
@@ -181,8 +204,8 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         if (timeRange != null && !timeRange.isBlank()) {
             String[] parts = timeRange.split("[/,，~至到]+");
             if (parts.length >= 2) {
-                String start = normalizeEpochSeconds(parts[0]);
-                String end = normalizeEpochSeconds(parts[1]);
+                String start = normalizeSearchTime(parts[0]);
+                String end = normalizeSearchTime(parts[1]);
                 if (!start.isBlank() && !end.isBlank()) {
                     return new TimeRange(start, end);
                 }
@@ -190,7 +213,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         }
         Instant end = Instant.now();
         Instant start = end.minusSeconds(Math.max(1, plannerProperties.getContextCollection().getDefaultLookbackMinutes()) * 60L);
-        return new TimeRange(String.valueOf(start.getEpochSecond()), String.valueOf(end.getEpochSecond()));
+        return new TimeRange(formatSearchTime(start), formatSearchTime(end));
     }
 
     private TimeRange resolveRelativeTimeRange(String text) {
@@ -198,28 +221,81 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             return null;
         }
         String normalized = normalize(text);
+        Matcher pointMatcher = Pattern.compile("(\\d{1,4})\\s*(分钟|分|小时|时|天|日)前").matcher(text);
+        if (pointMatcher.find()) {
+            long amount = Long.parseLong(pointMatcher.group(1));
+            long seconds = toSeconds(amount, pointMatcher.group(2));
+            Instant center = Instant.now().minusSeconds(seconds);
+            long radius = Math.min(Math.max(300L, seconds / 10), 1800L);
+            return new TimeRange(
+                    formatSearchTime(center.minusSeconds(radius)),
+                    formatSearchTime(center.plusSeconds(radius))
+            );
+        }
         Matcher matcher = Pattern.compile("(最近|近)\\s*(\\d{1,4})\\s*(分钟|分|小时|时|天|日)").matcher(text);
         if (!matcher.find()) {
             if (normalized.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论).*")) {
-                Instant end = Instant.now();
-                Instant start = end.minusSeconds(Math.max(1, plannerProperties.getContextCollection().getDefaultLookbackMinutes()) * 60L);
-                return new TimeRange(String.valueOf(start.getEpochSecond()), String.valueOf(end.getEpochSecond()));
+            Instant end = Instant.now();
+            Instant start = end.minusSeconds(Math.max(1, plannerProperties.getContextCollection().getDefaultLookbackMinutes()) * 60L);
+                return new TimeRange(formatSearchTime(start), formatSearchTime(end));
             }
             return null;
         }
         long amount = Long.parseLong(matcher.group(2));
-        String unit = matcher.group(3);
-        long seconds;
-        if ("分钟".equals(unit) || "分".equals(unit)) {
-            seconds = amount * 60L;
-        } else if ("小时".equals(unit) || "时".equals(unit)) {
-            seconds = amount * 3600L;
-        } else {
-            seconds = amount * 86400L;
-        }
+        long seconds = toSeconds(amount, matcher.group(3));
         Instant end = Instant.now();
         Instant start = end.minusSeconds(Math.max(60L, seconds));
-        return new TimeRange(String.valueOf(start.getEpochSecond()), String.valueOf(end.getEpochSecond()));
+        return new TimeRange(formatSearchTime(start), formatSearchTime(end));
+    }
+
+    private long toSeconds(long amount, String unit) {
+        if ("分钟".equals(unit) || "分".equals(unit)) {
+            return amount * 60L;
+        }
+        if ("小时".equals(unit) || "时".equals(unit)) {
+            return amount * 3600L;
+        }
+        return amount * 86400L;
+    }
+
+    private boolean hasTimeConstraint(ContextSourceRequest source, WorkspaceContext workspaceContext, String rawInstruction) {
+        return hasText(source == null ? null : source.getTimeRange())
+                || hasText(source == null ? null : source.getStartTime())
+                || hasText(source == null ? null : source.getEndTime())
+                || hasText(workspaceContext == null ? null : workspaceContext.getTimeRange())
+                || hasRelativeTimeReference(rawInstruction);
+    }
+
+    private boolean hasRelativeTimeReference(String text) {
+        if (!hasText(text)) {
+            return false;
+        }
+        String normalized = normalize(text);
+        return normalized.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论).*")
+                || Pattern.compile("(最近|近)\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)").matcher(text).find()
+                || Pattern.compile("\\d{1,4}\\s*(分钟|分|小时|时|天|日)前").matcher(text).find();
+    }
+
+    private String extractKeywordFromSelection(String value) {
+        if (!hasText(value)) {
+            return "";
+        }
+        List<Pattern> patterns = List.of(
+                Pattern.compile("有关(.{2,40}?)(?:的)?(?:讨论|消息|记录|聊天|内容)"),
+                Pattern.compile("关于(.{2,40}?)(?:的)?(?:讨论|消息|记录|聊天|内容)"),
+                Pattern.compile("(.{2,40}?)(?:相关|有关|关于)(?:的)?(?:讨论|消息|记录|聊天|内容)")
+        );
+        for (Pattern pattern : patterns) {
+            Matcher matcher = pattern.matcher(value);
+            if (matcher.find()) {
+                String cleaned = matcher.group(1)
+                        .replaceAll("^(最近|近|之前|历史|历史消息|聊天记录|本群|群里|当前|有关|关于|和|与|中|\\d{1,4}\\s*(分钟|分|小时|时|天|日)前)+", "")
+                        .replaceAll("(整理|总结|汇总|输出|生成|写成|文档|ppt|PPT|分析)+$", "")
+                        .trim();
+                return cleaned.length() > 40 ? cleaned.substring(0, 40).trim() : cleaned;
+            }
+        }
+        return "";
     }
 
     private String joinRange(String start, String end) {
@@ -229,22 +305,33 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         return start.trim() + "/" + end.trim();
     }
 
-    private String normalizeEpochSeconds(String value) {
+    private String normalizeSearchTime(String value) {
         if (value == null || value.isBlank()) {
             return "";
         }
         String trimmed = value.trim();
         if (trimmed.matches("\\d{10}")) {
-            return trimmed;
+            return formatSearchTime(Instant.ofEpochSecond(Long.parseLong(trimmed)));
         }
         if (trimmed.matches("\\d{13}")) {
-            return trimmed.substring(0, 10);
+            return formatSearchTime(Instant.ofEpochMilli(Long.parseLong(trimmed)));
         }
         try {
-            return String.valueOf(Instant.parse(trimmed).getEpochSecond());
+            return formatSearchTime(Instant.parse(trimmed));
         } catch (DateTimeParseException ignored) {
+            try {
+                return formatSearchTime(OffsetDateTime.parse(trimmed).toInstant());
+            } catch (DateTimeParseException ignoredAgain) {
+                return "";
+            }
+        }
+    }
+
+    private String formatSearchTime(Instant instant) {
+        if (instant == null) {
             return "";
         }
+        return DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(instant.truncatedTo(ChronoUnit.SECONDS).atZone(ZoneId.systemDefault()));
     }
 
     private String buildSummary(List<String> messages, List<String> docs, Set<String> sourceRefs) {
@@ -277,7 +364,19 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         return Math.min(requested, max);
     }
 
-    private String renderMessage(LarkMessageHistoryItem item) {
+    private Integer firstNonNull(Integer... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Integer value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String renderMessage(LarkMessageSearchItem item) {
         String sender = firstNonBlank(item.senderName(), item.senderId(), "未知成员");
         return sender + "：" + truncate(item.content(), 800);
     }
@@ -331,6 +430,10 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             }
         }
         return "";
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private record TimeRange(String start, String end) {
