@@ -102,7 +102,7 @@ public class DocumentAnchorResolver {
         }
         if (targetsText(action)) {
             DocumentTextAnchor textAnchor = resolveTextAnchor(snapshot, spec);
-            if (textAnchor == null || textAnchor.getMatchCount() == 0) {
+            if (textAnchor == null || textAnchor.getMatchCount() != 1) {
                 return unresolved("无法在文档中定位目标文本，请检查引用内容是否准确");
             }
             return ResolvedDocumentAnchor.builder()
@@ -155,17 +155,14 @@ public class DocumentAnchorResolver {
     private String findHeadingByTitle(DocumentStructureSnapshot snapshot, String title) {
         if (snapshot.getHeadingIndex() == null || title == null) return null;
         String normalized = normalize(title);
+        java.util.List<String> exactMatches = new java.util.ArrayList<>();
         for (Map.Entry<String, DocumentStructureNode> entry : snapshot.getHeadingIndex().entrySet()) {
             if (normalized.equals(normalize(entry.getValue().getTitleText()))) {
-                return entry.getKey();
+                exactMatches.add(entry.getKey());
             }
         }
-        // 模糊匹配
-        for (Map.Entry<String, DocumentStructureNode> entry : snapshot.getHeadingIndex().entrySet()) {
-            String t = normalize(entry.getValue().getTitleText());
-            if (t != null && (t.contains(normalized) || normalized.contains(t))) {
-                return entry.getKey();
-            }
+        if (exactMatches.size() == 1) {
+            return exactMatches.get(0);
         }
         return null;
     }
@@ -213,6 +210,14 @@ public class DocumentAnchorResolver {
                 }
             }
         }
+        if (matchCount != 1) {
+            return DocumentTextAnchor.builder()
+                    .matchedText(quoted)
+                    .matchCount(matchCount)
+                    .surroundingContext(quoted)
+                    .sourceBlockIds(List.copyOf(sourceBlockIds))
+                    .build();
+        }
         return DocumentTextAnchor.builder()
                 .matchedText(quoted)
                 .matchCount(matchCount)
@@ -229,21 +234,22 @@ public class DocumentAnchorResolver {
         if (snapshot.getBlockIndex() == null) return null;
         List<String> ordered = snapshot.getOrderedBlockIds();
         if (ordered == null) ordered = List.copyOf(snapshot.getBlockIndex().keySet());
+        java.util.List<DocumentBlockAnchor> matches = new java.util.ArrayList<>();
         for (String blockId : ordered) {
             DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
             if (isProtectedBlock(node, snapshot)) continue;
             if (node != null && node.getPlainText() != null && node.getPlainText().contains(quoted)) {
-                return DocumentBlockAnchor.builder()
+                matches.add(DocumentBlockAnchor.builder()
                         .blockId(blockId)
                         .blockType(node.getBlockType())
                         .plainText(node.getPlainText())
                         .topLevelAncestorId(node.getTopLevelAncestorId())
                         .nextBlockId(node.getNextSiblingId())
                         .prevBlockId(node.getPrevSiblingId())
-                        .build();
+                        .build());
             }
         }
-        return null;
+        return matches.size() == 1 ? matches.get(0) : null;
     }
 
     // ---- media anchor: 基于 snapshot blockIndex 的 blockType 元数据 ----
@@ -255,6 +261,7 @@ public class DocumentAnchorResolver {
         String hint = caption != null ? caption : quoted;
         List<String> ordered = snapshot.getOrderedBlockIds();
         if (ordered == null) ordered = List.copyOf(snapshot.getBlockIndex().keySet());
+        java.util.List<DocumentMediaAnchor> matches = new java.util.ArrayList<>();
         for (int i = 0; i < ordered.size(); i++) {
             String blockId = ordered.get(i);
             DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
@@ -266,15 +273,15 @@ public class DocumentAnchorResolver {
             }
             String prevId = i > 0 ? ordered.get(i - 1) : null;
             String nextId = i + 1 < ordered.size() ? ordered.get(i + 1) : null;
-            return DocumentMediaAnchor.builder()
+            matches.add(DocumentMediaAnchor.builder()
                     .blockId(blockId)
                     .mediaType(expectedType)
                     .plainText(node.getPlainText())
                     .prevBlockId(prevId)
                     .nextBlockId(nextId)
-                    .build();
+                    .build());
         }
-        return null;
+        return matches.size() == 1 ? matches.get(0) : null;
     }
 
     private boolean isMediaTypeMatch(String blockType, MediaAssetType expectedType) {
@@ -297,24 +304,25 @@ public class DocumentAnchorResolver {
         List<String> ordered = snapshot.getOrderedBlockIds();
         if (ordered == null) ordered = List.copyOf(snapshot.getBlockIndex().keySet());
         String hint = spec == null ? null : spec.getQuotedText();
+        java.util.List<DocumentBlockAnchor> matches = new java.util.ArrayList<>();
         for (int i = 0; i < ordered.size(); i++) {
             String blockId = ordered.get(i);
             if (blockId.equals(firstHeadingId)) break;
             DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
             if (isProtectedBlock(node, snapshot)) continue;
             if (node == null || node.getPlainText() == null || node.getPlainText().isBlank()) continue;
-            if (hint != null && !hint.isBlank() && !containsAnyKeyword(node.getPlainText(), hint)) continue;
+            if (hint != null && !hint.isBlank() && !node.getPlainText().contains(hint)) continue;
             String prevId = i > 0 ? ordered.get(i - 1) : null;
             String nextId = i + 1 < ordered.size() ? ordered.get(i + 1) : null;
-            return DocumentBlockAnchor.builder()
+            matches.add(DocumentBlockAnchor.builder()
                     .blockId(blockId)
                     .blockType(node.getBlockType())
                     .plainText(node.getPlainText())
                     .prevBlockId(prevId)
                     .nextBlockId(nextId)
-                    .build();
+                    .build());
         }
-        return null;
+        return matches.size() == 1 ? matches.get(0) : null;
     }
 
     // ---- helpers ----
@@ -350,17 +358,6 @@ public class DocumentAnchorResolver {
             return idx >= 0 ? idx + 1 : 0;
         }
         return 0;
-    }
-
-    private boolean containsAnyKeyword(String text, String hint) {
-        if (text == null || hint == null) return false;
-        if (text.contains(hint)) return true;
-        for (String kw : hint.split("[|，,\\s]+")) {
-            if (kw.length() >= 2 && text.contains(kw)) return true;
-        }
-        // prefix match: first 2 chars of hint
-        if (hint.length() >= 2 && text.contains(hint.substring(0, 2))) return true;
-        return false;
     }
 
     private boolean isProtectedBlock(DocumentStructureNode node, DocumentStructureSnapshot snapshot) {
