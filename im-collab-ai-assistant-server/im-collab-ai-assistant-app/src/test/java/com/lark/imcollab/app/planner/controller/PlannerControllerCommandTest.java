@@ -153,14 +153,14 @@ class PlannerControllerCommandTest {
         request.setAction("REPLAN");
         request.setVersion(1);
         request.setFeedback("change it");
-        when(plannerCommandApplicationService.replan("task-1", "change it")).thenReturn(session);
+        when(plannerCommandApplicationService.replan("task-1", "change it", null, null)).thenReturn(session);
         when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
                 "task-1", 1, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
         controller.command("task-1", request, AUTHORIZATION);
 
-        verify(plannerCommandApplicationService).replan("task-1", "change it");
+        verify(plannerCommandApplicationService).replan("task-1", "change it", null, null);
         verify(plannerCommandApplicationService, never()).resume(anyString(), anyString(), anyBoolean());
     }
 
@@ -177,7 +177,7 @@ class PlannerControllerCommandTest {
 
         when(repository.findSession("task-1")).thenReturn(Optional.of(session));
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.WAITING_APPROVAL)));
-        when(plannerCommandApplicationService.replan("task-1", "change it")).thenReturn(wrongTask);
+        when(plannerCommandApplicationService.replan("task-1", "change it", null, null)).thenReturn(wrongTask);
 
         PlanCommandRequest request = new PlanCommandRequest();
         request.setAction("REPLAN");

@@ -6,16 +6,17 @@ import com.lark.imcollab.common.utils.ResultUtils;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
 import com.lark.imcollab.planner.exception.VersionConflictException;
 import io.swagger.v3.oas.annotations.Hidden;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@Slf4j
 @Order(1)
 @RestControllerAdvice
 @Hidden
 public class PlannerExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(PlannerExceptionHandler.class);
 
     @ExceptionHandler(VersionConflictException.class)
     public BaseResponse<?> versionConflict(VersionConflictException e) {

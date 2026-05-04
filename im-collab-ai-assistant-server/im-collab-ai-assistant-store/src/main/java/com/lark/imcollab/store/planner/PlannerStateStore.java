@@ -33,6 +33,17 @@ public interface PlannerStateStore {
 
     List<TaskRecord> findTasksByOwner(String ownerOpenId, List<TaskStatusEnum> statuses, int offset, int limit);
 
+    default List<TaskRecord> findTasksByConversation(
+            String inputSource,
+            String chatId,
+            String threadId,
+            String ownerOpenId,
+            List<TaskStatusEnum> statuses,
+            int limit
+    ) {
+        return List.of();
+    }
+
     void saveStep(TaskStepRecord step);
 
     List<TaskStepRecord> findStepsByTaskId(String taskId);

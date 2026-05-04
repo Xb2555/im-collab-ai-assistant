@@ -1,11 +1,17 @@
 package com.lark.imcollab.planner.service;
 
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.PendingTaskCandidate;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -44,6 +50,41 @@ public class TaskSessionResolver {
             return;
         }
         stateStore.saveConversationTaskBinding(resolution.continuationKey(), resolution.taskId());
+    }
+
+    public List<PendingTaskCandidate> resolveCompletedCandidates(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null || !hasText(workspaceContext.getChatId()) || !hasText(workspaceContext.getSenderOpenId())) {
+            return List.of();
+        }
+        return stateStore.findTasksByConversation(
+                        workspaceContext.getInputSource(),
+                        workspaceContext.getChatId(),
+                        workspaceContext.getThreadId(),
+                        workspaceContext.getSenderOpenId(),
+                        List.of(TaskStatusEnum.COMPLETED),
+                        5
+                ).stream()
+                .map(this::toCandidate)
+                .toList();
+    }
+
+    public String conversationKey(WorkspaceContext workspaceContext) {
+        return buildConversationKey(workspaceContext);
+    }
+
+    private PendingTaskCandidate toCandidate(TaskRecord task) {
+        List<ArtifactTypeEnum> artifactTypes = stateStore.findArtifactsByTaskId(task.getTaskId()).stream()
+                .map(ArtifactRecord::getType)
+                .filter(type -> type != null)
+                .distinct()
+                .toList();
+        return PendingTaskCandidate.builder()
+                .taskId(task.getTaskId())
+                .title(task.getTitle())
+                .goal(task.getGoal())
+                .artifactTypes(artifactTypes)
+                .updatedAt(task.getUpdatedAt())
+                .build();
     }
 
     private String buildConversationKey(WorkspaceContext workspaceContext) {

@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.state.StateSnapshot;
 import com.lark.imcollab.common.domain.Approval;
+import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskEventType;
 import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionGuard;
@@ -47,13 +48,14 @@ public class DefaultPresentationExecutionService implements PresentationExecutio
     }
 
     private void runWorkflow(String taskId, String userFeedback) {
-        RunnableConfig config = RunnableConfig.builder().threadId(taskId + ":presentation").build();
+        Optional<Task> maybeTask = taskRepository.findById(taskId);
+        RunnableConfig config = RunnableConfig.builder().threadId(presentationThreadId(taskId, maybeTask)).build();
         Optional<StateSnapshot> snapshot = presentationWorkflow.stateOf(config);
         Map<String, Object> state = new HashMap<>();
         snapshot.ifPresent(s -> state.putAll(s.state().data()));
         state.put(PresentationStateKeys.TASK_ID, taskId);
         state.put(PresentationStateKeys.USER_FEEDBACK, userFeedback == null ? "" : userFeedback);
-        taskRepository.findById(taskId).ifPresent(task -> {
+        maybeTask.ifPresent(task -> {
             if (task.getRawInstruction() != null && !task.getRawInstruction().isBlank()) {
                 state.put(PresentationStateKeys.RAW_INSTRUCTION, task.getRawInstruction());
             }
@@ -71,6 +73,14 @@ public class DefaultPresentationExecutionService implements PresentationExecutio
             }
         });
         presentationWorkflow.invoke(new OverAllState(state), config);
+    }
+
+    private String presentationThreadId(String taskId, Optional<Task> maybeTask) {
+        return maybeTask
+                .map(Task::getExecutionContract)
+                .map(contract -> contract.getFrozenAt())
+                .map(frozenAt -> taskId + ":presentation:" + frozenAt.toEpochMilli())
+                .orElse(taskId + ":presentation");
     }
 
     private void runSafely(String taskId, String userFeedback, String stepId) {

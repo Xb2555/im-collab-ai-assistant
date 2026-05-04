@@ -51,4 +51,18 @@ class PlannerViewAssemblerTest {
         assertThat(preview.runtimeAvailable()).isTrue();
         assertThat(preview.transientReply()).isFalse();
     }
+
+    @Test
+    void completedPreviewCanReplanOnly() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+
+        PlanPreviewVO preview = assembler.toPlanPreview(session);
+
+        assertThat(preview.actions().canReplan()).isTrue();
+        assertThat(preview.actions().canCancel()).isFalse();
+        assertThat(preview.actions().canRetry()).isFalse();
+    }
 }

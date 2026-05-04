@@ -3,9 +3,11 @@ package com.lark.imcollab.gateway.im.service;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.PromptSlotState;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
@@ -213,6 +215,25 @@ class LarkIMTaskReplyFormatterTest {
 
         assertThat(text).contains("任务状态：已完成", "主执行链路已完成", "计划项：2 个");
         assertThat(text).doesNotContain("当前步骤：项目风险评估表", "步骤进度：1/2");
+    }
+
+    @Test
+    void completedStatusIncludesArtifactLinks() {
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(ArtifactRecord.builder()
+                        .type(ArtifactTypeEnum.PPT)
+                        .title("采购评审分析 PPT")
+                        .url("https://example.feishu.cn/slides/ppt-token")
+                        .preview("已修改 PPT 第 2 页")
+                        .build()))
+                .build();
+
+        String text = formatter.status(snapshot);
+
+        assertThat(text)
+                .contains("任务状态：已完成", "已有产物：1 个", "[PPT] 采购评审分析 PPT",
+                        "https://example.feishu.cn/slides/ppt-token");
     }
 
     @Test

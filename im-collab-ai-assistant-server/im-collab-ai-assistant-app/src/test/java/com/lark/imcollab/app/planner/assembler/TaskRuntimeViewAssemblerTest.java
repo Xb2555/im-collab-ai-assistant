@@ -25,4 +25,18 @@ class TaskRuntimeViewAssemblerTest {
         assertThat(detail.actions().canRetry()).isTrue();
         assertThat(detail.actions().canConfirm()).isFalse();
     }
+
+    @Test
+    void completedTaskCanReplanButCannotCancelOrRetry() {
+        TaskDetailVO detail = assembler.toTaskDetail(TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder()
+                        .taskId("task-1")
+                        .status(TaskStatusEnum.COMPLETED)
+                        .build())
+                .build());
+
+        assertThat(detail.actions().canReplan()).isTrue();
+        assertThat(detail.actions().canCancel()).isFalse();
+        assertThat(detail.actions().canRetry()).isFalse();
+    }
 }

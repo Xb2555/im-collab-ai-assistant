@@ -13,6 +13,12 @@ public class PlanCommandRequest {
     @Schema(description = "用户反馈（如需重规划或回答 Agent 追问）")
     private String feedback;
 
+    @Schema(description = "产物处理策略（AUTO/EDIT_EXISTING/CREATE_NEW/KEEP_EXISTING_CREATE_NEW）", example = "AUTO")
+    private String artifactPolicy;
+
+    @Schema(description = "可选：指定要调整的已有产物 ID")
+    private String targetArtifactId;
+
     @Schema(description = "任务版本号（用于冲突检测）", example = "1")
     private int version;
 }

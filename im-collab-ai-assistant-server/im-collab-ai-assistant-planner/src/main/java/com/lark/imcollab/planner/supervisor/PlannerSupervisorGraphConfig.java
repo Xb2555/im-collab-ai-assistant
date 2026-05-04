@@ -66,7 +66,10 @@ public class PlannerSupervisorGraphConfig {
         ));
         graph.addEdge("plan", "review");
         graph.addEdge("resume", "review");
-        graph.addEdge("replan", "review");
+        graph.addConditionalEdges("replan", nodes::routeAfterReplan, Map.of(
+                "REVIEW", "review",
+                "END", StateGraph.END
+        ));
         graph.addEdge("review", "gate");
         graph.addEdge("gate", "project_runtime");
         graph.addEdge("project_runtime", StateGraph.END);

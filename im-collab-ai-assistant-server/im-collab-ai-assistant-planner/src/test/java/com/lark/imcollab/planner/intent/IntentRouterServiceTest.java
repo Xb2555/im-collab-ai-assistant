@@ -206,6 +206,30 @@ class IntentRouterServiceTest {
     }
 
     @Test
+    void explicitFreshTaskInsideExistingConversationStartsNewTaskWhenModelClassifiesIt() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        PlanTaskSession session = plannedSession();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.95d,
+                "explicit fresh task with concrete deliverable",
+                "新建一个任务：生成一份6页PPT，主题执行中修改拦截验证，每页写等待提示和重跑验证。",
+                false
+        )));
+
+        TaskCommand command = service.route(
+                session,
+                "新建一个任务：生成一份6页PPT，主题执行中修改拦截验证，每页写等待提示和重跑验证。",
+                null,
+                true
+        );
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+        verify(model).classify(session, "新建一个任务：生成一份6页PPT，主题执行中修改拦截验证，每页写等待提示和重跑验证。", true);
+    }
+
+    @Test
     void taskOverviewWithMutationIntentUsesModelClassification() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         IntentRouterService service = router(model, new PlannerProperties());

@@ -3,6 +3,7 @@ package com.lark.imcollab.gateway.im.service;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.PromptSlotState;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
@@ -19,6 +20,7 @@ import java.util.List;
 public class LarkIMTaskReplyFormatter {
 
     private static final int MAX_IM_STEPS = 4;
+    private static final int MAX_IM_ARTIFACTS = 5;
     private static final int MAX_CLARIFICATION_QUESTIONS = 2;
     private static final int MAX_FAILURE_DETAIL_CHARS = 180;
 
@@ -117,8 +119,31 @@ public class LarkIMTaskReplyFormatter {
         int artifactCount = defaultList(snapshot.getArtifacts()).size();
         if (artifactCount > 0) {
             builder.append("\n已有产物：").append(artifactCount).append(" 个");
+            appendArtifactList(builder, defaultList(snapshot.getArtifacts()));
         }
         return builder.toString();
+    }
+
+    private void appendArtifactList(StringBuilder builder, List<ArtifactRecord> artifacts) {
+        int index = 1;
+        for (ArtifactRecord artifact : artifacts.stream().filter(this::visibleArtifact).limit(MAX_IM_ARTIFACTS).toList()) {
+            builder.append("\n").append(index++).append(". ");
+            if (artifact.getType() != null) {
+                builder.append("[").append(artifact.getType().name()).append("] ");
+            }
+            builder.append(firstNonBlank(artifact.getTitle(), artifact.getPreview(), "未命名产物"));
+            if (hasText(artifact.getUrl())) {
+                builder.append("\n   ").append(artifact.getUrl().trim());
+            }
+        }
+        long remaining = artifacts.stream().filter(this::visibleArtifact).count() - MAX_IM_ARTIFACTS;
+        if (remaining > 0) {
+            builder.append("\n还有 ").append(remaining).append(" 个产物可在任务工作台查看。");
+        }
+    }
+
+    private boolean visibleArtifact(ArtifactRecord artifact) {
+        return artifact != null && (hasText(artifact.getUrl()) || hasText(artifact.getTitle()) || hasText(artifact.getPreview()));
     }
 
     public String failure(PlanTaskSession session, TaskRuntimeSnapshot snapshot) {

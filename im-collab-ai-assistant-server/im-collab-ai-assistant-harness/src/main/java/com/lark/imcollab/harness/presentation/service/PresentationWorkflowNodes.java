@@ -465,11 +465,15 @@ public class PresentationWorkflowNodes {
     private int resolvePageCount(String text) {
         String normalized = normalize(text);
         Matcher matcher = PAGE_COUNT_PATTERN.matcher(text == null ? "" : text);
+        Integer requestedPageCount = null;
         while (matcher.find()) {
             int requested = Integer.parseInt(matcher.group(1));
             if (requested > 0) {
-                return Math.min(MAX_SLIDES, requested);
+                requestedPageCount = requested;
             }
+        }
+        if (requestedPageCount != null) {
+            return Math.min(MAX_SLIDES, requestedPageCount);
         }
         if (normalized.matches(".*(^|[^第每])一页(PPT|ppt|幻灯片|演示稿|$).*")
                 || normalized.matches(".*(单页|1页|1p|1slide).*")) {
