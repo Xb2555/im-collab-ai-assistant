@@ -27,6 +27,8 @@ public class ContextSourceRequest implements Serializable {
 
     private String endTime;
 
+    private String query;
+
     private List<String> docRefs;
 
     /**
@@ -37,4 +39,8 @@ public class ContextSourceRequest implements Serializable {
     private String selectionInstruction;
 
     private Integer limit;
+
+    private Integer pageSize;
+
+    private Integer pageLimit;
 }

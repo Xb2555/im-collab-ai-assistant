@@ -46,6 +46,25 @@ class ProcessCliCommandExecutorTest {
     }
 
     @Test
+    void windowsCmdExecutableWithSpacesKeepsPathAsSingleArgument() {
+        List<String> command = ProcessCliCommandExecutor.buildProcessCommand(
+                "C:\\Program Files\\nodejs\\lark-cli.cmd",
+                List.of("im", "+messages-search", "--query", "采购评审"),
+                "Windows 11"
+        );
+
+        assertThat(command).containsExactly(
+                "cmd.exe",
+                "/c",
+                "C:\\Program Files\\nodejs\\lark-cli.cmd",
+                "im",
+                "+messages-search",
+                "--query",
+                "采购评审"
+        );
+    }
+
+    @Test
     void windowsBareExecutableUsesCmdWrapperForPathResolution() {
         List<String> command = ProcessCliCommandExecutor.buildProcessCommand(
                 "lark-cli",

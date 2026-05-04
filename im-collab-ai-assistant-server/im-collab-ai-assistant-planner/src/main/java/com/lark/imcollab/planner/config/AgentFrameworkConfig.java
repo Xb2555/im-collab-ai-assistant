@@ -216,28 +216,28 @@ public class AgentFrameworkConfig {
                 .description("判断并规划 Planner 应从 IM 历史或飞书云文档读取哪些上下文")
                 .systemPrompt("""
                         你是 Planner 的上下文拉取计划子 Agent。
-                        你只判断是否需要读取外部上下文，以及应该读取 IM_HISTORY 还是 LARK_DOC。
+                        你只判断是否需要读取外部上下文，以及应该读取 IM_MESSAGE_SEARCH 还是 LARK_DOC。
                         不要生成任务计划，不要执行任务，不要回答用户。
 
                         可用来源：
-                        - IM_HISTORY：聊天或线程历史。需要 chatId 或 threadId。
+                        - IM_MESSAGE_SEARCH：聊天或线程消息检索。需要 chatId 或 threadId；可同时携带 query、timeRange、selectionInstruction。
                         - LARK_DOC：飞书云文档。需要 docRefs 中的 URL 或 token。
 
                         决策规则：
                         - selectedMessages 已经有真实材料时，needCollection=false。
-                        - 用户提到“刚才讨论/聊天记录/群里/这段对话/最近讨论”且有 chatId/threadId 时，使用 IM_HISTORY。
-                        - 用户说“刚才关于 A、B、C 的讨论”“把前面讨论的某个主题整理成文档/摘要”时，即使主题名称很明确，也不代表材料已经在当前输入里；必须先使用 IM_HISTORY 拉取相关消息。
+                        - 用户提到“刚才讨论/聊天记录/群里/这段对话/最近讨论/历史消息”且有 chatId/threadId 时，使用 IM_MESSAGE_SEARCH。
+                        - 用户说“刚才关于 A、B、C 的讨论”“把前面讨论的某个主题整理成文档/摘要”时，即使主题名称很明确，也不代表材料已经在当前输入里；必须先使用 IM_MESSAGE_SEARCH 拉取相关消息。
+                        - 如果有主题词或关键词，写入 query；如果有“最近10分钟/10分钟前/今天/昨天”等时间条件，写入 timeRange；把用户原话里的完整筛选条件写入 selectionInstruction。
                         - 如果 selectedMessages 只有当前这条指令本身，仍然视为没有真实材料。
                         - 但如果用户整句话本身已经包含任务目标、已完成事项、当前进展、风险、决策、下一步、指标、需求或资料摘录等具体事实，视为已有内联材料，needCollection=false 且不要追问外部材料。
                         - 用户提到文档、链接、根据这份材料，且 docRefs 有值时，使用 LARK_DOC。
                         - docRefs 和 chatId/threadId 都有，且任务像是综合整理，允许同时使用两个来源。
                         - 没有可用 source id/ref 时，needCollection=false，并给一个自然澄清问题。
-                        - 如果选择 IM_HISTORY，把用户原话里的筛选条件原样写入 selectionInstruction，例如时间范围、主题、必须包含/排除的内容、发送者或“找不到就反问”等约束。
                         - timeRange 尽量写成可解析格式：ISO 区间、epoch 秒区间，或简短相对范围如“最近10分钟”。
 
                         只输出 JSON：
-                        {"needCollection":true,"sources":[{"sourceType":"IM_HISTORY","chatId":"","threadId":"","timeRange":"","docRefs":[],"selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}
-                        sourceType 只能是 IM_HISTORY 或 LARK_DOC。
+                        {"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"","threadId":"","query":"","timeRange":"","docRefs":[],"selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}
+                        sourceType 只能是 IM_MESSAGE_SEARCH 或 LARK_DOC。
                         """)
                 .outputType(com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.class)
                 .model(chatModel)

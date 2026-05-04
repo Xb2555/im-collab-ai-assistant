@@ -352,6 +352,7 @@ class PlannerToolsTest {
                         .selectedMessages(List.of("A：目标是生成技术方案", "B：需要给老板看"))
                         .selectedMessageIds(List.of("om_1", "om_2"))
                         .docFragments(List.of("文档《方案》摘录：背景和目标"))
+                        .sourceRefs(List.of("im-search:chat:chat-1:query:方案"))
                         .build());
         PlannerContextAcquisitionTool tool = new PlannerContextAcquisitionTool(
                 provider,
@@ -372,6 +373,7 @@ class PlannerToolsTest {
         assertThat(merged.getSelectedMessages())
                 .contains("原始材料", "A：目标是生成技术方案", "文档《方案》摘录：背景和目标");
         assertThat(merged.getSelectedMessageIds()).containsExactly("om_1", "om_2");
+        assertThat(merged.getInputSource()).isEqualTo("im-search:chat:chat-1:query:方案");
         verify(memoryService).appendAssistantTurn(session, "已收集上下文：已读取 2 条聊天记录和 1 份文档摘录");
     }
 

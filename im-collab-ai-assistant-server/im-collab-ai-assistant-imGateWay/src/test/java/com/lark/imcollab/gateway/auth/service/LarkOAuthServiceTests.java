@@ -59,7 +59,7 @@ class LarkOAuthServiceTests {
         oauthProperties.setJwtSecret("0123456789abcdef0123456789abcdef");
         oauthProperties.setJwtTtl(Duration.ofMinutes(30));
         when(oauthClient.getAppAccessToken()).thenReturn("app-access-token");
-        when(oauthClient.exchangeAuthorizationCode("app-access-token", "code-1"))
+        when(oauthClient.exchangeAuthorizationCode(eq("app-access-token"), eq("code-1"), any()))
                 .thenReturn(new LarkOAuthTokenPayload(
                         "user-access-token",
                         7200,
