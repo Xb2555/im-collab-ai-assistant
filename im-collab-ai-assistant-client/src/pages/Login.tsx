@@ -35,7 +35,22 @@ export default function Login() {
       const platform = Capacitor.getPlatform();
       const oauthUrl = await authLauncher.getOAuthUrl();
 
+      const isTauriDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+      if (isTauriDesktop) {
+        console.info('[LOGIN_PATH] desktop-shell-open');
+        setAuthStep('opening-browser');
+        setLastOAuthUrl(oauthUrl);
+        await browserLauncher.openUrl(oauthUrl);
+        setAuthStep('waiting-return');
+        fallbackTimerRef.current = window.setTimeout(() => {
+          setShowFallback(true);
+        }, 12000);
+        return;
+      }
+
       if (platform === 'web') {
+        console.info('[LOGIN_PATH] web-window-location');
         setAuthStep('opening-browser');
         window.location.href = oauthUrl;
         return;
@@ -47,13 +62,7 @@ export default function Login() {
         return;
       }
 
-      setAuthStep('opening-browser');
-      setLastOAuthUrl(oauthUrl);
-      await browserLauncher.openUrl(oauthUrl);
-      setAuthStep('waiting-return');
-      fallbackTimerRef.current = window.setTimeout(() => {
-        setShowFallback(true);
-      }, 12000);
+      throw new Error(`未知平台: ${platform}`);
     } catch (error) {
       console.error(error);
       alert(error instanceof Error ? error.message : '获取登录二维码失败');

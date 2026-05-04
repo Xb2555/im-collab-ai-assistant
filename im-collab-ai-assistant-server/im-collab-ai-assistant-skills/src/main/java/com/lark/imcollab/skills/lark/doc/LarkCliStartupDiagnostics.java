@@ -28,12 +28,14 @@ public class LarkCliStartupDiagnostics implements ApplicationRunner {
             CliCommandResult version = larkCliClient.execute(List.of("--version"));
             CliCommandResult createHelp = larkCliClient.execute(List.of("docs", "+create", "--help"));
             CliCommandResult fetchHelp = larkCliClient.execute(List.of("docs", "+fetch", "--help"));
+            CliCommandResult messageSearchHelp = larkCliClient.execute(List.of("im", "+messages-search", "--help"));
             log.info(
-                    "Lark CLI diagnostics: executable={}, version={}, createApiVersionFlag={}, fetchApiVersionFlag={}",
+                    "Lark CLI diagnostics: executable={}, version={}, createApiVersionFlag={}, fetchApiVersionFlag={}, messageSearchSupported={}",
                     properties.getExecutable(),
                     oneLine(version.output()),
                     containsApiVersion(createHelp.output()),
-                    containsApiVersion(fetchHelp.output())
+                    containsApiVersion(fetchHelp.output()),
+                    isSuccessfulHelp(messageSearchHelp)
             );
         } catch (RuntimeException exception) {
             log.warn(
@@ -47,6 +49,10 @@ public class LarkCliStartupDiagnostics implements ApplicationRunner {
 
     private boolean containsApiVersion(String output) {
         return output != null && output.contains("--api-version");
+    }
+
+    private boolean isSuccessfulHelp(CliCommandResult result) {
+        return result != null && result.isSuccess() && result.output() != null && result.output().contains("+messages-search");
     }
 
     private String oneLine(String value) {

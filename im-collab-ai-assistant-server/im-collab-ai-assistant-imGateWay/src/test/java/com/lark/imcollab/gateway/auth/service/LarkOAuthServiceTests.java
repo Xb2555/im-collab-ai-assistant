@@ -53,45 +53,45 @@ class LarkOAuthServiceTests {
         assertThat(uri).doesNotContain("app_id=");
     }
 
-//    @Test
-//    void shouldReturnOpenIdAfterCallbackAndMeLookup() {
-//        appProperties.setAppSecret("app-secret");
-//        oauthProperties.setJwtSecret("0123456789abcdef0123456789abcdef");
-//        oauthProperties.setJwtTtl(Duration.ofMinutes(30));
-//        when(oauthClient.getAppAccessToken()).thenReturn("app-access-token");
-//        when(oauthClient.exchangeAuthorizationCode("app-access-token", "code-1"))
-//                .thenReturn(new LarkOAuthTokenPayload(
-//                        "user-access-token",
-//                        7200,
-//                        "refresh-token",
-//                        86400,
-//                        "Bearer",
-//                        "scope",
-//                        "ou_current",
-//                        "on_union",
-//                        "user_id",
-//                        "tenant_key",
-//                        "张三",
-//                        "https://avatar.example/zhang.png"
-//                ));
-//
-//        LarkAuthTokenResponse response = service.completeLogin("code-1", null);
-//
-//        assertThat(response.user().openId()).isEqualTo("ou_current");
-//
-//        ArgumentCaptor<LarkOAuthLoginSession> sessionCaptor = ArgumentCaptor.forClass(LarkOAuthLoginSession.class);
-//        org.mockito.Mockito.verify(redisJsonStore).set(
-//                org.mockito.ArgumentMatchers.startsWith("imcollab:auth:lark:session:"),
-//                sessionCaptor.capture(),
-//                any()
-//        );
-//        when(redisJsonStore.get(any(), eq(LarkOAuthLoginSession.class)))
-//                .thenReturn(Optional.of(sessionCaptor.getValue()));
-//
-//        Optional<LarkFrontendUserResponse> currentUser =
-//                service.findCurrentUserByBusinessToken(response.accessToken());
-//
-//        assertThat(currentUser).isPresent();
-//        assertThat(currentUser.get().openId()).isEqualTo("ou_current");
-//    }
+    @Test
+    void shouldReturnOpenIdAfterCallbackAndMeLookup() {
+        appProperties.setAppSecret("app-secret");
+        oauthProperties.setJwtSecret("0123456789abcdef0123456789abcdef");
+        oauthProperties.setJwtTtl(Duration.ofMinutes(30));
+        when(oauthClient.getAppAccessToken()).thenReturn("app-access-token");
+        when(oauthClient.exchangeAuthorizationCode(eq("app-access-token"), eq("code-1"), any()))
+                .thenReturn(new LarkOAuthTokenPayload(
+                        "user-access-token",
+                        7200,
+                        "refresh-token",
+                        86400,
+                        "Bearer",
+                        "scope",
+                        "ou_current",
+                        "on_union",
+                        "user_id",
+                        "tenant_key",
+                        "张三",
+                        "https://avatar.example/zhang.png"
+                ));
+
+        LarkAuthTokenResponse response = service.completeLogin("code-1", null);
+
+        assertThat(response.user().openId()).isEqualTo("ou_current");
+
+        ArgumentCaptor<LarkOAuthLoginSession> sessionCaptor = ArgumentCaptor.forClass(LarkOAuthLoginSession.class);
+        org.mockito.Mockito.verify(redisJsonStore).set(
+                org.mockito.ArgumentMatchers.startsWith("imcollab:auth:lark:session:"),
+                sessionCaptor.capture(),
+                any()
+        );
+        when(redisJsonStore.get(any(), eq(LarkOAuthLoginSession.class)))
+                .thenReturn(Optional.of(sessionCaptor.getValue()));
+
+        Optional<LarkFrontendUserResponse> currentUser =
+                service.findCurrentUserByBusinessToken(response.accessToken());
+
+        assertThat(currentUser).isPresent();
+        assertThat(currentUser.get().openId()).isEqualTo("ou_current");
+    }
 }

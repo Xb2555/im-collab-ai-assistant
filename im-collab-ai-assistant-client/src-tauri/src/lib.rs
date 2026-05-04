@@ -5,6 +5,7 @@ use tauri::{Manager, Emitter}; // ✨ 必须引入 Emitter 才能发事件
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_deep_link::init())
+    .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
         // 1. 把原来的窗口拽到最前面
         if let Some(window) = app.get_webview_window("main") {

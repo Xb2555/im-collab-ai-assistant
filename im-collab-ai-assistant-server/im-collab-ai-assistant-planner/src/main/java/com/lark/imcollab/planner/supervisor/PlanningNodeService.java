@@ -181,11 +181,14 @@ public class PlanningNodeService {
                 || hasText(workspaceContext == null ? null : workspaceContext.getThreadId()))
                 && hasIntentSourceRequest(intentScope)) {
             sources.add(ContextSourceRequest.builder()
-                    .sourceType(ContextSourceTypeEnum.IM_HISTORY)
+                    .sourceType(ContextSourceTypeEnum.IM_MESSAGE_SEARCH)
                     .chatId(workspaceContext == null ? "" : workspaceContext.getChatId())
                     .threadId(workspaceContext == null ? "" : workspaceContext.getThreadId())
                     .timeRange(firstNonBlank(intentScope.getTimeRange(), intentSnapshot.getTimeRange(), workspaceContext == null ? null : workspaceContext.getTimeRange()))
+                    .query(ContextNodeService.extractSearchQuery(rawInstruction))
                     .selectionInstruction(rawInstruction)
+                    .pageSize(50)
+                    .pageLimit(5)
                     .build());
         }
         if (intentScope.getDocRefs() != null && !intentScope.getDocRefs().isEmpty()) {
@@ -223,7 +226,26 @@ public class PlanningNodeService {
         WorkspaceContext sourceScope = blueprint.getSourceScope();
         if (sourceScope == null || !hasWorkspaceContextMaterial(sourceScope)) {
             blueprint.setSourceScope(workspaceContext);
+            return;
         }
+        if ((sourceScope.getSelectedMessages() == null || sourceScope.getSelectedMessages().isEmpty())
+                && workspaceContext.getSelectedMessages() != null
+                && !workspaceContext.getSelectedMessages().isEmpty()) {
+            sourceScope.setSelectedMessages(workspaceContext.getSelectedMessages());
+        }
+        if ((sourceScope.getSelectedMessageIds() == null || sourceScope.getSelectedMessageIds().isEmpty())
+                && workspaceContext.getSelectedMessageIds() != null
+                && !workspaceContext.getSelectedMessageIds().isEmpty()) {
+            sourceScope.setSelectedMessageIds(workspaceContext.getSelectedMessageIds());
+        }
+        if ((!hasText(sourceScope.getInputSource()) || isCollectedImSource(workspaceContext.getInputSource()))
+                && hasText(workspaceContext.getInputSource())) {
+            sourceScope.setInputSource(workspaceContext.getInputSource());
+        }
+    }
+
+    private boolean isCollectedImSource(String inputSource) {
+        return hasText(inputSource) && normalize(inputSource).startsWith("im-search");
     }
 
     private void normalizeCollectedContextWording(PlanBlueprint blueprint, WorkspaceContext workspaceContext) {
