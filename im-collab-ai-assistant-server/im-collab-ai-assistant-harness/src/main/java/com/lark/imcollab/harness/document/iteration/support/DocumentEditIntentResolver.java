@@ -26,11 +26,13 @@ import java.util.stream.Collectors;
 @Component
 public class DocumentEditIntentResolver {
 
-    private static final Pattern SECTION_ORDINAL_PATTERN = Pattern.compile("(?:^|\\s)(?:\\d+(?:\\.\\d+)*|第[一二三四五六七八九十百千万0-9]+[章节部分])");
+    private static final Pattern SECTION_ORDINAL_PATTERN = Pattern.compile("(?:^|\\s)(?:\\d+(?:\\.\\d+)*|第[一二三四五六七八九十百千万0-9]+[章节部分](?:第[一二三四五六七八九十百千万0-9]+[章节部分])*)");
     private static final Pattern SECTION_CONTENT_REFERENCE_PATTERN = Pattern.compile("(章节|小节|部分|段落|标题|内容|正文|数据|表述)");
     private static final Pattern SECTION_ACTION_MARKER_PATTERN = Pattern.compile("(给出|补充|增加|新增|插入|改写|修改|更新|替换|删除|移到|移动|调整|优化|展开|说明|完善|重写)");
     private static final Pattern DECIMAL_SECTION_HEADING_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)\\s*([^，。；,;\\n]+)");
+    private static final Pattern DECIMAL_SECTION_PATH_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)");
     private static final Pattern CHINESE_SECTION_ORDINAL_PATTERN = Pattern.compile("第([一二三四五六七八九十百千万0-9]+)(章|节|部分)");
+    private static final Pattern CHINESE_SECTION_PATH_PATTERN = Pattern.compile("(第[一二三四五六七八九十百千万0-9]+[章节部分](?:第[一二三四五六七八九十百千万0-9]+[章节部分])*)");
 
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
@@ -364,6 +366,12 @@ public class DocumentEditIntentResolver {
                     .headingTitle(sectionReference.headingTitle())
                     .build();
         }
+        if (hasText(sectionReference.outlinePath())) {
+            return builder
+                    .matchMode(DocumentAnchorMatchMode.BY_OUTLINE_PATH)
+                    .outlinePath(sectionReference.outlinePath())
+                    .build();
+        }
         return builder
                 .matchMode(DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL)
                 .structuralOrdinal(sectionReference.structuralOrdinal())
@@ -380,7 +388,29 @@ public class DocumentEditIntentResolver {
             String headingSuffix = normalizeSectionHeadingSuffix(decimalMatcher.group(2));
             if (hasText(headingSuffix)) {
                 String headingTitle = (decimalMatcher.group(1) + " " + headingSuffix).trim();
-                return new SectionReference(headingTitle, null, null);
+                return new SectionReference(headingTitle, null, null, null);
+            }
+        }
+        java.util.regex.Matcher decimalPathMatcher = DECIMAL_SECTION_PATH_PATTERN.matcher(instruction);
+        if (decimalPathMatcher.find()) {
+            String path = decimalPathMatcher.group(1);
+            if (path.contains(".")) {
+                if (path.chars().filter(ch -> ch == '.').count() >= 2) {
+                    return new SectionReference(null, null, null, path);
+                }
+                String[] parts = path.split("\\.");
+                String scope = parts.length == 2 ? "SUB_SECTION" : "TOP_LEVEL_SECTION";
+                Integer ordinal = toInt(parts[parts.length - 1]);
+                if (ordinal != null) {
+                    return new SectionReference(null, ordinal, scope, null);
+                }
+            }
+        }
+        java.util.regex.Matcher chinesePathMatcher = CHINESE_SECTION_PATH_PATTERN.matcher(instruction);
+        if (chinesePathMatcher.find()) {
+            String path = normalizeChineseSectionPath(chinesePathMatcher.group(1));
+            if (hasText(path) && path.contains("/")) {
+                return new SectionReference(null, null, null, path);
             }
         }
         java.util.regex.Matcher chineseMatcher = CHINESE_SECTION_ORDINAL_PATTERN.matcher(instruction);
@@ -388,7 +418,7 @@ public class DocumentEditIntentResolver {
             Integer ordinal = parseChineseOrArabicOrdinal(chineseMatcher.group(1));
             if (ordinal != null) {
                 String scope = "章".equals(chineseMatcher.group(2)) ? "TOP_LEVEL_SECTION" : "SUB_SECTION";
-                return new SectionReference(null, ordinal, scope);
+                return new SectionReference(null, ordinal, scope, null);
             }
         }
         return null;
@@ -430,6 +460,23 @@ public class DocumentEditIntentResolver {
         normalized = normalized.replaceFirst("的(数据|内容|正文|表述|描述|部分).*$", "").trim();
         normalized = normalized.replaceAll("[的:：，。；,;]+$", "").trim();
         return normalized.isEmpty() ? null : normalized;
+    }
+
+    private String normalizeChineseSectionPath(String rawPath) {
+        if (!hasText(rawPath)) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = CHINESE_SECTION_ORDINAL_PATTERN.matcher(rawPath);
+        java.util.List<String> segments = new java.util.ArrayList<>();
+        while (matcher.find()) {
+            Integer ordinal = parseChineseOrArabicOrdinal(matcher.group(1));
+            if (ordinal == null) {
+                return null;
+            }
+            String unit = matcher.group(2);
+            segments.add("第" + ordinal + unit);
+        }
+        return segments.isEmpty() ? null : String.join("/", segments);
     }
 
     private boolean expectsSectionAnchor(DocumentSemanticActionType semanticAction) {
@@ -501,6 +548,7 @@ public class DocumentEditIntentResolver {
         return value != null && !value.isBlank();
     }
 
-    private record SectionReference(String headingTitle, Integer structuralOrdinal, String structuralOrdinalScope) {
+    private record SectionReference(String headingTitle, Integer structuralOrdinal, String structuralOrdinalScope,
+                                    String outlinePath) {
     }
 }

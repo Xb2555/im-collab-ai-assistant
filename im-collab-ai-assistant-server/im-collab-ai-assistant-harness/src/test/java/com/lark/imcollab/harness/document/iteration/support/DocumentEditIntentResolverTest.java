@@ -273,4 +273,86 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
         assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.3 客源市场结构");
     }
+
+    @Test
+    void chineseCompositeSectionReferenceNormalizesToOutlinePath() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_SINGLE_BLOCK",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "BLOCK",
+                    "matchMode": "BY_QUOTED_TEXT",
+                    "quotedText": "这一节内容"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("把第3章第2节展开说明");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_OUTLINE_PATH);
+        assertThat(intent.getAnchorSpec().getOutlinePath()).isEqualTo("第3章/第2节");
+    }
+
+    @Test
+    void chineseSingleSectionReferenceUsesStructuralOrdinal() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_SINGLE_BLOCK",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "BLOCK",
+                    "matchMode": "BY_QUOTED_TEXT",
+                    "quotedText": "这一章内容"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("补充第3章的数据说明");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL);
+        assertThat(intent.getAnchorSpec().getStructuralOrdinal()).isEqualTo(3);
+        assertThat(intent.getAnchorSpec().getStructuralOrdinalScope()).isEqualTo("TOP_LEVEL_SECTION");
+    }
+
+    @Test
+    void decimalThreeLevelReferenceNormalizesToOutlinePath() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_SINGLE_BLOCK",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "BLOCK",
+                    "matchMode": "BY_QUOTED_TEXT",
+                    "quotedText": "对应小节内容"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("补充1.2.3的数据说明");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_OUTLINE_PATH);
+        assertThat(intent.getAnchorSpec().getOutlinePath()).isEqualTo("1.2.3");
+    }
 }
