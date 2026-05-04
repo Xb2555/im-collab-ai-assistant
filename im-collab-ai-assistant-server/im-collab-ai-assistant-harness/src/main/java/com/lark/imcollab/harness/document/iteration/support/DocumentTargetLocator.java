@@ -156,7 +156,9 @@ public class DocumentTargetLocator {
         LarkDocFetchResult outline = larkDocTool.fetchDocOutline(docRef);
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(outline.getContent());
         String query = hasText(decision.locatorValue()) ? decision.locatorValue() : instruction;
-        List<DocumentStructureParser.HeadingBlock> matches = structureParser.matchHeadings(query, headings);
+        List<DocumentStructureParser.HeadingBlock> matches = headings.stream()
+                .filter(h -> h.getText() != null && (h.getText().contains(query) || query.contains(h.getText())))
+                .toList();
         HeadingGranularity expectedGranularity = determineExpectedHeadingGranularity(instruction, headings);
         if (matches.isEmpty()) {
             DocumentStructureParser.HeadingBlock modelSelectedHeading = selectHeadingByModel(instruction, headings, expectedGranularity);

@@ -2,6 +2,7 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.DocumentPatchOperation;
+import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
 import com.lark.imcollab.skills.lark.doc.LarkDocBlockRef;
 import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.doc.LarkDocUpdateResult;
@@ -30,6 +31,24 @@ public class DocumentPatchExecutor {
         long afterRevision = -1L;
         List<String> lastNewBlockIds = List.of();
         for (DocumentPatchOperation operation : plan.getPatchOperations()) {
+            if (operation.getOperationType() == DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER) {
+                if (lastNewBlockIds.isEmpty()) continue;
+                String targetBlockId = operation.getTargetBlockId();
+                String currentTarget = targetBlockId;
+                for (String blockId : lastNewBlockIds) {
+                    LarkDocUpdateResult moveResult = larkDocTool.updateByCommand(
+                            docRef, "block_move_after", null, null, blockId, currentTarget, null);
+                    if (!moveResult.isSuccess()) {
+                        throw new IllegalStateException("block_group_move_after 失败: blockId=" + blockId + ", msg=" + moveResult.getMessage());
+                    }
+                    long rev = moveResult.getRevisionId();
+                    if (beforeRevision < 0) beforeRevision = rev;
+                    afterRevision = rev;
+                    currentTarget = blockId;
+                    modifiedBlocks.add(blockId);
+                }
+                continue;
+            }
             operation = resolveNewBlockPlaceholder(operation, lastNewBlockIds);
             LarkDocUpdateResult result = switch (operation.getOperationType()) {
                 case STR_REPLACE -> larkDocTool.updateByCommand(

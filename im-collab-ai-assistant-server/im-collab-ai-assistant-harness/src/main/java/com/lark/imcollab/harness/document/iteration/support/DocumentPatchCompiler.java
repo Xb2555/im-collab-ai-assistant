@@ -74,9 +74,9 @@ public class DocumentPatchCompiler {
         List<DocumentPatchOperation> ops = new ArrayList<>();
         ops.add(appendOp(generated, "先追加到文末，后续 move 到文首"));
         String prevId = sectionAnchor.getPrevTopLevelSectionId();
-        if (prevId != null) ops.add(moveAfterOp("__new__", prevId, "移到首章节之前"));
+        if (prevId != null) ops.add(groupMoveAfterOp("__new_group__", prevId, "整组移到首章节之前"));
         return base(taskId, intent, snapshot, anchor, strategy)
-                .reasoningSummary("文首插入：append + block_move_after")
+                .reasoningSummary("文首插入：append + block_group_move_after")
                 .generatedContent(generated)
                 .toolCommandType(DocumentPatchOperationType.APPEND)
                 .requiresApproval(true)
@@ -450,6 +450,14 @@ public class DocumentPatchCompiler {
         return DocumentPatchOperation.builder()
                 .operationType(DocumentPatchOperationType.BLOCK_MOVE_AFTER)
                 .blockId(blockId).targetBlockId(targetBlockId)
+                .justification(justification)
+                .build();
+    }
+
+    private DocumentPatchOperation groupMoveAfterOp(String groupPlaceholder, String targetBlockId, String justification) {
+        return DocumentPatchOperation.builder()
+                .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
+                .blockId(groupPlaceholder).targetBlockId(targetBlockId)
                 .justification(justification)
                 .build();
     }
