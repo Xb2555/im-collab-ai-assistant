@@ -16,7 +16,9 @@ import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.store.planner.PlannerStateStore;
+import org.springframework.beans.BeanUtils;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -26,6 +28,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PlannerSessionServiceTest {
 
@@ -36,12 +39,30 @@ class PlannerSessionServiceTest {
 
         service.saveWithoutVersionChange(session);
         assertThat(session.getVersion()).isZero();
+        assertThat(session.getStateRevision()).isEqualTo(1);
 
         service.save(session);
         assertThat(session.getVersion()).isEqualTo(1);
+        assertThat(session.getStateRevision()).isEqualTo(2);
 
         service.saveWithoutVersionChange(session);
         assertThat(session.getVersion()).isEqualTo(1);
+        assertThat(session.getStateRevision()).isEqualTo(3);
+    }
+
+    @Test
+    void staleSessionSaveFailsWhenStateRevisionHasMoved() {
+        InMemoryStore store = new InMemoryStore();
+        PlannerSessionService service = new PlannerSessionService(store, new PlannerProperties());
+        PlanTaskSession first = service.getOrCreate("task-1");
+        PlanTaskSession stale = service.get("task-1");
+
+        service.saveWithoutVersionChange(first);
+
+        assertThatThrownBy(() -> service.saveWithoutVersionChange(stale))
+                .isInstanceOf(VersionConflictException.class)
+                .hasMessageContaining("expectedStateRevision=0");
+        assertThat(stale.getStateRevision()).isZero();
     }
 
     @Test
@@ -115,12 +136,29 @@ class PlannerSessionServiceTest {
 
         @Override
         public void saveSession(PlanTaskSession session) {
-            sessions.put(session.getTaskId(), session);
+            sessions.put(session.getTaskId(), copy(session));
+        }
+
+        @Override
+        public boolean saveSessionIfStateRevision(PlanTaskSession session, long expectedStateRevision) {
+            PlanTaskSession current = sessions.get(session.getTaskId());
+            if (current == null) {
+                if (expectedStateRevision != 0L) {
+                    return false;
+                }
+                sessions.put(session.getTaskId(), copy(session));
+                return true;
+            }
+            if (current.getStateRevision() != expectedStateRevision) {
+                return false;
+            }
+            sessions.put(session.getTaskId(), copy(session));
+            return true;
         }
 
         @Override
         public Optional<PlanTaskSession> findSession(String taskId) {
-            return Optional.ofNullable(sessions.get(taskId));
+            return Optional.ofNullable(sessions.get(taskId)).map(InMemoryStore::copy);
         }
 
         @Override public Optional<String> findConversationTaskId(String conversationKey) { return Optional.empty(); }
@@ -143,6 +181,12 @@ class PlannerSessionServiceTest {
         @Override public Optional<TaskSubmissionResult> findSubmission(String taskId, String agentTaskId) { return Optional.empty(); }
         @Override public void saveEvaluation(TaskResultEvaluation evaluation) {}
         @Override public Optional<TaskResultEvaluation> findEvaluation(String taskId, String agentTaskId) { return Optional.empty(); }
+
+        private static PlanTaskSession copy(PlanTaskSession session) {
+            PlanTaskSession copy = new PlanTaskSession();
+            BeanUtils.copyProperties(session, copy);
+            return copy;
+        }
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

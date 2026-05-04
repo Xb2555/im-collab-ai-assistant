@@ -76,8 +76,8 @@ class PlannerCommandApplicationServiceTest {
 
         org.assertj.core.api.Assertions.assertThat(result).isSameAs(aborted);
         InOrder inOrder = inOrder(taskCommandFacade, sessionService, taskRuntimeService);
-        inOrder.verify(taskCommandFacade).cancelExecution("task-1");
         inOrder.verify(sessionService).markAborted("task-1", "User cancelled from GUI command");
+        inOrder.verify(taskCommandFacade).cancelExecution("task-1");
         inOrder.verify(taskRuntimeService).projectPhaseTransition(
                 "task-1",
                 PlanningPhaseEnum.ABORTED,
