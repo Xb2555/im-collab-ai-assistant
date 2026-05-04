@@ -6,7 +6,7 @@ import { Browser } from '@capacitor/browser';
  * 判断当前是否运行在 Tauri (桌面端) 环境中
  */
 const isTauriEnvironment = (): boolean => {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 };
 
 export const browserLauncher = {
@@ -34,12 +34,16 @@ export const browserLauncher = {
       // 拉起用户电脑默认的浏览器 (如 Chrome/Edge) 或飞书桌面端协议。
       if (isTauriEnvironment()) {
         try {
-          // 动态导入，防止纯 Web 端编译时找不到 @tauri-apps/api 报错
+          console.info('[browserLauncher] Tauri 环境，尝试通过 shell.open 拉起外部浏览器:', url);
           const { open } = await import('@tauri-apps/plugin-shell');
           await open(url);
+          console.info('[browserLauncher] shell.open 调用成功');
           return;
         } catch (e) {
-          console.warn('Tauri shell open failed, falling back to window.open', e);
+          console.error('[browserLauncher] Tauri shell.open 调用失败（不会回退到当前窗口）:', e);
+          throw new Error('桌面端无法拉起系统浏览器，请检查系统默认浏览器或 Tauri shell 权限', {
+            cause: e,
+          });
         }
       }
 
@@ -49,8 +53,10 @@ export const browserLauncher = {
       
     } catch (error) {
       console.error('拉起外部链接失败:', error);
-      // 极端异常兜底
-      window.open(url, '_blank');
+      const message = error instanceof Error ? error.message : '未知错误';
+      throw new Error(`拉起授权页失败: ${message}`, {
+        cause: error,
+      });
     }
   }
 };
