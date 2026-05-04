@@ -2,14 +2,14 @@ package com.lark.imcollab.common.model.entity;
 
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
-import java.util.Map;
-import com.lark.imcollab.common.model.entity.MediaAssetSpec;
+import java.util.List;
 
 @Data
 @Builder
@@ -19,6 +19,11 @@ public class DocumentEditIntent implements Serializable {
     private DocumentIterationIntentType intentType;
     private DocumentSemanticActionType semanticAction;
     private String userInstruction;
-    private Map<String, String> parameters;
+    private DocumentAnchorSpec anchorSpec;
+    private DocumentRewriteSpec rewriteSpec;
     private MediaAssetSpec assetSpec;
+    private boolean clarificationNeeded;
+    private String clarificationHint;
+    private DocumentRiskLevel riskLevel;
+    private List<String> riskHints;
 }

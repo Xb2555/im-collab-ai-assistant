@@ -2,7 +2,6 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
-import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
@@ -16,31 +15,45 @@ class DocumentEditIntentResolverTest {
 
     @Test
     void deleteAuthorInfoAtDocumentHeadUsesMetadataDeleteAction() {
-        DocumentIterationIntentService intentService = mock(DocumentIterationIntentService.class);
         ChatModel chatModel = mock(ChatModel.class);
-        when(intentService.resolve("删除开头的作者信息")).thenReturn(DocumentIterationIntentType.DELETE);
         when(chatModel.call(anyString())).thenReturn("""
-                {"targetRegion":"document_head","targetSemantic":"metadata","targetKeywords":["作者信息"]}
+                {
+                  "intentType": "DELETE",
+                  "semanticAction": "DELETE_METADATA_AT_DOCUMENT_HEAD",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "DOCUMENT_HEAD",
+                    "matchMode": "DOC_START",
+                    "quotedText": "作者信息"
+                  }
+                }
                 """);
-        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(intentService, chatModel, new ObjectMapper());
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
 
         DocumentEditIntent intent = resolver.resolve("删除开头的作者信息");
 
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.DELETE_METADATA_AT_DOCUMENT_HEAD);
-        assertThat(intent.getParameters().get("targetRegion")).isEqualTo("document_head");
-        assertThat(intent.getParameters().get("targetSemantic")).isEqualTo("metadata");
-        assertThat(intent.getParameters().get("targetKeywords")).isEqualTo("作者信息");
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getQuotedText()).isEqualTo("作者信息");
     }
 
     @Test
-    void genericDeleteSentenceFallsBackToInlineDeleteInsteadOfBlockDelete() {
-        DocumentIterationIntentService intentService = mock(DocumentIterationIntentService.class);
+    void genericDeleteSentenceFallsBackToInlineDelete() {
         ChatModel chatModel = mock(ChatModel.class);
-        when(intentService.resolve("删除这句话")).thenReturn(DocumentIterationIntentType.DELETE);
         when(chatModel.call(anyString())).thenReturn("""
-                {"targetRegion":"inline","targetSemantic":"paragraph","targetKeywords":["这句话"]}
+                {
+                  "intentType": "DELETE",
+                  "semanticAction": "DELETE_INLINE_TEXT",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "TEXT",
+                    "matchMode": "BY_QUOTED_TEXT",
+                    "quotedText": "这句话"
+                  }
+                }
                 """);
-        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(intentService, chatModel, new ObjectMapper());
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
 
         DocumentEditIntent intent = resolver.resolve("删除这句话");
 
@@ -49,16 +62,35 @@ class DocumentEditIntentResolverTest {
 
     @Test
     void rewriteMetadataAtHeadUsesDedicatedSemanticAction() {
-        DocumentIterationIntentService intentService = mock(DocumentIterationIntentService.class);
         ChatModel chatModel = mock(ChatModel.class);
-        when(intentService.resolve("修改文章开头的作者信息为李四")).thenReturn(DocumentIterationIntentType.UPDATE_CONTENT);
         when(chatModel.call(anyString())).thenReturn("""
-                {"targetRegion":"document_head","targetSemantic":"metadata","targetKeywords":["作者信息","作者"]}
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_METADATA_AT_DOCUMENT_HEAD",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "DOCUMENT_HEAD",
+                    "matchMode": "DOC_START",
+                    "quotedText": "作者"
+                  }
+                }
                 """);
-        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(intentService, chatModel, new ObjectMapper());
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
 
         DocumentEditIntent intent = resolver.resolve("修改文章开头的作者信息为李四");
 
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_METADATA_AT_DOCUMENT_HEAD);
+    }
+
+    @Test
+    void llmParseFailureReturnsClarificationNeeded() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("not valid json");
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("做点什么");
+
+        assertThat(intent.isClarificationNeeded()).isTrue();
+        assertThat(intent.getClarificationHint()).isNotBlank();
     }
 }

@@ -2,9 +2,14 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.entity.DocumentAnchorSpec;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.DocumentRewriteSpec;
 import com.lark.imcollab.common.model.entity.MediaAssetSpec;
+import com.lark.imcollab.common.model.enums.DocumentAnchorKind;
+import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
+import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.MediaAssetSourceType;
 import com.lark.imcollab.common.model.enums.MediaAssetType;
@@ -12,82 +17,158 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
-import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 @Component
 public class DocumentEditIntentResolver {
 
-    private final DocumentIterationIntentService intentService;
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
 
-    public DocumentEditIntentResolver(
-            DocumentIterationIntentService intentService,
-            ChatModel chatModel,
-            ObjectMapper objectMapper
-    ) {
-        this.intentService = intentService;
+    public DocumentEditIntentResolver(ChatModel chatModel, ObjectMapper objectMapper) {
         this.chatModel = chatModel;
         this.objectMapper = objectMapper;
     }
 
     public DocumentEditIntent resolve(String instruction) {
-        DocumentIterationIntentType intentType = intentService.resolve(instruction);
-        Map<String, String> parameters = extractParameters(instruction, intentType);
-        DocumentSemanticActionType semanticAction = resolveSemanticActionViaLlm(instruction, intentType);
-        MediaAssetSpec assetSpec = isMediaIntent(intentType) ? resolveAssetSpec(instruction, semanticAction) : null;
+        try {
+            String response = chatModel.call(buildPrompt(instruction));
+            Map<String, Object> payload = objectMapper.readValue(response.trim(), new TypeReference<>() {});
+            return fromPayload(instruction, payload);
+        } catch (Exception e) {
+            return DocumentEditIntent.builder()
+                    .userInstruction(instruction)
+                    .clarificationNeeded(true)
+                    .clarificationHint("意图解析失败，请重新描述：" + e.getMessage())
+                    .build();
+        }
+    }
+
+    private DocumentEditIntent fromPayload(String instruction, Map<String, Object> p) {
+        DocumentIterationIntentType intentType = parseEnum(DocumentIterationIntentType.class, str(p.get("intentType")));
+        DocumentSemanticActionType semanticAction = parseEnum(DocumentSemanticActionType.class, str(p.get("semanticAction")));
+        boolean clarificationNeeded = Boolean.TRUE.equals(p.get("clarificationNeeded"));
+        String clarificationHint = str(p.get("clarificationHint"));
+        DocumentRiskLevel riskLevel = parseEnum(DocumentRiskLevel.class, str(p.get("riskLevel")));
+
+        DocumentAnchorSpec anchorSpec = null;
+        if (p.get("anchorSpec") instanceof Map<?, ?> anchorMap) {
+            anchorSpec = DocumentAnchorSpec.builder()
+                    .anchorKind(parseEnum(DocumentAnchorKind.class, str(anchorMap.get("anchorKind"))))
+                    .matchMode(parseEnum(DocumentAnchorMatchMode.class, str(anchorMap.get("matchMode"))))
+                    .headingTitle(str(anchorMap.get("headingTitle")))
+                    .outlinePath(str(anchorMap.get("outlinePath")))
+                    .structuralOrdinal(toInt(anchorMap.get("structuralOrdinal")))
+                    .structuralOrdinalScope(str(anchorMap.get("structuralOrdinalScope")))
+                    .quotedText(str(anchorMap.get("quotedText")))
+                    .mediaCaption(str(anchorMap.get("mediaCaption")))
+                    .build();
+        }
+
+        DocumentRewriteSpec rewriteSpec = null;
+        if (p.get("rewriteSpec") instanceof Map<?, ?> rwMap) {
+            rewriteSpec = DocumentRewriteSpec.builder()
+                    .targetContent(str(rwMap.get("targetContent")))
+                    .styleOnly(Boolean.TRUE.equals(rwMap.get("styleOnly")))
+                    .newContent(str(rwMap.get("newContent")))
+                    .build();
+        }
+
+        MediaAssetSpec assetSpec = null;
+        if (p.get("assetSpec") instanceof Map<?, ?> assetMap) {
+            MediaAssetType assetType = parseEnum(MediaAssetType.class, str(assetMap.get("assetType")));
+            if (assetType != null) {
+                assetSpec = MediaAssetSpec.builder()
+                        .assetType(assetType)
+                        .sourceType(parseEnum(MediaAssetSourceType.class, str(assetMap.get("sourceType"))))
+                        .sourceRef(str(assetMap.get("sourceRef")))
+                        .caption(str(assetMap.get("caption")))
+                        .altText(str(assetMap.get("altText")))
+                        .generationPrompt(str(assetMap.get("generationPrompt")))
+                        .build();
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        List<String> riskHints = p.get("riskHints") instanceof List<?> list
+                ? (List<String>) list : List.of();
+
+        if (intentType == null || semanticAction == null) {
+            clarificationNeeded = true;
+            if (clarificationHint == null || clarificationHint.isBlank()) {
+                clarificationHint = "无法识别操作类型，请更明确地描述要对文档做什么";
+            }
+        }
+
         return DocumentEditIntent.builder()
                 .intentType(intentType)
                 .semanticAction(semanticAction)
                 .userInstruction(instruction)
-                .parameters(parameters)
+                .anchorSpec(anchorSpec)
+                .rewriteSpec(rewriteSpec)
                 .assetSpec(assetSpec)
+                .clarificationNeeded(clarificationNeeded)
+                .clarificationHint(clarificationHint)
+                .riskLevel(riskLevel)
+                .riskHints(riskHints)
                 .build();
     }
 
-    private boolean isMediaIntent(DocumentIterationIntentType intentType) {
-        return intentType == DocumentIterationIntentType.INSERT_MEDIA
-                || intentType == DocumentIterationIntentType.ADJUST_LAYOUT;
-    }
+    private String buildPrompt(String instruction) {
+        String intentTypes = Arrays.stream(DocumentIterationIntentType.values()).map(Enum::name).collect(Collectors.joining("|"));
+        String semanticActions = Arrays.stream(DocumentSemanticActionType.values()).map(Enum::name).collect(Collectors.joining("|"));
+        String anchorKinds = Arrays.stream(DocumentAnchorKind.values()).map(Enum::name).collect(Collectors.joining("|"));
+        String matchModes = Arrays.stream(DocumentAnchorMatchMode.values()).map(Enum::name).collect(Collectors.joining("|"));
+        String assetTypes = Arrays.stream(MediaAssetType.values()).map(Enum::name).collect(Collectors.joining("|"));
+        String sourceTypes = Arrays.stream(MediaAssetSourceType.values()).map(Enum::name).collect(Collectors.joining("|"));
+        String riskLevels = Arrays.stream(DocumentRiskLevel.values()).map(Enum::name).collect(Collectors.joining("|"));
 
-    private MediaAssetSpec resolveAssetSpec(String instruction, DocumentSemanticActionType semanticAction) {
-        try {
-            String response = chatModel.call(buildAssetSpecPrompt(instruction, semanticAction));
-            Map<String, Object> payload = objectMapper.readValue(response.trim(), new TypeReference<>() {});
-            MediaAssetType assetType = parseEnum(MediaAssetType.class, stringify(payload.get("assetType")));
-            MediaAssetSourceType sourceType = parseEnum(MediaAssetSourceType.class, stringify(payload.get("sourceType")));
-            if (assetType == null) return null;
-            return MediaAssetSpec.builder()
-                    .assetType(assetType)
-                    .sourceType(sourceType)
-                    .sourceRef(stringify(payload.get("sourceRef")))
-                    .caption(stringify(payload.get("caption")))
-                    .altText(stringify(payload.get("altText")))
-                    .generationPrompt(stringify(payload.get("generationPrompt")))
-                    .build();
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
+        return """
+                你是文档编辑意图解析器。根据用户指令，一次性输出完整的结构化 JSON，不要解释，只输出合法 JSON。
 
-    private String buildAssetSpecPrompt(String instruction, DocumentSemanticActionType semanticAction) {
-        String assetTypes = Arrays.stream(MediaAssetType.values()).map(Enum::name).collect(Collectors.joining(", "));
-        String sourceTypes = Arrays.stream(MediaAssetSourceType.values()).map(Enum::name).collect(Collectors.joining(", "));
-        return "你是文档富媒体资产规格提取器。\n"
-                + "根据用户指令，输出 JSON 格式的资产规格，只输出合法 JSON，不要解释。\n\n"
-                + "输出 schema:\n"
-                + "{\n"
-                + "  \"assetType\": \"" + assetTypes + "\",\n"
-                + "  \"sourceType\": \"" + sourceTypes + "\",\n"
-                + "  \"sourceRef\": \"外链URL或文件路径，无则空字符串\",\n"
-                + "  \"caption\": \"图片说明，无则空字符串\",\n"
-                + "  \"altText\": \"替代文本，无则空字符串\",\n"
-                + "  \"generationPrompt\": \"AI生成描述，无则空字符串\"\n"
-                + "}\n\n"
-                + "semanticAction: " + (semanticAction == null ? "unknown" : semanticAction.name()) + "\n"
-                + "用户指令: " + (instruction == null ? "" : instruction);
+                输出 schema（所有字段均可为 null）：
+                {
+                  "intentType": "%s",
+                  "semanticAction": "%s",
+                  "clarificationNeeded": false,
+                  "clarificationHint": "无法确定时填写原因",
+                  "riskLevel": "%s",
+                  "riskHints": ["..."],
+                  "anchorSpec": {
+                    "anchorKind": "%s",
+                    "matchMode": "%s",
+                    "headingTitle": "标题文本，BY_HEADING_TITLE 时填",
+                    "outlinePath": "如 '第一章/第二节'，BY_OUTLINE_PATH 时填",
+                    "structuralOrdinal": 1,
+                    "structuralOrdinalScope": "TOP_LEVEL_SECTION|SUB_SECTION",
+                    "quotedText": "用户引号内的文本，BY_QUOTED_TEXT 时填",
+                    "mediaCaption": "媒体说明文字，BY_MEDIA_CAPTION 时填"
+                  },
+                  "rewriteSpec": {
+                    "targetContent": "要改写的原文内容",
+                    "styleOnly": false,
+                    "newContent": "用户明确给出的新内容，否则为空"
+                  },
+                  "assetSpec": {
+                    "assetType": "%s",
+                    "sourceType": "%s",
+                    "sourceRef": "",
+                    "caption": "",
+                    "altText": "",
+                    "generationPrompt": ""
+                  }
+                }
+
+                规则：
+                1. intentType 和 semanticAction 必须从枚举值中选择，无法确定时设 clarificationNeeded=true。
+                2. anchorSpec.matchMode 必须是结构化 slot，不允许把中文"第三章"直接放进 headingTitle，应用 structuralOrdinal=3 + structuralOrdinalScope=TOP_LEVEL_SECTION。
+                3. 无法唯一确定锚点时，设 clarificationNeeded=true，不要猜。
+                4. 非媒体操作时 assetSpec 为 null。
+
+                用户指令：%s
+                """.formatted(intentTypes, semanticActions, riskLevels, anchorKinds, matchModes, assetTypes, sourceTypes, instruction);
     }
 
     private <T extends Enum<T>> T parseEnum(Class<T> clazz, String value) {
@@ -99,81 +180,18 @@ public class DocumentEditIntentResolver {
         }
     }
 
-    private DocumentSemanticActionType resolveSemanticActionViaLlm(String instruction, DocumentIterationIntentType intentType) {
+    private String str(Object value) {
+        if (value == null) return null;
+        String s = String.valueOf(value).trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    private Integer toInt(Object value) {
+        if (value == null) return null;
         try {
-            String response = chatModel.call(buildSemanticActionPrompt(instruction, intentType)).trim();
-            return DocumentSemanticActionType.valueOf(response.trim());
+            return Integer.parseInt(String.valueOf(value).trim());
         } catch (Exception ignored) {
-            return defaultSemanticAction(intentType);
+            return null;
         }
-    }
-
-    private DocumentSemanticActionType defaultSemanticAction(DocumentIterationIntentType intentType) {
-        return switch (intentType) {
-            case EXPLAIN -> DocumentSemanticActionType.EXPLAIN_ONLY;
-            case INSERT, INSERT_MEDIA -> DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR;
-            case UPDATE_CONTENT, UPDATE_STYLE -> DocumentSemanticActionType.REWRITE_INLINE_TEXT;
-            case DELETE -> DocumentSemanticActionType.DELETE_INLINE_TEXT;
-            case ADJUST_LAYOUT -> DocumentSemanticActionType.MOVE_BLOCK;
-        };
-    }
-
-    private Map<String, String> extractParameters(String instruction, DocumentIterationIntentType intentType) {
-        Map<String, String> parameters = new LinkedHashMap<>();
-        parameters.put("instruction", instruction == null ? "" : instruction.trim());
-        try {
-            String response = chatModel.call(buildSlotPrompt(instruction, intentType));
-            Map<String, Object> payload = objectMapper.readValue(response, new TypeReference<>() {});
-            parameters.put("targetRegion", stringify(payload.get("targetRegion")));
-            parameters.put("targetSemantic", stringify(payload.get("targetSemantic")));
-            parameters.put("targetKeywords", joinKeywords(payload.get("targetKeywords")));
-        } catch (Exception ignored) {
-            parameters.put("targetRegion", "unknown");
-            parameters.put("targetSemantic", "unknown");
-            parameters.put("targetKeywords", "");
-        }
-        return parameters;
-    }
-
-    private String buildSemanticActionPrompt(String instruction, DocumentIterationIntentType intentType) {
-        String validValues = Arrays.stream(DocumentSemanticActionType.values())
-                .map(Enum::name)
-                .collect(Collectors.joining(", "));
-        return "你是文档编辑语义动作分类器。\n"
-                + "根据用户指令和高层意图，从以下枚举值中选择最匹配的一个，只输出枚举名，不要解释。\n\n"
-                + "可选值：\n" + validValues + "\n\n"
-                + "intentType: " + (intentType == null ? "unknown" : intentType.name()) + "\n"
-                + "用户指令: " + (instruction == null ? "" : instruction);
-    }
-
-    private String buildSlotPrompt(String instruction, DocumentIterationIntentType intentType) {
-        return "你是文档编辑参数槽位提取器。\n"
-                + "请基于用户指令和已识别的高层意图，输出一个 JSON 对象，不要输出解释。\n\n"
-                + "输出 schema:\n"
-                + "{\n"
-                + "  \"targetRegion\": \"document_head|document_tail|section_body|inline|unknown\",\n"
-                + "  \"targetSemantic\": \"metadata|section|paragraph|block|unknown\",\n"
-                + "  \"targetKeywords\": [\"...\"]\n"
-                + "}\n\n"
-                + "规则:\n"
-                + "1. 只输出合法 JSON。\n"
-                + "2. targetRegion 表示目标所在结构区域，不是 patch 类型。\n"
-                + "3. targetSemantic 表示目标对象语义。\n"
-                + "4. targetKeywords 只保留用户真正要命中的对象关键词，去掉动作词。\n"
-                + "5. 无法确定时用 unknown，不要臆测。\n\n"
-                + "intentType: " + (intentType == null ? "unknown" : intentType.name()) + "\n"
-                + "用户指令: " + (instruction == null ? "" : instruction);
-    }
-
-    private String stringify(Object value) {
-        return value == null ? "" : String.valueOf(value).trim();
-    }
-
-    private String joinKeywords(Object value) {
-        if (value instanceof java.util.List<?> list) {
-            return list.stream().map(String::valueOf).map(String::trim).filter(item -> !item.isBlank()).distinct()
-                    .collect(Collectors.joining("|"));
-        }
-        return "";
     }
 }

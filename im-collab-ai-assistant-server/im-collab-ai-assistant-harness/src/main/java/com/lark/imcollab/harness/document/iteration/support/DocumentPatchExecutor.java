@@ -28,9 +28,9 @@ public class DocumentPatchExecutor {
         }
         long beforeRevision = -1L;
         long afterRevision = -1L;
-        String lastNewBlockId = null;
+        List<String> lastNewBlockIds = List.of();
         for (DocumentPatchOperation operation : plan.getPatchOperations()) {
-            operation = resolveNewBlockPlaceholder(operation, lastNewBlockId);
+            operation = resolveNewBlockPlaceholder(operation, lastNewBlockIds);
             LarkDocUpdateResult result = switch (operation.getOperationType()) {
                 case STR_REPLACE -> larkDocTool.updateByCommand(
                         docRef, "str_replace", operation.getNewContent(),
@@ -58,18 +58,19 @@ public class DocumentPatchExecutor {
             if (beforeRevision < 0) beforeRevision = rev;
             afterRevision = rev;
             collectModifiedBlocks(modifiedBlocks, operation, result);
-            lastNewBlockId = extractFirstNewBlockId(result);
+            lastNewBlockIds = extractNewBlockIds(result);
         }
         return new PatchExecutionResult(modifiedBlocks, beforeRevision, afterRevision);
     }
 
-    private DocumentPatchOperation resolveNewBlockPlaceholder(DocumentPatchOperation operation, String lastNewBlockId) {
-        if (lastNewBlockId == null || !"__new__".equals(operation.getBlockId())) {
+    private DocumentPatchOperation resolveNewBlockPlaceholder(DocumentPatchOperation operation, List<String> lastNewBlockIds) {
+        if (!"__new__".equals(operation.getBlockId()) || lastNewBlockIds.isEmpty()) {
             return operation;
         }
+        // 用第一个新 block id 作为代理（多 block section 移动的已知限制）
         return DocumentPatchOperation.builder()
                 .operationType(operation.getOperationType())
-                .blockId(lastNewBlockId)
+                .blockId(lastNewBlockIds.get(0))
                 .targetBlockId(operation.getTargetBlockId())
                 .startBlockId(operation.getStartBlockId())
                 .endBlockId(operation.getEndBlockId())
@@ -80,15 +81,12 @@ public class DocumentPatchExecutor {
                 .build();
     }
 
-    private String extractFirstNewBlockId(LarkDocUpdateResult result) {
-        if (result == null || result.getNewBlocks() == null || result.getNewBlocks().isEmpty()) {
-            return null;
-        }
+    private List<String> extractNewBlockIds(LarkDocUpdateResult result) {
+        if (result == null || result.getNewBlocks() == null) return List.of();
         return result.getNewBlocks().stream()
                 .map(LarkDocBlockRef::getBlockId)
                 .filter(id -> id != null && !id.isBlank())
-                .findFirst()
-                .orElse(null);
+                .toList();
     }
 
     private void collectModifiedBlocks(List<String> modifiedBlocks, DocumentPatchOperation operation, LarkDocUpdateResult result) {

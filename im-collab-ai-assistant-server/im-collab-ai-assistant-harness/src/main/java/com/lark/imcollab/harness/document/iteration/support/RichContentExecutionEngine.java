@@ -3,6 +3,7 @@ package com.lark.imcollab.harness.document.iteration.support;
 import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.ExecutionStep;
 import com.lark.imcollab.common.model.entity.RichContentExecutionResult;
+import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -11,27 +12,41 @@ import java.util.List;
 public class RichContentExecutionEngine {
 
     private final ExecutionStepHandlerRegistry registry;
+    private final LarkDocTool larkDocTool;
 
-    public RichContentExecutionEngine(ExecutionStepHandlerRegistry registry) {
+    public RichContentExecutionEngine(ExecutionStepHandlerRegistry registry, LarkDocTool larkDocTool) {
         this.registry = registry;
+        this.larkDocTool = larkDocTool;
     }
 
     public RichContentExecutionResult execute(String docRef, DocumentEditPlan plan) {
         if (plan.getExecutionPlan() == null || plan.getExecutionPlan().getSteps() == null) {
             throw new IllegalStateException("RichContentExecutionEngine: executionPlan has no steps");
         }
+        long beforeRevision = fetchRevision(docRef);
         List<ExecutionStep> steps = plan.getExecutionPlan().getSteps();
         RichContentExecutionContext ctx = new RichContentExecutionContext();
         seedContext(ctx, plan);
         for (ExecutionStep step : steps) {
             registry.dispatch(step, docRef, ctx);
         }
+        long afterRevision = fetchRevision(docRef);
         return RichContentExecutionResult.builder()
                 .createdBlockIds(ctx.getCreatedBlockIds())
                 .createdAssetRefs(ctx.getCreatedAssetRefs())
-                .beforeRevision(-1L)
-                .afterRevision(-1L)
+                .beforeRevision(beforeRevision)
+                .afterRevision(afterRevision)
                 .build();
+    }
+
+    private long fetchRevision(String docRef) {
+        try {
+            var outline = larkDocTool.fetchDocOutline(docRef);
+            Long rev = outline.getRevisionId();
+            return rev != null ? rev : -1L;
+        } catch (Exception ignored) {
+            return -1L;
+        }
     }
 
     private void seedContext(RichContentExecutionContext ctx, DocumentEditPlan plan) {

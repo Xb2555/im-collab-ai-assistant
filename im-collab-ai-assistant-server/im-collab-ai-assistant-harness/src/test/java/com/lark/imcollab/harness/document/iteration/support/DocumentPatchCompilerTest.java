@@ -189,8 +189,7 @@ class DocumentPatchCompilerTest {
         );
 
         assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.BLOCK_DELETE);
-        assertThat(plan.getSelector().getLocatorValue()).isEqualTo("作者：张三");
-        assertThat(plan.getSelector().getMatchedExcerpt()).isEqualTo("作者：张三");
+        assertThat(plan.getResolvedAnchor().getBlockAnchor().getPlainText()).isEqualTo("作者：张三");
         assertThat(plan.getPatchOperations()).singleElement().satisfies(operation -> {
             assertThat(operation.getBlockId()).isEqualTo("meta-1");
             assertThat(operation.getJustification()).contains("metadata");
@@ -209,11 +208,6 @@ class DocumentPatchCompilerTest {
                         .intentType(DocumentIterationIntentType.UPDATE_CONTENT)
                         .semanticAction(DocumentSemanticActionType.REWRITE_METADATA_AT_DOCUMENT_HEAD)
                         .userInstruction("修改文章开头的作者信息为李四")
-                        .parameters(Map.of(
-                                "targetRegion", "document_head",
-                                "targetSemantic", "metadata",
-                                "targetKeywords", "作者信息|作者"
-                        ))
                         .build(),
                 metadataSnapshot(),
                 ResolvedDocumentAnchor.builder()
@@ -229,7 +223,7 @@ class DocumentPatchCompilerTest {
         );
 
         assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);
-        assertThat(plan.getSelector().getMatchedExcerpt()).isEqualTo("作者：张三");
+        assertThat(plan.getResolvedAnchor().getBlockAnchor().getPlainText()).isEqualTo("作者：张三");
         assertThat(plan.getGeneratedContent()).isEqualTo("作者：李四");
         assertThat(plan.getPatchOperations()).singleElement().satisfies(operation -> {
             assertThat(operation.getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);

@@ -93,6 +93,9 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             String operator = context == null ? null : context.getSenderOpenId();
             Artifact ownedArtifact = ownershipGuard.assertEditable(request.getDocUrl(), operator, request.getTaskId());
             DocumentEditIntent editIntent = intentResolver.resolve(request.getInstruction());
+            if (editIntent.isClarificationNeeded()) {
+                throw new AiAssistantException(BusinessCode.PARAMS_ERROR, editIntent.getClarificationHint());
+            }
             validateRichMediaPrerequisites(request, editIntent);
             DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
             ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, editIntent);
@@ -103,7 +106,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             if (resolvedAsset != null) {
                 ExecutionPlan executionPlan = richContentExecutionPlanner.plan(editIntent, anchor, strategy, resolvedAsset);
                 editPlan.setResolvedAssetSpec(editIntent.getAssetSpec());
-                editPlan.setExecutionPlan(executionPlan);
+                if (executionPlan != null) editPlan.setExecutionPlan(executionPlan);
             }
             if (editPlan.isRequiresApproval()) {
                 runtimeSupport.waitForApproval(runtime, request, editPlan, ownedArtifact, operator);
@@ -211,15 +214,17 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             afterRevision = -1L;
         } else if (isRichExecutionPlan(editPlan)) {
             RichContentExecutionResult richResult = richContentExecutionEngine.execute(docRef, editPlan);
-            modifiedBlocks = richResult.getCreatedBlockIds();
-            beforeRevision = richResult.getBeforeRevision();
-            afterRevision = richResult.getAfterRevision();
-            Artifact runtimeArtifact = Artifact.builder()
-                    .externalUrl(resolveDocUrl(ownedArtifact, docRef))
-                    .documentId(resolveDocId(ownedArtifact))
-                    .build();
-            DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
-            richContentTargetStateVerifier.verify(editPlan, richResult, editPlan.getStructureSnapshot(), afterSnapshot);
+            modifiedBlocks = richResult != null ? richResult.getCreatedBlockIds() : List.of();
+            beforeRevision = richResult != null ? richResult.getBeforeRevision() : -1L;
+            afterRevision = richResult != null ? richResult.getAfterRevision() : -1L;
+            if (richResult != null) {
+                Artifact runtimeArtifact = Artifact.builder()
+                        .externalUrl(resolveDocUrl(ownedArtifact, docRef))
+                        .documentId(resolveDocId(ownedArtifact))
+                        .build();
+                DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
+                richContentTargetStateVerifier.verify(editPlan, richResult, editPlan.getStructureSnapshot(), afterSnapshot);
+            }
         } else {
             DocumentPatchExecutor.PatchExecutionResult patchResult = patchExecutor.execute(docRef, editPlan);
             modifiedBlocks = patchResult.getModifiedBlocks();
@@ -295,13 +300,13 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         if (editPlan == null) {
             return null;
         }
-        String targetTitle = editPlan.getSelector() == null ? null : editPlan.getSelector().getLocatorValue();
-        String targetPreview = editPlan.getResolvedAnchor() == null ? (editPlan.getSelector() == null ? null : editPlan.getSelector().getMatchedExcerpt())
-                : editPlan.getResolvedAnchor().getPreview();
+        ResolvedDocumentAnchor anchor = editPlan.getResolvedAnchor();
+        String targetTitle = resolveTargetTitle(anchor);
+        String targetPreview = anchor == null ? null : anchor.getPreview();
         return DocumentIterationPlanVO.builder()
                 .intentType(editPlan.getIntentType())
                 .semanticAction(editPlan.getSemanticAction())
-                .anchorType(editPlan.getResolvedAnchor() == null ? null : editPlan.getResolvedAnchor().getAnchorType())
+                .anchorType(anchor == null ? null : anchor.getAnchorType())
                 .strategyType(editPlan.getStrategyType())
                 .expectedState(editPlan.getExpectedState() == null ? null : editPlan.getExpectedState().getStateType())
                 .targetTitle(targetTitle)
@@ -311,6 +316,14 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                 .requiresApproval(editPlan.isRequiresApproval())
                 .riskLevel(editPlan.getRiskLevel())
                 .build();
+    }
+
+    private String resolveTargetTitle(ResolvedDocumentAnchor anchor) {
+        if (anchor == null) return null;
+        if (anchor.getSectionAnchor() != null) return anchor.getSectionAnchor().getHeadingText();
+        if (anchor.getBlockAnchor() != null) return anchor.getBlockAnchor().getPlainText();
+        if (anchor.getTextAnchor() != null) return anchor.getTextAnchor().getMatchedText();
+        return anchor.getPreview();
     }
 
     private ApprovalStatus parseStatus(String action) {

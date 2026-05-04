@@ -1,11 +1,14 @@
 package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.domain.Artifact;
+import com.lark.imcollab.common.model.entity.DocumentAnchorSpec;
 import com.lark.imcollab.common.model.entity.DocumentBlockAnchor;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.DocumentStructureNode;
 import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
 import com.lark.imcollab.common.model.entity.ResolvedDocumentAnchor;
+import com.lark.imcollab.common.model.enums.DocumentAnchorKind;
+import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import org.junit.jupiter.api.Test;
@@ -20,7 +23,7 @@ class DocumentAnchorResolverTest {
 
     @Test
     void deleteMetadataAtHeadResolvesAuthorBlockInsteadOfFirstHeading() {
-        DocumentAnchorResolver resolver = new DocumentAnchorResolver(new DocumentStructureParser());
+        DocumentAnchorResolver resolver = new DocumentAnchorResolver(null);
 
         ResolvedDocumentAnchor anchor = resolver.resolve(
                 Artifact.builder().externalUrl("https://example.com/docx/doc123").build(),
@@ -29,11 +32,11 @@ class DocumentAnchorResolverTest {
                         .intentType(DocumentIterationIntentType.DELETE)
                         .semanticAction(DocumentSemanticActionType.DELETE_METADATA_AT_DOCUMENT_HEAD)
                         .userInstruction("删除开头的作者信息")
-                        .parameters(Map.of(
-                                "targetRegion", "document_head",
-                                "targetSemantic", "metadata",
-                                "targetKeywords", "作者信息|作者"
-                        ))
+                        .anchorSpec(DocumentAnchorSpec.builder()
+                                .anchorKind(DocumentAnchorKind.DOCUMENT_HEAD)
+                                .matchMode(DocumentAnchorMatchMode.DOC_START)
+                                .quotedText("作者信息")
+                                .build())
                         .build()
         );
 

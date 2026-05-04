@@ -23,69 +23,50 @@ public class DocumentStructureSnapshotBuilder {
         this.structureParser = structureParser;
     }
 
+    /**
+     * 轻量主快照：只抓 outline，不循环抓所有 section with-ids。
+     * sectionBlockIds 按需通过 fetchSection() 填充。
+     */
     public DocumentStructureSnapshot build(Artifact artifact) {
-        String docRef = artifact.getExternalUrl() != null && !artifact.getExternalUrl().isBlank()
-                ? artifact.getExternalUrl()
-                : artifact.getDocumentId();
+        String docRef = resolveDocRef(artifact);
         String docId = larkDocTool.extractDocumentId(docRef);
         LarkDocFetchResult outline = larkDocTool.fetchDocOutline(docRef);
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(outline.getContent());
 
         Map<String, DocumentStructureNode> headingIndex = new LinkedHashMap<>();
         Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
-        Map<String, List<String>> sectionBlockIds = new LinkedHashMap<>();
         List<DocumentStructureNode> rootNodes = new ArrayList<>();
         List<String> topLevelSequence = new ArrayList<>();
+        List<String> orderedBlockIds = new ArrayList<>();
 
-        int minHeadingLevel = headings.stream().mapToInt(DocumentStructureParser.HeadingBlock::getLevel).min().orElse(2);
+        int minLevel = headings.stream().mapToInt(DocumentStructureParser.HeadingBlock::getLevel).min().orElse(2);
         String currentTopLevelId = null;
+
         for (int i = 0; i < headings.size(); i++) {
-            DocumentStructureParser.HeadingBlock heading = headings.get(i);
+            DocumentStructureParser.HeadingBlock h = headings.get(i);
             String prevId = i > 0 ? headings.get(i - 1).getBlockId() : null;
             String nextId = i + 1 < headings.size() ? headings.get(i + 1).getBlockId() : null;
-            if (heading.getLevel() == minHeadingLevel) {
-                currentTopLevelId = heading.getBlockId();
+            if (h.getLevel() == minLevel) {
+                currentTopLevelId = h.getBlockId();
             }
-            int topLevelIndex = heading.getLevel() == minHeadingLevel ? topLevelSequence.size() + 1 : topLevelSequence.size();
+            int topLevelIndex = h.getLevel() == minLevel ? topLevelSequence.size() + 1 : topLevelSequence.size();
             DocumentStructureNode node = DocumentStructureNode.builder()
-                    .blockId(heading.getBlockId())
+                    .blockId(h.getBlockId())
                     .blockType("heading")
-                    .headingLevel(heading.getLevel())
-                    .titleText(heading.getText())
-                    .plainText(heading.getText())
+                    .headingLevel(h.getLevel())
+                    .titleText(h.getText())
+                    .plainText(h.getText())
                     .topLevelAncestorId(currentTopLevelId)
                     .prevSiblingId(prevId)
                     .nextSiblingId(nextId)
                     .topLevelIndex(topLevelIndex <= 0 ? null : topLevelIndex)
                     .build();
-            headingIndex.put(heading.getBlockId(), node);
-            blockIndex.put(heading.getBlockId(), node);
-            if (heading.getLevel() == minHeadingLevel) {
+            headingIndex.put(h.getBlockId(), node);
+            blockIndex.put(h.getBlockId(), node);
+            orderedBlockIds.add(h.getBlockId());
+            if (h.getLevel() == minLevel) {
                 rootNodes.add(node);
-                topLevelSequence.add(heading.getBlockId());
-            }
-        }
-
-        // 对每个 top-level section 抓一次轻量 section XML，填充 sectionBlockIds 和 blockIndex
-        for (String headingId : topLevelSequence) {
-            try {
-                LarkDocFetchResult sectionXml = larkDocTool.fetchDocSection(docRef, headingId, "with-ids");
-                List<String> ids = structureParser.parseBlockIds(sectionXml.getContent());
-                List<DocumentStructureParser.BlockNode> sectionBlocks = structureParser.parseBlockNodes(sectionXml.getContent());
-                if (!ids.isEmpty()) {
-                    sectionBlockIds.put(headingId, List.copyOf(ids));
-                    for (DocumentStructureParser.BlockNode b : sectionBlocks) {
-                        blockIndex.putIfAbsent(b.getBlockId(), DocumentStructureNode.builder()
-                                .blockId(b.getBlockId())
-                                .blockType(b.getTagName())
-                                .plainText(b.getPlainText())
-                                .topLevelAncestorId(headingId)
-                                .build());
-                    }
-                }
-            } catch (RuntimeException ignored) {
-                // section fetch 失败时降级：只保留 heading 本身
-                sectionBlockIds.put(headingId, List.of(headingId));
+                topLevelSequence.add(h.getBlockId());
             }
         }
 
@@ -96,10 +77,49 @@ public class DocumentStructureSnapshotBuilder {
                 .headingIndex(headingIndex)
                 .blockIndex(blockIndex)
                 .topLevelSequence(topLevelSequence)
-                .sectionBlockIds(sectionBlockIds)
+                .orderedBlockIds(orderedBlockIds)
+                .sectionBlockIds(new LinkedHashMap<>())
                 .rawOutlineXml(outline.getContent())
                 .rawFullXml(null)
                 .rawFullMarkdown(null)
                 .build();
+    }
+
+    /**
+     * 按需抓取单个 section 的 block 明细，填充到已有 snapshot。
+     */
+    public void fetchSectionDetail(DocumentStructureSnapshot snapshot, String headingBlockId, String docRef) {
+        if (snapshot.getSectionBlockIds().containsKey(headingBlockId)) {
+            return;
+        }
+        try {
+            LarkDocFetchResult sectionXml = larkDocTool.fetchDocSection(docRef, headingBlockId, "with-ids");
+            List<String> ids = structureParser.parseBlockIds(sectionXml.getContent());
+            List<DocumentStructureParser.BlockNode> blocks = structureParser.parseBlockNodes(sectionXml.getContent());
+            if (!ids.isEmpty()) {
+                snapshot.getSectionBlockIds().put(headingBlockId, List.copyOf(ids));
+                for (DocumentStructureParser.BlockNode b : blocks) {
+                    snapshot.getBlockIndex().putIfAbsent(b.getBlockId(), DocumentStructureNode.builder()
+                            .blockId(b.getBlockId())
+                            .blockType(b.getTagName())
+                            .plainText(b.getPlainText())
+                            .topLevelAncestorId(headingBlockId)
+                            .build());
+                    if (!snapshot.getOrderedBlockIds().contains(b.getBlockId())) {
+                        snapshot.getOrderedBlockIds().add(b.getBlockId());
+                    }
+                }
+            } else {
+                snapshot.getSectionBlockIds().put(headingBlockId, List.of(headingBlockId));
+            }
+        } catch (RuntimeException ignored) {
+            snapshot.getSectionBlockIds().put(headingBlockId, List.of(headingBlockId));
+        }
+    }
+
+    private String resolveDocRef(Artifact artifact) {
+        return artifact.getExternalUrl() != null && !artifact.getExternalUrl().isBlank()
+                ? artifact.getExternalUrl()
+                : artifact.getDocumentId();
     }
 }

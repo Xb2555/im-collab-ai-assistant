@@ -1,14 +1,12 @@
 package com.lark.imcollab.common.model.enums;
 
-public enum DocumentAnchorType {
+public enum DocumentAnchorKind {
     DOCUMENT_HEAD,
     DOCUMENT_TAIL,
-    TEXT,
-    BLOCK,
     SECTION,
+    BLOCK,
+    TEXT,
     MEDIA,
     TABLE,
-    LAYOUT,
-    NONE,
-    UNRESOLVED
+    WHITEBOARD
 }
