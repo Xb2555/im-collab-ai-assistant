@@ -186,6 +186,32 @@ class DocumentAnchorResolverTest {
         assertThat(anchor.getBlockAnchor().getBlockId()).isEqualTo("meta-1");
     }
 
+    @Test
+    void byStructuralOrdinalSubSectionResolvesOrderedHeading() {
+        DocumentAnchorResolver resolver = new DocumentAnchorResolver(null);
+
+        ResolvedDocumentAnchor anchor = resolver.resolve(
+                Artifact.builder().externalUrl("https://example.com/docx/doc123").build(),
+                nestedHeadingSnapshot(),
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.UPDATE_CONTENT)
+                        .semanticAction(DocumentSemanticActionType.REWRITE_SECTION_BODY)
+                        .userInstruction("改写 1.3 小节")
+                        .anchorSpec(DocumentAnchorSpec.builder()
+                                .anchorKind(DocumentAnchorKind.SECTION)
+                                .matchMode(DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL)
+                                .structuralOrdinal(3)
+                                .structuralOrdinalScope("SUB_SECTION")
+                                .build())
+                        .build()
+        );
+
+        assertThat(anchor.getAnchorType()).isEqualTo(DocumentAnchorType.SECTION);
+        assertThat(anchor.getSectionAnchor()).isNotNull();
+        assertThat(anchor.getSectionAnchor().getHeadingBlockId()).isEqualTo("heading-1-3");
+        assertThat(anchor.getSectionAnchor().getHeadingText()).isEqualTo("1.3 客源市场结构");
+    }
+
     private DocumentStructureSnapshot snapshot() {
         Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
         blockIndex.put("meta-1", DocumentStructureNode.builder().blockId("meta-1").blockType("p").plainText("作者：张三").build());
@@ -246,6 +272,26 @@ class DocumentAnchorResolverTest {
                 .build();
     }
 
+    private DocumentStructureSnapshot nestedHeadingSnapshot() {
+        Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
+        blockIndex.put("heading-1", heading("heading-1", "一、发展现状"));
+        blockIndex.put("heading-1-1", heading3("heading-1-1", "1.1 总体复苏态势"));
+        blockIndex.put("heading-1-2", heading3("heading-1-2", "1.2 文旅融合新业态发展"));
+        blockIndex.put("heading-1-3", heading3("heading-1-3", "1.3 客源市场结构"));
+        return DocumentStructureSnapshot.builder()
+                .docId("doc-nested")
+                .blockIndex(blockIndex)
+                .headingIndex(Map.of(
+                        "heading-1", blockIndex.get("heading-1"),
+                        "heading-1-1", blockIndex.get("heading-1-1"),
+                        "heading-1-2", blockIndex.get("heading-1-2"),
+                        "heading-1-3", blockIndex.get("heading-1-3")
+                ))
+                .orderedBlockIds(List.of("heading-1", "heading-1-1", "heading-1-2", "heading-1-3"))
+                .topLevelSequence(List.of("heading-1"))
+                .build();
+    }
+
     private DocumentStructureNode heading(String blockId, String title) {
         return DocumentStructureNode.builder()
                 .blockId(blockId)
@@ -261,6 +307,16 @@ class DocumentAnchorResolverTest {
                 .blockId(blockId)
                 .blockType("p")
                 .plainText(text)
+                .build();
+    }
+
+    private DocumentStructureNode heading3(String blockId, String title) {
+        return DocumentStructureNode.builder()
+                .blockId(blockId)
+                .blockType("heading")
+                .headingLevel(3)
+                .plainText(title)
+                .titleText(title)
                 .build();
     }
 }

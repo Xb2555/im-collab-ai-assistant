@@ -355,4 +355,33 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_OUTLINE_PATH);
         assertThat(intent.getAnchorSpec().getOutlinePath()).isEqualTo("1.2.3");
     }
+
+    @Test
+    void insertAfterSectionInstructionNormalizesToHeadingAnchorInsteadOfOrdinal() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "semanticAction": "INSERT_SECTION_BEFORE_SECTION",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_STRUCTURAL_ORDINAL",
+                    "structuralOrdinal": 3,
+                    "structuralOrdinalScope": "TOP_LEVEL_SECTION"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("在1.3 客源市场结构 后插入1.4 游客偏好分析");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getIntentType()).isEqualTo(com.lark.imcollab.common.model.enums.DocumentIterationIntentType.INSERT);
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
+        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.3 客源市场结构");
+    }
 }

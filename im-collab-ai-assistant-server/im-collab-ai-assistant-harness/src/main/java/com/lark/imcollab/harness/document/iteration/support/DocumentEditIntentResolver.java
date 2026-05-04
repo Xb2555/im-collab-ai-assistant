@@ -33,6 +33,9 @@ public class DocumentEditIntentResolver {
     private static final Pattern SECTION_ORDINAL_PATTERN = Pattern.compile("(?:^|\\s)(?:\\d+(?:\\.\\d+)*|第[一二三四五六七八九十百千万0-9]+[章节部分](?:第[一二三四五六七八九十百千万0-9]+[章节部分])*)");
     private static final Pattern SECTION_CONTENT_REFERENCE_PATTERN = Pattern.compile("(章节|小节|部分|段落|标题|内容|正文|数据|表述)");
     private static final Pattern SECTION_ACTION_MARKER_PATTERN = Pattern.compile("(给出|补充|增加|新增|插入|改写|修改|更新|替换|删除|移到|移动|调整|优化|展开|说明|完善|重写)");
+    private static final Pattern INSERT_AFTER_PATTERN = Pattern.compile("(后插入|后新增|后面插入|之后插入)");
+    private static final Pattern INSERT_BEFORE_PATTERN = Pattern.compile("(前插入|前新增|前面插入|之前插入)");
+    private static final Pattern INSERTED_SECTION_CANDIDATE_PATTERN = Pattern.compile("(插入|新增)\\s*(?:第[一二三四五六七八九十百千万0-9]+[章节部分]|\\d+(?:\\.\\d+)+)");
     private static final Pattern DECIMAL_SECTION_HEADING_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)\\s*([^，。；,;\\n]+)");
     private static final Pattern DECIMAL_SECTION_PATH_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)");
     private static final Pattern CHINESE_SECTION_ORDINAL_PATTERN = Pattern.compile("第([一二三四五六七八九十百千万0-9]+)(章|节|部分)");
@@ -158,6 +161,7 @@ public class DocumentEditIntentResolver {
             log.info("DOC_ITER_INTENT validation_null_intent");
             return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
         }
+        intent = normalizeSectionInsertIntent(intent);
         intent = normalizeSectionIntent(intent);
         if (intent.isClarificationNeeded()) {
             log.info("DOC_ITER_INTENT validation_clarification instruction='{}' hint='{}'",
@@ -382,6 +386,65 @@ public class DocumentEditIntentResolver {
         return intent;
     }
 
+    private DocumentEditIntent normalizeSectionInsertIntent(DocumentEditIntent intent) {
+        if (intent == null || !hasText(intent.getUserInstruction()) || intent.getIntentType() != DocumentIterationIntentType.INSERT) {
+            return intent;
+        }
+        if (!looksLikeSectionInsert(intent) || !isExplicitSectionInsertInstruction(intent.getUserInstruction())) {
+            return intent;
+        }
+        SectionReference sectionReference = extractSectionReference(intent.getUserInstruction());
+        if (sectionReference == null) {
+            return intent;
+        }
+        DocumentSemanticActionType normalizedAction = normalizeInsertSemanticAction(intent.getUserInstruction(), intent.getSemanticAction());
+        DocumentAnchorSpec normalizedAnchor = buildSectionAnchor(sectionReference);
+        log.info("DOC_ITER_INTENT normalize_insert instruction='{}' fromAction={} toAction={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                intent.getUserInstruction(),
+                intent.getSemanticAction(),
+                normalizedAction,
+                sectionReference.headingTitle(),
+                sectionReference.outlinePath(),
+                sectionReference.structuralOrdinal(),
+                sectionReference.structuralOrdinalScope());
+        intent.setIntentType(DocumentIterationIntentType.INSERT);
+        intent.setSemanticAction(normalizedAction);
+        intent.setAnchorSpec(normalizedAnchor);
+        return intent;
+    }
+
+    private boolean looksLikeSectionInsert(DocumentEditIntent intent) {
+        if (intent == null || intent.getSemanticAction() == null) {
+            return false;
+        }
+        return switch (intent.getSemanticAction()) {
+            case INSERT_SECTION_BEFORE_SECTION, INSERT_BLOCK_AFTER_ANCHOR, INSERT_INLINE_TEXT -> true;
+            default -> false;
+        };
+    }
+
+    private DocumentSemanticActionType normalizeInsertSemanticAction(String instruction, DocumentSemanticActionType currentAction) {
+        if (!hasText(instruction)) {
+            return currentAction;
+        }
+        if (INSERT_AFTER_PATTERN.matcher(instruction).find()) {
+            return DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR;
+        }
+        if (INSERT_BEFORE_PATTERN.matcher(instruction).find()) {
+            return DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION;
+        }
+        return currentAction == null ? DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION : currentAction;
+    }
+
+    private boolean isExplicitSectionInsertInstruction(String instruction) {
+        if (!hasText(instruction)) {
+            return false;
+        }
+        boolean hasDirection = INSERT_AFTER_PATTERN.matcher(instruction).find()
+                || INSERT_BEFORE_PATTERN.matcher(instruction).find();
+        return hasDirection && INSERTED_SECTION_CANDIDATE_PATTERN.matcher(instruction).find();
+    }
+
     private boolean looksLikeSectionBodyRewrite(DocumentEditIntent intent) {
         if (intent == null) {
             return false;
@@ -501,6 +564,7 @@ public class DocumentEditIntentResolver {
         if (markerMatcher.find()) {
             normalized = normalized.substring(0, markerMatcher.start()).trim();
         }
+        normalized = normalized.replaceFirst("(前|后|之前|之后)$", "").trim();
         normalized = normalized.replaceFirst("(中的|中|里|内的|内)(数据|内容|正文|表述|描述|部分).*$", "").trim();
         normalized = normalized.replaceFirst("的(数据|内容|正文|表述|描述|部分).*$", "").trim();
         normalized = normalized.replaceAll("[的:：，。；,;]+$", "").trim();
