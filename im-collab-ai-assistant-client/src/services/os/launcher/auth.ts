@@ -3,7 +3,7 @@ import { Browser } from '@capacitor/browser';
 import { authApi } from '@/services/api/auth';
 
 const isTauriEnvironment = (): boolean => {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
+  return typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__ !== undefined;
 };
 
 export const authLauncher = {

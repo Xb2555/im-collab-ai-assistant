@@ -34,7 +34,7 @@ imcollab:
       args: ${LARK_CLI_ARGS:}
       working-directory: ${LARK_CLI_WORKING_DIR:}
       doc-identity: ${LARK_DOC_IDENTITY:bot}
-      timeout-seconds: ${LARK_CLI_TIMEOUT_SECONDS:60}
+      timeout-seconds: ${LARK_CLI_TIMEOUT_SECONDS:180}
     lark-doc:
       folder-token: ${LARK_DOC_FOLDER_TOKEN:}
       web-base-url: ${LARK_DOC_WEB_BASE_URL:${LARK_OPEN_DOMAIN:}}

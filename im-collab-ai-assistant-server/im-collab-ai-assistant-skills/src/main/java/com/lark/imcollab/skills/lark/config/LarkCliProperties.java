@@ -16,6 +16,6 @@ public class LarkCliProperties {
     private String workingDirectory = "";
     private String docIdentity = "user";
     private String slidesIdentity = "user";
-    private int timeoutSeconds = 60;
+    private int timeoutSeconds = 180;
 
 }

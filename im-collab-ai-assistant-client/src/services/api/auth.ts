@@ -20,12 +20,14 @@ export const authApi = {
   /**
    * 获取飞书授权 URL（JSON，不重定向）
    */
+ 
   getLoginUrl: async (): Promise<LarkLoginUrlData> => {
-    // 判断当前是不是在 Tauri 桌面端环境中
-    const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+    // ✨ 使用兼容 Tauri 2.0 的判断
+// ✨ 加上 (window as any) 强制绕过 TypeScript 检查
+const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__ !== undefined;
     const clientType = isTauri ? 'desktop' : 'web'; 
     
-    // 把身份告诉后端
+    // 发送请求，这次一定会带上 ?client=desktop
     const response = await apiClient.get<LarkLoginUrlResponse>(`/api/auth/login-url?client=${clientType}`);
     
     if (response.data.code !== 0) {

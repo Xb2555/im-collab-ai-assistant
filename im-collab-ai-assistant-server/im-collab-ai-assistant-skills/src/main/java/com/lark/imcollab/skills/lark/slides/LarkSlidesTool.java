@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.skills.framework.cli.CliCommandResult;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
 
@@ -18,6 +20,8 @@ import java.util.Map;
 
 @Component
 public class LarkSlidesTool {
+
+    private static final Logger log = LoggerFactory.getLogger(LarkSlidesTool.class);
 
     private final LarkCliClient larkCliClient;
     private final LarkCliProperties properties;
@@ -48,17 +52,20 @@ public class LarkSlidesTool {
             throw new IllegalArgumentException("slideXmlList is empty");
         }
 
-        LarkSlidesCreateResult result = createEmptyPresentation(title.trim());
+        long startedAt = System.nanoTime();
+        LarkSlidesCreateResult result = createEmptyPresentation(title.trim(), slides.size());
         if (result.getPresentationId() == null || result.getPresentationId().isBlank()) {
             throw new IllegalStateException("Lark Slides create response missing presentation id");
         }
         for (int index = 0; index < slides.size(); index++) {
             appendSlide(result.getPresentationId(), slides.get(index), index + 1);
         }
+        log.info("Lark slides presentation created: presentationId={}, slideCount={}, elapsedMs={}",
+                result.getPresentationId(), slides.size(), elapsedMs(startedAt));
         return result;
     }
 
-    private LarkSlidesCreateResult createEmptyPresentation(String title) {
+    private LarkSlidesCreateResult createEmptyPresentation(String title, int slideCount) {
         List<String> args = new ArrayList<>();
         args.add("slides");
         args.add("+create");
@@ -67,10 +74,12 @@ public class LarkSlidesTool {
         args.add("--title");
         args.add(title);
 
-        JsonNode root = executeJson(args);
-        JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
-        JsonNode presentation = data.path("presentation").isMissingNode() ? data : data.path("presentation");
-        return LarkSlidesCreateResult.builder()
+        long startedAt = System.nanoTime();
+        try {
+            JsonNode root = executeJson(args);
+            JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
+            JsonNode presentation = data.path("presentation").isMissingNode() ? data : data.path("presentation");
+            LarkSlidesCreateResult result = LarkSlidesCreateResult.builder()
                 .presentationId(firstNonBlank(
                         text(data, "xml_presentation_id"),
                         text(data, "presentation_id"),
@@ -90,9 +99,20 @@ public class LarkSlidesTool {
                 .title(firstNonBlank(text(data, "title"), text(presentation, "title"), title))
                 .message(firstNonBlank(text(data, "message"), text(root, "message")))
                 .build();
+            log.info("Lark slides empty presentation created: presentationId={}, title={}, targetSlideCount={}, timeoutMs={}, elapsedMs={}",
+                    result.getPresentationId(), title, slideCount, commandTimeoutMillis(), elapsedMs(startedAt));
+            return result;
+        } catch (RuntimeException exception) {
+            log.warn("Lark slides empty presentation creation failed: title={}, targetSlideCount={}, timeoutMs={}, elapsedMs={}, error={}",
+                    title, slideCount, commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
+            throw exception;
+        }
     }
 
     private void appendSlide(String presentationId, String slideXml, int slideIndex) {
+        long startedAt = System.nanoTime();
+        int xmlChars = slideXml == null ? 0 : slideXml.length();
+        int shapeCount = countOccurrences(slideXml, "<shape");
         try (
                 TempJsonFile params = writeTempJsonArg("params", Map.of("xml_presentation_id", presentationId));
                 TempJsonFile data = writeTempJsonArg("data", Map.of("slide", Map.of("content", slideXml)))
@@ -109,7 +129,11 @@ public class LarkSlidesTool {
             args.add(data.arg());
             args.add("--yes");
             executeJson(args);
+            log.info("Lark slides page appended: presentationId={}, slideIndex={}, xmlChars={}, shapeCount={}, timeoutMs={}, elapsedMs={}",
+                    presentationId, slideIndex, xmlChars, shapeCount, commandTimeoutMillis(), elapsedMs(startedAt));
         } catch (RuntimeException exception) {
+            log.warn("Lark slides page append failed: presentationId={}, slideIndex={}, xmlChars={}, shapeCount={}, timeoutMs={}, elapsedMs={}, error={}",
+                    presentationId, slideIndex, xmlChars, shapeCount, commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
             throw new IllegalStateException("Failed to append slide " + slideIndex + ": " + exception.getMessage(), exception);
         }
     }
@@ -126,9 +150,16 @@ public class LarkSlidesTool {
         args.add("--params");
 
         JsonNode root;
+        long startedAt = System.nanoTime();
         try (TempJsonFile params = writeTempJsonArg("params", Map.of("xml_presentation_id", presentationId.trim()))) {
             args.add(params.arg());
             root = executeJson(args);
+            log.info("Lark slides presentation fetched: presentationId={}, timeoutMs={}, elapsedMs={}",
+                    presentationId.trim(), commandTimeoutMillis(), elapsedMs(startedAt));
+        } catch (RuntimeException exception) {
+            log.warn("Lark slides presentation fetch failed: presentationId={}, timeoutMs={}, elapsedMs={}, error={}",
+                    presentationId.trim(), commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
+            throw exception;
         }
         JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
         JsonNode presentation = data.path("presentation").isMissingNode() ? data : data.path("presentation");
@@ -211,6 +242,23 @@ public class LarkSlidesTool {
 
     private long commandTimeoutMillis() {
         return Math.max(1, properties.getTimeoutSeconds()) * 1000L;
+    }
+
+    private long elapsedMs(long startedAt) {
+        return (System.nanoTime() - startedAt) / 1_000_000L;
+    }
+
+    private int countOccurrences(String value, String needle) {
+        if (value == null || value.isBlank() || needle == null || needle.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        int index = 0;
+        while ((index = value.indexOf(needle, index)) >= 0) {
+            count++;
+            index += needle.length();
+        }
+        return count;
     }
 
     private String readableCliError(String output) {

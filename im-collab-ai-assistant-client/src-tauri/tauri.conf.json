@@ -21,9 +21,6 @@
     ],
     "security": {
       "csp": null
-    },
-    "deepLink": {
-      "schemes": ["agentpilot"]
     }
   },
   "bundle": {
@@ -36,5 +33,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "schemes": ["agentpilot"]
+    }
   }
 }
