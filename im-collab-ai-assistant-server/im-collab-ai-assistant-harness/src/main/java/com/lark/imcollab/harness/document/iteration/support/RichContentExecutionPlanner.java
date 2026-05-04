@@ -44,7 +44,8 @@ public class RichContentExecutionPlanner {
             steps.add(step("UPLOAD_IMAGE", "lark_drive_upload", asset.getAssetRef()));
         }
         steps.add(step("INSERT_IMAGE_BLOCK", "lark_doc_block_insert_after",
-                anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
+                anchor.getInsertionBlockId() != null ? anchor.getInsertionBlockId()
+                        : anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
         if (asset.getCaption() != null && !asset.getCaption().isBlank()) {
             steps.add(step("UPDATE_CAPTION", "lark_doc_str_replace", asset.getCaption()));
         }
@@ -54,7 +55,8 @@ public class RichContentExecutionPlanner {
     private void buildTableSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
         steps.add(step("RESOLVE_TABLE_SCHEMA", "table_asset_resolver", asset.getTableModel()));
         steps.add(step("INSERT_TABLE_BLOCK", "lark_doc_block_insert_after",
-                anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
+                anchor.getInsertionBlockId() != null ? anchor.getInsertionBlockId()
+                        : anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
         steps.add(step("WRITE_TABLE_DATA", "lark_doc_table_write", asset.getTableModel()));
         steps.add(step("VERIFY_TABLE_NODE", "snapshot_verify", MediaAssetType.TABLE.name()));
     }
@@ -62,7 +64,8 @@ public class RichContentExecutionPlanner {
     private void buildWhiteboardSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
         steps.add(step("CREATE_WHITEBOARD", "lark_whiteboard_create", asset.getAssetRef()));
         steps.add(step("INSERT_WHITEBOARD_REF", "lark_doc_block_insert_after",
-                anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
+                anchor.getInsertionBlockId() != null ? anchor.getInsertionBlockId()
+                        : anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
         steps.add(step("VERIFY_WHITEBOARD_NODE", "snapshot_verify", MediaAssetType.WHITEBOARD.name()));
     }
 

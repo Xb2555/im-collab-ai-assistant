@@ -59,11 +59,20 @@ public class DocumentAnchorResolver {
         }
         if (targetsInsertAfterSection(action)) {
             DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(snapshot, intent.getUserInstruction());
-            DocumentBlockAnchor tailBlock = sectionTailBlock(snapshot, sectionAnchor);
+            String tailBlockId = sectionTailBlockId(sectionAnchor);
+            if (tailBlockId == null) {
+                throw new IllegalStateException("无法确定插入锚点：章节 " + sectionPreview(sectionAnchor) + " 的尾部 block 未解析，请重试或换一种描述方式。");
+            }
+            DocumentBlockAnchor tailBlock = DocumentBlockAnchor.builder()
+                    .blockId(tailBlockId)
+                    .blockType(snapshot.getBlockIndex() != null && snapshot.getBlockIndex().get(tailBlockId) != null
+                            ? snapshot.getBlockIndex().get(tailBlockId).getBlockType() : null)
+                    .build();
             return ResolvedDocumentAnchor.builder()
                     .anchorType(DocumentAnchorType.BLOCK)
                     .sectionAnchor(sectionAnchor)
                     .blockAnchor(tailBlock)
+                    .insertionBlockId(tailBlockId)
                     .preview(sectionPreview(sectionAnchor))
                     .build();
         }
@@ -106,17 +115,11 @@ public class DocumentAnchorResolver {
         };
     }
 
-    private DocumentBlockAnchor sectionTailBlock(DocumentStructureSnapshot snapshot, DocumentSectionAnchor sectionAnchor) {
+    private String sectionTailBlockId(DocumentSectionAnchor sectionAnchor) {
         if (sectionAnchor == null) return null;
         List<String> allBlockIds = sectionAnchor.getAllBlockIds();
         if (allBlockIds == null || allBlockIds.isEmpty()) return null;
-        String tailId = allBlockIds.get(allBlockIds.size() - 1);
-        DocumentStructureNode node = snapshot.getBlockIndex() == null ? null : snapshot.getBlockIndex().get(tailId);
-        return DocumentBlockAnchor.builder()
-                .blockId(tailId)
-                .blockType(node == null ? null : node.getBlockType())
-                .plainText(node == null ? "" : node.getPlainText())
-                .build();
+        return allBlockIds.get(allBlockIds.size() - 1);
     }
 
     private boolean targetsMedia(DocumentSemanticActionType action) {
@@ -303,23 +306,11 @@ public class DocumentAnchorResolver {
     }
 
     private List<String> sectionAllBlockIds(DocumentStructureSnapshot snapshot, String headingBlockId) {
-        List<String> allIds = structureParser.parseBlockIds(snapshot.getRawFullXml());
-        List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(snapshot.getRawOutlineXml());
-        int start = allIds.indexOf(headingBlockId);
-        if (start < 0) {
-            return List.of(headingBlockId);
+        if (snapshot.getSectionBlockIds() != null) {
+            List<String> ids = snapshot.getSectionBlockIds().get(headingBlockId);
+            if (ids != null && !ids.isEmpty()) return ids;
         }
-        int nextHeadingIndex = allIds.size();
-        for (DocumentStructureParser.HeadingBlock heading : headings) {
-            if (headingBlockId.equals(heading.getBlockId())) {
-                continue;
-            }
-            int candidate = allIds.indexOf(heading.getBlockId());
-            if (candidate > start) {
-                nextHeadingIndex = Math.min(nextHeadingIndex, candidate);
-            }
-        }
-        return List.copyOf(allIds.subList(start, nextHeadingIndex));
+        return List.of(headingBlockId);
     }
 
     private int resolveTopLevelIndex(DocumentStructureSnapshot snapshot, String headingBlockId) {

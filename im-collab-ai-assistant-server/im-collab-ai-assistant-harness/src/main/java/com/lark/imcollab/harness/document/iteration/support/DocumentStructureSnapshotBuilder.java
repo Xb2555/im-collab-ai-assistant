@@ -29,20 +29,11 @@ public class DocumentStructureSnapshotBuilder {
                 : artifact.getDocumentId();
         String docId = larkDocTool.extractDocumentId(docRef);
         LarkDocFetchResult outline = larkDocTool.fetchDocOutline(docRef);
-        LarkDocFetchResult fullMarkdown = larkDocTool.fetchDocFullMarkdown(docRef);
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(outline.getContent());
-        LarkDocFetchResult fullXml = null;
-        try {
-            fullXml = larkDocTool.fetchDocFull(docRef, "with-ids");
-        } catch (RuntimeException exception) {
-            // 轻量降级：富媒体路径优先保证可执行，不因为整篇 XML 抓取失败而中断。
-        }
-        List<String> allBlockIds = fullXml == null ? List.of() : structureParser.parseBlockIds(fullXml.getContent());
-        List<DocumentStructureParser.BlockNode> blocks = fullXml == null
-                ? List.of()
-                : structureParser.parseBlockNodes(fullXml.getContent());
+
         Map<String, DocumentStructureNode> headingIndex = new LinkedHashMap<>();
         Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
+        Map<String, List<String>> sectionBlockIds = new LinkedHashMap<>();
         List<DocumentStructureNode> rootNodes = new ArrayList<>();
         List<String> topLevelSequence = new ArrayList<>();
 
@@ -74,27 +65,41 @@ public class DocumentStructureSnapshotBuilder {
                 topLevelSequence.add(heading.getBlockId());
             }
         }
-            for (String blockId : allBlockIds) {
-                DocumentStructureParser.BlockNode parsedBlock = blocks.stream()
-                    .filter(block -> blockId.equals(block.getBlockId()))
-                    .findFirst()
-                    .orElse(null);
-            blockIndex.putIfAbsent(blockId, DocumentStructureNode.builder()
-                    .blockId(blockId)
-                    .blockType(parsedBlock == null ? "block" : parsedBlock.getTagName())
-                    .plainText(parsedBlock == null ? null : parsedBlock.getPlainText())
-                    .build());
+
+        // 对每个 top-level section 抓一次轻量 section XML，填充 sectionBlockIds 和 blockIndex
+        for (String headingId : topLevelSequence) {
+            try {
+                LarkDocFetchResult sectionXml = larkDocTool.fetchDocSection(docRef, headingId, "with-ids");
+                List<String> ids = structureParser.parseBlockIds(sectionXml.getContent());
+                List<DocumentStructureParser.BlockNode> sectionBlocks = structureParser.parseBlockNodes(sectionXml.getContent());
+                if (!ids.isEmpty()) {
+                    sectionBlockIds.put(headingId, List.copyOf(ids));
+                    for (DocumentStructureParser.BlockNode b : sectionBlocks) {
+                        blockIndex.putIfAbsent(b.getBlockId(), DocumentStructureNode.builder()
+                                .blockId(b.getBlockId())
+                                .blockType(b.getTagName())
+                                .plainText(b.getPlainText())
+                                .topLevelAncestorId(headingId)
+                                .build());
+                    }
+                }
+            } catch (RuntimeException ignored) {
+                // section fetch 失败时降级：只保留 heading 本身
+                sectionBlockIds.put(headingId, List.of(headingId));
+            }
         }
+
         return DocumentStructureSnapshot.builder()
                 .docId(docId)
-                .revisionId(fullMarkdown.getRevisionId())
+                .revisionId(outline.getRevisionId())
                 .rootNodes(rootNodes)
                 .headingIndex(headingIndex)
                 .blockIndex(blockIndex)
                 .topLevelSequence(topLevelSequence)
+                .sectionBlockIds(sectionBlockIds)
                 .rawOutlineXml(outline.getContent())
-                .rawFullXml(fullXml == null ? null : fullXml.getContent())
-                .rawFullMarkdown(fullMarkdown.getContent())
+                .rawFullXml(null)
+                .rawFullMarkdown(null)
                 .build();
     }
 }

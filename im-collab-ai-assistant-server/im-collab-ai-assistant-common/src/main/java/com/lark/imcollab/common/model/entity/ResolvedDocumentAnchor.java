@@ -19,4 +19,5 @@ public class ResolvedDocumentAnchor implements Serializable {
     private DocumentSectionAnchor sectionAnchor;
     private DocumentMediaAnchor mediaAnchor;
     private String preview;
+    private String insertionBlockId;
 }

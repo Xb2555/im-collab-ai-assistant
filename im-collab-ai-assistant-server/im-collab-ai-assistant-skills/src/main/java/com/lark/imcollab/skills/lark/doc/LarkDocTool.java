@@ -535,7 +535,7 @@ public class LarkDocTool {
             case "str_replace" -> updateBySelection(docRef, "replace_all", content, docFormat, null, pattern);
             case "block_insert_after" -> updateByBlockAnchor(docRef, "insert_after", content, docFormat, blockId);
             case "block_replace" -> updateByBlockAnchor(docRef, "replace_range", content, docFormat, blockId);
-            case "block_delete" -> deleteByBlockAnchor(docRef, blockId);
+            case "block_delete" -> directBlockDelete(docRef, blockId);
             case "create_whiteboard" -> appendWhiteboard(docRef);
             default -> legacyUpdateByCommand(docRef, normalizedCommand, content, docFormat, blockId, pattern, revisionId, timeoutMillis);
         };
@@ -786,6 +786,15 @@ public class LarkDocTool {
         }
         String markdown = toV1Markdown(content, docFormat);
         return updateBySelection(docRef, mode, markdown, "markdown", null, anchorSelection);
+    }
+
+    private LarkDocUpdateResult directBlockDelete(String docRef, String blockId) {
+        requireValue(blockId, "blockId");
+        Set<String> supportedFlags = supportedFlags("+update");
+        List<DocCommandAttempt> attempts = updateDocAttempts(
+                docRef, "block_delete", null, null, blockId.trim(), null, null, supportedFlags
+        );
+        return parseUpdateResult(executeJsonWithCompat("+update", attempts), "block_delete");
     }
 
     private LarkDocUpdateResult deleteByBlockAnchor(String docRef, String blockId) {

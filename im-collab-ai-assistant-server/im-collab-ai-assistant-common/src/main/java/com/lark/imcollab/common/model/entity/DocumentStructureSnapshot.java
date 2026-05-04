@@ -23,4 +23,5 @@ public class DocumentStructureSnapshot implements Serializable {
     private String rawOutlineXml;
     private String rawFullXml;
     private String rawFullMarkdown;
+    private Map<String, List<String>> sectionBlockIds;
 }

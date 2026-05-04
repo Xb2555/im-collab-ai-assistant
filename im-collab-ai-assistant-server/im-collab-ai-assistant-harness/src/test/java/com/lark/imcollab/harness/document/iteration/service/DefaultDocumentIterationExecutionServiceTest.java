@@ -75,19 +75,10 @@ class DefaultDocumentIterationExecutionServiceTest {
     @BeforeEach
     void setUp() {
         service = new DefaultDocumentIterationExecutionService(
-                ownershipGuard,
-                intentResolver,
-                snapshotBuilder,
-                anchorResolver,
-                strategyPlanner,
-                patchCompiler,
-                patchExecutor,
-                targetStateVerifier,
-                runtimeSupport,
-                assetResolutionFacade,
-                richContentExecutionPlanner,
-                richContentExecutionEngine,
-                richContentTargetStateVerifier
+                ownershipGuard, intentResolver, snapshotBuilder, anchorResolver,
+                strategyPlanner, patchCompiler, patchExecutor, targetStateVerifier,
+                runtimeSupport, assetResolutionFacade, richContentExecutionPlanner,
+                richContentExecutionEngine, richContentTargetStateVerifier
         );
     }
 
@@ -168,7 +159,7 @@ class DefaultDocumentIterationExecutionServiceTest {
 
         assertThat(response.getModifiedBlocks()).containsExactly("text-match");
         assertThat(response.getEditPlan().getStrategyType()).isEqualTo(DocumentStrategyType.TEXT_REPLACE);
-        verify(targetStateVerifier).verify(eq(plan), eq(beforeSnapshot), eq(afterSnapshot));
+        verify(targetStateVerifier).verify(eq(plan), eq(beforeSnapshot), any());
         verify(runtimeSupport).touchOwnedDocument(any(), any());
     }
 

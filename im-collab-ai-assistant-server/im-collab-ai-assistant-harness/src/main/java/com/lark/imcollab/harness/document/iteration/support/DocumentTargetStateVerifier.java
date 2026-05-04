@@ -218,7 +218,10 @@ public class DocumentTargetStateVerifier {
     }
 
     private String md(DocumentStructureSnapshot snapshot) {
-        return snapshot == null || snapshot.getRawFullMarkdown() == null ? "" : snapshot.getRawFullMarkdown();
+        if (snapshot == null || snapshot.getBlockIndex() == null) return "";
+        StringBuilder sb = new StringBuilder();
+        snapshot.getBlockIndex().values().forEach(n -> { if (n.getPlainText() != null) sb.append(n.getPlainText()).append("\n"); });
+        return sb.toString();
     }
 
     private String normalize(String value) {
