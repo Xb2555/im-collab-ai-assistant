@@ -54,6 +54,12 @@ public class RichContentExecutionEngine {
         if (plan.getResolvedAssetSpec().getGenerationPrompt() != null) {
             ctx.put("generationPrompt", plan.getResolvedAssetSpec().getGenerationPrompt());
         }
+        if (plan.getResolvedAssetSpec().getCaption() != null) {
+            ctx.put("imageCaption", plan.getResolvedAssetSpec().getCaption());
+        }
+        if (plan.getResolvedAssetSpec().getAltText() != null) {
+            ctx.put("imageAltText", plan.getResolvedAssetSpec().getAltText());
+        }
         if (plan.getResolvedAssetSpec().getTableSchema() != null) {
             ctx.put("tableModel", plan.getResolvedAssetSpec().getTableSchema());
         }

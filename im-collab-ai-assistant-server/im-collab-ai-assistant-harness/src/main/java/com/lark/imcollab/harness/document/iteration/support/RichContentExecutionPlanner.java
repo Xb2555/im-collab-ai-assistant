@@ -46,10 +46,6 @@ public class RichContentExecutionPlanner {
         steps.add(step("INSERT_IMAGE_BLOCK", "lark_doc_block_insert_after",
                 anchor.getInsertionBlockId() != null ? anchor.getInsertionBlockId()
                         : anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
-        if (asset.getCaption() != null && !asset.getCaption().isBlank()) {
-            // caption 通过 block_replace 更新，不退回模糊 str_replace
-            steps.add(step("UPDATE_CAPTION", "lark_doc_block_replace_caption", asset.getCaption()));
-        }
         steps.add(step("VERIFY_IMAGE_NODE", "snapshot_verify", MediaAssetType.IMAGE.name()));
     }
 

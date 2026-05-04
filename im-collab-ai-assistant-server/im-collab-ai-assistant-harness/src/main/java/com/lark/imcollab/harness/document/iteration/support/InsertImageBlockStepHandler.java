@@ -26,8 +26,9 @@ public class InsertImageBlockStepHandler implements ExecutionStepHandler {
         if (fileToken == null || fileToken.isBlank()) {
             fileToken = anchorBlockId;
         }
+        String altText = firstNonBlank(ctx.getString("imageAltText"), ctx.getString("imageCaption"), "image");
         LarkDocUpdateResult result = larkDocTool.updateByCommand(
-                docRef, "block_insert_after", toMarkdownImage(fileToken), "markdown", anchorBlockId, null, null);
+                docRef, "block_insert_after", toMarkdownImage(altText, fileToken), "markdown", anchorBlockId, null, null);
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("INSERT_IMAGE_BLOCK: insert failed");
         }
@@ -43,7 +44,26 @@ public class InsertImageBlockStepHandler implements ExecutionStepHandler {
         }
     }
 
-    private String toMarkdownImage(String fileToken) {
-        return "![image](" + fileToken + ")";
+    private String toMarkdownImage(String altText, String fileToken) {
+        return "![" + sanitizeAltText(altText) + "](" + fileToken + ")";
+    }
+
+    private String sanitizeAltText(String value) {
+        if (value == null || value.isBlank()) {
+            return "image";
+        }
+        return value.replace("]", "\\]");
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 }
