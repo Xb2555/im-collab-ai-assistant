@@ -97,7 +97,7 @@ public class LarkIMMessageProjectionService {
                 item.senderIdType(),
                 item.senderType(),
                 item.tenantKey(),
-                item.content(),
+                renderContent(item.msgType(), item.content(), openId -> toUserProfile(userMap.get(normalizeOpenId(openId)))),
                 item.mentions(),
                 item.upperMessageId(),
                 sender == null ? null : sender.name(),
@@ -288,6 +288,13 @@ public class LarkIMMessageProjectionService {
     private String profileName(String openId, Function<String, LarkUserProfile> profileResolver) {
         LarkUserProfile profile = profileResolver.apply(openId);
         return firstText(profile == null ? null : profile.name(), openId);
+    }
+
+    private LarkUserProfile toUserProfile(LarkUserDisplayInfo displayInfo) {
+        if (displayInfo == null) {
+            return null;
+        }
+        return new LarkUserProfile(null, displayInfo.name(), displayInfo.avatar());
     }
 
     private boolean looksLikeOpenId(String value) {
