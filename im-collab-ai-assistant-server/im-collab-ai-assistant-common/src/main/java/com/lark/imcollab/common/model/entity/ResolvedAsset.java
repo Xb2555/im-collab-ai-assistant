@@ -1,13 +1,17 @@
 package com.lark.imcollab.common.model.entity;
 
 import com.lark.imcollab.common.model.enums.MediaAssetType;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
 
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class ResolvedAsset implements Serializable {
     private MediaAssetType assetType;
     private String assetRef;
