@@ -16,6 +16,10 @@ import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.vo.DocumentIterationPlanVO;
 import com.lark.imcollab.common.model.vo.DocumentIterationVO;
+import com.lark.imcollab.common.model.entity.ExecutionPlan;
+import com.lark.imcollab.common.model.entity.ResolvedAsset;
+import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.harness.document.iteration.support.AssetResolutionFacade;
 import com.lark.imcollab.harness.document.iteration.support.DocumentAnchorResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditIntentResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditStrategyPlanner;
@@ -25,6 +29,8 @@ import com.lark.imcollab.harness.document.iteration.support.DocumentPatchCompile
 import com.lark.imcollab.harness.document.iteration.support.DocumentPatchExecutor;
 import com.lark.imcollab.harness.document.iteration.support.DocumentStructureSnapshotBuilder;
 import com.lark.imcollab.harness.document.iteration.support.DocumentTargetStateVerifier;
+import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionPlanner;
+import com.lark.imcollab.harness.document.iteration.support.RichContentTargetStateVerifier;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -42,6 +48,9 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
     private final DocumentPatchExecutor patchExecutor;
     private final DocumentTargetStateVerifier targetStateVerifier;
     private final DocumentIterationRuntimeSupport runtimeSupport;
+    private final AssetResolutionFacade assetResolutionFacade;
+    private final RichContentExecutionPlanner richContentExecutionPlanner;
+    private final RichContentTargetStateVerifier richContentTargetStateVerifier;
 
     public DefaultDocumentIterationExecutionService(
             DocumentOwnershipGuard ownershipGuard,
@@ -52,7 +61,10 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentPatchCompiler patchCompiler,
             DocumentPatchExecutor patchExecutor,
             DocumentTargetStateVerifier targetStateVerifier,
-            DocumentIterationRuntimeSupport runtimeSupport
+            DocumentIterationRuntimeSupport runtimeSupport,
+            AssetResolutionFacade assetResolutionFacade,
+            RichContentExecutionPlanner richContentExecutionPlanner,
+            RichContentTargetStateVerifier richContentTargetStateVerifier
     ) {
         this.ownershipGuard = ownershipGuard;
         this.intentResolver = intentResolver;
@@ -63,6 +75,9 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         this.patchExecutor = patchExecutor;
         this.targetStateVerifier = targetStateVerifier;
         this.runtimeSupport = runtimeSupport;
+        this.assetResolutionFacade = assetResolutionFacade;
+        this.richContentExecutionPlanner = richContentExecutionPlanner;
+        this.richContentTargetStateVerifier = richContentTargetStateVerifier;
     }
 
     @Override
@@ -76,7 +91,14 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
             ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, editIntent);
             DocumentEditStrategy strategy = strategyPlanner.plan(editIntent, anchor);
+            ResolvedAsset resolvedAsset = isRichMediaAction(editIntent.getSemanticAction())
+                    ? assetResolutionFacade.resolve(editIntent.getAssetSpec()) : null;
             DocumentEditPlan editPlan = patchCompiler.compile(runtime.getTaskId(), editIntent, snapshot, anchor, strategy);
+            if (resolvedAsset != null) {
+                ExecutionPlan executionPlan = richContentExecutionPlanner.plan(editIntent, anchor, strategy, resolvedAsset);
+                editPlan.setResolvedAssetSpec(editIntent.getAssetSpec());
+                editPlan.setExecutionPlan(executionPlan);
+            }
             if (editPlan.isRequiresApproval()) {
                 runtimeSupport.waitForApproval(runtime, request, editPlan, ownedArtifact, operator);
                 String summary = "已生成受控编辑计划，等待进一步确认";
@@ -182,7 +204,11 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                     .documentId(resolveDocId(ownedArtifact))
                     .build();
             DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
-            targetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
+            if (isRichMediaAction(editPlan.getSemanticAction())) {
+                richContentTargetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
+            } else {
+                targetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
+            }
         }
         String summary = buildSummary(editPlan.getIntentType(), patchResult.getModifiedBlocks(), editPlan)
                 + appendRevisionSummary(patchResult);
@@ -269,6 +295,17 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             case "REJECT", "REJECTED" -> ApprovalStatus.REJECTED;
             case "MODIFY", "MODIFIED" -> ApprovalStatus.MODIFIED;
             default -> throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "Unsupported approval action: " + action);
+        };
+    }
+
+    private boolean isRichMediaAction(DocumentSemanticActionType action) {
+        if (action == null) return false;
+        return switch (action) {
+            case INSERT_IMAGE_AFTER_ANCHOR, REPLACE_IMAGE, DELETE_IMAGE,
+                 INSERT_TABLE_AFTER_ANCHOR, REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE,
+                 INSERT_WHITEBOARD_AFTER_ANCHOR, UPDATE_WHITEBOARD_CONTENT,
+                 RELAYOUT_SECTION, CONVERT_TEXT_TO_TABLE, CONVERT_TEXT_TO_IMAGE_CARD -> true;
+            default -> false;
         };
     }
 

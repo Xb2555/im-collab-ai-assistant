@@ -73,9 +73,53 @@ public class DocumentEditStrategyPlanner {
                     DocumentPatchOperationType.BLOCK_MOVE_AFTER,
                     ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_BLOCK_INSERTED_AFTER).build(),
                     true, DocumentRiskLevel.HIGH);
-            case MOVE_BLOCK -> strategy(DocumentStrategyType.BLOCK_MOVE_AFTER, DocumentAnchorType.BLOCK,
+            case MOVE_BLOCK, MOVE_MEDIA_BLOCK -> strategy(DocumentStrategyType.BLOCK_MOVE_AFTER, DocumentAnchorType.BLOCK,
                     DocumentPatchOperationType.BLOCK_MOVE_AFTER,
                     ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_BLOCK_INSERTED_AFTER).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case INSERT_IMAGE_AFTER_ANCHOR -> strategy(DocumentStrategyType.MEDIA_INSERT_AFTER, DocumentAnchorType.BLOCK,
+                    DocumentPatchOperationType.BLOCK_INSERT_AFTER,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT).build(),
+                    false, DocumentRiskLevel.MEDIUM);
+            case REPLACE_IMAGE -> strategy(DocumentStrategyType.BLOCK_REPLACE, DocumentAnchorType.MEDIA,
+                    DocumentPatchOperationType.BLOCK_REPLACE,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case DELETE_IMAGE -> strategy(DocumentStrategyType.BLOCK_DELETE, DocumentAnchorType.MEDIA,
+                    DocumentPatchOperationType.BLOCK_DELETE,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_MEDIA_NODE_REMOVED).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case INSERT_TABLE_AFTER_ANCHOR -> strategy(DocumentStrategyType.TABLE_INSERT_AFTER, DocumentAnchorType.BLOCK,
+                    DocumentPatchOperationType.BLOCK_INSERT_AFTER,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_TABLE_NODE_PRESENT).build(),
+                    false, DocumentRiskLevel.MEDIUM);
+            case REWRITE_TABLE_DATA, APPEND_TABLE_ROW -> strategy(DocumentStrategyType.TABLE_DATA_REWRITE, DocumentAnchorType.TABLE,
+                    DocumentPatchOperationType.BLOCK_REPLACE,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_TABLE_NODE_PRESENT).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case DELETE_TABLE -> strategy(DocumentStrategyType.BLOCK_DELETE, DocumentAnchorType.TABLE,
+                    DocumentPatchOperationType.BLOCK_DELETE,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_MEDIA_NODE_REMOVED).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case INSERT_WHITEBOARD_AFTER_ANCHOR -> strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentAnchorType.BLOCK,
+                    DocumentPatchOperationType.BLOCK_INSERT_AFTER,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case UPDATE_WHITEBOARD_CONTENT -> strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentAnchorType.MEDIA,
+                    DocumentPatchOperationType.BLOCK_REPLACE,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case RELAYOUT_SECTION -> strategy(DocumentStrategyType.LAYOUT_REORDER, DocumentAnchorType.SECTION,
+                    DocumentPatchOperationType.BLOCK_MOVE_AFTER,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_LAYOUT_REORDERED).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case CONVERT_TEXT_TO_TABLE -> strategy(DocumentStrategyType.CONVERT_TO_TABLE, DocumentAnchorType.BLOCK,
+                    DocumentPatchOperationType.BLOCK_INSERT_AFTER,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_TABLE_NODE_PRESENT).build(),
+                    true, DocumentRiskLevel.HIGH);
+            case CONVERT_TEXT_TO_IMAGE_CARD -> strategy(DocumentStrategyType.CONVERT_TO_IMAGE_CARD, DocumentAnchorType.BLOCK,
+                    DocumentPatchOperationType.BLOCK_INSERT_AFTER,
+                    ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT).build(),
                     true, DocumentRiskLevel.HIGH);
             default -> strategy(DocumentStrategyType.BLOCK_INSERT_AFTER, anchor.getAnchorType(),
                     DocumentPatchOperationType.BLOCK_INSERT_AFTER,

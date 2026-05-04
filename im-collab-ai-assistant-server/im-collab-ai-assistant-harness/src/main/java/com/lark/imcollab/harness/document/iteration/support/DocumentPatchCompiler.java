@@ -72,6 +72,8 @@ public class DocumentPatchCompiler {
             case DELETE_WHOLE_SECTION -> buildSectionDeletePlan(taskId, intent, selector, snapshot, anchor, strategy, DeleteScope.WHOLE_SECTION);
             case MOVE_SECTION, MOVE_BLOCK -> buildApprovalOnlyPlan(taskId, intent, selector, snapshot, anchor, strategy,
                     "已识别为移动类编辑，当前链路需要显式人工确认，不自动执行");
+            default -> buildApprovalOnlyPlan(taskId, intent, selector, snapshot, anchor, strategy,
+                    "富媒体/布局类编辑，由 RichContentExecutionPlanner 处理");
         };
     }
 

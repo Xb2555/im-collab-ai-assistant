@@ -30,6 +30,8 @@ public class DocumentEditPlan implements Serializable {
     private String generatedContent;
     private String styleProfile;
     private String mediaSpec;
+    private MediaAssetSpec resolvedAssetSpec;
+    private ExecutionPlan executionPlan;
     private String layoutSpec;
     private DocumentPatchOperationType toolCommandType;
     private DocumentStrategyType strategyType;

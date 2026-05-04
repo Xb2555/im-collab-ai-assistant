@@ -3,6 +3,7 @@ package com.lark.imcollab.harness.document.iteration.support;
 import com.lark.imcollab.common.domain.Artifact;
 import com.lark.imcollab.common.model.entity.DocumentBlockAnchor;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.DocumentMediaAnchor;
 import com.lark.imcollab.common.model.entity.DocumentSectionAnchor;
 import com.lark.imcollab.common.model.entity.DocumentStructureNode;
 import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
@@ -10,6 +11,7 @@ import com.lark.imcollab.common.model.entity.DocumentTextAnchor;
 import com.lark.imcollab.common.model.entity.ResolvedDocumentAnchor;
 import com.lark.imcollab.common.model.enums.DocumentAnchorType;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.common.model.enums.MediaAssetType;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -55,6 +57,14 @@ public class DocumentAnchorResolver {
                     .preview(blockAnchor == null ? "" : blockAnchor.getPlainText())
                     .build();
         }
+        if (targetsMedia(action)) {
+            DocumentMediaAnchor mediaAnchor = resolveMediaAnchor(snapshot, intent.getUserInstruction(), mediaTypeFor(action));
+            return ResolvedDocumentAnchor.builder()
+                    .anchorType(mediaAnchorType(action))
+                    .mediaAnchor(mediaAnchor)
+                    .preview(mediaAnchor == null ? "" : mediaAnchor.getPlainText())
+                    .build();
+        }
         if (targetsSection(action)) {
             DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(snapshot, intent.getUserInstruction());
             return ResolvedDocumentAnchor.builder()
@@ -77,6 +87,54 @@ public class DocumentAnchorResolver {
                 .blockAnchor(blockAnchor)
                 .preview(blockAnchor == null ? "" : blockAnchor.getPlainText())
                 .build();
+    }
+
+    private boolean targetsMedia(DocumentSemanticActionType action) {
+        return switch (action) {
+            case REPLACE_IMAGE, DELETE_IMAGE, REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE,
+                 UPDATE_WHITEBOARD_CONTENT, MOVE_MEDIA_BLOCK -> true;
+            default -> false;
+        };
+    }
+
+    private DocumentAnchorType mediaAnchorType(DocumentSemanticActionType action) {
+        return switch (action) {
+            case REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE -> DocumentAnchorType.TABLE;
+            default -> DocumentAnchorType.MEDIA;
+        };
+    }
+
+    private MediaAssetType mediaTypeFor(DocumentSemanticActionType action) {
+        return switch (action) {
+            case REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE -> MediaAssetType.TABLE;
+            case UPDATE_WHITEBOARD_CONTENT -> MediaAssetType.WHITEBOARD;
+            default -> MediaAssetType.IMAGE;
+        };
+    }
+
+    private DocumentMediaAnchor resolveMediaAnchor(DocumentStructureSnapshot snapshot, String instruction, MediaAssetType expectedType) {
+        String quoted = structureParser.extractQuotedText(instruction);
+        List<String> blockIds = structureParser.parseBlockIds(snapshot.getRawFullXml());
+        for (int i = 0; i < blockIds.size(); i++) {
+            String blockId = blockIds.get(i);
+            DocumentStructureNode node = snapshot.getBlockIndex() == null ? null : snapshot.getBlockIndex().get(blockId);
+            if (node == null || node.getBlockType() == null) continue;
+            String bt = node.getBlockType().toLowerCase(java.util.Locale.ROOT);
+            boolean typeMatch = bt.contains(expectedType.name().toLowerCase(java.util.Locale.ROOT))
+                    || (expectedType == MediaAssetType.IMAGE && bt.contains("media"))
+                    || (expectedType == MediaAssetType.TABLE && bt.contains("table"))
+                    || (expectedType == MediaAssetType.WHITEBOARD && bt.contains("whiteboard"));
+            if (!typeMatch) continue;
+            if (quoted != null && !quoted.isBlank() && node.getPlainText() != null && !node.getPlainText().contains(quoted)) continue;
+            return DocumentMediaAnchor.builder()
+                    .blockId(blockId)
+                    .mediaType(expectedType)
+                    .plainText(node.getPlainText())
+                    .prevBlockId(i > 0 ? blockIds.get(i - 1) : null)
+                    .nextBlockId(i + 1 < blockIds.size() ? blockIds.get(i + 1) : null)
+                    .build();
+        }
+        return null;
     }
 
     private boolean targetsSection(DocumentSemanticActionType action) {

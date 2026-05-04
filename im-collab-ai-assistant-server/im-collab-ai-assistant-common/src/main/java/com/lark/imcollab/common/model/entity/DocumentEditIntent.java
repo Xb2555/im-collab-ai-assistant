@@ -9,6 +9,7 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
 import java.util.Map;
+import com.lark.imcollab.common.model.entity.MediaAssetSpec;
 
 @Data
 @Builder
@@ -19,4 +20,5 @@ public class DocumentEditIntent implements Serializable {
     private DocumentSemanticActionType semanticAction;
     private String userInstruction;
     private Map<String, String> parameters;
+    private MediaAssetSpec assetSpec;
 }
