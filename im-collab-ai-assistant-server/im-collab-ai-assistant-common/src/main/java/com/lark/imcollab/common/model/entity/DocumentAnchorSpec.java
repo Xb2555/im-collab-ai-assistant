@@ -16,6 +16,7 @@ import java.io.Serializable;
 public class DocumentAnchorSpec implements Serializable {
     private DocumentAnchorKind anchorKind;
     private DocumentAnchorMatchMode matchMode;
+    private String blockId;
     private String headingTitle;
     private String outlinePath;
     private Integer structuralOrdinal;

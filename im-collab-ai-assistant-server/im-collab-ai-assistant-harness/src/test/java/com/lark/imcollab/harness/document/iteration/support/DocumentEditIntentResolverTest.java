@@ -131,4 +131,50 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.isClarificationNeeded()).isTrue();
         assertThat(intent.getClarificationHint()).contains("缺少明确锚点");
     }
+
+    @Test
+    void byBlockIdAnchorIsAcceptedWhenStructuredFieldIsPresent() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_SECTION_BODY",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_BLOCK_ID",
+                    "blockId": "heading-1"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("改写这个 section");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getBlockId()).isEqualTo("heading-1");
+    }
+
+    @Test
+    void byBlockIdAnchorWithoutBlockIdIsRejected() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_SECTION_BODY",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_BLOCK_ID"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("改写这个 section");
+
+        assertThat(intent.isClarificationNeeded()).isTrue();
+        assertThat(intent.getClarificationHint()).contains("锚点描述不完整");
+    }
 }

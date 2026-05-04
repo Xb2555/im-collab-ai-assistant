@@ -116,6 +116,76 @@ class DocumentAnchorResolverTest {
         assertThat(anchor.getAnchorType()).isEqualTo(DocumentAnchorType.UNRESOLVED);
     }
 
+    @Test
+    void byBlockIdSectionAnchorResolvesOnlyWhenBlockIsRealHeading() {
+        DocumentAnchorResolver resolver = new DocumentAnchorResolver(null);
+
+        ResolvedDocumentAnchor anchor = resolver.resolve(
+                Artifact.builder().externalUrl("https://example.com/docx/doc123").build(),
+                snapshot(),
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.UPDATE_CONTENT)
+                        .semanticAction(DocumentSemanticActionType.REWRITE_SECTION_BODY)
+                        .userInstruction("改写这个章节")
+                        .anchorSpec(DocumentAnchorSpec.builder()
+                                .anchorKind(DocumentAnchorKind.SECTION)
+                                .matchMode(DocumentAnchorMatchMode.BY_BLOCK_ID)
+                                .blockId("heading-1")
+                                .build())
+                        .build()
+        );
+
+        assertThat(anchor.getAnchorType()).isEqualTo(DocumentAnchorType.SECTION);
+        assertThat(anchor.getSectionAnchor()).isNotNull();
+        assertThat(anchor.getSectionAnchor().getHeadingBlockId()).isEqualTo("heading-1");
+    }
+
+    @Test
+    void byBlockIdSectionAnchorRejectsNonHeadingBlock() {
+        DocumentAnchorResolver resolver = new DocumentAnchorResolver(null);
+
+        ResolvedDocumentAnchor anchor = resolver.resolve(
+                Artifact.builder().externalUrl("https://example.com/docx/doc123").build(),
+                snapshot(),
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.UPDATE_CONTENT)
+                        .semanticAction(DocumentSemanticActionType.REWRITE_SECTION_BODY)
+                        .userInstruction("改写这个章节")
+                        .anchorSpec(DocumentAnchorSpec.builder()
+                                .anchorKind(DocumentAnchorKind.SECTION)
+                                .matchMode(DocumentAnchorMatchMode.BY_BLOCK_ID)
+                                .blockId("body-1")
+                                .build())
+                        .build()
+        );
+
+        assertThat(anchor.getAnchorType()).isEqualTo(DocumentAnchorType.UNRESOLVED);
+    }
+
+    @Test
+    void byBlockIdBlockAnchorResolvesTargetBlockWithoutQuotedTextFallback() {
+        DocumentAnchorResolver resolver = new DocumentAnchorResolver(null);
+
+        ResolvedDocumentAnchor anchor = resolver.resolve(
+                Artifact.builder().externalUrl("https://example.com/docx/doc123").build(),
+                snapshot(),
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.UPDATE_CONTENT)
+                        .semanticAction(DocumentSemanticActionType.REWRITE_METADATA_AT_DOCUMENT_HEAD)
+                        .userInstruction("改写开头元信息")
+                        .anchorSpec(DocumentAnchorSpec.builder()
+                                .anchorKind(DocumentAnchorKind.DOCUMENT_HEAD)
+                                .matchMode(DocumentAnchorMatchMode.BY_BLOCK_ID)
+                                .blockId("meta-1")
+                                .build())
+                        .build()
+        );
+
+        assertThat(anchor.getAnchorType()).isEqualTo(DocumentAnchorType.BLOCK);
+        assertThat(anchor.getBlockAnchor()).isNotNull();
+        assertThat(anchor.getBlockAnchor().getBlockId()).isEqualTo("meta-1");
+    }
+
     private DocumentStructureSnapshot snapshot() {
         Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
         blockIndex.put("meta-1", DocumentStructureNode.builder().blockId("meta-1").blockType("p").plainText("作者：张三").build());

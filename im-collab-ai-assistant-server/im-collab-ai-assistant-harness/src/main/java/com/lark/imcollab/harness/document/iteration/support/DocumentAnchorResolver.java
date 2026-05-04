@@ -129,7 +129,9 @@ public class DocumentAnchorResolver {
         if (spec == null) return null;
         String headingBlockId = null;
 
-        if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL && spec.getStructuralOrdinal() != null) {
+        if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_BLOCK_ID && spec.getBlockId() != null) {
+            headingBlockId = resolveHeadingBlockId(snapshot, spec.getBlockId());
+        } else if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL && spec.getStructuralOrdinal() != null) {
             List<String> topLevel = snapshot.getTopLevelSequence();
             int idx = spec.getStructuralOrdinal() - 1;
             if (topLevel != null && idx >= 0 && idx < topLevel.size()) {
@@ -144,7 +146,7 @@ public class DocumentAnchorResolver {
         if (headingBlockId == null) return null;
 
         // 按需抓取 section 明细
-        if (artifact != null) {
+        if (artifact != null && snapshotBuilder != null) {
             String docRef = artifact.getExternalUrl() != null ? artifact.getExternalUrl() : artifact.getDocumentId();
             snapshotBuilder.fetchSectionDetail(snapshot, headingBlockId, docRef);
         }
@@ -229,6 +231,9 @@ public class DocumentAnchorResolver {
     // ---- block anchor: 基于 snapshot blockIndex ----
 
     private DocumentBlockAnchor resolveBlockAnchor(DocumentStructureSnapshot snapshot, DocumentAnchorSpec spec) {
+        if (spec != null && spec.getMatchMode() == DocumentAnchorMatchMode.BY_BLOCK_ID) {
+            return resolveBlockAnchorById(snapshot, spec.getBlockId());
+        }
         String quoted = spec == null ? null : spec.getQuotedText();
         if (quoted == null || quoted.isBlank()) return null;
         if (snapshot.getBlockIndex() == null) return null;
@@ -298,6 +303,10 @@ public class DocumentAnchorResolver {
     // ---- head metadata block ----
 
     private DocumentBlockAnchor resolveHeadMetadataBlock(DocumentStructureSnapshot snapshot, DocumentAnchorSpec spec) {
+        if (spec != null && spec.getMatchMode() == DocumentAnchorMatchMode.BY_BLOCK_ID) {
+            DocumentBlockAnchor blockAnchor = resolveBlockAnchorById(snapshot, spec.getBlockId());
+            return isHeadMetadataBlock(snapshot, blockAnchor == null ? null : blockAnchor.getBlockId()) ? blockAnchor : null;
+        }
         if (snapshot.getBlockIndex() == null) return null;
         String firstHeadingId = snapshot.getTopLevelSequence() == null || snapshot.getTopLevelSequence().isEmpty()
                 ? null : snapshot.getTopLevelSequence().get(0);
@@ -364,6 +373,66 @@ public class DocumentAnchorResolver {
         if (node == null) return true;
         if ("heading".equalsIgnoreCase(node.getBlockType()) || node.getHeadingLevel() != null) return true;
         return snapshot != null && snapshot.getHeadingIndex() != null && snapshot.getHeadingIndex().containsKey(node.getBlockId());
+    }
+
+    private String resolveHeadingBlockId(DocumentStructureSnapshot snapshot, String blockId) {
+        if (snapshot == null || blockId == null || snapshot.getHeadingIndex() == null) {
+            return null;
+        }
+        DocumentStructureNode headingNode = snapshot.getHeadingIndex().get(blockId);
+        return headingNode == null ? null : blockId;
+    }
+
+    private DocumentBlockAnchor resolveBlockAnchorById(DocumentStructureSnapshot snapshot, String blockId) {
+        if (snapshot == null || blockId == null || snapshot.getBlockIndex() == null) {
+            return null;
+        }
+        DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
+        if (node == null || isProtectedBlock(node, snapshot)) {
+            return null;
+        }
+        List<String> ordered = snapshot.getOrderedBlockIds();
+        String prevId = null;
+        String nextId = null;
+        if (ordered != null) {
+            int index = ordered.indexOf(blockId);
+            if (index >= 0) {
+                prevId = index > 0 ? ordered.get(index - 1) : null;
+                nextId = index + 1 < ordered.size() ? ordered.get(index + 1) : null;
+            }
+        }
+        return DocumentBlockAnchor.builder()
+                .blockId(blockId)
+                .blockType(node.getBlockType())
+                .plainText(node.getPlainText())
+                .topLevelAncestorId(node.getTopLevelAncestorId())
+                .nextBlockId(nextId != null ? nextId : node.getNextSiblingId())
+                .prevBlockId(prevId != null ? prevId : node.getPrevSiblingId())
+                .build();
+    }
+
+    private boolean isHeadMetadataBlock(DocumentStructureSnapshot snapshot, String blockId) {
+        if (snapshot == null || blockId == null) {
+            return false;
+        }
+        String firstHeadingId = snapshot.getTopLevelSequence() == null || snapshot.getTopLevelSequence().isEmpty()
+                ? null : snapshot.getTopLevelSequence().get(0);
+        if (firstHeadingId == null) {
+            return snapshot.getBlockIndex() != null && snapshot.getBlockIndex().containsKey(blockId);
+        }
+        List<String> ordered = snapshot.getOrderedBlockIds();
+        if (ordered == null) {
+            ordered = List.copyOf(snapshot.getBlockIndex().keySet());
+        }
+        for (String currentBlockId : ordered) {
+            if (firstHeadingId.equals(currentBlockId)) {
+                return false;
+            }
+            if (blockId.equals(currentBlockId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean targetsInsertAfterSection(DocumentSemanticActionType action) {

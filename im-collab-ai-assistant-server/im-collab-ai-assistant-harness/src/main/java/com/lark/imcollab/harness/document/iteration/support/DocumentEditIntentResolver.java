@@ -63,6 +63,7 @@ public class DocumentEditIntentResolver {
             anchorSpec = DocumentAnchorSpec.builder()
                     .anchorKind(parseEnum(DocumentAnchorKind.class, str(anchorMap.get("anchorKind"))))
                     .matchMode(parseEnum(DocumentAnchorMatchMode.class, str(anchorMap.get("matchMode"))))
+                    .blockId(str(anchorMap.get("blockId")))
                     .headingTitle(str(anchorMap.get("headingTitle")))
                     .outlinePath(str(anchorMap.get("outlinePath")))
                     .structuralOrdinal(toInt(anchorMap.get("structuralOrdinal")))
@@ -270,7 +271,7 @@ public class DocumentEditIntentResolver {
             case BY_OUTLINE_PATH -> hasText(anchorSpec.getOutlinePath());
             case BY_STRUCTURAL_ORDINAL -> anchorSpec.getStructuralOrdinal() != null && hasText(anchorSpec.getStructuralOrdinalScope());
             case BY_QUOTED_TEXT -> hasText(anchorSpec.getQuotedText());
-            case BY_BLOCK_ID -> false;
+            case BY_BLOCK_ID -> hasText(anchorSpec.getBlockId());
             case BY_MEDIA_CAPTION -> hasText(anchorSpec.getMediaCaption());
         };
     }
