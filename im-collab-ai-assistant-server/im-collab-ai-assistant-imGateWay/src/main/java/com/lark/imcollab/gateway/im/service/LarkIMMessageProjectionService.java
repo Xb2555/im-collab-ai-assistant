@@ -2,6 +2,8 @@ package com.lark.imcollab.gateway.im.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.lark.imcollab.gateway.im.dto.LarkMessageHistoryViewResponse;
 import com.lark.imcollab.gateway.im.dto.LarkRealtimeMessage;
 import com.lark.imcollab.gateway.im.dto.LarkUserDisplayInfo;
@@ -32,8 +34,7 @@ public class LarkIMMessageProjectionService {
 
     public LarkIMMessageProjectionService(
             LarkUserProfileHydrationService userProfileHydrationService,
-            ObjectMapper objectMapper
-    ) {
+            ObjectMapper objectMapper) {
         this.userProfileHydrationService = userProfileHydrationService;
         this.objectMapper = objectMapper;
     }
@@ -58,8 +59,7 @@ public class LarkIMMessageProjectionService {
         String content = renderContent(
                 event == null ? null : event.messageType(),
                 event == null ? null : event.content(),
-                userProfileHydrationService::resolveByTenantAccessToken
-        );
+                userProfileHydrationService::resolveByTenantAccessToken);
         return new LarkRealtimeMessage(
                 event == null ? null : event.eventId(),
                 event == null ? null : event.messageId(),
@@ -71,14 +71,12 @@ public class LarkIMMessageProjectionService {
                 sender == null ? null : sender.name(),
                 sender == null ? null : sender.avatarUrl(),
                 event == null ? null : event.createTime(),
-                event != null && event.mentionDetected()
-        );
+                event != null && event.mentionDetected());
     }
 
     private LarkMessageHistoryItem projectHistoryItem(
             LarkMessageHistoryItem item,
-            Map<String, LarkUserDisplayInfo> userMap
-    ) {
+            Map<String, LarkUserDisplayInfo> userMap) {
         LarkUserDisplayInfo sender = shouldHydrateSender(item.msgType())
                 ? userMap.get(normalizeOpenId(item.senderId()))
                 : null;
@@ -97,12 +95,11 @@ public class LarkIMMessageProjectionService {
                 item.senderIdType(),
                 item.senderType(),
                 item.tenantKey(),
-                renderContent(item.msgType(), item.content(), openId -> toUserProfile(userMap.get(normalizeOpenId(openId)))),
+                normalizeHistoryContent(item.msgType(), item.content(), userMap),
                 item.mentions(),
                 item.upperMessageId(),
                 sender == null ? null : sender.name(),
-                sender == null ? null : sender.avatar()
-        );
+                sender == null ? null : sender.avatar());
     }
 
     private Set<String> collectOpenIds(List<LarkMessageHistoryItem> items) {
@@ -134,7 +131,8 @@ public class LarkIMMessageProjectionService {
         try {
             collectOpenIdsFromJson(openIds, objectMapper.readTree(content));
         } catch (IOException ignored) {
-            // Message content can be arbitrary user text. Only JSON system/card payloads are scanned for ids.
+            // Message content can be arbitrary user text. Only JSON system/card payloads
+            // are scanned for ids.
         }
     }
 
@@ -181,11 +179,117 @@ public class LarkIMMessageProjectionService {
         return "text".equalsIgnoreCase(messageType);
     }
 
+    private String normalizeHistoryContent(
+            String messageType,
+            String content,
+            Map<String, LarkUserDisplayInfo> userMap) {
+        if (!"system".equalsIgnoreCase(messageType)) {
+            return content;
+        }
+        if (content == null || content.isBlank()) {
+            return content;
+        }
+        try {
+            JsonNode rootNode = objectMapper.readTree(content);
+            if (!(rootNode instanceof ObjectNode root)) {
+                return content;
+            }
+            String template = firstText(text(root, "template"), text(root, "text"));
+            if (template == null) {
+                return content;
+            }
+            ObjectNode variablesNode = root.with("variables");
+            Matcher matcher = TEMPLATE_VARIABLE_PATTERN.matcher(template);
+            while (matcher.find()) {
+                String variableName = matcher.group(1);
+                JsonNode variableNode = findVariable(root, variableName);
+                upsertNormalizedVariable(variablesNode, variableName, variableNode, userMap);
+            }
+            return objectMapper.writeValueAsString(root);
+        } catch (IOException exception) {
+            return content;
+        }
+    }
+
+    private void upsertNormalizedVariable(
+            ObjectNode variablesNode,
+            String variableName,
+            JsonNode variableNode,
+            Map<String, LarkUserDisplayInfo> userMap) {
+        if (variablesNode == null || variableName == null || variableName.isBlank()) {
+            return;
+        }
+        ArrayNode normalized = normalizeVariableToArray(variableNode, userMap);
+        if (normalized == null || normalized.isEmpty()) {
+            return;
+        }
+        variablesNode.set(variableName, normalized);
+    }
+
+    private ArrayNode normalizeVariableToArray(JsonNode variableNode, Map<String, LarkUserDisplayInfo> userMap) {
+        if (variableNode == null || variableNode.isMissingNode() || variableNode.isNull()) {
+            return null;
+        }
+        ArrayNode result = objectMapper.createArrayNode();
+        if (variableNode.isArray()) {
+            for (JsonNode item : variableNode) {
+                appendNormalizedValue(result, item, userMap);
+            }
+        } else {
+            appendNormalizedValue(result, variableNode, userMap);
+        }
+        return result;
+    }
+
+    private void appendNormalizedValue(ArrayNode target, JsonNode node, Map<String, LarkUserDisplayInfo> userMap) {
+        if (target == null || node == null || node.isNull() || node.isMissingNode()) {
+            return;
+        }
+        String value = extractVariableValue(node, userMap);
+        if (value != null && !value.isBlank()) {
+            target.add(value);
+        }
+    }
+
+    private String extractVariableValue(JsonNode node, Map<String, LarkUserDisplayInfo> userMap) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return null;
+        }
+        if (node.isTextual()) {
+            String value = node.asText();
+            if (looksLikeOpenId(value)) {
+                LarkUserDisplayInfo user = userMap == null ? null : userMap.get(normalizeOpenId(value));
+                return firstText(user == null ? null : user.name(), value);
+            }
+            return value;
+        }
+        if (!node.isObject()) {
+            return node.asText(null);
+        }
+        String openId = firstText(
+                text(node, "open_id"),
+                text(node, "user_id"),
+                text(node, "id"),
+                text(node.path("user"), "open_id"),
+                text(node.path("user"), "user_id"),
+                text(node.path("user"), "id"));
+        if (openId != null) {
+            LarkUserDisplayInfo user = userMap == null ? null : userMap.get(normalizeOpenId(openId));
+            return firstText(user == null ? null : user.name(), openId);
+        }
+        return firstText(
+                text(node, "name"),
+                text(node, "user_name"),
+                text(node, "display_name"),
+                text(node, "text"),
+                text(node, "content"),
+                text(node, "value"));
+    }
+
     private String renderContent(
             String messageType,
             String content,
-            Function<String, LarkUserProfile> profileResolver
-    ) {
+            Function<String, LarkUserProfile> profileResolver) {
         if (!"system".equalsIgnoreCase(messageType)) {
             return content;
         }
@@ -266,8 +370,7 @@ public class LarkIMMessageProjectionService {
                 text(node, "display_name"),
                 text(node, "text"),
                 text(node, "content"),
-                text(node, "value")
-        );
+                text(node, "value"));
         if (explicitName != null) {
             return explicitName;
         }
@@ -277,8 +380,7 @@ public class LarkIMMessageProjectionService {
                 text(node, "id"),
                 text(node.path("user"), "open_id"),
                 text(node.path("user"), "user_id"),
-                text(node.path("user"), "id")
-        );
+                text(node.path("user"), "id"));
         if (openId != null) {
             return profileName(openId, profileResolver);
         }
