@@ -241,10 +241,6 @@ public class LarkCliClient {
         return new ResolvedCliCommand(normalizedExecutable, normalizedArgs);
     }
 
-    private boolean isWindows() {
-        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
-    }
-
     private boolean isPowerShellWrapper(String executable, List<String> args) {
         if (executable == null || args == null || args.size() < 2) {
             return false;

@@ -89,6 +89,34 @@ class LarkUserProfileHydrationServiceTests {
     }
 
     @Test
+    void shouldCacheDeniedHydrationAndSkipRepeatedRequests() {
+        when(redisJsonStore.get("imcollab:lark:user-profile-denied:ou_1", Boolean.class))
+                .thenReturn(Optional.of(Boolean.TRUE));
+
+        LarkUserProfile profile = service.resolveByTenantAccessToken("ou_1");
+
+        assertThat(profile.name()).isNull();
+        assertThat(profile.avatarUrl()).isNull();
+        verify(openApiClient, never()).getWithTenantToken(any(), any());
+    }
+
+    @Test
+    void shouldCacheDeniedHydrationWhenOpenApiReturnsNoAuthority() throws Exception {
+        when(redisJsonStore.get("imcollab:lark:user-profile-denied:ou_1", Boolean.class))
+                .thenReturn(Optional.empty());
+        when(openApiClient.getWithTenantToken(
+                eq("/open-apis/contact/v3/users/ou_1"),
+                eq(java.util.Map.of("user_id_type", "open_id"))
+        )).thenThrow(new com.lark.imcollab.gateway.im.client.LarkOpenApiException(41050, "no user authority error"));
+
+        LarkUserProfile profile = service.resolveByTenantAccessToken("ou_1");
+
+        assertThat(profile.name()).isNull();
+        assertThat(profile.avatarUrl()).isNull();
+        verify(redisJsonStore).set(eq("imcollab:lark:user-profile-denied:ou_1"), eq(Boolean.TRUE), any(Duration.class));
+    }
+
+    @Test
     void shouldSkipInvalidOrBotOpenId() {
         assertThat(service.resolveByTenantAccessToken("bot")).isNull();
         assertThat(service.resolveByTenantAccessToken("user_1")).isNull();

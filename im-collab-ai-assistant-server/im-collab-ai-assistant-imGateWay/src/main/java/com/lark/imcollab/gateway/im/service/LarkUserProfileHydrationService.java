@@ -17,7 +17,10 @@ public class LarkUserProfileHydrationService {
 
     private static final Logger log = LoggerFactory.getLogger(LarkUserProfileHydrationService.class);
     private static final Duration PROFILE_CACHE_TTL = Duration.ofHours(6);
+    private static final Duration DENIED_PROFILE_CACHE_TTL = Duration.ofMinutes(15);
     private static final String PROFILE_CACHE_KEY_PREFIX = "imcollab:lark:user-profile:";
+    private static final String PROFILE_DENIED_CACHE_KEY_PREFIX = "imcollab:lark:user-profile-denied:";
+    private static final int LARK_NO_USER_AUTHORITY_ERROR = 41050;
 
     private final LarkOpenApiClient openApiClient;
     private final RedisJsonStore redisJsonStore;
@@ -40,6 +43,9 @@ public class LarkUserProfileHydrationService {
         if (normalizedOpenId == null) {
             return null;
         }
+        if (isHydrationDenied(normalizedOpenId)) {
+            return new LarkUserProfile(normalizedOpenId, null, null);
+        }
         Optional<LarkUserProfile> cached = readCachedProfile(normalizedOpenId);
         if (cached.isPresent()) {
             return cached.get();
@@ -51,8 +57,13 @@ public class LarkUserProfileHydrationService {
             }
             return profile;
         } catch (LarkOpenApiException exception) {
-            log.warn("Failed to hydrate Lark user profile: openId={}, larkCode={}, message={}",
-                    normalizedOpenId, exception.getLarkCode(), exception.getMessage());
+            if (exception.getLarkCode() == LARK_NO_USER_AUTHORITY_ERROR) {
+                cacheHydrationDenied(normalizedOpenId);
+                log.debug("Skipped Lark user profile hydration due to missing authority: openId={}", normalizedOpenId);
+            } else {
+                log.warn("Failed to hydrate Lark user profile: openId={}, larkCode={}, message={}",
+                        normalizedOpenId, exception.getLarkCode(), exception.getMessage());
+            }
             return new LarkUserProfile(normalizedOpenId, null, null);
         } catch (RuntimeException exception) {
             log.warn("Failed to hydrate Lark user profile: openId={}, message={}",
@@ -79,6 +90,22 @@ public class LarkUserProfileHydrationService {
             redisJsonStore.set(cacheKey(openId), profile, PROFILE_CACHE_TTL);
         } catch (RuntimeException ignored) {
             // Profile hydration is a display enhancement; cache failures must not block IM messages.
+        }
+    }
+
+    private void cacheHydrationDenied(String openId) {
+        try {
+            redisJsonStore.set(deniedCacheKey(openId), Boolean.TRUE, DENIED_PROFILE_CACHE_TTL);
+        } catch (RuntimeException ignored) {
+            // Denied-cache failures must not block IM messages.
+        }
+    }
+
+    private boolean isHydrationDenied(String openId) {
+        try {
+            return redisJsonStore.get(deniedCacheKey(openId), Boolean.class).orElse(false);
+        } catch (RuntimeException exception) {
+            return false;
         }
     }
 
@@ -121,6 +148,10 @@ public class LarkUserProfileHydrationService {
 
     private String cacheKey(String openId) {
         return PROFILE_CACHE_KEY_PREFIX + openId;
+    }
+
+    private String deniedCacheKey(String openId) {
+        return PROFILE_DENIED_CACHE_KEY_PREFIX + openId;
     }
 
     private String normalize(String value) {

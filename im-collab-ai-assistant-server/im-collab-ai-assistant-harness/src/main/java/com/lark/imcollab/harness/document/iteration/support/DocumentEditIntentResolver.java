@@ -6,6 +6,7 @@ import com.lark.imcollab.common.model.entity.DocumentAnchorSpec;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.DocumentRewriteSpec;
 import com.lark.imcollab.common.model.entity.MediaAssetSpec;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.DocumentAnchorKind;
 import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
@@ -32,18 +33,22 @@ public class DocumentEditIntentResolver {
         this.objectMapper = objectMapper;
     }
 
-    public DocumentEditIntent resolve(String instruction) {
+    public DocumentEditIntent resolve(String instruction, WorkspaceContext workspaceContext) {
         try {
             String response = chatModel.call(buildPrompt(instruction));
             Map<String, Object> payload = objectMapper.readValue(response.trim(), new TypeReference<>() {});
-            return fromPayload(instruction, payload);
+            return enrichWithWorkspaceContext(fromPayload(instruction, payload), workspaceContext);
         } catch (Exception e) {
-            return DocumentEditIntent.builder()
+            return enrichWithWorkspaceContext(DocumentEditIntent.builder()
                     .userInstruction(instruction)
                     .clarificationNeeded(true)
                     .clarificationHint("意图解析失败，请重新描述：" + e.getMessage())
-                    .build();
+                    .build(), workspaceContext);
         }
+    }
+
+    public DocumentEditIntent resolve(String instruction) {
+        return resolve(instruction, null);
     }
 
     private DocumentEditIntent fromPayload(String instruction, Map<String, Object> p) {
@@ -114,6 +119,43 @@ public class DocumentEditIntentResolver {
                 .riskLevel(riskLevel)
                 .riskHints(riskHints)
                 .build();
+    }
+
+    private DocumentEditIntent enrichWithWorkspaceContext(DocumentEditIntent intent, WorkspaceContext workspaceContext) {
+        if (intent == null) {
+            return null;
+        }
+        if (workspaceContext == null || workspaceContext.getAttachmentRefs() == null || workspaceContext.getAttachmentRefs().isEmpty()) {
+            return intent;
+        }
+        MediaAssetSpec currentSpec = intent.getAssetSpec();
+        if (currentSpec == null) {
+            if (intent.getSemanticAction() != DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR) {
+                return intent;
+            }
+            currentSpec = MediaAssetSpec.builder()
+                    .assetType(MediaAssetType.IMAGE)
+                    .build();
+        }
+        if (currentSpec.getAssetType() != MediaAssetType.IMAGE) {
+            return intent;
+        }
+        if (hasText(currentSpec.getSourceRef())) {
+            return intent;
+        }
+        String firstAttachment = workspaceContext.getAttachmentRefs().stream()
+                .filter(this::hasText)
+                .findFirst()
+                .orElse(null);
+        if (!hasText(firstAttachment)) {
+            return intent;
+        }
+        currentSpec.setSourceRef(firstAttachment);
+        if (currentSpec.getSourceType() == null) {
+            currentSpec.setSourceType(MediaAssetSourceType.ATTACHMENT);
+        }
+        intent.setAssetSpec(currentSpec);
+        return intent;
     }
 
     private String buildPrompt(String instruction) {
@@ -193,5 +235,9 @@ public class DocumentEditIntentResolver {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

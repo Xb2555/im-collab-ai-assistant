@@ -246,6 +246,45 @@ class LarkDocToolTest {
         assertThat(updateCommand.stdin()).isEqualTo("新增内容");
     }
 
+    @Test
+    void updateByCommandStrReplaceUsesCommandProtocol() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --doc string
+                              --command string
+                              --pattern string
+                              --content string
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"success":true,"data":{"doc_id":"doc-str","mode":"str_replace","message":"ok","revision_id":3}}
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.updateByCommand("doc-str", "str_replace", "新内容", "markdown", null, "旧内容", null);
+
+        assertThat(result.getDocId()).isEqualTo("doc-str");
+        CliCommand updateCommand = commands.get(commands.size() - 1);
+        assertThat(updateCommand.arguments()).contains("docs", "+update", "--command", "str_replace");
+        assertThat(updateCommand.arguments()).doesNotContain("--mode");
+    }
+
     private LarkCliClient dummyCliClient(List<CliCommand> commands) {
         CliCommandExecutor executor = command -> {
             commands.add(command);

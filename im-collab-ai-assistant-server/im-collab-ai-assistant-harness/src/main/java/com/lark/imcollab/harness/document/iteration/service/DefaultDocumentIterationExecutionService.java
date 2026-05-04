@@ -92,7 +92,10 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             WorkspaceContext context = request.getWorkspaceContext();
             String operator = context == null ? null : context.getSenderOpenId();
             Artifact ownedArtifact = ownershipGuard.assertEditable(request.getDocUrl(), operator, request.getTaskId());
-            DocumentEditIntent editIntent = intentResolver.resolve(request.getInstruction());
+            DocumentEditIntent editIntent = intentResolver.resolve(
+                    request.getInstruction(),
+                    request.getWorkspaceContext()
+            );
             if (editIntent.isClarificationNeeded()) {
                 throw new AiAssistantException(BusinessCode.PARAMS_ERROR, editIntent.getClarificationHint());
             }
@@ -155,7 +158,10 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentEditPlan plan = pending.getEditPlan();
             if (status == ApprovalStatus.MODIFIED) {
                 String revisedInstruction = defaultIfBlank(request == null ? null : request.getFeedback(), pending.getOriginalRequest().getInstruction());
-                DocumentEditIntent revisedIntent = intentResolver.resolve(revisedInstruction);
+                DocumentEditIntent revisedIntent = intentResolver.resolve(
+                        revisedInstruction,
+                        pending.getOriginalRequest() == null ? null : pending.getOriginalRequest().getWorkspaceContext()
+                );
                 DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
                 ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, revisedIntent);
                 DocumentEditStrategy strategy = strategyPlanner.plan(revisedIntent, anchor);

@@ -45,7 +45,7 @@ public class LarkDocWriteGateway {
         long timeoutMillis = isRichMediaCommand(normalizedCommand) ? richMediaTimeoutMillis() : readGateway.commandTimeoutMillis();
         return switch (normalizedCommand) {
             case "append" -> updateDoc(docRef, "append", content);
-            case "str_replace" -> updateBySelection(docRef, "replace_all", content, docFormat, null, pattern);
+            case "str_replace" -> legacyUpdate(docRef, "str_replace", content, docFormat, null, pattern, revisionId, timeoutMillis);
             case "block_insert_after" -> updateByBlockAnchor(docRef, "insert_after", content, docFormat, blockId);
             case "block_replace" -> updateByBlockAnchor(docRef, "replace_range", content, docFormat, blockId);
             case "block_delete" -> directBlockDelete(docRef, blockId);
