@@ -114,12 +114,14 @@ public class LarkOAuthService {
         validateRequired(code, "code");
         validateRequired(appProperties.getAppSecret(), "appSecret");
 
-        if (state != null && !state.isBlank() && !consumeState(state.trim())) {
+        String normalizedState = state == null ? null : state.trim();
+        String redirectUri = resolveRedirectUriByState(normalizedState);
+
+        if (normalizedState != null && !normalizedState.isBlank() && !consumeState(normalizedState)) {
             throw new IllegalArgumentException("Invalid or expired oauth state");
         }
 
         String appAccessToken = oauthClient.getAppAccessToken();
-        String redirectUri = resolveRedirectUriByState(state);
         LarkOAuthTokenPayload payload = oauthClient.exchangeAuthorizationCode(appAccessToken, code.trim(), redirectUri);
         log.info("Lark OAuth token exchanged: scope={}, tokenType={}, expiresIn={}, refreshExpiresIn={}",
                 payload.scope(), payload.tokenType(), payload.expiresIn(), payload.refreshExpiresIn());
