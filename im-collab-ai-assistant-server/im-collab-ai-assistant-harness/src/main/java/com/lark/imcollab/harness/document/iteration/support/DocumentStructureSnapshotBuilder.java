@@ -4,22 +4,26 @@ import com.lark.imcollab.common.domain.Artifact;
 import com.lark.imcollab.common.model.entity.DocumentStructureNode;
 import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
 import com.lark.imcollab.skills.lark.doc.LarkDocFetchResult;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
+import com.lark.imcollab.skills.lark.doc.LarkDocReadGateway;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class DocumentStructureSnapshotBuilder {
 
-    private final LarkDocTool larkDocTool;
+    private static final Pattern DOC_URL_PATTERN = Pattern.compile("/(?:docx|wiki)/([A-Za-z0-9]+)");
+
+    private final LarkDocReadGateway readGateway;
     private final DocumentStructureParser structureParser;
 
-    public DocumentStructureSnapshotBuilder(LarkDocTool larkDocTool, DocumentStructureParser structureParser) {
-        this.larkDocTool = larkDocTool;
+    public DocumentStructureSnapshotBuilder(LarkDocReadGateway readGateway, DocumentStructureParser structureParser) {
+        this.readGateway = readGateway;
         this.structureParser = structureParser;
     }
 
@@ -29,8 +33,8 @@ public class DocumentStructureSnapshotBuilder {
      */
     public DocumentStructureSnapshot build(Artifact artifact) {
         String docRef = resolveDocRef(artifact);
-        String docId = larkDocTool.extractDocumentId(docRef);
-        LarkDocFetchResult outline = larkDocTool.fetchDocOutline(docRef);
+        String docId = extractDocumentId(docRef);
+        LarkDocFetchResult outline = readGateway.fetchDocOutline(docRef);
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(outline.getContent());
 
         Map<String, DocumentStructureNode> headingIndex = new LinkedHashMap<>();
@@ -93,7 +97,7 @@ public class DocumentStructureSnapshotBuilder {
             return;
         }
         try {
-            LarkDocFetchResult sectionXml = larkDocTool.fetchDocSection(docRef, headingBlockId, "with-ids");
+            LarkDocFetchResult sectionXml = readGateway.fetchDocSection(docRef, headingBlockId, "with-ids");
             List<String> ids = structureParser.parseBlockIds(sectionXml.getContent());
             List<DocumentStructureParser.BlockNode> blocks = structureParser.parseBlockNodes(sectionXml.getContent());
             if (!ids.isEmpty()) {
@@ -121,5 +125,14 @@ public class DocumentStructureSnapshotBuilder {
         return artifact.getExternalUrl() != null && !artifact.getExternalUrl().isBlank()
                 ? artifact.getExternalUrl()
                 : artifact.getDocumentId();
+    }
+
+    private String extractDocumentId(String docIdOrUrl) {
+        if (docIdOrUrl == null || docIdOrUrl.isBlank()) {
+            return docIdOrUrl;
+        }
+        String trimmed = docIdOrUrl.trim();
+        Matcher matcher = DOC_URL_PATTERN.matcher(trimmed);
+        return matcher.find() ? matcher.group(1) : trimmed;
     }
 }
