@@ -28,6 +28,9 @@ public class DocumentEditIntentResolver {
 
     private static final Pattern SECTION_ORDINAL_PATTERN = Pattern.compile("(?:^|\\s)(?:\\d+(?:\\.\\d+)*|第[一二三四五六七八九十百千万0-9]+[章节部分])");
     private static final Pattern SECTION_CONTENT_REFERENCE_PATTERN = Pattern.compile("(章节|小节|部分|段落|标题|内容|正文|数据|表述)");
+    private static final Pattern SECTION_ACTION_MARKER_PATTERN = Pattern.compile("(给出|补充|增加|新增|插入|改写|修改|更新|替换|删除|移到|移动|调整|优化|展开|说明|完善|重写)");
+    private static final Pattern DECIMAL_SECTION_HEADING_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)\\s*([^，。；,;\\n]+)");
+    private static final Pattern CHINESE_SECTION_ORDINAL_PATTERN = Pattern.compile("第([一二三四五六七八九十百千万0-9]+)(章|节|部分)");
 
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
@@ -130,6 +133,7 @@ public class DocumentEditIntentResolver {
         if (intent == null) {
             return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
         }
+        intent = normalizeSectionIntent(intent);
         if (intent.isClarificationNeeded()) {
             return ensureClarificationHint(intent, "当前指令缺少足够信息，请明确操作类型、目标位置和目标内容");
         }
@@ -317,6 +321,117 @@ public class DocumentEditIntentResolver {
         return null;
     }
 
+    private DocumentEditIntent normalizeSectionIntent(DocumentEditIntent intent) {
+        if (intent == null || !hasText(intent.getUserInstruction())) {
+            return intent;
+        }
+        SectionReference sectionReference = extractSectionReference(intent.getUserInstruction());
+        if (sectionReference == null || !looksLikeSectionBodyRewrite(intent)) {
+            return intent;
+        }
+        intent.setIntentType(DocumentIterationIntentType.UPDATE_CONTENT);
+        intent.setSemanticAction(DocumentSemanticActionType.REWRITE_SECTION_BODY);
+        intent.setAnchorSpec(buildSectionAnchor(sectionReference));
+        return intent;
+    }
+
+    private boolean looksLikeSectionBodyRewrite(DocumentEditIntent intent) {
+        if (intent == null) {
+            return false;
+        }
+        DocumentSemanticActionType semanticAction = intent.getSemanticAction();
+        if (semanticAction != DocumentSemanticActionType.REWRITE_SINGLE_BLOCK
+                && semanticAction != DocumentSemanticActionType.REWRITE_INLINE_TEXT
+                && semanticAction != DocumentSemanticActionType.REWRITE_SECTION_BODY) {
+            return false;
+        }
+        DocumentAnchorSpec anchorSpec = intent.getAnchorSpec();
+        if (anchorSpec == null) {
+            return true;
+        }
+        return anchorSpec.getMatchMode() == DocumentAnchorMatchMode.BY_QUOTED_TEXT
+                || anchorSpec.getAnchorKind() == DocumentAnchorKind.BLOCK
+                || anchorSpec.getAnchorKind() == DocumentAnchorKind.TEXT
+                || anchorSpec.getAnchorKind() == null;
+    }
+
+    private DocumentAnchorSpec buildSectionAnchor(SectionReference sectionReference) {
+        DocumentAnchorSpec.DocumentAnchorSpecBuilder builder = DocumentAnchorSpec.builder()
+                .anchorKind(DocumentAnchorKind.SECTION);
+        if (hasText(sectionReference.headingTitle())) {
+            return builder
+                    .matchMode(DocumentAnchorMatchMode.BY_HEADING_TITLE)
+                    .headingTitle(sectionReference.headingTitle())
+                    .build();
+        }
+        return builder
+                .matchMode(DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL)
+                .structuralOrdinal(sectionReference.structuralOrdinal())
+                .structuralOrdinalScope(sectionReference.structuralOrdinalScope())
+                .build();
+    }
+
+    private SectionReference extractSectionReference(String instruction) {
+        if (!hasText(instruction)) {
+            return null;
+        }
+        java.util.regex.Matcher decimalMatcher = DECIMAL_SECTION_HEADING_PATTERN.matcher(instruction);
+        if (decimalMatcher.find()) {
+            String headingSuffix = normalizeSectionHeadingSuffix(decimalMatcher.group(2));
+            if (hasText(headingSuffix)) {
+                String headingTitle = (decimalMatcher.group(1) + " " + headingSuffix).trim();
+                return new SectionReference(headingTitle, null, null);
+            }
+        }
+        java.util.regex.Matcher chineseMatcher = CHINESE_SECTION_ORDINAL_PATTERN.matcher(instruction);
+        if (chineseMatcher.find()) {
+            Integer ordinal = parseChineseOrArabicOrdinal(chineseMatcher.group(1));
+            if (ordinal != null) {
+                String scope = "章".equals(chineseMatcher.group(2)) ? "TOP_LEVEL_SECTION" : "SUB_SECTION";
+                return new SectionReference(null, ordinal, scope);
+            }
+        }
+        return null;
+    }
+
+    private Integer parseChineseOrArabicOrdinal(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return switch (value) {
+                case "一" -> 1;
+                case "二" -> 2;
+                case "三" -> 3;
+                case "四" -> 4;
+                case "五" -> 5;
+                case "六" -> 6;
+                case "七" -> 7;
+                case "八" -> 8;
+                case "九" -> 9;
+                case "十" -> 10;
+                default -> null;
+            };
+        }
+    }
+
+    private String normalizeSectionHeadingSuffix(String rawSuffix) {
+        if (!hasText(rawSuffix)) {
+            return null;
+        }
+        String normalized = rawSuffix.trim();
+        java.util.regex.Matcher markerMatcher = SECTION_ACTION_MARKER_PATTERN.matcher(normalized);
+        if (markerMatcher.find()) {
+            normalized = normalized.substring(0, markerMatcher.start()).trim();
+        }
+        normalized = normalized.replaceFirst("(中的|中|里|内的|内)(数据|内容|正文|表述|描述|部分).*$", "").trim();
+        normalized = normalized.replaceFirst("的(数据|内容|正文|表述|描述|部分).*$", "").trim();
+        normalized = normalized.replaceAll("[的:：，。；,;]+$", "").trim();
+        return normalized.isEmpty() ? null : normalized;
+    }
+
     private boolean expectsSectionAnchor(DocumentSemanticActionType semanticAction) {
         if (semanticAction == null) {
             return false;
@@ -384,5 +499,8 @@ public class DocumentEditIntentResolver {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private record SectionReference(String headingTitle, Integer structuralOrdinal, String structuralOrdinalScope) {
     }
 }

@@ -2,6 +2,8 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.enums.DocumentAnchorKind;
+import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
@@ -179,7 +181,7 @@ class DocumentEditIntentResolverTest {
     }
 
     @Test
-    void sectionLikeInstructionWithSyntheticQuotedTextIsRejected() {
+    void sectionLikeInstructionWithSyntheticQuotedTextIsNormalizedToSectionRewrite() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""
                 {
@@ -202,8 +204,12 @@ class DocumentEditIntentResolverTest {
 
         DocumentEditIntent intent = resolver.resolve("1.1 总体复苏态势中的数据太久了，换成2026年的");
 
-        assertThat(intent.isClarificationNeeded()).isTrue();
-        assertThat(intent.getClarificationHint()).contains("章节标题或章节序号");
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
+        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.1 总体复苏态势");
     }
 
     @Test
@@ -234,5 +240,37 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getAnchorSpec()).isNotNull();
         assertThat(intent.getAnchorSpec().getQuotedText()).isEqualTo("总体复苏态势中的数据");
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_INLINE_TEXT);
+    }
+
+    @Test
+    void sectionNumberInstructionNormalizesWeakModelOutputToSectionRewrite() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_SINGLE_BLOCK",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "BLOCK",
+                    "matchMode": "BY_QUOTED_TEXT",
+                    "quotedText": "客源市场结构的数据"
+                  },
+                  "rewriteSpec": {
+                    "targetContent": "客源市场结构的数据",
+                    "styleOnly": false,
+                    "newContent": "补充具体数据说明"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("1.3 客源市场结构给出具体的数据说明");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
+        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.3 客源市场结构");
     }
 }
