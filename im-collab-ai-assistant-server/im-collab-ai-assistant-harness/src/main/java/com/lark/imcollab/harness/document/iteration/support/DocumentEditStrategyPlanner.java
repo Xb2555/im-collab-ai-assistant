@@ -10,6 +10,8 @@ import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
 import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.DocumentStrategyType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -17,9 +19,11 @@ import java.util.Map;
 @Component
 public class DocumentEditStrategyPlanner {
 
+    private static final Logger log = LoggerFactory.getLogger(DocumentEditStrategyPlanner.class);
+
     public DocumentEditStrategy plan(DocumentEditIntent intent, ResolvedDocumentAnchor anchor) {
         DocumentSemanticActionType action = intent.getSemanticAction();
-        return switch (action) {
+        DocumentEditStrategy strategy = switch (action) {
             case EXPLAIN_ONLY -> strategy(DocumentStrategyType.EXPLAIN_ONLY, anchor.getAnchorType(), null,
                     ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_NO_CHANGE).build(),
                     false, DocumentRiskLevel.LOW);
@@ -126,6 +130,15 @@ public class DocumentEditStrategyPlanner {
                     ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_BLOCK_INSERTED_AFTER).build(),
                     false, DocumentRiskLevel.MEDIUM);
         };
+        log.info("DOC_ITER_STRATEGY action={} resolvedAnchorType={} strategyType={} patchFamily={} expectedState={} requiresApproval={} riskLevel={}",
+                action,
+                anchor == null ? null : anchor.getAnchorType(),
+                strategy.getStrategyType(),
+                strategy.getPatchFamily(),
+                strategy.getExpectedState() == null ? null : strategy.getExpectedState().getStateType(),
+                strategy.isRequiresApproval(),
+                strategy.getRiskLevel());
+        return strategy;
     }
 
     private DocumentEditStrategy strategy(

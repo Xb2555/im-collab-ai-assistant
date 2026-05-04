@@ -15,6 +15,8 @@ import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentAnchorType;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.MediaAssetType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -23,6 +25,8 @@ import java.util.Map;
 
 @Component
 public class DocumentAnchorResolver {
+
+    private static final Logger log = LoggerFactory.getLogger(DocumentAnchorResolver.class);
 
     private final DocumentStructureSnapshotBuilder snapshotBuilder;
 
@@ -33,6 +37,16 @@ public class DocumentAnchorResolver {
     public ResolvedDocumentAnchor resolve(Artifact artifact, DocumentStructureSnapshot snapshot, DocumentEditIntent intent) {
         DocumentSemanticActionType action = intent.getSemanticAction();
         DocumentAnchorSpec spec = intent.getAnchorSpec();
+        log.info("DOC_ITER_ANCHOR resolve_start action={} anchorKind={} matchMode={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={} quotedText='{}' docId={}",
+                action,
+                spec == null ? null : spec.getAnchorKind(),
+                spec == null ? null : spec.getMatchMode(),
+                spec == null ? null : spec.getHeadingTitle(),
+                spec == null ? null : spec.getOutlinePath(),
+                spec == null ? null : spec.getStructuralOrdinal(),
+                spec == null ? null : spec.getStructuralOrdinalScope(),
+                spec == null ? null : spec.getQuotedText(),
+                snapshot == null ? null : snapshot.getDocId());
 
         if (action == DocumentSemanticActionType.INSERT_METADATA_AT_DOCUMENT_HEAD) {
             return ResolvedDocumentAnchor.builder()
@@ -59,6 +73,12 @@ public class DocumentAnchorResolver {
         if (targetsInsertAfterSection(action)) {
             DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(artifact, snapshot, spec);
             if (sectionAnchor == null) {
+                log.info("DOC_ITER_ANCHOR insert_after_unresolved action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                        action,
+                        spec == null ? null : spec.getHeadingTitle(),
+                        spec == null ? null : spec.getOutlinePath(),
+                        spec == null ? null : spec.getStructuralOrdinal(),
+                        spec == null ? null : spec.getStructuralOrdinalScope());
                 return unresolved("无法定位目标章节，请提供更明确的章节标题或序号");
             }
             String tailBlockId = sectionTailBlockId(sectionAnchor);
@@ -92,8 +112,20 @@ public class DocumentAnchorResolver {
         if (targetsSection(action)) {
             DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(artifact, snapshot, spec);
             if (sectionAnchor == null) {
+                log.info("DOC_ITER_ANCHOR section_unresolved action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                        action,
+                        spec == null ? null : spec.getHeadingTitle(),
+                        spec == null ? null : spec.getOutlinePath(),
+                        spec == null ? null : spec.getStructuralOrdinal(),
+                        spec == null ? null : spec.getStructuralOrdinalScope());
                 return unresolved("无法唯一定位目标章节，请提供更明确的章节标题或序号");
             }
+            log.info("DOC_ITER_ANCHOR section_resolved action={} headingBlockId={} headingText='{}' bodySize={} topLevelIndex={}",
+                    action,
+                    sectionAnchor.getHeadingBlockId(),
+                    sectionAnchor.getHeadingText(),
+                    sectionAnchor.getBodyBlockIds() == null ? null : sectionAnchor.getBodyBlockIds().size(),
+                    sectionAnchor.getTopLevelIndex());
             return ResolvedDocumentAnchor.builder()
                     .anchorType(DocumentAnchorType.SECTION)
                     .sectionAnchor(sectionAnchor)
@@ -114,8 +146,13 @@ public class DocumentAnchorResolver {
         // 默认：block 锚点
         DocumentBlockAnchor blockAnchor = resolveBlockAnchor(snapshot, spec);
         if (blockAnchor == null || blockAnchor.getBlockId() == null) {
+            log.info("DOC_ITER_ANCHOR block_unresolved action={} quotedText='{}'",
+                    action,
+                    spec == null ? null : spec.getQuotedText());
             return unresolved("无法定位目标 block，请提供更明确的引用文本");
         }
+        log.info("DOC_ITER_ANCHOR block_resolved action={} blockId={} plainText='{}'",
+                action, blockAnchor.getBlockId(), blockAnchor.getPlainText());
         return ResolvedDocumentAnchor.builder()
                 .anchorType(DocumentAnchorType.BLOCK)
                 .blockAnchor(blockAnchor)
@@ -144,6 +181,8 @@ public class DocumentAnchorResolver {
         }
 
         if (headingBlockId == null) return null;
+        log.info("DOC_ITER_ANCHOR section_heading_candidate matchMode={} headingBlockId={}",
+                spec.getMatchMode(), headingBlockId);
 
         // 按需抓取 section 明细
         if (artifact != null && snapshotBuilder != null) {
@@ -163,6 +202,7 @@ public class DocumentAnchorResolver {
                 exactMatches.add(entry.getKey());
             }
         }
+        log.info("DOC_ITER_ANCHOR title_match title='{}' normalized='{}' exactMatches={}", title, normalized, exactMatches);
         if (exactMatches.size() == 1) {
             return exactMatches.get(0);
         }
@@ -173,6 +213,7 @@ public class DocumentAnchorResolver {
         if (outlinePath == null || snapshot.getHeadingIndex() == null) return null;
         String[] parts = outlinePath.split("/");
         String last = parts[parts.length - 1].trim();
+        log.info("DOC_ITER_ANCHOR outline_path_match outlinePath='{}' lastSegment='{}'", outlinePath, last);
         return findHeadingByTitle(snapshot, last);
     }
 

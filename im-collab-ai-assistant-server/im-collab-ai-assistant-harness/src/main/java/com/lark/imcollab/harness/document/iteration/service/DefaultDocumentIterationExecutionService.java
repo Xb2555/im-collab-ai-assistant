@@ -33,6 +33,8 @@ import com.lark.imcollab.harness.document.iteration.support.DocumentTargetStateV
 import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionEngine;
 import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionPlanner;
 import com.lark.imcollab.harness.document.iteration.support.RichContentTargetStateVerifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -40,6 +42,8 @@ import java.util.Locale;
 
 @Service
 public class DefaultDocumentIterationExecutionService implements DocumentIterationExecutionService {
+
+    private static final Logger log = LoggerFactory.getLogger(DefaultDocumentIterationExecutionService.class);
 
     private final DocumentOwnershipGuard ownershipGuard;
     private final DocumentEditIntentResolver intentResolver;
@@ -96,6 +100,13 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                     request.getInstruction(),
                     request.getWorkspaceContext()
             );
+            log.info("DOC_ITER_PLAN execute_start taskId={} instruction='{}' intentType={} action={} anchorKind={} matchMode={}",
+                    runtime.getTaskId(),
+                    request.getInstruction(),
+                    editIntent == null ? null : editIntent.getIntentType(),
+                    editIntent == null ? null : editIntent.getSemanticAction(),
+                    editIntent == null || editIntent.getAnchorSpec() == null ? null : editIntent.getAnchorSpec().getAnchorKind(),
+                    editIntent == null || editIntent.getAnchorSpec() == null ? null : editIntent.getAnchorSpec().getMatchMode());
             if (editIntent.isClarificationNeeded()) {
                 throw new AiAssistantException(BusinessCode.PARAMS_ERROR, editIntent.getClarificationHint());
             }
@@ -106,6 +117,16 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             ResolvedAsset resolvedAsset = isRichMediaAction(editIntent.getSemanticAction())
                     ? assetResolutionFacade.resolve(editIntent.getAssetSpec()) : null;
             DocumentEditPlan editPlan = patchCompiler.compile(runtime.getTaskId(), editIntent, snapshot, anchor, strategy);
+            log.info("DOC_ITER_PLAN compiled taskId={} intentType={} action={} anchorType={} targetPreview='{}' strategyType={} toolCommandType={} requiresApproval={} riskLevel={}",
+                    runtime.getTaskId(),
+                    editPlan.getIntentType(),
+                    editPlan.getSemanticAction(),
+                    anchor == null ? null : anchor.getAnchorType(),
+                    anchor == null ? null : anchor.getPreview(),
+                    editPlan.getStrategyType(),
+                    editPlan.getToolCommandType(),
+                    editPlan.isRequiresApproval(),
+                    editPlan.getRiskLevel());
             if (resolvedAsset != null) {
                 ExecutionPlan executionPlan = richContentExecutionPlanner.plan(editIntent, anchor, strategy, resolvedAsset);
                 editPlan.setResolvedAssetSpec(editIntent.getAssetSpec());
@@ -162,10 +183,22 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                         revisedInstruction,
                         pending.getOriginalRequest() == null ? null : pending.getOriginalRequest().getWorkspaceContext()
                 );
+                log.info("DOC_ITER_PLAN execute_modified taskId={} revisedInstruction='{}' intentType={} action={}",
+                        taskId,
+                        revisedInstruction,
+                        revisedIntent == null ? null : revisedIntent.getIntentType(),
+                        revisedIntent == null ? null : revisedIntent.getSemanticAction());
                 DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
                 ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, revisedIntent);
                 DocumentEditStrategy strategy = strategyPlanner.plan(revisedIntent, anchor);
                 plan = patchCompiler.compile(taskId, revisedIntent, snapshot, anchor, strategy);
+                log.info("DOC_ITER_PLAN recompiled taskId={} action={} anchorType={} targetPreview='{}' strategyType={} requiresApproval={}",
+                        taskId,
+                        plan.getSemanticAction(),
+                        anchor == null ? null : anchor.getAnchorType(),
+                        anchor == null ? null : anchor.getPreview(),
+                        plan.getStrategyType(),
+                        plan.isRequiresApproval());
                 if (plan.isRequiresApproval()) {
                     DocumentIterationRequest revisedRequest = copyRequest(pending.getOriginalRequest(), revisedInstruction);
                     runtimeSupport.waitForApproval(runtime, revisedRequest, plan, ownedArtifact, operatorOpenId);

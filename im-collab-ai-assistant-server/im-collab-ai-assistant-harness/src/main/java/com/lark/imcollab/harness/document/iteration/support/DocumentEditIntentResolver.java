@@ -14,6 +14,8 @@ import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.MediaAssetSourceType;
 import com.lark.imcollab.common.model.enums.MediaAssetType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
@@ -25,6 +27,8 @@ import java.util.stream.Collectors;
 
 @Component
 public class DocumentEditIntentResolver {
+
+    private static final Logger log = LoggerFactory.getLogger(DocumentEditIntentResolver.class);
 
     private static final Pattern SECTION_ORDINAL_PATTERN = Pattern.compile("(?:^|\\s)(?:\\d+(?:\\.\\d+)*|第[一二三四五六七八九十百千万0-9]+[章节部分](?:第[一二三四五六七八九十百千万0-9]+[章节部分])*)");
     private static final Pattern SECTION_CONTENT_REFERENCE_PATTERN = Pattern.compile("(章节|小节|部分|段落|标题|内容|正文|数据|表述)");
@@ -46,8 +50,26 @@ public class DocumentEditIntentResolver {
         try {
             String response = chatModel.call(buildPrompt(instruction));
             Map<String, Object> payload = objectMapper.readValue(stripCodeFences(response), new TypeReference<>() {});
-            return enrichWithWorkspaceContext(validate(fromPayload(instruction, payload)), workspaceContext);
+            DocumentEditIntent parsedIntent = fromPayload(instruction, payload);
+            DocumentEditIntent validatedIntent = validate(parsedIntent);
+            DocumentEditIntent enrichedIntent = enrichWithWorkspaceContext(validatedIntent, workspaceContext);
+            log.info("DOC_ITER_INTENT resolved instruction='{}' rawIntentType={} rawAction={} finalIntentType={} finalAction={} anchorKind={} matchMode={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={} clarificationNeeded={} clarificationHint='{}'",
+                    instruction,
+                    parsedIntent == null ? null : parsedIntent.getIntentType(),
+                    parsedIntent == null ? null : parsedIntent.getSemanticAction(),
+                    enrichedIntent == null ? null : enrichedIntent.getIntentType(),
+                    enrichedIntent == null ? null : enrichedIntent.getSemanticAction(),
+                    enrichedIntent == null || enrichedIntent.getAnchorSpec() == null ? null : enrichedIntent.getAnchorSpec().getAnchorKind(),
+                    enrichedIntent == null || enrichedIntent.getAnchorSpec() == null ? null : enrichedIntent.getAnchorSpec().getMatchMode(),
+                    enrichedIntent == null || enrichedIntent.getAnchorSpec() == null ? null : enrichedIntent.getAnchorSpec().getHeadingTitle(),
+                    enrichedIntent == null || enrichedIntent.getAnchorSpec() == null ? null : enrichedIntent.getAnchorSpec().getOutlinePath(),
+                    enrichedIntent == null || enrichedIntent.getAnchorSpec() == null ? null : enrichedIntent.getAnchorSpec().getStructuralOrdinal(),
+                    enrichedIntent == null || enrichedIntent.getAnchorSpec() == null ? null : enrichedIntent.getAnchorSpec().getStructuralOrdinalScope(),
+                    enrichedIntent != null && enrichedIntent.isClarificationNeeded(),
+                    enrichedIntent == null ? null : enrichedIntent.getClarificationHint());
+            return enrichedIntent;
         } catch (Exception e) {
+            log.warn("DOC_ITER_INTENT failed instruction='{}' error='{}'", instruction, e.getMessage(), e);
             return enrichWithWorkspaceContext(DocumentEditIntent.builder()
                     .userInstruction(instruction)
                     .clarificationNeeded(true)
@@ -133,23 +155,38 @@ public class DocumentEditIntentResolver {
 
     private DocumentEditIntent validate(DocumentEditIntent intent) {
         if (intent == null) {
+            log.info("DOC_ITER_INTENT validation_null_intent");
             return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
         }
         intent = normalizeSectionIntent(intent);
         if (intent.isClarificationNeeded()) {
+            log.info("DOC_ITER_INTENT validation_clarification instruction='{}' hint='{}'",
+                    intent.getUserInstruction(), intent.getClarificationHint());
             return ensureClarificationHint(intent, "当前指令缺少足够信息，请明确操作类型、目标位置和目标内容");
         }
         if (intent.getIntentType() == null || intent.getSemanticAction() == null) {
+            log.info("DOC_ITER_INTENT validation_missing_action instruction='{}' intentType={} action={}",
+                    intent.getUserInstruction(), intent.getIntentType(), intent.getSemanticAction());
             return clarificationIntent(intent.getUserInstruction(), "无法识别操作类型，请明确要插入、改写、删除还是解释文档内容");
         }
         if (requiresAnchor(intent) && intent.getAnchorSpec() == null) {
+            log.info("DOC_ITER_INTENT validation_missing_anchor instruction='{}' action={}",
+                    intent.getUserInstruction(), intent.getSemanticAction());
             return clarificationIntent(intent.getUserInstruction(), "缺少明确锚点，请说明章节标题、结构序号或引用文本");
         }
         if (intent.getAnchorSpec() != null && !isAnchorSpecValid(intent.getAnchorSpec())) {
+            log.info("DOC_ITER_INTENT validation_invalid_anchor instruction='{}' anchorKind={} matchMode={}",
+                    intent.getUserInstruction(), intent.getAnchorSpec().getAnchorKind(), intent.getAnchorSpec().getMatchMode());
             return clarificationIntent(intent.getUserInstruction(), "锚点描述不完整，请提供明确的章节标题、结构序号、引用文本或媒体说明");
         }
         String semanticValidationError = validateAnchorSemantics(intent);
         if (semanticValidationError != null) {
+            log.info("DOC_ITER_INTENT validation_semantic_reject instruction='{}' action={} anchorKind={} matchMode={} reason='{}'",
+                    intent.getUserInstruction(),
+                    intent.getSemanticAction(),
+                    intent.getAnchorSpec() == null ? null : intent.getAnchorSpec().getAnchorKind(),
+                    intent.getAnchorSpec() == null ? null : intent.getAnchorSpec().getMatchMode(),
+                    semanticValidationError);
             return clarificationIntent(intent.getUserInstruction(), semanticValidationError);
         }
         return intent;
@@ -331,6 +368,14 @@ public class DocumentEditIntentResolver {
         if (sectionReference == null || !looksLikeSectionBodyRewrite(intent)) {
             return intent;
         }
+        log.info("DOC_ITER_INTENT normalize_section instruction='{}' fromAction={} toAction={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                intent.getUserInstruction(),
+                intent.getSemanticAction(),
+                DocumentSemanticActionType.REWRITE_SECTION_BODY,
+                sectionReference.headingTitle(),
+                sectionReference.outlinePath(),
+                sectionReference.structuralOrdinal(),
+                sectionReference.structuralOrdinalScope());
         intent.setIntentType(DocumentIterationIntentType.UPDATE_CONTENT);
         intent.setSemanticAction(DocumentSemanticActionType.REWRITE_SECTION_BODY);
         intent.setAnchorSpec(buildSectionAnchor(sectionReference));
