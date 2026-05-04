@@ -20,10 +20,14 @@ import org.springframework.stereotype.Component;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
 public class DocumentEditIntentResolver {
+
+    private static final Pattern SECTION_ORDINAL_PATTERN = Pattern.compile("(?:^|\\s)(?:\\d+(?:\\.\\d+)*|第[一二三四五六七八九十百千万0-9]+[章节部分])");
+    private static final Pattern SECTION_CONTENT_REFERENCE_PATTERN = Pattern.compile("(章节|小节|部分|段落|标题|内容|正文|数据|表述)");
 
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
@@ -138,6 +142,10 @@ public class DocumentEditIntentResolver {
         if (intent.getAnchorSpec() != null && !isAnchorSpecValid(intent.getAnchorSpec())) {
             return clarificationIntent(intent.getUserInstruction(), "锚点描述不完整，请提供明确的章节标题、结构序号、引用文本或媒体说明");
         }
+        String semanticValidationError = validateAnchorSemantics(intent);
+        if (semanticValidationError != null) {
+            return clarificationIntent(intent.getUserInstruction(), semanticValidationError);
+        }
         return intent;
     }
 
@@ -187,7 +195,7 @@ public class DocumentEditIntentResolver {
         String sourceTypes = Arrays.stream(MediaAssetSourceType.values()).map(Enum::name).collect(Collectors.joining("|"));
         String riskLevels = Arrays.stream(DocumentRiskLevel.values()).map(Enum::name).collect(Collectors.joining("|"));
 
-        return """
+        String prompt = """
                 你是文档编辑意图解析器。根据用户指令，一次性输出完整的结构化 JSON，不要解释，只输出合法 JSON。
 
                 输出 schema（所有字段均可为 null）：
@@ -229,9 +237,18 @@ public class DocumentEditIntentResolver {
                 2. anchorSpec.matchMode 必须是结构化 slot，不允许把中文"第三章"直接放进 headingTitle，应用 structuralOrdinal=3 + structuralOrdinalScope=TOP_LEVEL_SECTION。
                 3. 无法唯一确定锚点时，设 clarificationNeeded=true，不要猜。
                 4. 非媒体操作时 assetSpec 为 null。
+                5. 只要用户明确提到章节号、节号、标题序号或章节标题，例如“1.3 客源市场结构”“第三章”“第二节”，优先使用 SECTION 锚点；不要降级成 BLOCK/TEXT/BY_QUOTED_TEXT。
+                6. 当用户表达“某章节中的数据/内容/正文/表述需要改写、补充、更新”时，优先判定为 REWRITE_SECTION_BODY；只有用户明确指向某个具体段落或单个 block 时，才使用 REWRITE_SINGLE_BLOCK。
+                7. BY_QUOTED_TEXT 只允许用于文档中可直接定位的字面文本：
+                   - 用户使用引号点名原文；
+                   - 或用户明确给出一段稳定、可直接查找的原句。
+                   不允许把“总体复苏态势中的数据”“客源市场结构那部分内容”这类抽象概括写入 quotedText。
+                8. 如果用户已经给出章节号/章节标题，同时又描述该章节里的内容问题，应保留章节锚点，不要凭空构造 quotedText 锚点。
+                9. 如果既不能稳定识别章节，也没有真实可引用原文，返回 clarificationNeeded=true，不要编造 anchorSpec。
 
                 用户指令：%s
                 """.formatted(intentTypes, semanticActions, riskLevels, anchorKinds, matchModes, assetTypes, sourceTypes, instruction);
+        return prompt;
     }
 
     private String stripCodeFences(String response) {
@@ -274,6 +291,55 @@ public class DocumentEditIntentResolver {
             case BY_BLOCK_ID -> hasText(anchorSpec.getBlockId());
             case BY_MEDIA_CAPTION -> hasText(anchorSpec.getMediaCaption());
         };
+    }
+
+    private String validateAnchorSemantics(DocumentEditIntent intent) {
+        DocumentAnchorSpec anchorSpec = intent.getAnchorSpec();
+        if (anchorSpec == null || anchorSpec.getMatchMode() == null) {
+            return null;
+        }
+        if (expectsSectionAnchor(intent.getSemanticAction())
+                && anchorSpec.getAnchorKind() != DocumentAnchorKind.SECTION
+                && anchorSpec.getMatchMode() != DocumentAnchorMatchMode.BY_BLOCK_ID) {
+            return "当前操作面向章节，请提供明确的章节标题或章节序号";
+        }
+        if (anchorSpec.getMatchMode() != DocumentAnchorMatchMode.BY_QUOTED_TEXT) {
+            return null;
+        }
+        String instruction = str(intent.getUserInstruction());
+        String quotedText = str(anchorSpec.getQuotedText());
+        if (!hasText(quotedText)) {
+            return "引用文本为空，请提供可直接定位的原文片段";
+        }
+        if (mentionsSectionReference(instruction) && !isLiteralQuotedReference(instruction, quotedText)) {
+            return "当前指令更像章节定位，请提供明确的章节标题或章节序号，不要使用概括性引用文本";
+        }
+        return null;
+    }
+
+    private boolean expectsSectionAnchor(DocumentSemanticActionType semanticAction) {
+        if (semanticAction == null) {
+            return false;
+        }
+        return switch (semanticAction) {
+            case INSERT_SECTION_BEFORE_SECTION, REWRITE_SECTION_BODY, DELETE_SECTION_BODY, DELETE_WHOLE_SECTION, MOVE_SECTION, RELAYOUT_SECTION -> true;
+            default -> false;
+        };
+    }
+
+    private boolean mentionsSectionReference(String instruction) {
+        return hasText(instruction)
+                && SECTION_ORDINAL_PATTERN.matcher(instruction).find()
+                && SECTION_CONTENT_REFERENCE_PATTERN.matcher(instruction).find();
+    }
+
+    private boolean isLiteralQuotedReference(String instruction, String quotedText) {
+        if (!hasText(instruction) || !hasText(quotedText)) {
+            return false;
+        }
+        return instruction.contains("“" + quotedText + "”")
+                || instruction.contains("\"" + quotedText + "\"")
+                || instruction.contains("'" + quotedText + "'");
     }
 
     private DocumentEditIntent clarificationIntent(String instruction, String hint) {

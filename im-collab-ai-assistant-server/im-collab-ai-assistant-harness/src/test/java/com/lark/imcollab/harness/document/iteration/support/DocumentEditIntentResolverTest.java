@@ -177,4 +177,62 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.isClarificationNeeded()).isTrue();
         assertThat(intent.getClarificationHint()).contains("锚点描述不完整");
     }
+
+    @Test
+    void sectionLikeInstructionWithSyntheticQuotedTextIsRejected() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_SINGLE_BLOCK",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "BLOCK",
+                    "matchMode": "BY_QUOTED_TEXT",
+                    "quotedText": "总体复苏态势中的数据"
+                  },
+                  "rewriteSpec": {
+                    "targetContent": "总体复苏态势中的数据",
+                    "styleOnly": false,
+                    "newContent": "2026年的数据"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("1.1 总体复苏态势中的数据太久了，换成2026年的");
+
+        assertThat(intent.isClarificationNeeded()).isTrue();
+        assertThat(intent.getClarificationHint()).contains("章节标题或章节序号");
+    }
+
+    @Test
+    void quotedLiteralTextRemainsValidWhenUserProvidesDirectCitation() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "semanticAction": "REWRITE_INLINE_TEXT",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "TEXT",
+                    "matchMode": "BY_QUOTED_TEXT",
+                    "quotedText": "总体复苏态势中的数据"
+                  },
+                  "rewriteSpec": {
+                    "targetContent": "总体复苏态势中的数据",
+                    "styleOnly": false,
+                    "newContent": "2026年的数据"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("把“总体复苏态势中的数据”替换成“2026年的数据”");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getQuotedText()).isEqualTo("总体复苏态势中的数据");
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_INLINE_TEXT);
+    }
 }
