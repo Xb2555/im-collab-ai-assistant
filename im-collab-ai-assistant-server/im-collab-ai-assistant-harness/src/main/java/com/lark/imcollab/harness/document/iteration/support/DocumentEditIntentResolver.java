@@ -3,8 +3,11 @@ package com.lark.imcollab.harness.document.iteration.support;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.MediaAssetSpec;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.common.model.enums.MediaAssetSourceType;
+import com.lark.imcollab.common.model.enums.MediaAssetType;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
@@ -34,12 +37,66 @@ public class DocumentEditIntentResolver {
         DocumentIterationIntentType intentType = intentService.resolve(instruction);
         Map<String, String> parameters = extractParameters(instruction, intentType);
         DocumentSemanticActionType semanticAction = resolveSemanticActionViaLlm(instruction, intentType);
+        MediaAssetSpec assetSpec = isMediaIntent(intentType) ? resolveAssetSpec(instruction, semanticAction) : null;
         return DocumentEditIntent.builder()
                 .intentType(intentType)
                 .semanticAction(semanticAction)
                 .userInstruction(instruction)
                 .parameters(parameters)
+                .assetSpec(assetSpec)
                 .build();
+    }
+
+    private boolean isMediaIntent(DocumentIterationIntentType intentType) {
+        return intentType == DocumentIterationIntentType.INSERT_MEDIA
+                || intentType == DocumentIterationIntentType.ADJUST_LAYOUT;
+    }
+
+    private MediaAssetSpec resolveAssetSpec(String instruction, DocumentSemanticActionType semanticAction) {
+        try {
+            String response = chatModel.call(buildAssetSpecPrompt(instruction, semanticAction));
+            Map<String, Object> payload = objectMapper.readValue(response.trim(), new TypeReference<>() {});
+            MediaAssetType assetType = parseEnum(MediaAssetType.class, stringify(payload.get("assetType")));
+            MediaAssetSourceType sourceType = parseEnum(MediaAssetSourceType.class, stringify(payload.get("sourceType")));
+            if (assetType == null) return null;
+            return MediaAssetSpec.builder()
+                    .assetType(assetType)
+                    .sourceType(sourceType)
+                    .sourceRef(stringify(payload.get("sourceRef")))
+                    .caption(stringify(payload.get("caption")))
+                    .altText(stringify(payload.get("altText")))
+                    .generationPrompt(stringify(payload.get("generationPrompt")))
+                    .build();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String buildAssetSpecPrompt(String instruction, DocumentSemanticActionType semanticAction) {
+        String assetTypes = Arrays.stream(MediaAssetType.values()).map(Enum::name).collect(Collectors.joining(", "));
+        String sourceTypes = Arrays.stream(MediaAssetSourceType.values()).map(Enum::name).collect(Collectors.joining(", "));
+        return "你是文档富媒体资产规格提取器。\n"
+                + "根据用户指令，输出 JSON 格式的资产规格，只输出合法 JSON，不要解释。\n\n"
+                + "输出 schema:\n"
+                + "{\n"
+                + "  \"assetType\": \"" + assetTypes + "\",\n"
+                + "  \"sourceType\": \"" + sourceTypes + "\",\n"
+                + "  \"sourceRef\": \"外链URL或文件路径，无则空字符串\",\n"
+                + "  \"caption\": \"图片说明，无则空字符串\",\n"
+                + "  \"altText\": \"替代文本，无则空字符串\",\n"
+                + "  \"generationPrompt\": \"AI生成描述，无则空字符串\"\n"
+                + "}\n\n"
+                + "semanticAction: " + (semanticAction == null ? "unknown" : semanticAction.name()) + "\n"
+                + "用户指令: " + (instruction == null ? "" : instruction);
+    }
+
+    private <T extends Enum<T>> T parseEnum(Class<T> clazz, String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Enum.valueOf(clazz, value.trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private DocumentSemanticActionType resolveSemanticActionViaLlm(String instruction, DocumentIterationIntentType intentType) {

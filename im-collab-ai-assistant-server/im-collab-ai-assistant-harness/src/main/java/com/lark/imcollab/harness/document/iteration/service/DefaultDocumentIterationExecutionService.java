@@ -19,6 +19,7 @@ import com.lark.imcollab.common.model.vo.DocumentIterationVO;
 import com.lark.imcollab.common.model.entity.ExecutionPlan;
 import com.lark.imcollab.common.model.entity.ResolvedAsset;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.common.model.entity.RichContentExecutionResult;
 import com.lark.imcollab.harness.document.iteration.support.AssetResolutionFacade;
 import com.lark.imcollab.harness.document.iteration.support.DocumentAnchorResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditIntentResolver;
@@ -29,6 +30,7 @@ import com.lark.imcollab.harness.document.iteration.support.DocumentPatchCompile
 import com.lark.imcollab.harness.document.iteration.support.DocumentPatchExecutor;
 import com.lark.imcollab.harness.document.iteration.support.DocumentStructureSnapshotBuilder;
 import com.lark.imcollab.harness.document.iteration.support.DocumentTargetStateVerifier;
+import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionEngine;
 import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionPlanner;
 import com.lark.imcollab.harness.document.iteration.support.RichContentTargetStateVerifier;
 import org.springframework.stereotype.Service;
@@ -50,6 +52,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
     private final DocumentIterationRuntimeSupport runtimeSupport;
     private final AssetResolutionFacade assetResolutionFacade;
     private final RichContentExecutionPlanner richContentExecutionPlanner;
+    private final RichContentExecutionEngine richContentExecutionEngine;
     private final RichContentTargetStateVerifier richContentTargetStateVerifier;
 
     public DefaultDocumentIterationExecutionService(
@@ -64,6 +67,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentIterationRuntimeSupport runtimeSupport,
             AssetResolutionFacade assetResolutionFacade,
             RichContentExecutionPlanner richContentExecutionPlanner,
+            RichContentExecutionEngine richContentExecutionEngine,
             RichContentTargetStateVerifier richContentTargetStateVerifier
     ) {
         this.ownershipGuard = ownershipGuard;
@@ -77,6 +81,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         this.runtimeSupport = runtimeSupport;
         this.assetResolutionFacade = assetResolutionFacade;
         this.richContentExecutionPlanner = richContentExecutionPlanner;
+        this.richContentExecutionEngine = richContentExecutionEngine;
         this.richContentTargetStateVerifier = richContentTargetStateVerifier;
     }
 
@@ -195,23 +200,40 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentEditPlan editPlan,
             String operator
     ) {
-        DocumentPatchExecutor.PatchExecutionResult patchResult = editPlan.getIntentType() == DocumentIterationIntentType.EXPLAIN
-                ? new DocumentPatchExecutor.PatchExecutionResult(List.of(), -1L, -1L)
-                : patchExecutor.execute(docRef, editPlan);
-        if (editPlan.getIntentType() != DocumentIterationIntentType.EXPLAIN) {
+        List<String> modifiedBlocks;
+        long beforeRevision;
+        long afterRevision;
+
+        if (editPlan.getIntentType() == DocumentIterationIntentType.EXPLAIN) {
+            modifiedBlocks = List.of();
+            beforeRevision = -1L;
+            afterRevision = -1L;
+        } else if (isRichExecutionPlan(editPlan)) {
+            RichContentExecutionResult richResult = richContentExecutionEngine.execute(docRef, editPlan);
+            modifiedBlocks = richResult.getCreatedBlockIds();
+            beforeRevision = richResult.getBeforeRevision();
+            afterRevision = richResult.getAfterRevision();
             Artifact runtimeArtifact = Artifact.builder()
                     .externalUrl(resolveDocUrl(ownedArtifact, docRef))
                     .documentId(resolveDocId(ownedArtifact))
                     .build();
             DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
-            if (isRichMediaAction(editPlan.getSemanticAction())) {
-                richContentTargetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
-            } else {
-                targetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
-            }
+            richContentTargetStateVerifier.verify(editPlan, richResult, editPlan.getStructureSnapshot(), afterSnapshot);
+        } else {
+            DocumentPatchExecutor.PatchExecutionResult patchResult = patchExecutor.execute(docRef, editPlan);
+            modifiedBlocks = patchResult.getModifiedBlocks();
+            beforeRevision = patchResult.getBeforeRevision();
+            afterRevision = patchResult.getAfterRevision();
+            Artifact runtimeArtifact = Artifact.builder()
+                    .externalUrl(resolveDocUrl(ownedArtifact, docRef))
+                    .documentId(resolveDocId(ownedArtifact))
+                    .build();
+            DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
+            targetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
         }
-        String summary = buildSummary(editPlan.getIntentType(), patchResult.getModifiedBlocks(), editPlan)
-                + appendRevisionSummary(patchResult);
+
+        String summary = buildSummary(editPlan.getIntentType(), modifiedBlocks, editPlan)
+                + appendRevisionSummary(beforeRevision, afterRevision);
         runtimeSupport.saveSummaryArtifact(
                 runtime,
                 "文档迭代结果",
@@ -231,17 +253,21 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                 .requireInput(false)
                 .preview(editPlan.getReasoningSummary())
                 .docUrl(resolveDocUrl(ownedArtifact, docRef))
-                .modifiedBlocks(patchResult.getModifiedBlocks())
+                .modifiedBlocks(modifiedBlocks)
                 .summary(summary)
                 .editPlan(toPlanVO(editPlan))
                 .build();
     }
 
-    private String appendRevisionSummary(DocumentPatchExecutor.PatchExecutionResult patchResult) {
-        if (patchResult.getBeforeRevision() < 0 || patchResult.getAfterRevision() < 0) {
+    private boolean isRichExecutionPlan(DocumentEditPlan editPlan) {
+        return isRichMediaAction(editPlan.getSemanticAction()) && editPlan.getExecutionPlan() != null;
+    }
+
+    private String appendRevisionSummary(long beforeRevision, long afterRevision) {
+        if (beforeRevision < 0 || afterRevision < 0) {
             return "";
         }
-        return "，revision: " + patchResult.getBeforeRevision() + " -> " + patchResult.getAfterRevision();
+        return "，revision: " + beforeRevision + " -> " + afterRevision;
     }
 
     private DocumentIterationVO waitingResponse(

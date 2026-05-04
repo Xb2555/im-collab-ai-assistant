@@ -57,6 +57,16 @@ public class DocumentAnchorResolver {
                     .preview(blockAnchor == null ? "" : blockAnchor.getPlainText())
                     .build();
         }
+        if (targetsInsertAfterSection(action)) {
+            DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(snapshot, intent.getUserInstruction());
+            DocumentBlockAnchor tailBlock = sectionTailBlock(snapshot, sectionAnchor);
+            return ResolvedDocumentAnchor.builder()
+                    .anchorType(DocumentAnchorType.BLOCK)
+                    .sectionAnchor(sectionAnchor)
+                    .blockAnchor(tailBlock)
+                    .preview(sectionPreview(sectionAnchor))
+                    .build();
+        }
         if (targetsMedia(action)) {
             DocumentMediaAnchor mediaAnchor = resolveMediaAnchor(snapshot, intent.getUserInstruction(), mediaTypeFor(action));
             return ResolvedDocumentAnchor.builder()
@@ -86,6 +96,26 @@ public class DocumentAnchorResolver {
                 .anchorType(DocumentAnchorType.BLOCK)
                 .blockAnchor(blockAnchor)
                 .preview(blockAnchor == null ? "" : blockAnchor.getPlainText())
+                .build();
+    }
+
+    private boolean targetsInsertAfterSection(DocumentSemanticActionType action) {
+        return switch (action) {
+            case INSERT_IMAGE_AFTER_ANCHOR, INSERT_TABLE_AFTER_ANCHOR, INSERT_WHITEBOARD_AFTER_ANCHOR -> true;
+            default -> false;
+        };
+    }
+
+    private DocumentBlockAnchor sectionTailBlock(DocumentStructureSnapshot snapshot, DocumentSectionAnchor sectionAnchor) {
+        if (sectionAnchor == null) return null;
+        List<String> allBlockIds = sectionAnchor.getAllBlockIds();
+        if (allBlockIds == null || allBlockIds.isEmpty()) return null;
+        String tailId = allBlockIds.get(allBlockIds.size() - 1);
+        DocumentStructureNode node = snapshot.getBlockIndex() == null ? null : snapshot.getBlockIndex().get(tailId);
+        return DocumentBlockAnchor.builder()
+                .blockId(tailId)
+                .blockType(node == null ? null : node.getBlockType())
+                .plainText(node == null ? "" : node.getPlainText())
                 .build();
     }
 
