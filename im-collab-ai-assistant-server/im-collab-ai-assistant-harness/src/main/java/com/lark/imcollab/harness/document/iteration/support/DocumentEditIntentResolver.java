@@ -37,7 +37,7 @@ public class DocumentEditIntentResolver {
         try {
             String response = chatModel.call(buildPrompt(instruction));
             Map<String, Object> payload = objectMapper.readValue(stripCodeFences(response), new TypeReference<>() {});
-            return enrichWithWorkspaceContext(normalizeForInstruction(instruction, fromPayload(instruction, payload)), workspaceContext);
+            return enrichWithWorkspaceContext(validate(fromPayload(instruction, payload)), workspaceContext);
         } catch (Exception e) {
             return enrichWithWorkspaceContext(DocumentEditIntent.builder()
                     .userInstruction(instruction)
@@ -121,6 +121,25 @@ public class DocumentEditIntentResolver {
                 .build();
     }
 
+    private DocumentEditIntent validate(DocumentEditIntent intent) {
+        if (intent == null) {
+            return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
+        }
+        if (intent.isClarificationNeeded()) {
+            return ensureClarificationHint(intent, "当前指令缺少足够信息，请明确操作类型、目标位置和目标内容");
+        }
+        if (intent.getIntentType() == null || intent.getSemanticAction() == null) {
+            return clarificationIntent(intent.getUserInstruction(), "无法识别操作类型，请明确要插入、改写、删除还是解释文档内容");
+        }
+        if (requiresAnchor(intent) && intent.getAnchorSpec() == null) {
+            return clarificationIntent(intent.getUserInstruction(), "缺少明确锚点，请说明章节标题、结构序号或引用文本");
+        }
+        if (intent.getAnchorSpec() != null && !isAnchorSpecValid(intent.getAnchorSpec())) {
+            return clarificationIntent(intent.getUserInstruction(), "锚点描述不完整，请提供明确的章节标题、结构序号、引用文本或媒体说明");
+        }
+        return intent;
+    }
+
     private DocumentEditIntent enrichWithWorkspaceContext(DocumentEditIntent intent, WorkspaceContext workspaceContext) {
         if (intent == null) {
             return null;
@@ -186,7 +205,8 @@ public class DocumentEditIntentResolver {
                     "structuralOrdinal": 1,
                     "structuralOrdinalScope": "TOP_LEVEL_SECTION|SUB_SECTION",
                     "quotedText": "用户引号内的文本，BY_QUOTED_TEXT 时填",
-                    "mediaCaption": "媒体说明文字，BY_MEDIA_CAPTION 时填"
+                    "mediaCaption": "媒体说明文字，BY_MEDIA_CAPTION 时填",
+                    "blockId": "仅在上游已明确给出平台 blockId 时填写"
                   },
                   "rewriteSpec": {
                     "targetContent": "要改写的原文内容",
@@ -230,84 +250,45 @@ public class DocumentEditIntentResolver {
         return trimmed;
     }
 
-    private DocumentEditIntent normalizeForInstruction(String instruction, DocumentEditIntent intent) {
-        if (intent == null || instruction == null) {
-            return intent;
+    private boolean requiresAnchor(DocumentEditIntent intent) {
+        if (intent == null || intent.getSemanticAction() == null) {
+            return false;
         }
-        String lower = instruction.trim().toLowerCase(java.util.Locale.ROOT);
-        String headingTitle = extractHeadingTarget(instruction);
-        if (headingTitle != null && !headingTitle.isBlank()) {
-            intent = ensureHeadingAnchor(intent, headingTitle);
+        return switch (intent.getSemanticAction()) {
+            case EXPLAIN_ONLY, APPEND_SECTION_TO_DOCUMENT_END -> false;
+            default -> true;
+        };
+    }
+
+    private boolean isAnchorSpecValid(DocumentAnchorSpec anchorSpec) {
+        if (anchorSpec == null || anchorSpec.getMatchMode() == null) {
+            return false;
         }
-        boolean deleteHint = lower.contains("删") || lower.contains("去掉") || lower.contains("移除");
-        if (!deleteHint) {
-            return intent;
-        }
-        boolean sectionHint = lower.matches(".*(\\d+(\\.\\d+)*\\s*[^\\s]+).*")
-                || lower.contains("章节")
-                || lower.contains("小节")
-                || lower.contains("节")
-                || lower.contains("标题");
-        DocumentSemanticActionType semanticAction = sectionHint
-                ? DocumentSemanticActionType.DELETE_WHOLE_SECTION
-                : DocumentSemanticActionType.DELETE_INLINE_TEXT;
+        return switch (anchorSpec.getMatchMode()) {
+            case DOC_START, DOC_END -> anchorSpec.getAnchorKind() != null;
+            case BY_HEADING_TITLE -> hasText(anchorSpec.getHeadingTitle());
+            case BY_OUTLINE_PATH -> hasText(anchorSpec.getOutlinePath());
+            case BY_STRUCTURAL_ORDINAL -> anchorSpec.getStructuralOrdinal() != null && hasText(anchorSpec.getStructuralOrdinalScope());
+            case BY_QUOTED_TEXT -> hasText(anchorSpec.getQuotedText());
+            case BY_BLOCK_ID -> false;
+            case BY_MEDIA_CAPTION -> hasText(anchorSpec.getMediaCaption());
+        };
+    }
+
+    private DocumentEditIntent clarificationIntent(String instruction, String hint) {
         return DocumentEditIntent.builder()
-                .intentType(DocumentIterationIntentType.DELETE)
-                .semanticAction(semanticAction)
-                .userInstruction(intent.getUserInstruction())
-                .anchorSpec(intent.getAnchorSpec())
-                .rewriteSpec(intent.getRewriteSpec())
-                .assetSpec(intent.getAssetSpec())
-                .clarificationNeeded(intent.isClarificationNeeded())
-                .clarificationHint(intent.getClarificationHint())
-                .riskLevel(intent.getRiskLevel())
-                .riskHints(intent.getRiskHints())
+                .userInstruction(instruction)
+                .clarificationNeeded(true)
+                .clarificationHint(hint)
                 .build();
     }
 
-    private DocumentEditIntent ensureHeadingAnchor(DocumentEditIntent intent, String headingTitle) {
-        if (intent.getAnchorSpec() != null
-                && intent.getAnchorSpec().getMatchMode() == DocumentAnchorMatchMode.BY_HEADING_TITLE
-                && hasText(intent.getAnchorSpec().getHeadingTitle())) {
+    private DocumentEditIntent ensureClarificationHint(DocumentEditIntent intent, String fallbackHint) {
+        if (intent.getClarificationHint() != null && !intent.getClarificationHint().isBlank()) {
             return intent;
         }
-        DocumentAnchorSpec anchorSpec = DocumentAnchorSpec.builder()
-                .anchorKind(DocumentAnchorKind.DOCUMENT_HEAD)
-                .matchMode(DocumentAnchorMatchMode.BY_HEADING_TITLE)
-                .headingTitle(headingTitle)
-                .build();
-        return DocumentEditIntent.builder()
-                .intentType(intent.getIntentType())
-                .semanticAction(intent.getSemanticAction())
-                .userInstruction(intent.getUserInstruction())
-                .anchorSpec(anchorSpec)
-                .rewriteSpec(intent.getRewriteSpec())
-                .assetSpec(intent.getAssetSpec())
-                .clarificationNeeded(intent.isClarificationNeeded())
-                .clarificationHint(intent.getClarificationHint())
-                .riskLevel(intent.getRiskLevel())
-                .riskHints(intent.getRiskHints())
-                .build();
-    }
-
-    private String extractHeadingTarget(String instruction) {
-        if (instruction == null || instruction.isBlank()) {
-            return null;
-        }
-        String normalized = instruction.trim();
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
-                "(?:在|于)?\\s*([0-9一二三四五六七八九十百千万]+(?:\\.[0-9一二三四五六七八九十百千万]+)*\\s*[^，。；:：\\n]+?)\\s*(?:中|里|内)?\\s*(?:新增|添加|插入|修改|改写|删除|去掉|移除)"
-        ).matcher(normalized);
-        if (matcher.find()) {
-            return matcher.group(1).trim();
-        }
-        matcher = java.util.regex.Pattern.compile(
-                "(?:删除|修改|改写|新增|添加|插入)\\s*([0-9一二三四五六七八九十百千万]+(?:\\.[0-9一二三四五六七八九十百千万]+)*\\s*[^，。；:：\\n]+)"
-        ).matcher(normalized);
-        if (matcher.find()) {
-            return matcher.group(1).trim();
-        }
-        return null;
+        intent.setClarificationHint(fallbackHint);
+        return intent;
     }
 
     private <T extends Enum<T>> T parseEnum(Class<T> clazz, String value) {

@@ -2,7 +2,6 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
-import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
@@ -96,7 +95,7 @@ class DocumentEditIntentResolverTest {
     }
 
     @Test
-    void fencedJsonAndHeadingInstructionAreNormalized() {
+    void fencedJsonWithoutAnchorIsRejectedInsteadOfBeingPatchedLocally() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""
                 ```json
@@ -111,9 +110,25 @@ class DocumentEditIntentResolverTest {
 
         DocumentEditIntent intent = resolver.resolve("在1.1 游客规模与收入中新增一段文字：介绍东方明珠");
 
-        assertThat(intent.isClarificationNeeded()).isFalse();
-        assertThat(intent.getAnchorSpec()).isNotNull();
-        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
-        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.1 游客规模与收入");
+        assertThat(intent.isClarificationNeeded()).isTrue();
+        assertThat(intent.getClarificationHint()).contains("缺少明确锚点");
+    }
+
+    @Test
+    void deleteInstructionWithoutStableAnchorIsRejectedInsteadOfDangerousFallback() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "DELETE",
+                  "semanticAction": "DELETE_INLINE_TEXT",
+                  "clarificationNeeded": false
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("删除这一段");
+
+        assertThat(intent.isClarificationNeeded()).isTrue();
+        assertThat(intent.getClarificationHint()).contains("缺少明确锚点");
     }
 }
