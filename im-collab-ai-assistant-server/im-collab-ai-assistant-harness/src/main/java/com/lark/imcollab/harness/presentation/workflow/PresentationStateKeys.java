@@ -14,6 +14,7 @@ public final class PresentationStateKeys {
     public static final String CONSTRAINTS = "constraints";
     public static final String UPSTREAM_CONTEXT = "upstreamContext";
     public static final String UPSTREAM_ARTIFACT_SUMMARY = "upstreamArtifactSummary";
+    public static final String GENERATION_OPTIONS = "generationOptions";
     public static final String STORYLINE = "storyline";
     public static final String SLIDE_OUTLINE = "slideOutline";
     public static final String SLIDE_XML_LIST = "slideXmlList";

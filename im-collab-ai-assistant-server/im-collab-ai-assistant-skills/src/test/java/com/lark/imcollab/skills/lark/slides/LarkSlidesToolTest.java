@@ -9,6 +9,10 @@ import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -20,10 +24,20 @@ class LarkSlidesToolTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
-    void createPresentationUsesSlidesCreateWithUserIdentityAndJsonSlides() throws Exception {
+    void createPresentationCreatesEmptyDeckThenAppendsSlidesWithFileArgs() throws Exception {
         List<CliCommand> commands = new ArrayList<>();
+        List<String> paramsPayloads = new ArrayList<>();
+        List<String> dataPayloads = new ArrayList<>();
         CliCommandExecutor executor = command -> {
             commands.add(command);
+            List<String> args = command.arguments();
+            if (args.contains("xml_presentation.slide")) {
+                paramsPayloads.add(readAtFileArg(args, "--params"));
+                dataPayloads.add(readAtFileArg(args, "--data"));
+                return new CliCommandResult(0, """
+                        {"data":{"slide":{"id":"slide-1"}}}
+                        """);
+            }
             return new CliCommandResult(0, """
                     {"data":{"xml_presentation_id":"slides-1","url":"https://example.feishu.cn/slides/slides-1","title":"方案汇报"}}
                     """);
@@ -31,7 +45,10 @@ class LarkSlidesToolTest {
         LarkCliProperties properties = new LarkCliProperties();
         LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
 
-        LarkSlidesCreateResult result = tool.createPresentation("方案汇报", List.of("<slide><data><shape type=\"text\" topLeftX=\"0\" topLeftY=\"0\" width=\"100\" height=\"50\"><content><p>标题</p></content></shape></data></slide>"));
+        LarkSlidesCreateResult result = tool.createPresentation("方案汇报", List.of(
+                "<slide><data><shape type=\"text\" topLeftX=\"0\" topLeftY=\"0\" width=\"100\" height=\"50\"><content><p>标题一</p></content></shape></data></slide>",
+                "<slide><data><shape type=\"text\" topLeftX=\"0\" topLeftY=\"0\" width=\"100\" height=\"50\"><content><p>标题二</p></content></shape></data></slide>"
+        ));
 
         assertThat(result.getPresentationId()).isEqualTo("slides-1");
         assertThat(result.getPresentationUrl()).contains("slides-1");
@@ -39,20 +56,32 @@ class LarkSlidesToolTest {
         assertThat(args).containsSequence(List.of(
                 "slides", "+create",
                 "--as", "user",
-                "--title", "方案汇报",
-                "--slides"
+                "--title", "方案汇报"
         ));
-        int slidesArgIndex = args.indexOf("--slides") + 1;
-        JsonNode slides = objectMapper.readTree(args.get(slidesArgIndex));
-        assertThat(slides).hasSize(1);
-        assertThat(slides.get(0).asText()).contains("<slide");
+        assertThat(args).doesNotContain("--slides");
+        assertThat(commands).hasSize(3);
+        assertThat(commands.get(1).arguments()).containsSequence(List.of(
+                "slides", "xml_presentation.slide", "create",
+                "--as", "user",
+                "--params"
+        ));
+        assertThat(commands.get(1).arguments()).contains("--data", "--yes");
+        assertThat(commands.get(1).arguments().get(commands.get(1).arguments().indexOf("--params") + 1)).startsWith("@");
+        assertThat(commands.get(1).arguments().get(commands.get(1).arguments().indexOf("--data") + 1)).startsWith("@");
+        assertThat(paramsPayloads).hasSize(2);
+        assertThat(dataPayloads).hasSize(2);
+        assertThat(objectMapper.readTree(paramsPayloads.get(0)).path("xml_presentation_id").asText()).isEqualTo("slides-1");
+        assertThat(objectMapper.readTree(dataPayloads.get(0)).path("slide").path("content").asText()).contains("标题一");
+        assertThat(objectMapper.readTree(dataPayloads.get(1)).path("slide").path("content").asText()).contains("标题二");
     }
 
     @Test
-    void fetchPresentationUsesXmlPresentationGet() {
+    void fetchPresentationUsesXmlPresentationGet() throws Exception {
         List<CliCommand> commands = new ArrayList<>();
+        List<String> paramsPayloads = new ArrayList<>();
         CliCommandExecutor executor = command -> {
             commands.add(command);
+            paramsPayloads.add(readAtFileArg(command.arguments(), "--params"));
             return new CliCommandResult(0, """
                     {"data":{"presentation":{"title":"方案汇报","content":"<presentation><slide/></presentation>"}}}
                     """);
@@ -69,9 +98,8 @@ class LarkSlidesToolTest {
                 "--as", "user",
                 "--params"
         ));
-        assertThat(commands.get(0).arguments().get(commands.get(0).arguments().indexOf("--params") + 1))
-                .contains("xml_presentation_id")
-                .contains("slides-1");
+        assertThat(commands.get(0).arguments().get(commands.get(0).arguments().indexOf("--params") + 1)).startsWith("@");
+        assertThat(objectMapper.readTree(paramsPayloads.get(0)).path("xml_presentation_id").asText()).isEqualTo("slides-1");
     }
 
     @Test
@@ -85,5 +113,42 @@ class LarkSlidesToolTest {
         assertThatThrownBy(() -> tool.createPresentation("失败演示", List.of("<slide><data/></slide>")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("slides permission denied");
+    }
+
+    @Test
+    void createPresentationReportsSlideIndexWhenAppendFails() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            if (command.arguments().contains("xml_presentation.slide") && commands.size() == 3) {
+                return new CliCommandResult(1, """
+                        {"error":{"message":"append failed on server"}}
+                        """);
+            }
+            if (command.arguments().contains("xml_presentation.slide")) {
+                return new CliCommandResult(0, "{}");
+            }
+            return new CliCommandResult(0, """
+                    {"data":{"xml_presentation_id":"slides-1","url":"https://example.feishu.cn/slides/slides-1","title":"方案汇报"}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
+
+        assertThatThrownBy(() -> tool.createPresentation("失败演示", List.of("<slide><data>1</data></slide>", "<slide><data>2</data></slide>")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Failed to append slide 2")
+                .hasMessageContaining("append failed on server");
+    }
+
+    private String readAtFileArg(List<String> args, String flag) throws IOException {
+        int index = args.indexOf(flag);
+        assertThat(index).isGreaterThanOrEqualTo(0);
+        assertThat(index + 1).isLessThan(args.size());
+        String fileArg = args.get(index + 1);
+        assertThat(fileArg).startsWith("@");
+        Path path = Path.of(fileArg.substring(1));
+        assertThat(path.isAbsolute()).isFalse();
+        return Files.readString(path, StandardCharsets.UTF_8);
     }
 }

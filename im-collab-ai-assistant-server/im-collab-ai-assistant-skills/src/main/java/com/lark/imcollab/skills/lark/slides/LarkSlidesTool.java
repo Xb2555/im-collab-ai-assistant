@@ -8,8 +8,13 @@ import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Component
 public class LarkSlidesTool {
@@ -43,15 +48,24 @@ public class LarkSlidesTool {
             throw new IllegalArgumentException("slideXmlList is empty");
         }
 
+        LarkSlidesCreateResult result = createEmptyPresentation(title.trim());
+        if (result.getPresentationId() == null || result.getPresentationId().isBlank()) {
+            throw new IllegalStateException("Lark Slides create response missing presentation id");
+        }
+        for (int index = 0; index < slides.size(); index++) {
+            appendSlide(result.getPresentationId(), slides.get(index), index + 1);
+        }
+        return result;
+    }
+
+    private LarkSlidesCreateResult createEmptyPresentation(String title) {
         List<String> args = new ArrayList<>();
         args.add("slides");
         args.add("+create");
         args.add("--as");
         args.add(resolveSlidesIdentity());
         args.add("--title");
-        args.add(title.trim());
-        args.add("--slides");
-        args.add(writeJson(slides));
+        args.add(title);
 
         JsonNode root = executeJson(args);
         JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
@@ -73,9 +87,31 @@ public class LarkSlidesTool {
                         text(presentation, "presentation_url"),
                         text(presentation, "presentationUrl")
                 ))
-                .title(firstNonBlank(text(data, "title"), text(presentation, "title"), title.trim()))
+                .title(firstNonBlank(text(data, "title"), text(presentation, "title"), title))
                 .message(firstNonBlank(text(data, "message"), text(root, "message")))
                 .build();
+    }
+
+    private void appendSlide(String presentationId, String slideXml, int slideIndex) {
+        try (
+                TempJsonFile params = writeTempJsonArg("params", Map.of("xml_presentation_id", presentationId));
+                TempJsonFile data = writeTempJsonArg("data", Map.of("slide", Map.of("content", slideXml)))
+        ) {
+            List<String> args = new ArrayList<>();
+            args.add("slides");
+            args.add("xml_presentation.slide");
+            args.add("create");
+            args.add("--as");
+            args.add(resolveSlidesIdentity());
+            args.add("--params");
+            args.add(params.arg());
+            args.add("--data");
+            args.add(data.arg());
+            args.add("--yes");
+            executeJson(args);
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("Failed to append slide " + slideIndex + ": " + exception.getMessage(), exception);
+        }
     }
 
     @Tool(description = "Scenario D: fetch a Lark Slides presentation XML by presentation id.")
@@ -88,9 +124,12 @@ public class LarkSlidesTool {
         args.add("--as");
         args.add(resolveSlidesIdentity());
         args.add("--params");
-        args.add(writeJson(java.util.Map.of("xml_presentation_id", presentationId.trim())));
 
-        JsonNode root = executeJson(args);
+        JsonNode root;
+        try (TempJsonFile params = writeTempJsonArg("params", Map.of("xml_presentation_id", presentationId.trim()))) {
+            args.add(params.arg());
+            root = executeJson(args);
+        }
         JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
         JsonNode presentation = data.path("presentation").isMissingNode() ? data : data.path("presentation");
         return LarkSlidesFetchResult.builder()
@@ -125,6 +164,43 @@ public class LarkSlidesTool {
             return objectMapper.writeValueAsString(value);
         } catch (Exception exception) {
             throw new IllegalStateException("Failed to serialize slides payload", exception);
+        }
+    }
+
+    private TempJsonFile writeTempJsonArg(String name, Object value) {
+        try {
+            Path directory = Files.createTempDirectory(cliWorkingDirectory(), ".lark-slides-");
+            Path file = directory.resolve(name + ".json");
+            Files.writeString(file, writeJson(value), StandardCharsets.UTF_8);
+            return new TempJsonFile(file, directory, "@" + toCliRelativePath(file));
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to write temporary slides payload", exception);
+        }
+    }
+
+    private Path cliWorkingDirectory() {
+        String configured = properties.getWorkingDirectory();
+        if (configured == null || configured.isBlank()) {
+            return Path.of("").toAbsolutePath().normalize();
+        }
+        return Path.of(configured).toAbsolutePath().normalize();
+    }
+
+    private String toCliRelativePath(Path file) {
+        Path relative = cliWorkingDirectory().relativize(file.toAbsolutePath().normalize());
+        return relative.toString();
+    }
+
+    private record TempJsonFile(Path file, Path directory, String arg) implements AutoCloseable {
+
+        @Override
+        public void close() {
+            try {
+                Files.deleteIfExists(file);
+                Files.deleteIfExists(directory);
+            } catch (IOException ignored) {
+                // Best-effort cleanup only.
+            }
         }
     }
 
