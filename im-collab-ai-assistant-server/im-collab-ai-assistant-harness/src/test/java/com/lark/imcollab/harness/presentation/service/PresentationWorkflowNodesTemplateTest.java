@@ -41,7 +41,8 @@ class PresentationWorkflowNodesTemplateTest {
 
         assertThat(xml)
                 .contains("<slide xmlns=\"http://www.larkoffice.com/sml/2.0\">")
-                .contains("linear-gradient(135deg,rgba(15,23,42,1)")
+                .contains("rgb(246,249,255)")
+                .contains("fontSize=\"31\"")
                 .contains("startX=\"130\" startY=\"280\"")
                 .contains("<note>")
                 .contains("实施路径");

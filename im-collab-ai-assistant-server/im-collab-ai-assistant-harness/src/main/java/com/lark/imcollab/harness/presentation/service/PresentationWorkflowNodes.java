@@ -600,7 +600,7 @@ public class PresentationWorkflowNodes {
 
     String buildSlideXmlTemplate(PresentationSlidePlan slide, int index, int total, PresentationGenerationOptions options) {
         StyleProfile profile = styleProfile(options == null ? "" : options.getStyle());
-        String title = escapeXml(blankToDefault(slide == null ? null : slide.getTitle(), index == 1 ? "汇报 PPT" : "核心内容"));
+        String title = blankToDefault(slide == null ? null : slide.getTitle(), index == 1 ? "汇报 PPT" : "核心内容");
         List<String> points = normalizeKeyPointsForDensity(
                 slide == null ? List.of() : slide.getKeyPoints(),
                 List.of("明确目标", "梳理进展", "推进下一步"),
@@ -616,13 +616,14 @@ public class PresentationWorkflowNodes {
                       <data>
                         <shape type="rect" topLeftX="0" topLeftY="0" width="960" height="18"><fill><fillColor color="%s"/></fill></shape>
                         <shape type="rect" topLeftX="72" topLeftY="96" width="70" height="8"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="text" topLeftX="72" topLeftY="126" width="810" height="122"><content textType="title" color="%s"><p>%s</p></content></shape>
-                        <shape type="text" topLeftX="78" topLeftY="292" width="760" height="156"><content textType="body" color="%s"><ul>%s</ul></content></shape>
-                        <shape type="text" topLeftX="74" topLeftY="474" width="760" height="28"><content textType="caption" color="%s"><p>%s</p></content></shape>
+                        <shape type="text" topLeftX="72" topLeftY="118" width="810" height="138">%s</shape>
+                        <shape type="text" topLeftX="78" topLeftY="286" width="760" height="166"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
+                        <shape type="text" topLeftX="74" topLeftY="474" width="760" height="28">%s</shape>
                       </data>%s
                     </slide>
-                    """.formatted(profile.background(), profile.accent(), profile.accent(), profile.text(), title,
-                    profile.text(), bulletList(points), profile.muted(), escapeXml(profile.name()), note).trim();
+                    """.formatted(profile.background(), profile.accent(), profile.accent(),
+                    titleContent(title, profile.text(), 42), bulletList(points, profile.text(), 21),
+                    plainContent(profile.name(), profile.muted(), 14, false, "left"), note).trim();
         }
         if ("two-column".equals(layout) || "comparison".equals(layout)) {
             return """
@@ -630,17 +631,18 @@ public class PresentationWorkflowNodes {
                       <style><fill><fillColor color="%s"/></fill></style>
                       <data>
                         %s
-                        <shape type="text" topLeftX="64" topLeftY="50" width="820" height="70"><content textType="headline" color="%s"><p>%s</p></content></shape>
+                        <shape type="text" topLeftX="64" topLeftY="44" width="820" height="78">%s</shape>
                         <shape type="rect" topLeftX="70" topLeftY="150" width="390" height="250"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
                         <shape type="rect" topLeftX="500" topLeftY="150" width="390" height="250"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="100" topLeftY="185" width="320" height="178"><content textType="body" color="%s"><ul>%s</ul></content></shape>
-                        <shape type="text" topLeftX="530" topLeftY="185" width="320" height="178"><content textType="body" color="%s"><ul>%s</ul></content></shape>
+                        <shape type="text" topLeftX="100" topLeftY="184" width="320" height="188"><content textType="body" lineSpacing="multiple:1.3"><ul>%s</ul></content></shape>
+                        <shape type="text" topLeftX="530" topLeftY="184" width="320" height="188"><content textType="body" lineSpacing="multiple:1.3"><ul>%s</ul></content></shape>
                         %s
                       </data>%s
                     </slide>
-                    """.formatted(profile.background(), accentRail(profile), profile.text(), title,
+                    """.formatted(profile.background(), accentRail(profile), headlineContent(title, profile.text(), 31),
                     profile.cardFill(), profile.cardBorder(), profile.cardFill(), profile.cardBorder(),
-                    profile.text(), bulletList(firstHalf(points)), profile.text(), bulletList(secondHalf(points)), pageNumber(index, total, profile), note).trim();
+                    bulletList(firstHalf(points), profile.text(), 19), bulletList(secondHalf(points), profile.text(), 19),
+                    pageNumber(index, total, profile), note).trim();
         }
         if ("timeline".equals(layout)) {
             return """
@@ -648,13 +650,13 @@ public class PresentationWorkflowNodes {
                       <style><fill><fillColor color="%s"/></fill></style>
                       <data>
                         %s
-                        <shape type="text" topLeftX="64" topLeftY="50" width="820" height="70"><content textType="headline" color="%s"><p>%s</p></content></shape>
+                        <shape type="text" topLeftX="64" topLeftY="44" width="820" height="78">%s</shape>
                         <line startX="130" startY="280" endX="830" endY="280"><border color="%s" width="3"/></line>
                         %s
                         %s
                       </data>%s
                     </slide>
-                    """.formatted(profile.background(), accentRail(profile), profile.text(), title, profile.accent(),
+                    """.formatted(profile.background(), accentRail(profile), headlineContent(title, profile.text(), 31), profile.accent(),
                     timelineItems(points, profile), pageNumber(index, total, profile), note).trim();
         }
         if ("metric-cards".equals(layout) || "risk-list".equals(layout)) {
@@ -663,12 +665,12 @@ public class PresentationWorkflowNodes {
                       <style><fill><fillColor color="%s"/></fill></style>
                       <data>
                         %s
-                        <shape type="text" topLeftX="64" topLeftY="48" width="820" height="70"><content textType="headline" color="%s"><p>%s</p></content></shape>
+                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
                         %s
                         %s
                       </data>%s
                     </slide>
-                    """.formatted(profile.background(), accentRail(profile), profile.text(), title,
+                    """.formatted(profile.background(), accentRail(profile), headlineContent(title, profile.text(), 31),
                     metricCards(points, profile), pageNumber(index, total, profile), note).trim();
         }
         return """
@@ -676,23 +678,47 @@ public class PresentationWorkflowNodes {
                   <style><fill><fillColor color="%s"/></fill></style>
                   <data>
                     %s
-                    <shape type="text" topLeftX="64" topLeftY="54" width="820" height="82"><content textType="headline" color="%s"><p>%s</p></content></shape>
+                    <shape type="text" topLeftX="64" topLeftY="48" width="820" height="88">%s</shape>
                     <shape type="rect" topLeftX="72" topLeftY="154" width="800" height="270"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                    <shape type="text" topLeftX="108" topLeftY="190" width="720" height="194"><content textType="body" color="%s"><ul>%s</ul></content></shape>
+                    <shape type="text" topLeftX="108" topLeftY="188" width="720" height="206"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
                     %s
                   </data>%s
                 </slide>
-                """.formatted(profile.background(), accentRail(profile), profile.text(), title,
-                profile.cardFill(), profile.cardBorder(), profile.text(), bulletList(points), pageNumber(index, total, profile), note).trim();
+                """.formatted(profile.background(), accentRail(profile), headlineContent(title, profile.text(), 31),
+                profile.cardFill(), profile.cardBorder(), bulletList(points, profile.text(), 20), pageNumber(index, total, profile), note).trim();
     }
 
-    private String bulletList(List<String> points) {
+    private String bulletList(List<String> points, String color, int fontSize) {
         List<String> safePoints = points == null || points.isEmpty() ? List.of("明确目标", "推进落地") : points;
         StringBuilder builder = new StringBuilder();
         for (String point : safePoints) {
-            builder.append("<li><p>").append(escapeXml(point)).append("</p></li>");
+            builder.append("<li><p><span color=\"")
+                    .append(color)
+                    .append("\" fontSize=\"")
+                    .append(fontSize)
+                    .append("\">")
+                    .append(escapeXml(point))
+                    .append("</span></p></li>");
         }
         return builder.toString();
+    }
+
+    private String titleContent(String text, String color, int fontSize) {
+        return "<content textType=\"title\"><p><strong><span color=\"%s\" fontSize=\"%d\">%s</span></strong></p></content>"
+                .formatted(color, fontSize, escapeXml(text));
+    }
+
+    private String headlineContent(String text, String color, int fontSize) {
+        return "<content><p><strong><span color=\"%s\" fontSize=\"%d\">%s</span></strong></p></content>"
+                .formatted(color, fontSize, escapeXml(text));
+    }
+
+    private String plainContent(String text, String color, int fontSize, boolean bold, String align) {
+        String content = "<span color=\"%s\" fontSize=\"%d\">%s</span>".formatted(color, fontSize, escapeXml(text));
+        if (bold) {
+            content = "<strong>" + content + "</strong>";
+        }
+        return "<content><p textAlign=\"%s\">%s</p></content>".formatted(align, content);
     }
 
     private List<String> firstHalf(List<String> points) {
@@ -720,8 +746,8 @@ public class PresentationWorkflowNodes {
 
     private String pageNumber(int index, int total, StyleProfile profile) {
         return """
-                <shape type="text" topLeftX="770" topLeftY="472" width="120" height="28"><content textType="caption" textAlign="right" color="%s"><p>%d/%d</p></content></shape>
-                """.formatted(profile.muted(), index, Math.max(1, total)).trim();
+                <shape type="text" topLeftX="770" topLeftY="472" width="120" height="28">%s</shape>
+                """.formatted(plainContent(index + "/" + Math.max(1, total), profile.muted(), 14, false, "right")).trim();
     }
 
     private String timelineItems(List<String> points, StyleProfile profile) {
@@ -733,8 +759,9 @@ public class PresentationWorkflowNodes {
             int x = 110 + gap * i;
             builder.append("""
                     <shape type="rect" topLeftX="%d" topLeftY="262" width="36" height="36"><fill><fillColor color="%s"/></fill></shape>
-                    <shape type="text" topLeftX="%d" topLeftY="322" width="142" height="82"><content textType="caption" textAlign="center" color="%s"><p>%s</p></content></shape>
-                    """.formatted(x, profile.accent(), x - 52, profile.text(), escapeXml(safePoints.get(i))));
+                    <shape type="text" topLeftX="%d" topLeftY="322" width="142" height="92">%s</shape>
+                    """.formatted(x, profile.accent(), x - 52,
+                    plainContent(safePoints.get(i), profile.text(), 16, false, "center")));
         }
         return builder.toString().trim();
     }
@@ -751,9 +778,9 @@ public class PresentationWorkflowNodes {
             builder.append("""
                     <shape type="rect" topLeftX="%d" topLeftY="168" width="%d" height="210"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
                     <shape type="rect" topLeftX="%d" topLeftY="168" width="%d" height="8"><fill><fillColor color="%s"/></fill></shape>
-                    <shape type="text" topLeftX="%d" topLeftY="204" width="%d" height="128"><content textType="body" textAlign="center" color="%s"><p>%s</p></content></shape>
+                    <shape type="text" topLeftX="%d" topLeftY="202" width="%d" height="138">%s</shape>
                     """.formatted(x, width, profile.cardFill(), profile.cardBorder(), x, width, profile.accent(),
-                    x + 18, width - 36, profile.text(), escapeXml(safePoints.get(i))));
+                    x + 18, width - 36, plainContent(safePoints.get(i), profile.text(), 20, true, "center")));
         }
         return builder.toString().trim();
     }
@@ -918,13 +945,13 @@ public class PresentationWorkflowNodes {
     private StyleProfile styleProfile(String style) {
         return switch (canonicalStyle(style)) {
             case "deep-tech" -> new StyleProfile(
-                    "深色科技风",
-                    "linear-gradient(135deg,rgba(15,23,42,1) 0%,rgba(30,64,175,1) 100%)",
-                    "rgb(96,165,250)",
-                    "rgb(248,250,252)",
-                    "rgb(203,213,225)",
-                    "rgba(15,23,42,0.78)",
-                    "rgba(96,165,250,0.55)");
+                    "高对比科技风",
+                    "rgb(246,249,255)",
+                    "rgb(37,99,235)",
+                    "rgb(15,23,42)",
+                    "rgb(71,85,105)",
+                    "rgb(255,255,255)",
+                    "rgb(147,197,253)");
             case "business-light" -> new StyleProfile(
                     "浅色商务风",
                     "rgb(248,250,252)",
