@@ -116,29 +116,32 @@ class DocumentPatchExecutorTest {
     }
 
     @Test
-    void newBlockPlaceholderResolvedFromPreviousOperation() {
+    void blockGroupMoveUsesExplicitRuntimeGroupKey() {
         LarkDocTool tool = mock(LarkDocTool.class);
         when(tool.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder()
                         .success(true).revisionId(2L)
-                        .newBlocks(List.of(LarkDocBlockRef.builder().blockId("blk-created").build()))
+                        .newBlocks(List.of(
+                                LarkDocBlockRef.builder().blockId("blk-created-1").build(),
+                                LarkDocBlockRef.builder().blockId("blk-created-2").build()
+                        ))
                         .build())
-                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(3L).newBlocks(List.of()).build());
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(3L).newBlocks(List.of()).build())
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(4L).newBlocks(List.of()).build());
 
         DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .patchOperations(List.of(
                         DocumentPatchOperation.builder()
-                                .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
-                                .blockId("anchor")
+                                .operationType(DocumentPatchOperationType.APPEND)
+                                .runtimeGroupKey("group-new-section")
                                 .newContent("第一步")
                                 .docFormat("markdown")
                                 .build(),
                         DocumentPatchOperation.builder()
-                                .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
-                                .blockId("__new__")
-                                .newContent("第二步")
-                                .docFormat("markdown")
+                                .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
+                                .runtimeGroupKey("group-new-section")
+                                .targetBlockId("prev-section-tail")
                                 .build()
                 ))
                 .build();
@@ -146,6 +149,24 @@ class DocumentPatchExecutorTest {
         DocumentPatchExecutor.PatchExecutionResult result = executor.execute("doc123", plan);
 
         assertThat(result.getBeforeRevision()).isEqualTo(2L);
-        assertThat(result.getAfterRevision()).isEqualTo(3L);
+        assertThat(result.getAfterRevision()).isEqualTo(4L);
+        assertThat(result.getModifiedBlocks()).contains("blk-created-1", "blk-created-2");
+    }
+
+    @Test
+    void blockGroupMoveFailsFastWhenRuntimeGroupIsMissing() {
+        LarkDocTool tool = mock(LarkDocTool.class);
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(tool);
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .patchOperations(List.of(DocumentPatchOperation.builder()
+                        .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
+                        .runtimeGroupKey("missing-group")
+                        .targetBlockId("prev-section-tail")
+                        .build()))
+                .build();
+
+        assertThatThrownBy(() -> executor.execute("doc123", plan))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("未找到可移动的新建 block group");
     }
 }

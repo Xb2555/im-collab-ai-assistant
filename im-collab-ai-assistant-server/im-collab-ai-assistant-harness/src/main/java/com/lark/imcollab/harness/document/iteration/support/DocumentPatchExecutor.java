@@ -11,7 +11,9 @@ import lombok.Getter;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Component
 public class DocumentPatchExecutor {
@@ -29,13 +31,16 @@ public class DocumentPatchExecutor {
         }
         long beforeRevision = -1L;
         long afterRevision = -1L;
-        List<String> lastNewBlockIds = List.of();
+        Map<String, List<String>> runtimeGroups = new HashMap<>();
         for (DocumentPatchOperation operation : plan.getPatchOperations()) {
             if (operation.getOperationType() == DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER) {
-                if (lastNewBlockIds.isEmpty()) continue;
+                List<String> groupBlockIds = resolveRuntimeGroup(operation, runtimeGroups);
+                if (groupBlockIds.isEmpty()) {
+                    throw new IllegalStateException("block_group_move_after 失败: 未找到可移动的新建 block group");
+                }
                 String targetBlockId = operation.getTargetBlockId();
                 String currentTarget = targetBlockId;
-                for (String blockId : lastNewBlockIds) {
+                for (String blockId : groupBlockIds) {
                     LarkDocUpdateResult moveResult = larkDocTool.updateByCommand(
                             docRef, "block_move_after", null, null, blockId, currentTarget, null);
                     if (!moveResult.isSuccess()) {
@@ -49,7 +54,6 @@ public class DocumentPatchExecutor {
                 }
                 continue;
             }
-            operation = resolveNewBlockPlaceholder(operation, lastNewBlockIds);
             LarkDocUpdateResult result = switch (operation.getOperationType()) {
                 case STR_REPLACE -> larkDocTool.updateByCommand(
                         docRef, "str_replace", operation.getNewContent(),
@@ -77,27 +81,27 @@ public class DocumentPatchExecutor {
             if (beforeRevision < 0) beforeRevision = rev;
             afterRevision = rev;
             collectModifiedBlocks(modifiedBlocks, operation, result);
-            lastNewBlockIds = extractNewBlockIds(result);
+            rememberRuntimeGroup(operation, result, runtimeGroups);
         }
         return new PatchExecutionResult(modifiedBlocks, beforeRevision, afterRevision);
     }
 
-    private DocumentPatchOperation resolveNewBlockPlaceholder(DocumentPatchOperation operation, List<String> lastNewBlockIds) {
-        if (!"__new__".equals(operation.getBlockId()) || lastNewBlockIds.isEmpty()) {
-            return operation;
+    private void rememberRuntimeGroup(DocumentPatchOperation operation, LarkDocUpdateResult result, Map<String, List<String>> runtimeGroups) {
+        if (operation == null || operation.getRuntimeGroupKey() == null || operation.getRuntimeGroupKey().isBlank()) {
+            return;
         }
-        // 用第一个新 block id 作为代理（多 block section 移动的已知限制）
-        return DocumentPatchOperation.builder()
-                .operationType(operation.getOperationType())
-                .blockId(lastNewBlockIds.get(0))
-                .targetBlockId(operation.getTargetBlockId())
-                .startBlockId(operation.getStartBlockId())
-                .endBlockId(operation.getEndBlockId())
-                .oldText(operation.getOldText())
-                .newContent(operation.getNewContent())
-                .docFormat(operation.getDocFormat())
-                .justification(operation.getJustification())
-                .build();
+        List<String> newBlockIds = extractNewBlockIds(result);
+        if (newBlockIds.isEmpty()) {
+            return;
+        }
+        runtimeGroups.put(operation.getRuntimeGroupKey(), List.copyOf(newBlockIds));
+    }
+
+    private List<String> resolveRuntimeGroup(DocumentPatchOperation operation, Map<String, List<String>> runtimeGroups) {
+        if (operation == null || operation.getRuntimeGroupKey() == null || operation.getRuntimeGroupKey().isBlank()) {
+            return List.of();
+        }
+        return runtimeGroups.getOrDefault(operation.getRuntimeGroupKey(), List.of());
     }
 
     private List<String> extractNewBlockIds(LarkDocUpdateResult result) {

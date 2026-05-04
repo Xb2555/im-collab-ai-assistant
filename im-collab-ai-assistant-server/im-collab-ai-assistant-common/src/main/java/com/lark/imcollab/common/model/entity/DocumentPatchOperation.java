@@ -14,6 +14,7 @@ import java.io.Serializable;
 @AllArgsConstructor
 public class DocumentPatchOperation implements Serializable {
     private DocumentPatchOperationType operationType;
+    private String runtimeGroupKey;
     private String blockId;
     private String targetBlockId;
     private String startBlockId;

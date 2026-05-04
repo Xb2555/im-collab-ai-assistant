@@ -10,6 +10,8 @@ import java.util.List;
 
 @Component
 public class DocumentPatchCompiler {
+    private static final String RUNTIME_GROUP_NEW_HEAD_INSERT = "new-head-insert";
+    private static final String RUNTIME_GROUP_NEW_SECTION_BEFORE = "new-section-before";
 
     private final ChatModel chatModel;
 
@@ -72,9 +74,9 @@ public class DocumentPatchCompiler {
             return approvalOnlyPlan(taskId, intent, snapshot, anchor, strategy, "未找到首章节锚点，需人工确认");
         }
         List<DocumentPatchOperation> ops = new ArrayList<>();
-        ops.add(appendOp(generated, "先追加到文末，后续 move 到文首"));
+        ops.add(appendOp(generated, "先追加到文末，后续 move 到文首", RUNTIME_GROUP_NEW_HEAD_INSERT));
         String prevId = sectionAnchor.getPrevTopLevelSectionId();
-        if (prevId != null) ops.add(groupMoveAfterOp("__new_group__", prevId, "整组移到首章节之前"));
+        if (prevId != null) ops.add(groupMoveAfterOp(RUNTIME_GROUP_NEW_HEAD_INSERT, prevId, "整组移到首章节之前"));
         return base(taskId, intent, snapshot, anchor, strategy)
                 .reasoningSummary("文首插入：append + block_group_move_after")
                 .generatedContent(generated)
@@ -114,12 +116,13 @@ public class DocumentPatchCompiler {
                 .patchOperations(List.of(
                         DocumentPatchOperation.builder()
                                 .operationType(DocumentPatchOperationType.APPEND)
+                                .runtimeGroupKey(RUNTIME_GROUP_NEW_SECTION_BEFORE)
                                 .newContent(insertContent).docFormat("markdown")
                                 .justification("先将新章节追加到文末")
                                 .build(),
                         DocumentPatchOperation.builder()
                                 .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
-                                .blockId("__new_group__")
+                                .runtimeGroupKey(RUNTIME_GROUP_NEW_SECTION_BEFORE)
                                 .targetBlockId(sectionAnchor.getPrevTopLevelSectionId())
                                 .justification("再移动到目标章节前")
                                 .build()
@@ -138,7 +141,7 @@ public class DocumentPatchCompiler {
                 .toolCommandType(DocumentPatchOperationType.APPEND)
                 .requiresApproval(strategy.isRequiresApproval())
                 .riskLevel(DocumentRiskLevel.MEDIUM)
-                .patchOperations(List.of(appendOp(generated, "文末追加")))
+                .patchOperations(List.of(appendOp(generated, "文末追加", null)))
                 .build();
     }
 
@@ -480,9 +483,10 @@ public class DocumentPatchCompiler {
 
     // ---- patch operation builders ----
 
-    private DocumentPatchOperation appendOp(String content, String justification) {
+    private DocumentPatchOperation appendOp(String content, String justification, String runtimeGroupKey) {
         return DocumentPatchOperation.builder()
                 .operationType(DocumentPatchOperationType.APPEND)
+                .runtimeGroupKey(runtimeGroupKey)
                 .newContent(content).docFormat("markdown")
                 .justification(justification)
                 .build();
@@ -496,10 +500,11 @@ public class DocumentPatchCompiler {
                 .build();
     }
 
-    private DocumentPatchOperation groupMoveAfterOp(String groupPlaceholder, String targetBlockId, String justification) {
+    private DocumentPatchOperation groupMoveAfterOp(String runtimeGroupKey, String targetBlockId, String justification) {
         return DocumentPatchOperation.builder()
                 .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
-                .blockId(groupPlaceholder).targetBlockId(targetBlockId)
+                .runtimeGroupKey(runtimeGroupKey)
+                .targetBlockId(targetBlockId)
                 .justification(justification)
                 .build();
     }
