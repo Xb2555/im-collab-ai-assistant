@@ -152,6 +152,27 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     }
 
     @Override
+    public List<TaskRecord> findTasksByConversation(
+            String inputSource,
+            String chatId,
+            String threadId,
+            String ownerOpenId,
+            List<TaskStatusEnum> statuses,
+            int limit
+    ) {
+        if (!hasText(chatId) || !hasText(ownerOpenId)) {
+            return List.of();
+        }
+        int fetchLimit = Math.max(20, Math.max(1, limit) * 4);
+        return findTasksByOwner(ownerOpenId, statuses, 0, fetchLimit).stream()
+                .filter(task -> sameText(chatId, task.getChatId()))
+                .filter(task -> !hasText(inputSource) || sameText(inputSource, task.getSource()))
+                .filter(task -> sameThread(threadId, task.getThreadId()))
+                .limit(Math.max(1, limit))
+                .toList();
+    }
+
+    @Override
     public void saveStep(TaskStepRecord step) {
         try {
             String stepKey = stepKey(step.getTaskId(), step.getStepId());
@@ -340,5 +361,15 @@ public class RedisPlannerStateStore implements PlannerStateStore {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean sameText(String expected, String actual) {
+        return hasText(expected) && hasText(actual) && expected.trim().equals(actual.trim());
+    }
+
+    private boolean sameThread(String expected, String actual) {
+        String left = hasText(expected) ? expected.trim() : "chat-root";
+        String right = hasText(actual) ? actual.trim() : "chat-root";
+        return left.equals(right);
     }
 }

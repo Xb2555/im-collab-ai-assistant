@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.util.ExecutionCommandGuard;
@@ -268,6 +269,29 @@ public class PlannerSupervisorGraphNodes {
             return CompletableFuture.completedFuture("CLARIFY");
         }
         return CompletableFuture.completedFuture("PLAN");
+    }
+
+    public CompletableFuture<String> routeAfterReplan(OverAllState state, RunnableConfig config) {
+        String taskId = state.value(PlannerSupervisorStateKeys.TASK_ID, "");
+        PlanTaskSession session = sessionService.get(taskId);
+        if (session != null && replanIsWaitingForUser(session)) {
+            return CompletableFuture.completedFuture("END");
+        }
+        if (session != null
+                && session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED
+                && session.getTransitionReason() != null
+                && session.getTransitionReason().contains("artifact updated in place")) {
+            return CompletableFuture.completedFuture("END");
+        }
+        return CompletableFuture.completedFuture("REVIEW");
+    }
+
+    private boolean replanIsWaitingForUser(PlanTaskSession session) {
+        if (session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER) {
+            return true;
+        }
+        TaskIntakeState intakeState = session.getIntakeState();
+        return intakeState != null && intakeState.getPendingArtifactSelection() != null;
     }
 
     private WorkspaceContext workspaceContext(OverAllState state) {

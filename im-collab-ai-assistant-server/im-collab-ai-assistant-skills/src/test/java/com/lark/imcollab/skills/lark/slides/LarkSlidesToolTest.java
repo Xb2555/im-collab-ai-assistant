@@ -103,6 +103,53 @@ class LarkSlidesToolTest {
     }
 
     @Test
+    void fetchPresentationSupportsRealXmlPresentationWrapper() {
+        CliCommandExecutor executor = command -> new CliCommandResult(0, """
+                {"data":{"xml_presentation":{"presentation_id":"slides-1","content":"<presentation><slide id=\\"s1\\"/></presentation>","revision_id":1}}}
+                """);
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
+
+        LarkSlidesFetchResult result = tool.fetchPresentation("slides-1");
+
+        assertThat(result.getPresentationId()).isEqualTo("slides-1");
+        assertThat(result.getXml()).contains("<presentation>");
+    }
+
+    @Test
+    void replaceSlideUsesShortcutWithPartsFile() throws Exception {
+        List<CliCommand> commands = new ArrayList<>();
+        List<String> partsPayloads = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            partsPayloads.add(readAtFileArg(command.arguments(), "--parts"));
+            return new CliCommandResult(0, """
+                    {"data":{"xml_presentation_id":"slides-1","slide_id":"s1","parts_count":1,"revision_id":"12"}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
+
+        LarkSlidesReplaceResult result = tool.replaceSlide("slides-1", "s1", List.of(java.util.Map.of(
+                "action", "block_replace",
+                "block_id", "b1",
+                "replacement", "<shape type=\"text\"><content><p>新标题</p></content></shape>"
+        )));
+
+        assertThat(result.getSlideId()).isEqualTo("s1");
+        assertThat(commands.get(0).arguments()).containsSequence(List.of(
+                "slides", "+replace-slide",
+                "--as", "user",
+                "--presentation", "slides-1",
+                "--slide-id", "s1",
+                "--parts"
+        ));
+        assertThat(commands.get(0).arguments().get(commands.get(0).arguments().indexOf("--parts") + 1)).startsWith("@");
+        assertThat(objectMapper.readTree(partsPayloads.get(0)).get(0).path("block_id").asText()).isEqualTo("b1");
+    }
+
+
+    @Test
     void createPresentationTurnsCliFailureIntoReadableException() {
         CliCommandExecutor executor = command -> new CliCommandResult(1, """
                 {"error":{"message":"slides permission denied"}}

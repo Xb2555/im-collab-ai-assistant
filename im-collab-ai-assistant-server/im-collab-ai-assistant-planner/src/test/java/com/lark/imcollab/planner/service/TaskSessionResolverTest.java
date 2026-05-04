@@ -1,11 +1,17 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -62,5 +68,39 @@ class TaskSessionResolverTest {
         assertThat(resolution.taskId()).isEqualTo("task-completed");
         assertThat(resolution.existingSession()).isTrue();
         assertThat(resolution.continuationKey()).isEqualTo("LARK_PRIVATE_CHAT:chat-1:chat-root");
+    }
+
+    @Test
+    void completedCandidatesAreScopedToCurrentConversationAndOwner() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_GROUP_CHAT")
+                .chatId("chat-1")
+                .threadId("thread-1")
+                .senderOpenId("ou-1")
+                .build();
+        when(stateStore.findTasksByConversation(
+                "LARK_GROUP_CHAT",
+                "chat-1",
+                "thread-1",
+                "ou-1",
+                List.of(TaskStatusEnum.COMPLETED),
+                5
+        )).thenReturn(List.of(TaskRecord.builder()
+                .taskId("task-1")
+                .title("采购评审 PPT")
+                .updatedAt(Instant.parse("2026-05-04T08:00:00Z"))
+                .build()));
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(ArtifactRecord.builder()
+                .artifactId("artifact-1")
+                .type(ArtifactTypeEnum.PPT)
+                .build()));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        var candidates = resolver.resolveCompletedCandidates(context);
+
+        assertThat(candidates).hasSize(1);
+        assertThat(candidates.get(0).getTaskId()).isEqualTo("task-1");
+        assertThat(candidates.get(0).getArtifactTypes()).containsExactly(ArtifactTypeEnum.PPT);
     }
 }

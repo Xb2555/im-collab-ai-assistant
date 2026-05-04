@@ -175,6 +175,41 @@ class PlannerSupervisorGraphRunnerTest {
         verify(fixture.planningNodeService).plan("task-4", "整理刚才讨论", collectedContext, "");
     }
 
+    @Test
+    void replanStopsWhenNodeNeedsUserSelection() throws Exception {
+        Fixture fixture = new Fixture();
+        PlanTaskSession current = PlanTaskSession.builder()
+                .taskId("task-5")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PlanTaskSession waiting = PlanTaskSession.builder()
+                .taskId("task-5")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT)
+                        .assistantReply("这个任务下有多个可修改产物，你想修改哪一个？")
+                        .pendingAdjustmentInstruction("把PPT标题改了")
+                        .build())
+                .build();
+        when(fixture.sessionService.getOrCreate("task-5")).thenReturn(current);
+        when(fixture.sessionService.get("task-5")).thenReturn(waiting);
+        when(fixture.decisionAgent.decide(any(), any(), eq("把PPT标题改了")))
+                .thenReturn(PlannerSupervisorDecisionResult.of(PlannerSupervisorAction.PLAN_ADJUSTMENT, 1.0d, "adjust"));
+        when(fixture.replanNodeService.replan("task-5", "把PPT标题改了", null)).thenReturn(waiting);
+
+        PlanTaskSession result = fixture.runner.run(
+                new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "adjust"),
+                "task-5",
+                "把PPT标题改了",
+                null,
+                null
+        );
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("多个可修改产物");
+        verifyNoInteractions(fixture.reviewGateNodeService);
+    }
+
     private static class Fixture {
         private final PlannerSessionService sessionService = mock(PlannerSessionService.class);
         private final PlannerSupervisorDecisionAgent decisionAgent = mock(PlannerSupervisorDecisionAgent.class);
@@ -249,7 +284,10 @@ class PlannerSupervisorGraphRunnerTest {
             ));
             graph.addEdge("plan", "review");
             graph.addEdge("resume", "review");
-            graph.addEdge("replan", "review");
+            graph.addConditionalEdges("replan", nodes::routeAfterReplan, Map.of(
+                    "REVIEW", "review",
+                    "END", StateGraph.END
+            ));
             graph.addEdge("review", "gate");
             graph.addEdge("gate", "project_runtime");
             graph.addEdge("project_runtime", StateGraph.END);

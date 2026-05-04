@@ -94,6 +94,25 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void generationOptionsPreferLatestReplanPageCountOverOriginalTaskPageCount() {
+        PresentationExecutionSupport support = mock(PresentationExecutionSupport.class);
+        when(support.findPptStep("task-replan")).thenReturn(Optional.of(TaskStepRecord.builder()
+                .taskId("task-replan")
+                .name("生成新版PPT（3页）")
+                .inputSummary("整体重新规划并重跑，生成一份3页新版PPT")
+                .build()));
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                support, null, null, null, null, null, new ObjectMapper());
+
+        PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
+                "task-replan",
+                Task.builder().rawInstruction("原始任务：生成一份2页PPT").build(),
+                new OverAllState(Map.of()));
+
+        assertThat(options.getPageCount()).isEqualTo(3);
+    }
+
+    @Test
     void generationOptionsKeepMinimalProfessionalWhenExplicitlyRequested() {
         PresentationExecutionSupport support = mock(PresentationExecutionSupport.class);
         when(support.findPptStep("task-2")).thenReturn(Optional.of(TaskStepRecord.builder()

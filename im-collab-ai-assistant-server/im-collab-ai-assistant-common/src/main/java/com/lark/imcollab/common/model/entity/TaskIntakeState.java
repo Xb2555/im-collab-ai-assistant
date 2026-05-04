@@ -37,6 +37,15 @@ public class TaskIntakeState implements Serializable {
     @Schema(description = "只读查询视图，由 LLM 在固定枚举意图内细分，例如 PLAN/STATUS/ARTIFACTS")
     private String readOnlyView;
 
+    @Schema(description = "IM 多任务选择挂起态")
+    private PendingTaskSelection pendingTaskSelection;
+
+    @Schema(description = "IM 多产物选择挂起态")
+    private PendingArtifactSelection pendingArtifactSelection;
+
+    @Schema(description = "完成态产物调整挂起指令")
+    private String pendingAdjustmentInstruction;
+
     @Schema(description = "最近一次输入时间")
     private String lastInputAt;
 }

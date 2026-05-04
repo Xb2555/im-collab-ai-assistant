@@ -2,6 +2,7 @@ package com.lark.imcollab.app.planner.service;
 
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
@@ -12,6 +13,7 @@ import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -24,6 +26,7 @@ public class PlannerCommandApplicationService {
     private final TaskRuntimeService taskRuntimeService;
     private final PlannerSessionService sessionService;
 
+    @Autowired
     public PlannerCommandApplicationService(
             PlannerSupervisorGraphRunner graphRunner,
             TaskBridgeService taskBridgeService,
@@ -41,6 +44,21 @@ public class PlannerCommandApplicationService {
     }
 
     public PlanTaskSession resume(String taskId, String feedback, boolean replanFromRoot) {
+        PlanTaskSession current = sessionService.get(taskId);
+        TaskIntakeState intakeState = current.getIntakeState();
+        if (intakeState != null
+                && intakeState.getPendingAdjustmentInstruction() != null
+                && !intakeState.getPendingAdjustmentInstruction().isBlank()) {
+            current.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+            sessionService.saveWithoutVersionChange(current);
+            return graphRunner.run(
+                    new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "resume completed task adjustment"),
+                    taskId,
+                    intakeState.getPendingAdjustmentInstruction() + "\n用户补充：" + feedback,
+                    null,
+                    feedback
+            );
+        }
         taskRuntimeService.appendUserIntervention(taskId, feedback);
         PlannerSupervisorAction action = replanFromRoot
                 ? PlannerSupervisorAction.PLAN_ADJUSTMENT
@@ -55,16 +73,31 @@ public class PlannerCommandApplicationService {
     }
 
     public PlanTaskSession replan(String taskId, String feedback) {
-        taskRuntimeService.appendUserIntervention(taskId, feedback);
+        return replan(taskId, feedback, null, null);
+    }
+
+    public PlanTaskSession replan(String taskId, String feedback, String artifactPolicy, String targetArtifactId) {
+        String effectiveFeedback = appendCommandHints(feedback, artifactPolicy, targetArtifactId);
         PlanTaskSession session = graphRunner.run(
                 new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "user requested plan adjustment"),
                 taskId,
-                feedback,
+                effectiveFeedback,
                 null,
-                feedback
+                effectiveFeedback
         );
         taskBridgeService.ensureTask(session);
         return session;
+    }
+
+    private String appendCommandHints(String feedback, String artifactPolicy, String targetArtifactId) {
+        StringBuilder builder = new StringBuilder(feedback == null ? "" : feedback.trim());
+        if (artifactPolicy != null && !artifactPolicy.isBlank()) {
+            builder.append("\n产物策略：").append(artifactPolicy.trim());
+        }
+        if (targetArtifactId != null && !targetArtifactId.isBlank()) {
+            builder.append("\n目标产物ID：").append(targetArtifactId.trim());
+        }
+        return builder.toString().trim();
     }
 
     public PlanTaskSession confirmExecution(String taskId, PlanTaskSession currentSession) {
