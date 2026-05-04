@@ -235,7 +235,11 @@ public class DocumentEditIntentResolver {
             return intent;
         }
         String lower = instruction.trim().toLowerCase(java.util.Locale.ROOT);
-        boolean deleteHint = lower.contains("删除") || lower.contains("去掉") || lower.contains("移除");
+        String headingTitle = extractHeadingTarget(instruction);
+        if (headingTitle != null && !headingTitle.isBlank()) {
+            intent = ensureHeadingAnchor(intent, headingTitle);
+        }
+        boolean deleteHint = lower.contains("删") || lower.contains("去掉") || lower.contains("移除");
         if (!deleteHint) {
             return intent;
         }
@@ -259,6 +263,51 @@ public class DocumentEditIntentResolver {
                 .riskLevel(intent.getRiskLevel())
                 .riskHints(intent.getRiskHints())
                 .build();
+    }
+
+    private DocumentEditIntent ensureHeadingAnchor(DocumentEditIntent intent, String headingTitle) {
+        if (intent.getAnchorSpec() != null
+                && intent.getAnchorSpec().getMatchMode() == DocumentAnchorMatchMode.BY_HEADING_TITLE
+                && hasText(intent.getAnchorSpec().getHeadingTitle())) {
+            return intent;
+        }
+        DocumentAnchorSpec anchorSpec = DocumentAnchorSpec.builder()
+                .anchorKind(DocumentAnchorKind.DOCUMENT_HEAD)
+                .matchMode(DocumentAnchorMatchMode.BY_HEADING_TITLE)
+                .headingTitle(headingTitle)
+                .build();
+        return DocumentEditIntent.builder()
+                .intentType(intent.getIntentType())
+                .semanticAction(intent.getSemanticAction())
+                .userInstruction(intent.getUserInstruction())
+                .anchorSpec(anchorSpec)
+                .rewriteSpec(intent.getRewriteSpec())
+                .assetSpec(intent.getAssetSpec())
+                .clarificationNeeded(intent.isClarificationNeeded())
+                .clarificationHint(intent.getClarificationHint())
+                .riskLevel(intent.getRiskLevel())
+                .riskHints(intent.getRiskHints())
+                .build();
+    }
+
+    private String extractHeadingTarget(String instruction) {
+        if (instruction == null || instruction.isBlank()) {
+            return null;
+        }
+        String normalized = instruction.trim();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "(?:在|于)?\\s*([0-9一二三四五六七八九十百千万]+(?:\\.[0-9一二三四五六七八九十百千万]+)*\\s*[^，。；:：\\n]+?)\\s*(?:中|里|内)?\\s*(?:新增|添加|插入|修改|改写|删除|去掉|移除)"
+        ).matcher(normalized);
+        if (matcher.find()) {
+            return matcher.group(1).trim();
+        }
+        matcher = java.util.regex.Pattern.compile(
+                "(?:删除|修改|改写|新增|添加|插入)\\s*([0-9一二三四五六七八九十百千万]+(?:\\.[0-9一二三四五六七八九十百千万]+)*\\s*[^，。；:：\\n]+)"
+        ).matcher(normalized);
+        if (matcher.find()) {
+            return matcher.group(1).trim();
+        }
+        return null;
     }
 
     private <T extends Enum<T>> T parseEnum(Class<T> clazz, String value) {

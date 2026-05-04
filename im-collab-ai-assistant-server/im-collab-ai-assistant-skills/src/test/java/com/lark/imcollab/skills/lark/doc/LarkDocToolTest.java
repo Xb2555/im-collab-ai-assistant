@@ -208,7 +208,7 @@ class LarkDocToolTest {
     }
 
     @Test
-    void updateByCommandAppendUsesV1ModeAndMarkdownProtocol() {
+    void updateDocAppendUsesCommandProtocol() {
         List<CliCommand> commands = new ArrayList<>();
         CliCommandExecutor executor = command -> {
             commands.add(command);
@@ -218,11 +218,11 @@ class LarkDocToolTest {
                           lark-cli docs +update [flags]
 
                         Flags:
-                              --api-version string
-                              --as string
-                              --doc string
-                              --mode string
-                              --markdown string
+                        --api-version string
+                        --as string
+                        --doc string
+                        --command string
+                        --markdown string
                         """);
             }
             return new CliCommandResult(0, """
@@ -237,12 +237,12 @@ class LarkDocToolTest {
                 objectMapper
         );
 
-        LarkDocUpdateResult result = tool.updateByCommand("doc-append", "append", "新增内容", "markdown", null, null, null);
+        LarkDocUpdateResult result = tool.appendMarkdown("doc-append", "新增内容");
 
         assertThat(result.getDocId()).isEqualTo("doc-append");
         CliCommand updateCommand = commands.get(commands.size() - 1);
-        assertThat(updateCommand.arguments()).contains("docs", "+update", "--mode", "append", "--markdown", "-");
-        assertThat(updateCommand.arguments()).doesNotContain("--command");
+        assertThat(updateCommand.arguments()).contains("docs", "+update", "--command", "append", "--markdown", "-");
+        assertThat(updateCommand.arguments()).doesNotContain("--mode");
         assertThat(updateCommand.stdin()).isEqualTo("新增内容");
     }
 

@@ -25,16 +25,13 @@ public class LarkDocWriteGateway {
         this.readGateway = readGateway;
     }
 
-    public LarkDocUpdateResult updateDoc(String docIdOrUrl, String mode, String markdown) {
+    public LarkDocUpdateResult updateDoc(String docIdOrUrl, String command, String markdown) {
         requireValue(docIdOrUrl, "docIdOrUrl");
-        requireValue(mode, "mode");
-        if (!"delete_range".equals(mode) && !"block_delete".equals(mode)) requireValue(markdown, "markdown");
+        requireValue(command, "command");
+        if (!"delete_range".equals(command) && !"block_delete".equals(command)) requireValue(markdown, "markdown");
         Set<String> supportedFlags = readGateway.supportedFlags("+update");
-        // append uses v1 protocol (--mode/--markdown), other modes use v2 (--command)
-        List<DocCommandAttempt> attempts = "append".equals(mode)
-                ? v1UpdateAttempts(docIdOrUrl.trim(), mode, markdown, null, null, null, supportedFlags)
-                : updateDocAttempts(docIdOrUrl.trim(), mode.trim(), markdown, "markdown", null, null, null, supportedFlags);
-        return parseUpdateResult(readGateway.executeJsonWithCompat("+update", attempts), mode);
+        List<DocCommandAttempt> attempts = updateDocAttempts(docIdOrUrl.trim(), command.trim(), markdown, "markdown", null, null, null, supportedFlags);
+        return parseUpdateResult(readGateway.executeJsonWithCompat("+update", attempts), command);
     }
 
     public LarkDocUpdateResult updateByCommand(String docIdOrUrl, String command, String content, String docFormat, String blockId, String pattern, Long revisionId) {
@@ -42,15 +39,14 @@ public class LarkDocWriteGateway {
         requireValue(command, "command");
         String normalizedCommand = command.trim();
         String docRef = docIdOrUrl.trim();
-        long timeoutMillis = isRichMediaCommand(normalizedCommand) ? richMediaTimeoutMillis() : readGateway.commandTimeoutMillis();
         return switch (normalizedCommand) {
             case "append" -> updateDoc(docRef, "append", content);
-            case "str_replace" -> legacyUpdate(docRef, "str_replace", content, docFormat, null, pattern, revisionId, timeoutMillis);
-            case "block_insert_after" -> legacyUpdate(docRef, "block_insert_after", content, docFormat, blockId, null, revisionId, timeoutMillis);
-            case "block_replace" -> legacyUpdate(docRef, "block_replace", content, docFormat, blockId, null, revisionId, timeoutMillis);
+            case "str_replace" -> executeCommandUpdate(docRef, normalizedCommand, content, docFormat, null, pattern, revisionId, readGateway.commandTimeoutMillis());
+            case "block_insert_after", "block_replace" -> executeCommandUpdate(docRef, normalizedCommand, content, docFormat, blockId, null, revisionId, richMediaTimeoutMillis());
             case "block_delete" -> directBlockDelete(docRef, blockId);
             case "create_whiteboard" -> appendWhiteboard(docRef);
-            default -> legacyUpdate(docRef, normalizedCommand, content, docFormat, blockId, pattern, revisionId, timeoutMillis);
+            default -> executeCommandUpdate(docRef, normalizedCommand, content, docFormat, blockId, pattern, revisionId,
+                    readGateway.commandTimeoutMillis());
         };
     }
 
@@ -59,12 +55,6 @@ public class LarkDocWriteGateway {
     }
 
     // ---- internals ----
-
-    private LarkDocUpdateResult updateBySelection(String docRef, String mode, String markdown, String docFormat, String titleSelection, String ellipsisSelection) {
-        Set<String> supportedFlags = readGateway.supportedFlags("+update");
-        List<DocCommandAttempt> attempts = v1UpdateAttempts(docRef, mode, markdown, titleSelection, ellipsisSelection, null, supportedFlags);
-        return parseUpdateResult(readGateway.executeJsonWithCompat("+update", attempts), mode);
-    }
 
     private LarkDocUpdateResult directBlockDelete(String docRef, String blockId) {
         requireValue(blockId, "blockId");
@@ -86,7 +76,16 @@ public class LarkDocWriteGateway {
         return result;
     }
 
-    private LarkDocUpdateResult legacyUpdate(String docRef, String command, String content, String docFormat, String blockId, String pattern, Long revisionId, long timeoutMillis) {
+    private LarkDocUpdateResult executeCommandUpdate(
+            String docRef,
+            String command,
+            String content,
+            String docFormat,
+            String blockId,
+            String pattern,
+            Long revisionId,
+            long timeoutMillis
+    ) {
         Set<String> supportedFlags = readGateway.supportedFlags("+update");
         List<DocCommandAttempt> attempts = updateDocAttempts(docRef, command, content, normalizeDocFormat(docFormat), blockId, pattern, revisionId, supportedFlags);
         return parseUpdateResult(readGateway.executeJsonWithCompat("+update", attempts, timeoutMillis), command);
@@ -122,30 +121,6 @@ public class LarkDocWriteGateway {
         return new DocCommandAttempt(args, stdin);
     }
 
-    private List<DocCommandAttempt> v1UpdateAttempts(String docRef, String mode, String markdown, String titleSelection, String ellipsisSelection, String newTitle, Set<String> supportedFlags) {
-        Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
-        attempts.put("preferred", v1UpdateAttempt(docRef, mode, markdown, titleSelection, ellipsisSelection, newTitle, supportedFlags, true, true));
-        attempts.put("no-api-version", v1UpdateAttempt(docRef, mode, markdown, titleSelection, ellipsisSelection, newTitle, supportedFlags, false, true));
-        attempts.put("basic", v1UpdateAttempt(docRef, mode, markdown, titleSelection, ellipsisSelection, newTitle,
-                Set.of("--as", "--doc", "--mode", "--markdown", "--selection-by-title", "--selection-with-ellipsis", "--new-title"), false, false));
-        return readGateway.distinctAttempts(attempts);
-    }
-
-    private DocCommandAttempt v1UpdateAttempt(String docRef, String mode, String markdown, String titleSelection, String ellipsisSelection, String newTitle, Set<String> supportedFlags, boolean withApiVersion, boolean includeIdentity) {
-        List<String> args = new ArrayList<>();
-        args.add("docs");
-        args.add("+update");
-        if (withApiVersion) readGateway.appendIfSupported(args, supportedFlags, "--api-version", "v1");
-        if (includeIdentity) readGateway.appendIfSupported(args, supportedFlags, "--as", readGateway.resolveDocIdentity());
-        readGateway.appendIfSupported(args, supportedFlags, "--doc", docRef);
-        readGateway.appendIfSupported(args, supportedFlags, "--mode", mode);
-        if (readGateway.hasText(markdown)) readGateway.appendIfSupported(args, supportedFlags, "--markdown", CONTENT_STDIN_MARKER);
-        readGateway.appendIfSupported(args, supportedFlags, "--selection-by-title", titleSelection);
-        readGateway.appendIfSupported(args, supportedFlags, "--selection-with-ellipsis", ellipsisSelection);
-        readGateway.appendIfSupported(args, supportedFlags, "--new-title", newTitle);
-        return new DocCommandAttempt(args, readGateway.hasText(markdown) ? markdown : null);
-    }
-
     private LarkDocUpdateResult parseUpdateResult(JsonNode root, String command) {
         JsonNode data = root.path("data");
         JsonNode document = data.path("document").isMissingNode() ? data : data.path("document");
@@ -175,17 +150,6 @@ public class LarkDocWriteGateway {
                 .build();
     }
 
-    private String toV1Markdown(String content, String docFormat) {
-        if (content == null) return null;
-        String fmt = normalizeDocFormat(docFormat);
-        return switch (fmt) {
-            case "", "markdown" -> content;
-            case "whiteboard" -> "<whiteboard token=\"" + content.trim() + "\"/>";
-            case "image" -> "![image](" + content.trim() + ")";
-            default -> content;
-        };
-    }
-
     private String normalizeDocFormat(String docFormat) {
         if (docFormat == null) {
             return "";
@@ -201,14 +165,6 @@ public class LarkDocWriteGateway {
         return content.lines().map(String::trim).filter(readGateway::hasText)
                 .filter(l -> !l.startsWith("<")).findFirst()
                 .orElseGet(() -> { String n = content.replaceAll("\\s+", " ").trim(); return n.isBlank() ? null : n; });
-    }
-
-    private boolean isRichMediaCommand(String command) {
-        if (command == null) return false;
-        return switch (command) {
-            case "upload_image", "create_whiteboard", "table_write", "block_insert_after" -> true;
-            default -> false;
-        };
     }
 
     private long richMediaTimeoutMillis() {

@@ -88,8 +88,12 @@ public class LarkDocTool {
         return readGateway.fetchDoc(docRef, scope, "xml", detail, null, null, null);
     }
 
-    public LarkDocUpdateResult updateDoc(String docIdOrUrl, String mode, String markdown) {
-        return writeGateway.updateDoc(docIdOrUrl, mode, markdown);
+    public LarkDocUpdateResult updateDocByCommand(String docIdOrUrl, String command, String markdown) {
+        return writeGateway.updateDoc(docIdOrUrl, command, markdown);
+    }
+
+    public LarkDocUpdateResult updateDoc(String docIdOrUrl, String command, String markdown) {
+        return updateDocByCommand(docIdOrUrl, command, markdown);
     }
 
     public LarkDocFetchResult fetchDocOutline(String docIdOrUrl) {

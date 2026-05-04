@@ -371,7 +371,7 @@ public class DocumentAnchorResolver {
 
     private boolean targetsInsertAfterSection(DocumentSemanticActionType action) {
         return switch (action) {
-            case INSERT_IMAGE_AFTER_ANCHOR, INSERT_TABLE_AFTER_ANCHOR, INSERT_WHITEBOARD_AFTER_ANCHOR -> true;
+            case INSERT_BLOCK_AFTER_ANCHOR, INSERT_IMAGE_AFTER_ANCHOR, INSERT_TABLE_AFTER_ANCHOR, INSERT_WHITEBOARD_AFTER_ANCHOR -> true;
             default -> false;
         };
     }

@@ -71,6 +71,38 @@ class DocumentPatchCompilerTest {
     }
 
     @Test
+    void insertBeforeSectionNormalizesPlainTextToHeading() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("前言\n\n这是新增章节");
+        DocumentPatchCompiler compiler = new DocumentPatchCompiler(chatModel);
+
+        DocumentEditPlan plan = compiler.compile(
+                "task-1b",
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.INSERT)
+                        .semanticAction(DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION)
+                        .userInstruction("在项目背景前新增前言")
+                        .build(),
+                snapshot(),
+                ResolvedDocumentAnchor.builder()
+                        .anchorType(DocumentAnchorType.SECTION)
+                        .sectionAnchor(DocumentSectionAnchor.builder()
+                                .headingBlockId("heading-block")
+                                .headingText("一、项目背景")
+                                .headingLevel(2)
+                                .allBlockIds(List.of("heading-block", "body-1"))
+                                .bodyBlockIds(List.of("body-1"))
+                                .build())
+                        .preview("一、项目背景")
+                        .build(),
+                strategy(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT, DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
+        );
+
+        assertThat(plan.getPatchOperations()).first().satisfies(operation ->
+                assertThat(operation.getNewContent()).startsWith("## 前言"));
+    }
+
+    @Test
     void rewriteSectionBodyCompilesInsertThenDeleteOldBody() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""

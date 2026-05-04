@@ -93,19 +93,29 @@ public class DocumentPatchCompiler {
         if (headingOnly(generated)) throw new IllegalStateException("新增章节只有标题无正文");
         DocumentSectionAnchor sectionAnchor = requireSectionAnchor(anchor);
         String headingBlockId = sectionAnchor.getHeadingBlockId();
-        String combined = generated + "\n\n" + excerpt;
+        String insertContent = generated;
+        if (!insertContent.endsWith("\n")) {
+            insertContent = insertContent + "\n";
+        }
         return base(taskId, intent, snapshot, anchor, strategy)
-                .reasoningSummary("章节前插入：block_replace 合并新旧内容")
+                .reasoningSummary("章节前插入：append + block_move_after")
                 .generatedContent(generated)
-                .toolCommandType(DocumentPatchOperationType.BLOCK_REPLACE)
-                .requiresApproval(false)
-                .riskLevel(DocumentRiskLevel.MEDIUM)
-                .patchOperations(List.of(DocumentPatchOperation.builder()
-                        .operationType(DocumentPatchOperationType.BLOCK_REPLACE)
-                        .blockId(headingBlockId)
-                        .newContent(combined).docFormat("markdown")
-                        .justification("在目标章节前插入新章节，合并为 block_replace")
-                        .build()))
+                .toolCommandType(DocumentPatchOperationType.APPEND)
+                .requiresApproval(true)
+                .riskLevel(DocumentRiskLevel.HIGH)
+                .patchOperations(List.of(
+                        DocumentPatchOperation.builder()
+                                .operationType(DocumentPatchOperationType.APPEND)
+                                .newContent(insertContent).docFormat("markdown")
+                                .justification("先将新章节追加到文末")
+                                .build(),
+                        DocumentPatchOperation.builder()
+                                .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
+                                .blockId("__new_group__")
+                                .targetBlockId(sectionAnchor.getPrevTopLevelSectionId())
+                                .justification("再移动到目标章节前")
+                                .build()
+                ))
                 .build();
     }
 
@@ -475,6 +485,8 @@ public class DocumentPatchCompiler {
         if (first.startsWith("#")) {
             String text = first.replaceFirst("^#+\\s*", "");
             lines[0] = "#".repeat(anchorLevel) + " " + text;
+        } else {
+            lines[0] = "#".repeat(anchorLevel) + " " + first;
         }
         return trim(String.join("\n", lines));
     }

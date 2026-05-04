@@ -53,16 +53,23 @@ public class DocumentTargetStateVerifier {
     private void verifyNewSectionBefore(DocumentEditPlan plan, DocumentStructureSnapshot before, DocumentStructureSnapshot after) {
         DocumentSectionAnchor target = plan.getResolvedAnchor() == null ? null : plan.getResolvedAnchor().getSectionAnchor();
         if (target == null || target.getHeadingBlockId() == null) return;
-        String targetId = target.getHeadingBlockId();
         List<String> afterTopLevel = after == null ? null : after.getTopLevelSequence();
         if (afterTopLevel == null) return;
-        int afterIdx = afterTopLevel.indexOf(targetId);
-        if (afterIdx < 0) throw new IllegalStateException("目标状态校验失败：目标章节 heading 在 after 快照中消失");
-        List<String> beforeTopLevel = before == null ? null : before.getTopLevelSequence();
-        int beforeIdx = beforeTopLevel == null ? -1 : beforeTopLevel.indexOf(targetId);
-        if (beforeIdx >= 0 && afterIdx <= beforeIdx) {
-            throw new IllegalStateException("目标状态校验失败：新章节未插入到目标章节之前（before_idx=" + beforeIdx + " after_idx=" + afterIdx + "）");
+        int targetIdx = afterTopLevel.indexOf(target.getHeadingBlockId());
+        if (targetIdx < 0) {
+            throw new IllegalStateException("目标状态校验失败：目标章节 heading 在 after 快照中消失");
         }
+        String newContent = firstNewContent(plan);
+        String insertedBlockId = findBlockIdContaining(after, newContent);
+        if (insertedBlockId == null) {
+            throw new IllegalStateException("目标状态校验失败：after 快照中未找到新插入章节");
+        }
+        String insertedTopLevel = resolveTopLevelAncestor(after, insertedBlockId);
+        int insertedIdx = insertedTopLevel == null ? -1 : afterTopLevel.indexOf(insertedTopLevel);
+        if (insertedIdx >= 0 && insertedIdx < targetIdx) {
+            return;
+        }
+        throw new IllegalStateException("目标状态校验失败：新章节未成功插入到目标章节之前");
     }
 
     private void verifyTextReplaced(DocumentEditPlan plan, DocumentStructureSnapshot before, DocumentStructureSnapshot after) {
@@ -86,18 +93,25 @@ public class DocumentTargetStateVerifier {
     }
 
     private void verifyBlockInsertedAfter(DocumentEditPlan plan, DocumentStructureSnapshot before, DocumentStructureSnapshot after) {
-        // 主判据：after block 数量 > before
-        if (blockCount(after) <= blockCount(before)) {
-            throw new IllegalStateException("目标状态校验失败：插入后 block 数量未增长");
+        String newContent = firstNewContent(plan);
+        if (hasText(newContent) && fullText(after).contains(newContent)) {
+            return;
         }
-        // 辅助：anchor 后方有新 block
+        // 兜底判据：after block 数量 > before
+        if (blockCount(after) > blockCount(before)) {
+            return;
+        }
+        if (hasText(newContent)) {
+            throw new IllegalStateException("目标状态校验失败：插入后未能在文档中找到新增内容");
+        }
         String anchorBlockId = resolveAnchorBlockId(plan);
         if (anchorBlockId != null && after != null && after.getOrderedBlockIds() != null) {
             int anchorIdx = after.getOrderedBlockIds().indexOf(anchorBlockId);
-            if (anchorIdx >= 0 && anchorIdx + 1 >= after.getOrderedBlockIds().size()) {
-                throw new IllegalStateException("目标状态校验失败：锚点 block 后方无新增 block");
+            if (anchorIdx >= 0 && anchorIdx + 1 < after.getOrderedBlockIds().size()) {
+                return;
             }
         }
+        throw new IllegalStateException("目标状态校验失败：插入后 block 数量未增长");
     }
 
     private void verifyBlocksRemoved(DocumentEditPlan plan, DocumentStructureSnapshot after) {
@@ -172,6 +186,13 @@ public class DocumentTargetStateVerifier {
                 .map(DocumentPatchOperation::getOldText).findFirst().orElse(null);
     }
 
+    private String firstNewContent(DocumentEditPlan plan) {
+        if (plan.getPatchOperations() == null) return null;
+        return plan.getPatchOperations().stream()
+                .filter(op -> op.getNewContent() != null && !op.getNewContent().isBlank())
+                .map(DocumentPatchOperation::getNewContent).findFirst().orElse(null);
+    }
+
     private String resolveAnchorBlockId(DocumentEditPlan plan) {
         ResolvedDocumentAnchor anchor = plan.getResolvedAnchor();
         if (anchor == null) return null;
@@ -188,5 +209,32 @@ public class DocumentTargetStateVerifier {
         StringBuilder sb = new StringBuilder();
         snapshot.getBlockIndex().values().forEach(n -> { if (n.getPlainText() != null) sb.append(n.getPlainText()); });
         return sb.toString();
+    }
+
+    private String findBlockIdContaining(DocumentStructureSnapshot snapshot, String content) {
+        if (!hasText(content) || snapshot == null || snapshot.getBlockIndex() == null) {
+            return null;
+        }
+        for (DocumentStructureNode node : snapshot.getBlockIndex().values()) {
+            if (node != null && hasText(node.getPlainText()) && content.contains(node.getPlainText())) {
+                return node.getBlockId();
+            }
+        }
+        return null;
+    }
+
+    private String resolveTopLevelAncestor(DocumentStructureSnapshot snapshot, String blockId) {
+        if (snapshot == null || snapshot.getBlockIndex() == null || blockId == null) {
+            return null;
+        }
+        DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
+        if (node == null) {
+            return null;
+        }
+        return hasText(node.getTopLevelAncestorId()) ? node.getTopLevelAncestorId() : node.getBlockId();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

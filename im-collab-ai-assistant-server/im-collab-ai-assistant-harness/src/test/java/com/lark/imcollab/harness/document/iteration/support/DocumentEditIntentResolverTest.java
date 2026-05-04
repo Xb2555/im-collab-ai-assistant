@@ -2,6 +2,7 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
@@ -92,5 +93,27 @@ class DocumentEditIntentResolverTest {
 
         assertThat(intent.isClarificationNeeded()).isTrue();
         assertThat(intent.getClarificationHint()).isNotBlank();
+    }
+
+    @Test
+    void fencedJsonAndHeadingInstructionAreNormalized() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                ```json
+                {
+                  "intentType": "INSERT",
+                  "semanticAction": "INSERT_BLOCK_AFTER_ANCHOR",
+                  "clarificationNeeded": false
+                }
+                ```
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("在1.1 游客规模与收入中新增一段文字：介绍东方明珠");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
+        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.1 游客规模与收入");
     }
 }
