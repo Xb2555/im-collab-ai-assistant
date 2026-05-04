@@ -1,9 +1,10 @@
 package com.lark.imcollab.app.planner.service;
 
-import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
@@ -90,6 +91,10 @@ class PlannerCommandApplicationServiceTest {
     void resumeAppendsUserInterventionBeforeContinuingGraph() {
         PlanTaskSession session = new PlanTaskSession();
         session.setTaskId("task-1");
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        when(sessionService.get("task-1")).thenReturn(current);
         when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
                 eq("给一个大概的参考就好"), eq(null), eq("给一个大概的参考就好")))
                 .thenReturn(session);
@@ -117,8 +122,7 @@ class PlannerCommandApplicationServiceTest {
 
         service.replan("task-1", "增加风险复盘");
 
-        InOrder inOrder = inOrder(taskRuntimeService, graphRunner, taskBridgeService);
-        inOrder.verify(taskRuntimeService).appendUserIntervention("task-1", "增加风险复盘");
+        InOrder inOrder = inOrder(graphRunner, taskBridgeService);
         inOrder.verify(graphRunner).run(
                 eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "user requested plan adjustment")),
                 eq("task-1"),
@@ -127,6 +131,58 @@ class PlannerCommandApplicationServiceTest {
                 eq("增加风险复盘")
         );
         inOrder.verify(taskBridgeService).ensureTask(session);
+    }
+
+    @Test
+    void completedReplanGoesThroughPlanAdjustmentGraphWithCommandHints() {
+        PlanTaskSession completed = new PlanTaskSession();
+        completed.setTaskId("task-1");
+        completed.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        String expectedInstruction = "把第2页标题改成新标题\n产物策略：EDIT_EXISTING\n目标产物ID：artifact-1";
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq(expectedInstruction), eq(null), eq(expectedInstruction)))
+                .thenReturn(completed);
+
+        PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", "EDIT_EXISTING", "artifact-1");
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(completed);
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "user requested plan adjustment")),
+                eq("task-1"),
+                eq(expectedInstruction),
+                eq(null),
+                eq(expectedInstruction)
+        );
+        verify(taskBridgeService).ensureTask(completed);
+    }
+
+    @Test
+    void resumeCompletedAdjustmentGoesThroughPlanAdjustmentGraph() {
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        current.setIntakeState(TaskIntakeState.builder()
+                .pendingAdjustmentInstruction("修改现有 PPT")
+                .build());
+        PlanTaskSession resumed = new PlanTaskSession();
+        resumed.setTaskId("task-1");
+        when(sessionService.get("task-1")).thenReturn(current);
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq("修改现有 PPT\n用户补充：把第2页标题改成新标题"), eq(null), eq("把第2页标题改成新标题")))
+                .thenReturn(resumed);
+
+        PlanTaskSession result = service.resume("task-1", "把第2页标题改成新标题", false);
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(resumed);
+        verify(sessionService).saveWithoutVersionChange(current);
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "resume completed task adjustment")),
+                eq("task-1"),
+                eq("修改现有 PPT\n用户补充：把第2页标题改成新标题"),
+                eq(null),
+                eq("把第2页标题改成新标题")
+        );
+        verify(taskRuntimeService, never()).appendUserIntervention(any(), any());
     }
 
     @Test

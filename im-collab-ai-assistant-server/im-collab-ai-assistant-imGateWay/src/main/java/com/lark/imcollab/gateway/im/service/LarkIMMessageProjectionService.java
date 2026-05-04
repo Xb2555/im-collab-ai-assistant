@@ -80,6 +80,8 @@ public class LarkIMMessageProjectionService {
         LarkUserDisplayInfo sender = shouldHydrateSender(item.msgType())
                 ? userMap.get(normalizeOpenId(item.senderId()))
                 : null;
+        String resolvedSenderName = firstText(sender == null ? null : sender.name(), item.senderName());
+        String resolvedSenderAvatar = firstText(sender == null ? null : sender.avatar(), item.senderAvatar());
         return new LarkMessageHistoryItem(
                 item.messageId(),
                 item.rootId(),
@@ -98,8 +100,8 @@ public class LarkIMMessageProjectionService {
                 normalizeHistoryContent(item.msgType(), item.content(), userMap),
                 item.mentions(),
                 item.upperMessageId(),
-                sender == null ? null : sender.name(),
-                sender == null ? null : sender.avatar());
+                resolvedSenderName,
+                resolvedSenderAvatar);
     }
 
     private Set<String> collectOpenIds(List<LarkMessageHistoryItem> items) {
@@ -163,7 +165,12 @@ public class LarkIMMessageProjectionService {
             if (profile == null) {
                 continue;
             }
-            userMap.put(openId, new LarkUserDisplayInfo(profile.name(), profile.avatarUrl()));
+            String name = profile.name();
+            String avatar = profile.avatarUrl();
+            if ((name == null || name.isBlank()) && (avatar == null || avatar.isBlank())) {
+                continue;
+            }
+            userMap.put(openId, new LarkUserDisplayInfo(name, avatar));
         }
         return userMap;
     }

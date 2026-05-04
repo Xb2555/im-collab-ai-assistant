@@ -12,7 +12,8 @@ import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.im.LarkMessageSearchItem;
 import com.lark.imcollab.skills.lark.im.LarkMessageSearchResult;
 import com.lark.imcollab.skills.lark.im.LarkMessageSearchTool;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -29,8 +30,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Component
-@Slf4j
 public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcquisitionFacade {
+    private static final Logger log = LoggerFactory.getLogger(DefaultPlannerContextAcquisitionFacade.class);
 
     private final LarkMessageSearchTool messageSearchTool;
     private final LarkDocTool docTool;

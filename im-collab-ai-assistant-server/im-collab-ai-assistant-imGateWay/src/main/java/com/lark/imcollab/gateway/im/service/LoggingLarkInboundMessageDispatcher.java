@@ -161,6 +161,14 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             replyText(message, session, replyFormatter.uncertainIntent(session), "unknown intent");
             return;
         }
+        if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                && session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED
+                && hasAssistantReply(session)) {
+            replyText(message, session,
+                    session.getIntakeState().getAssistantReply() + "\n\n" + replyFormatter.status(snapshot(session)),
+                    "plan adjustment completed");
+            return;
+        }
         if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT && hasAssistantReply(session)) {
             replyText(message, session, session.getIntakeState().getAssistantReply(), "plan adjustment clarification");
             return;

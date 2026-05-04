@@ -163,19 +163,64 @@ public class LarkSlidesTool {
         }
         JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
         JsonNode presentation = data.path("presentation").isMissingNode() ? data : data.path("presentation");
+        JsonNode xmlPresentation = data.path("xml_presentation").isMissingNode() ? presentation : data.path("xml_presentation");
         return LarkSlidesFetchResult.builder()
                 .success(root.path("success").asBoolean(data.path("success").asBoolean(true)))
-                .presentationId(presentationId.trim())
-                .title(firstNonBlank(text(data, "title"), text(presentation, "title")))
+                .presentationId(firstNonBlank(
+                        text(xmlPresentation, "presentation_id"),
+                        text(xmlPresentation, "xml_presentation_id"),
+                        presentationId.trim()
+                ))
+                .title(firstNonBlank(text(data, "title"), text(presentation, "title"), text(xmlPresentation, "title")))
                 .xml(firstNonBlank(
                         text(data, "xml"),
                         text(data, "content"),
                         text(presentation, "xml"),
                         text(presentation, "content"),
+                        text(xmlPresentation, "xml"),
+                        text(xmlPresentation, "content"),
                         data.toString()
                 ))
                 .message(firstNonBlank(text(data, "message"), text(root, "message")))
                 .build();
+    }
+
+    @Tool(description = "Scenario D: replace or insert blocks on an existing Lark Slides page.")
+    public LarkSlidesReplaceResult replaceSlide(String presentation, String slideId, List<Map<String, Object>> parts) {
+        requireValue(presentation, "presentation");
+        requireValue(slideId, "slideId");
+        if (parts == null || parts.isEmpty()) {
+            throw new IllegalArgumentException("parts is required");
+        }
+        long startedAt = System.nanoTime();
+        try (TempJsonFile partsFile = writeTempJsonArg("parts", parts)) {
+            List<String> args = new ArrayList<>();
+            args.add("slides");
+            args.add("+replace-slide");
+            args.add("--as");
+            args.add(resolveSlidesIdentity());
+            args.add("--presentation");
+            args.add(presentation.trim());
+            args.add("--slide-id");
+            args.add(slideId.trim());
+            args.add("--parts");
+            args.add(partsFile.arg());
+            JsonNode root = executeJson(args);
+            JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
+            log.info("Lark slides page replaced: presentation={}, slideId={}, parts={}, timeoutMs={}, elapsedMs={}",
+                    presentation.trim(), slideId.trim(), parts.size(), commandTimeoutMillis(), elapsedMs(startedAt));
+            return LarkSlidesReplaceResult.builder()
+                    .presentationId(firstNonBlank(text(data, "xml_presentation_id"), text(data, "presentation_id"), presentation.trim()))
+                    .slideId(firstNonBlank(text(data, "slide_id"), slideId.trim()))
+                    .partsCount(data.path("parts_count").asInt(parts.size()))
+                    .revisionId(firstNonBlank(text(data, "revision_id"), text(data, "revisionId")))
+                    .message(firstNonBlank(text(data, "message"), text(root, "message")))
+                    .build();
+        } catch (RuntimeException exception) {
+            log.warn("Lark slides page replace failed: presentation={}, slideId={}, parts={}, timeoutMs={}, elapsedMs={}, error={}",
+                    presentation.trim(), slideId.trim(), parts.size(), commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
+            throw exception;
+        }
     }
 
     private JsonNode executeJson(List<String> args) {

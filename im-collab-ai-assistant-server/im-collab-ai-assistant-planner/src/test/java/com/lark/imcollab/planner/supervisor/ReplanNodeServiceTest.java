@@ -1,10 +1,22 @@
 package com.lark.imcollab.planner.supervisor;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.facade.PresentationIterationFacade;
+import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
+import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskRecord;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.planner.replan.CardPlanPatchMerger;
 import com.lark.imcollab.planner.replan.PlanAdjustmentInterpreter;
 import com.lark.imcollab.planner.replan.PlanPatchCardDraft;
@@ -12,13 +24,23 @@ import com.lark.imcollab.planner.replan.PlanPatchIntent;
 import com.lark.imcollab.planner.replan.PlanPatchOperation;
 import com.lark.imcollab.planner.service.PlanQualityService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
+import com.lark.imcollab.planner.service.TaskRuntimeService;
+import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 
+import java.time.Instant;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentCaptor.forClass;
+import org.mockito.ArgumentCaptor;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -33,13 +55,20 @@ class ReplanNodeServiceTest {
     private final PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
     private final PlanningNodeService planningNodeService = mock(PlanningNodeService.class);
     private final PlanQualityService qualityService = mock(PlanQualityService.class);
+    private final PlannerStateStore stateStore = mock(PlannerStateStore.class);
+    private final TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+    private final PresentationIterationFacade presentationIterationFacade = mock(PresentationIterationFacade.class);
     private final ReplanNodeService service = new ReplanNodeService(
             sessionService,
             adjustmentInterpreter,
             patchTool,
             questionTool,
             planningNodeService,
-            qualityService
+            qualityService,
+            stateStore,
+            taskRuntimeService,
+            provider(presentationIterationFacade),
+            new ObjectMapper()
     );
 
     @Test
@@ -102,13 +131,194 @@ class ReplanNodeServiceTest {
                 dependencyOnlyPatchTool,
                 questionTool,
                 planningNodeService,
-                qualityService
+                qualityService,
+                stateStore,
+                taskRuntimeService,
+                provider(presentationIterationFacade),
+                new ObjectMapper()
         );
 
         dependencyOnlyService.replan("task-1", "再加一条：最后输出一段可以直接发到群里的项目进展摘要", null);
 
         verify(questionTool).askUser(any(), any());
         verify(qualityService, never()).applyMergedPlanAdjustment(any(), any(), anyString());
+    }
+
+    @Test
+    void completedVaguePptEditAsksClarificationInPlannerChain() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+
+        PlanTaskSession result = service.replan("task-1", "修改一下 PPT", null);
+
+        assertThat(result.getIntakeState().getPendingAdjustmentInstruction()).isEqualTo("修改一下 PPT");
+        assertThat(result.getIntakeState().getAssistantReply()).contains("你想改哪一页");
+        verify(questionTool).askUser(eq(session), any());
+        verify(planningNodeService, never()).plan(anyString(), anyString(), any(), any());
+        verify(presentationIterationFacade, never()).edit(any());
+    }
+
+    @Test
+    void completedConcretePptEditUpdatesExistingArtifactWithoutPlanningNewTask() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .summary("已将第2页标题改成新标题")
+                .modifiedSlides(List.of("2"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(artifact.getStatus()).isEqualTo("UPDATED");
+        assertThat(artifact.getVersion()).isEqualTo(2);
+        assertThat(artifact.getPreview()).isEqualTo("已将第2页标题改成新标题");
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已将第2页标题改成新标题");
+        verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
+        verify(stateStore).saveArtifact(artifact);
+        verify(planningNodeService, never()).plan(anyString(), anyString(), any(), any());
+        verify(sessionService).publishEvent("task-1", "COMPLETED");
+    }
+
+    @Test
+    void completedConcretePptEditWithMultiplePptsAsksArtifactSelection() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord first = pptArtifact("artifact-ppt-1", "旧版 PPT", Instant.parse("2026-05-04T09:00:00Z"));
+        ArtifactRecord second = pptArtifact("artifact-ppt-2", "新版 PPT", Instant.parse("2026-05-04T10:00:00Z"));
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
+
+        PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", null);
+
+        assertThat(result.getIntakeState().getAssistantReply()).contains("多个可修改产物");
+        assertThat(result.getIntakeState().getPendingArtifactSelection().getCandidates())
+                .extracting(candidate -> candidate.getArtifactId())
+                .containsExactly("artifact-ppt-2", "artifact-ppt-1");
+        verify(presentationIterationFacade, never()).edit(any());
+        verify(planningNodeService, never()).plan(anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void pendingArtifactSelectionReplyCanResumeInsideReplanNode() {
+        PlanTaskSession session = completedSession();
+        session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        session.setIntakeState(TaskIntakeState.builder()
+                .intakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT)
+                .pendingArtifactSelection(PendingArtifactSelection.builder()
+                        .taskId("task-1")
+                        .originalInstruction("把第2页标题改成新标题")
+                        .candidates(List.of(
+                                artifactCandidate("artifact-ppt-2", "新版 PPT"),
+                                artifactCandidate("artifact-ppt-1", "旧版 PPT")
+                        ))
+                        .expiresAt(Instant.now().plusSeconds(600))
+                        .build())
+                .build());
+        ArtifactRecord first = pptArtifact("artifact-ppt-1", "旧版 PPT", Instant.parse("2026-05-04T09:00:00Z"));
+        ArtifactRecord second = pptArtifact("artifact-ppt-2", "新版 PPT", Instant.parse("2026-05-04T10:00:00Z"));
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token-1")
+                .summary("已将旧版 PPT 第2页标题改成新标题")
+                .modifiedSlides(List.of("2"))
+                .build());
+
+        service.replan("task-1", "<at user_id=\"bot\">飞书IM- test</at> 2", null);
+
+        ArgumentCaptor<PresentationIterationRequest> request = forClass(PresentationIterationRequest.class);
+        verify(presentationIterationFacade).edit(request.capture());
+        assertThat(request.getValue().getArtifactId()).isEqualTo("artifact-ppt-1");
+        assertThat(session.getIntakeState().getPendingArtifactSelection()).isNull();
+        verify(adjustmentInterpreter, never()).interpret(any(), anyString(), any());
+    }
+
+    @Test
+    void completedConcretePptEditUsesTargetArtifactIdWhenProvided() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord first = pptArtifact("artifact-ppt-1", "旧版 PPT", Instant.parse("2026-05-04T09:00:00Z"));
+        ArtifactRecord second = pptArtifact("artifact-ppt-2", "新版 PPT", Instant.parse("2026-05-04T10:00:00Z"));
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token-1")
+                .summary("已将旧版 PPT 第2页标题改成新标题")
+                .modifiedSlides(List.of("2"))
+                .build());
+
+        service.replan("task-1", "把第2页标题改成新标题\n目标产物ID：artifact-ppt-1", null);
+
+        ArgumentCaptor<PresentationIterationRequest> request = forClass(PresentationIterationRequest.class);
+        verify(presentationIterationFacade).edit(request.capture());
+        assertThat(request.getValue().getArtifactId()).isEqualTo("artifact-ppt-1");
+        assertThat(first.getStatus()).isEqualTo("UPDATED");
+        assertThat(second.getStatus()).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    void completedDocTargetUsesGenericArtifactSelectionPathButDoesNotCallPptEditor() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord doc = ArtifactRecord.builder()
+                .artifactId("artifact-doc-1")
+                .taskId("task-1")
+                .type(ArtifactTypeEnum.DOC)
+                .title("采购评审文档")
+                .url("https://example.feishu.cn/docx/doc-token")
+                .status("COMPLETED")
+                .version(1)
+                .updatedAt(Instant.parse("2026-05-04T10:00:00Z"))
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+
+        PlanTaskSession result = service.replan("task-1", "把文档补充风险提示\n目标产物ID：artifact-doc-1", null);
+
+        assertThat(result.getIntakeState().getAssistantReply()).contains("Doc 原地编辑能力暂未接入");
+        verify(presentationIterationFacade, never()).edit(any());
+    }
+
+    @Test
+    void completedOverallAdjustmentReusesPlanningNode() {
+        PlanTaskSession session = completedSession();
+        PlanTaskSession replanned = session();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(planningNodeService.plan("task-1", "整体重新规划一下任务步骤", null, "整体重新规划一下任务步骤"))
+                .thenReturn(replanned);
+
+        PlanTaskSession result = service.replan("task-1", "整体重新规划一下任务步骤", null);
+
+        assertThat(result).isSameAs(replanned);
+        verify(planningNodeService).plan("task-1", "整体重新规划一下任务步骤", null, "整体重新规划一下任务步骤");
+        verify(presentationIterationFacade, never()).edit(any());
     }
 
     private static PlanTaskSession session() {
@@ -126,6 +336,43 @@ class ReplanNodeServiceTest {
                 .build();
     }
 
+    private static PlanTaskSession completedSession() {
+        PlanTaskSession session = session();
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        return session;
+    }
+
+    private static ArtifactRecord pptArtifact() {
+        return pptArtifact("artifact-ppt-1", "采购评审 PPT", Instant.now());
+    }
+
+    private static ArtifactRecord pptArtifact(String artifactId, String title, Instant updatedAt) {
+        return ArtifactRecord.builder()
+                .artifactId(artifactId)
+                .taskId("task-1")
+                .type(ArtifactTypeEnum.PPT)
+                .title(title)
+                .url("https://example.feishu.cn/slides/" + artifactId)
+                .preview("旧标题")
+                .status("COMPLETED")
+                .version(1)
+                .createdAt(updatedAt)
+                .updatedAt(updatedAt)
+                .build();
+    }
+
+    private static PendingArtifactCandidate artifactCandidate(String artifactId, String title) {
+        return PendingArtifactCandidate.builder()
+                .artifactId(artifactId)
+                .taskId("task-1")
+                .type(ArtifactTypeEnum.PPT)
+                .title(title)
+                .url("https://example.feishu.cn/slides/" + artifactId)
+                .version(1)
+                .updatedAt(Instant.now())
+                .build();
+    }
+
     private static UserPlanCard card(String cardId, String title, PlanCardTypeEnum type, List<String> dependsOn) {
         return UserPlanCard.builder()
                 .cardId(cardId)
@@ -135,5 +382,44 @@ class ReplanNodeServiceTest {
                 .status("PENDING")
                 .dependsOn(dependsOn)
                 .build();
+    }
+
+    private static ObjectProvider<PresentationIterationFacade> provider(PresentationIterationFacade facade) {
+        return new ObjectProvider<>() {
+            @Override
+            public PresentationIterationFacade getObject(Object... args) {
+                return facade;
+            }
+
+            @Override
+            public PresentationIterationFacade getIfAvailable() {
+                return facade;
+            }
+
+            @Override
+            public PresentationIterationFacade getIfUnique() {
+                return facade;
+            }
+
+            @Override
+            public PresentationIterationFacade getObject() {
+                return facade;
+            }
+
+            @Override
+            public Iterator<PresentationIterationFacade> iterator() {
+                return List.of(facade).iterator();
+            }
+
+            @Override
+            public Stream<PresentationIterationFacade> stream() {
+                return Stream.of(facade);
+            }
+
+            @Override
+            public Stream<PresentationIterationFacade> orderedStream() {
+                return stream();
+            }
+        };
     }
 }

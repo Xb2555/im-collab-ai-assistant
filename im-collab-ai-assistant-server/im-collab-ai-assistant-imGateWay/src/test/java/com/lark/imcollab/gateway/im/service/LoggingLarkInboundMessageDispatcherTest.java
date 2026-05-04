@@ -2,6 +2,7 @@ package com.lark.imcollab.gateway.im.service;
 
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
@@ -11,6 +12,7 @@ import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
@@ -227,6 +229,26 @@ class LoggingLarkInboundMessageDispatcherTest {
     }
 
     @Test
+    void completedPlanAdjustmentIncludesUpdatedSummaryAndArtifactLinks() {
+        PlanTaskSession completed = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.COMPLETED);
+        completed.getIntakeState().setAssistantReply("已修改 PPT 第 1 页：IM指定产物修改验证2002");
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(completed);
+        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshotWithArtifact());
+
+        dispatcher.dispatch(message("2"));
+
+        List<String> replies = sentPrivateTexts(replyTool);
+        assertThat(replies).hasSize(2);
+        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(1))
+                .contains("已修改 PPT 第 1 页：IM指定产物修改验证2002")
+                .contains("任务状态：已完成")
+                .contains("[PPT] IM指定产物修改验证")
+                .contains("https://example.feishu.cn/slides/abc123");
+    }
+
+    @Test
     void failedPlanAdjustmentRepliesFailureInsteadOfReceiptText() {
         PlanTaskSession failed = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.FAILED);
         failed.setTransitionReason("计划调整失败");
@@ -330,6 +352,24 @@ class LoggingLarkInboundMessageDispatcherTest {
                         TaskStepRecord.builder().taskId("task-1").name("生成汇报 PPT").status(StepStatusEnum.READY).build()
                 ))
                 .artifacts(List.of())
+                .build();
+    }
+
+    private static TaskRuntimeSnapshot snapshotWithArtifact() {
+        return TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().taskId("task-1").status(TaskStatusEnum.COMPLETED).build())
+                .steps(List.of(
+                        TaskStepRecord.builder().taskId("task-1").name("生成汇报 PPT").status(StepStatusEnum.COMPLETED).build()
+                ))
+                .artifacts(List.of(
+                        ArtifactRecord.builder()
+                                .artifactId("artifact-1")
+                                .taskId("task-1")
+                                .type(ArtifactTypeEnum.PPT)
+                                .title("IM指定产物修改验证")
+                                .url("https://example.feishu.cn/slides/abc123")
+                                .build()
+                ))
                 .build();
     }
 

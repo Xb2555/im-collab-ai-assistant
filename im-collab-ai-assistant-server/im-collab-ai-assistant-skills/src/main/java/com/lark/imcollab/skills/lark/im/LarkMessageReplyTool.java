@@ -30,7 +30,9 @@ public class LarkMessageReplyTool {
         String normalizedText = requireValue(text, "text");
         String normalizedIdempotencyKey = requireValue(idempotencyKey, "idempotencyKey");
         log.info("Sending Lark group reply: messageId={}, text={}", normalizedMessageId, escapeForLog(normalizedText));
-        requireMessageClient().replyText(normalizedMessageId, normalizedText, normalizedIdempotencyKey);
+        LarkBotMessageResult result = requireMessageClient().replyText(normalizedMessageId, normalizedText, normalizedIdempotencyKey);
+        log.info("Lark group reply sent: sourceMessageId={}, replyMessageId={}, chatId={}",
+                normalizedMessageId, result.messageId(), result.chatId());
     }
 
     @Tool(description = "Scenario A: send a text message to a Lark single-chat user as bot by user open_id.")
@@ -43,7 +45,10 @@ public class LarkMessageReplyTool {
         String normalizedText = requireValue(text, "text");
         String normalizedIdempotencyKey = requireValue(idempotencyKey, "idempotencyKey");
         log.info("Sending Lark p2p message: openId={}, text={}", normalizedOpenId, escapeForLog(normalizedText));
-        return requireMessageClient().sendTextToOpenId(normalizedOpenId, normalizedText, normalizedIdempotencyKey);
+        LarkBotMessageResult result = requireMessageClient().sendTextToOpenId(normalizedOpenId, normalizedText, normalizedIdempotencyKey);
+        log.info("Lark p2p message sent: openId={}, messageId={}, chatId={}",
+                normalizedOpenId, result.messageId(), result.chatId());
+        return result;
     }
 
     private LarkBotMessageClient requireMessageClient() {

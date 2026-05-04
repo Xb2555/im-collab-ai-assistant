@@ -102,6 +102,8 @@ public class AgentFrameworkConfig {
                         In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material.
                         If the pending question asks for material or range and the user asks identity/capability, chats casually, or starts a separate task, do not choose ANSWER_CLARIFICATION.
                         If the user asks to add something and also mentions a desired output, it is ADJUST_PLAN, not QUERY_STATUS.
+                        If the user explicitly asks to "新建一个任务", "新建任务", "新开一个任务", "另起一个任务", or "再开一个任务" and also gives a deliverable or work goal, choose START_TASK even when an old task is bound to the conversation.
+                        If such wording appears only inside a title, topic, slide text, or quoted content, classify by the actual command intent.
                         Choose UNKNOWN when the message cannot be safely mapped to one fixed intent, including non-task chat.
                         JSON shape: {"intent":"...","confidence":0.0,"reason":"","normalizedInput":"","needsClarification":false,"readOnlyView":"PLAN|STATUS|ARTIFACTS|"}
                         For QUERY_STATUS, set readOnlyView=PLAN when the user asks to see the stored plan or all steps.
