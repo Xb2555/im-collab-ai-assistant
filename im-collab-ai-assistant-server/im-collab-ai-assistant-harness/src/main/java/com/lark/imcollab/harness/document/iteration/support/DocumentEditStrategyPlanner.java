@@ -46,7 +46,7 @@ public class DocumentEditStrategyPlanner {
                     ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_TEXT_REPLACED).build(),
                     true, DocumentRiskLevel.HIGH);
             case REWRITE_SECTION_BODY -> strategy(DocumentStrategyType.BLOCK_REPLACE, DocumentAnchorType.SECTION,
-                    DocumentPatchOperationType.BLOCK_INSERT_AFTER,
+                    DocumentPatchOperationType.BLOCK_REPLACE,
                     ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_TEXT_REPLACED).build(),
                     false, DocumentRiskLevel.MEDIUM);
             case DELETE_METADATA_AT_DOCUMENT_HEAD -> strategy(DocumentStrategyType.CONTROLLED_HEAD_DELETE, DocumentAnchorType.BLOCK,

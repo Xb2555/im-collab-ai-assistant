@@ -27,14 +27,23 @@ public class InsertImageBlockStepHandler implements ExecutionStepHandler {
             fileToken = anchorBlockId;
         }
         LarkDocUpdateResult result = larkDocTool.updateByCommand(
-                docRef, "block_insert_after", fileToken, "image", anchorBlockId, null, null);
+                docRef, "block_insert_after", toMarkdownImage(fileToken), "markdown", anchorBlockId, null, null);
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("INSERT_IMAGE_BLOCK: insert failed");
         }
+        String newBlockId = null;
         if (result.getNewBlocks() != null && !result.getNewBlocks().isEmpty()) {
-            String newBlockId = result.getNewBlocks().get(0).getBlockId();
+            newBlockId = result.getNewBlocks().get(0).getBlockId();
+        } else if (result.getBoardTokens() != null && !result.getBoardTokens().isEmpty()) {
+            newBlockId = result.getBoardTokens().get(0);
+        }
+        if (newBlockId != null && !newBlockId.isBlank()) {
             ctx.addCreatedBlockId(newBlockId);
             ctx.put("imageBlockId", newBlockId);
         }
+    }
+
+    private String toMarkdownImage(String fileToken) {
+        return "![image](" + fileToken + ")";
     }
 }

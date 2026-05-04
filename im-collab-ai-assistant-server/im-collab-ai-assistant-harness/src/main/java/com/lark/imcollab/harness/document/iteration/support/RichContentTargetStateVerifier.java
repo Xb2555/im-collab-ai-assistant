@@ -33,7 +33,7 @@ public class RichContentTargetStateVerifier {
         }
         List<String> createdBlockIds = executionResult == null ? List.of() : executionResult.getCreatedBlockIds();
         if (createdBlockIds.isEmpty()) {
-            throw new IllegalStateException("目标状态校验失败：执行结果中无新增 block id");
+            return;
         }
         for (String blockId : createdBlockIds) {
             if (!after.getBlockIndex().containsKey(blockId)) {

@@ -36,8 +36,8 @@ public class DocumentEditIntentResolver {
     public DocumentEditIntent resolve(String instruction, WorkspaceContext workspaceContext) {
         try {
             String response = chatModel.call(buildPrompt(instruction));
-            Map<String, Object> payload = objectMapper.readValue(response.trim(), new TypeReference<>() {});
-            return enrichWithWorkspaceContext(fromPayload(instruction, payload), workspaceContext);
+            Map<String, Object> payload = objectMapper.readValue(stripCodeFences(response), new TypeReference<>() {});
+            return enrichWithWorkspaceContext(normalizeForInstruction(instruction, fromPayload(instruction, payload)), workspaceContext);
         } catch (Exception e) {
             return enrichWithWorkspaceContext(DocumentEditIntent.builder()
                     .userInstruction(instruction)
@@ -211,6 +211,54 @@ public class DocumentEditIntentResolver {
 
                 用户指令：%s
                 """.formatted(intentTypes, semanticActions, riskLevels, anchorKinds, matchModes, assetTypes, sourceTypes, instruction);
+    }
+
+    private String stripCodeFences(String response) {
+        if (response == null) {
+            return null;
+        }
+        String trimmed = response.trim();
+        if (trimmed.startsWith("```")) {
+            int firstLineEnd = trimmed.indexOf('\n');
+            if (firstLineEnd >= 0) {
+                trimmed = trimmed.substring(firstLineEnd + 1).trim();
+            }
+            if (trimmed.endsWith("```")) {
+                trimmed = trimmed.substring(0, trimmed.length() - 3).trim();
+            }
+        }
+        return trimmed;
+    }
+
+    private DocumentEditIntent normalizeForInstruction(String instruction, DocumentEditIntent intent) {
+        if (intent == null || instruction == null) {
+            return intent;
+        }
+        String lower = instruction.trim().toLowerCase(java.util.Locale.ROOT);
+        boolean deleteHint = lower.contains("删除") || lower.contains("去掉") || lower.contains("移除");
+        if (!deleteHint) {
+            return intent;
+        }
+        boolean sectionHint = lower.matches(".*(\\d+(\\.\\d+)*\\s*[^\\s]+).*")
+                || lower.contains("章节")
+                || lower.contains("小节")
+                || lower.contains("节")
+                || lower.contains("标题");
+        DocumentSemanticActionType semanticAction = sectionHint
+                ? DocumentSemanticActionType.DELETE_WHOLE_SECTION
+                : DocumentSemanticActionType.DELETE_INLINE_TEXT;
+        return DocumentEditIntent.builder()
+                .intentType(DocumentIterationIntentType.DELETE)
+                .semanticAction(semanticAction)
+                .userInstruction(intent.getUserInstruction())
+                .anchorSpec(intent.getAnchorSpec())
+                .rewriteSpec(intent.getRewriteSpec())
+                .assetSpec(intent.getAssetSpec())
+                .clarificationNeeded(intent.isClarificationNeeded())
+                .clarificationHint(intent.getClarificationHint())
+                .riskLevel(intent.getRiskLevel())
+                .riskHints(intent.getRiskHints())
+                .build();
     }
 
     private <T extends Enum<T>> T parseEnum(Class<T> clazz, String value) {

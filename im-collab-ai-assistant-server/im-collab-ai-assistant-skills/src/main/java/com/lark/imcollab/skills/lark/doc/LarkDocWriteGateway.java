@@ -88,7 +88,7 @@ public class LarkDocWriteGateway {
 
     private LarkDocUpdateResult legacyUpdate(String docRef, String command, String content, String docFormat, String blockId, String pattern, Long revisionId, long timeoutMillis) {
         Set<String> supportedFlags = readGateway.supportedFlags("+update");
-        List<DocCommandAttempt> attempts = updateDocAttempts(docRef, command, content, docFormat, blockId, pattern, revisionId, supportedFlags);
+        List<DocCommandAttempt> attempts = updateDocAttempts(docRef, command, content, normalizeDocFormat(docFormat), blockId, pattern, revisionId, supportedFlags);
         return parseUpdateResult(readGateway.executeJsonWithCompat("+update", attempts, timeoutMillis), command);
     }
 
@@ -177,12 +177,22 @@ public class LarkDocWriteGateway {
 
     private String toV1Markdown(String content, String docFormat) {
         if (content == null) return null;
-        String fmt = docFormat == null ? "" : docFormat.trim().toLowerCase();
+        String fmt = normalizeDocFormat(docFormat);
         return switch (fmt) {
             case "", "markdown" -> content;
             case "whiteboard" -> "<whiteboard token=\"" + content.trim() + "\"/>";
             case "image" -> "![image](" + content.trim() + ")";
             default -> content;
+        };
+    }
+
+    private String normalizeDocFormat(String docFormat) {
+        if (docFormat == null) {
+            return "";
+        }
+        return switch (docFormat.trim().toLowerCase()) {
+            case "image", "img" -> "markdown";
+            default -> docFormat.trim().toLowerCase();
         };
     }
 
