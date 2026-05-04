@@ -4,90 +4,135 @@ import com.lark.imcollab.common.domain.Artifact;
 import com.lark.imcollab.common.model.entity.DocumentStructureNode;
 import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
 import com.lark.imcollab.skills.lark.doc.LarkDocFetchResult;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
+import com.lark.imcollab.skills.lark.doc.LarkDocReadGateway;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class DocumentStructureSnapshotBuilder {
 
-    private final LarkDocTool larkDocTool;
+    private static final Pattern DOC_URL_PATTERN = Pattern.compile("/(?:docx|wiki)/([A-Za-z0-9]+)");
+
+    private final LarkDocReadGateway readGateway;
     private final DocumentStructureParser structureParser;
 
-    public DocumentStructureSnapshotBuilder(LarkDocTool larkDocTool, DocumentStructureParser structureParser) {
-        this.larkDocTool = larkDocTool;
+    public DocumentStructureSnapshotBuilder(LarkDocReadGateway readGateway, DocumentStructureParser structureParser) {
+        this.readGateway = readGateway;
         this.structureParser = structureParser;
     }
 
+    /**
+     * 轻量主快照：只抓 outline，不循环抓所有 section with-ids。
+     * sectionBlockIds 按需通过 fetchSection() 填充。
+     */
     public DocumentStructureSnapshot build(Artifact artifact) {
-        String docRef = artifact.getExternalUrl() != null && !artifact.getExternalUrl().isBlank()
-                ? artifact.getExternalUrl()
-                : artifact.getDocumentId();
-        String docId = larkDocTool.extractDocumentId(docRef);
-        LarkDocFetchResult outline = larkDocTool.fetchDocOutline(docRef);
-        LarkDocFetchResult fullXml = larkDocTool.fetchDocFull(docRef, "with-ids");
-        LarkDocFetchResult fullMarkdown = larkDocTool.fetchDocFullMarkdown(docRef);
+        String docRef = resolveDocRef(artifact);
+        String docId = extractDocumentId(docRef);
+        LarkDocFetchResult outline = readGateway.fetchDocOutline(docRef);
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(outline.getContent());
-        List<String> allBlockIds = structureParser.parseBlockIds(fullXml.getContent());
-        List<DocumentStructureParser.BlockNode> blocks = structureParser.parseBlockNodes(fullXml.getContent());
+
         Map<String, DocumentStructureNode> headingIndex = new LinkedHashMap<>();
         Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
         List<DocumentStructureNode> rootNodes = new ArrayList<>();
         List<String> topLevelSequence = new ArrayList<>();
+        List<String> orderedBlockIds = new ArrayList<>();
 
-        int minHeadingLevel = headings.stream().mapToInt(DocumentStructureParser.HeadingBlock::getLevel).min().orElse(2);
+        int minLevel = headings.stream().mapToInt(DocumentStructureParser.HeadingBlock::getLevel).min().orElse(2);
         String currentTopLevelId = null;
+
         for (int i = 0; i < headings.size(); i++) {
-            DocumentStructureParser.HeadingBlock heading = headings.get(i);
+            DocumentStructureParser.HeadingBlock h = headings.get(i);
             String prevId = i > 0 ? headings.get(i - 1).getBlockId() : null;
             String nextId = i + 1 < headings.size() ? headings.get(i + 1).getBlockId() : null;
-            if (heading.getLevel() == minHeadingLevel) {
-                currentTopLevelId = heading.getBlockId();
+            if (h.getLevel() == minLevel) {
+                currentTopLevelId = h.getBlockId();
             }
-            int topLevelIndex = heading.getLevel() == minHeadingLevel ? topLevelSequence.size() + 1 : topLevelSequence.size();
+            int topLevelIndex = h.getLevel() == minLevel ? topLevelSequence.size() + 1 : topLevelSequence.size();
             DocumentStructureNode node = DocumentStructureNode.builder()
-                    .blockId(heading.getBlockId())
+                    .blockId(h.getBlockId())
                     .blockType("heading")
-                    .headingLevel(heading.getLevel())
-                    .titleText(heading.getText())
-                    .plainText(heading.getText())
+                    .headingLevel(h.getLevel())
+                    .titleText(h.getText())
+                    .plainText(h.getText())
                     .topLevelAncestorId(currentTopLevelId)
                     .prevSiblingId(prevId)
                     .nextSiblingId(nextId)
                     .topLevelIndex(topLevelIndex <= 0 ? null : topLevelIndex)
                     .build();
-            headingIndex.put(heading.getBlockId(), node);
-            blockIndex.put(heading.getBlockId(), node);
-            if (heading.getLevel() == minHeadingLevel) {
+            headingIndex.put(h.getBlockId(), node);
+            blockIndex.put(h.getBlockId(), node);
+            orderedBlockIds.add(h.getBlockId());
+            if (h.getLevel() == minLevel) {
                 rootNodes.add(node);
-                topLevelSequence.add(heading.getBlockId());
+                topLevelSequence.add(h.getBlockId());
             }
         }
-        for (String blockId : allBlockIds) {
-            DocumentStructureParser.BlockNode parsedBlock = blocks.stream()
-                    .filter(block -> blockId.equals(block.getBlockId()))
-                    .findFirst()
-                    .orElse(null);
-            blockIndex.putIfAbsent(blockId, DocumentStructureNode.builder()
-                    .blockId(blockId)
-                    .blockType(parsedBlock == null ? "block" : parsedBlock.getTagName())
-                    .plainText(parsedBlock == null ? null : parsedBlock.getPlainText())
-                    .build());
-        }
+
         return DocumentStructureSnapshot.builder()
                 .docId(docId)
-                .revisionId(fullMarkdown.getRevisionId())
+                .revisionId(outline.getRevisionId())
                 .rootNodes(rootNodes)
                 .headingIndex(headingIndex)
                 .blockIndex(blockIndex)
                 .topLevelSequence(topLevelSequence)
+                .orderedBlockIds(orderedBlockIds)
+                .sectionBlockIds(new LinkedHashMap<>())
                 .rawOutlineXml(outline.getContent())
-                .rawFullXml(fullXml.getContent())
-                .rawFullMarkdown(fullMarkdown.getContent())
+                .rawFullXml(null)
+                .rawFullMarkdown(null)
                 .build();
+    }
+
+    /**
+     * 按需抓取单个 section 的 block 明细，填充到已有 snapshot。
+     */
+    public void fetchSectionDetail(DocumentStructureSnapshot snapshot, String headingBlockId, String docRef) {
+        if (snapshot.getSectionBlockIds().containsKey(headingBlockId)) {
+            return;
+        }
+        try {
+            LarkDocFetchResult sectionXml = readGateway.fetchDocSection(docRef, headingBlockId, "with-ids");
+            List<String> ids = structureParser.parseBlockIds(sectionXml.getContent());
+            List<DocumentStructureParser.BlockNode> blocks = structureParser.parseBlockNodes(sectionXml.getContent());
+            if (!ids.isEmpty()) {
+                snapshot.getSectionBlockIds().put(headingBlockId, List.copyOf(ids));
+                for (DocumentStructureParser.BlockNode b : blocks) {
+                    snapshot.getBlockIndex().putIfAbsent(b.getBlockId(), DocumentStructureNode.builder()
+                            .blockId(b.getBlockId())
+                            .blockType(b.getTagName())
+                            .plainText(b.getPlainText())
+                            .topLevelAncestorId(headingBlockId)
+                            .build());
+                    if (!snapshot.getOrderedBlockIds().contains(b.getBlockId())) {
+                        snapshot.getOrderedBlockIds().add(b.getBlockId());
+                    }
+                }
+            } else {
+                snapshot.getSectionBlockIds().put(headingBlockId, List.of(headingBlockId));
+            }
+        } catch (RuntimeException ignored) {
+            snapshot.getSectionBlockIds().put(headingBlockId, List.of(headingBlockId));
+        }
+    }
+
+    private String resolveDocRef(Artifact artifact) {
+        return artifact.getExternalUrl() != null && !artifact.getExternalUrl().isBlank()
+                ? artifact.getExternalUrl()
+                : artifact.getDocumentId();
+    }
+
+    private String extractDocumentId(String docIdOrUrl) {
+        if (docIdOrUrl == null || docIdOrUrl.isBlank()) {
+            return docIdOrUrl;
+        }
+        String trimmed = docIdOrUrl.trim();
+        Matcher matcher = DOC_URL_PATTERN.matcher(trimmed);
+        return matcher.find() ? matcher.group(1) : trimmed;
     }
 }

@@ -22,7 +22,6 @@ public class PendingDocumentIteration implements Serializable {
     private String docUrl;
     private String artifactTaskId;
     private DocumentIterationIntentType intentType;
-    private DocumentTargetSelector selector;
     private DocumentEditPlan editPlan;
     private DocumentIterationRequest originalRequest;
     private Instant createdAt;

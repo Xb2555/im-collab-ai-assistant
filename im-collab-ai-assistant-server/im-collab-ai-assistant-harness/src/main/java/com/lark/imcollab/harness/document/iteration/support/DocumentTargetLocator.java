@@ -9,15 +9,19 @@ import com.lark.imcollab.common.model.enums.DocumentLocatorStrategy;
 import com.lark.imcollab.common.model.enums.DocumentRelativePosition;
 import com.lark.imcollab.common.model.enums.DocumentTargetType;
 import com.lark.imcollab.skills.lark.doc.LarkDocFetchResult;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
+import com.lark.imcollab.skills.lark.doc.LarkDocReadGateway;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Deprecated
 public class DocumentTargetLocator {
+
+    private static final Pattern DOC_URL_PATTERN = Pattern.compile("/(?:docx|wiki)/([A-Za-z0-9]+)");
 
     private enum HeadingGranularity {
         TOP_LEVEL,
@@ -26,18 +30,18 @@ public class DocumentTargetLocator {
     }
 
     private final DocumentAnchorIntentService anchorIntentService;
-    private final LarkDocTool larkDocTool;
+    private final LarkDocReadGateway readGateway;
     private final DocumentStructureParser structureParser;
     private final ChatModel chatModel;
 
     public DocumentTargetLocator(
             DocumentAnchorIntentService anchorIntentService,
-            LarkDocTool larkDocTool,
+            LarkDocReadGateway readGateway,
             DocumentStructureParser structureParser,
             ChatModel chatModel
     ) {
         this.anchorIntentService = anchorIntentService;
-        this.larkDocTool = larkDocTool;
+        this.readGateway = readGateway;
         this.structureParser = structureParser;
         this.chatModel = chatModel;
     }
@@ -57,11 +61,11 @@ public class DocumentTargetLocator {
     }
 
     private DocumentTargetSelector resolveDocStart(Artifact artifact, String docRef, DocumentRelativePosition relativePosition) {
-        List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(larkDocTool.fetchDocOutline(docRef).getContent());
+        List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(readGateway.fetchDocOutline(docRef).getContent());
         if (!headings.isEmpty()) {
             DocumentStructureParser.HeadingBlock firstHeading = structureParser.findFirstTopLevelHeading(headings);
             String headingMarkdown = structureParser.unwrapMarkdownFragment(
-                    larkDocTool.fetchDocRangeMarkdown(docRef, firstHeading.getBlockId(), firstHeading.getBlockId()).getContent()
+                    readGateway.fetchDocRangeMarkdown(docRef, firstHeading.getBlockId(), firstHeading.getBlockId()).getContent()
             );
             return DocumentTargetSelector.builder()
                     .docId(resolveDocId(artifact))
@@ -74,14 +78,14 @@ public class DocumentTargetLocator {
                     .matchedBlockIds(List.of(firstHeading.getBlockId()))
                     .build();
         }
-        LarkDocFetchResult fullXml = larkDocTool.fetchDocFull(docRef, "with-ids");
+        LarkDocFetchResult fullXml = readGateway.fetchDocFull(docRef, "with-ids");
         List<String> blockIds = structureParser.parseBlockIds(fullXml.getContent());
         if (blockIds.isEmpty()) {
             throw new AiAssistantException(BusinessCode.NOT_FOUND_ERROR, "文档为空，无法定位文档开头");
         }
         String firstBlockId = blockIds.get(0);
         String firstBlockMarkdown = structureParser.unwrapMarkdownFragment(
-                larkDocTool.fetchDocRangeMarkdown(docRef, firstBlockId, firstBlockId).getContent()
+                readGateway.fetchDocRangeMarkdown(docRef, firstBlockId, firstBlockId).getContent()
         );
         return DocumentTargetSelector.builder()
                 .docId(resolveDocId(artifact))
@@ -96,7 +100,7 @@ public class DocumentTargetLocator {
     }
 
     private DocumentTargetSelector resolveDocEnd(Artifact artifact, String docRef, DocumentRelativePosition relativePosition) {
-        LarkDocFetchResult fullXml = larkDocTool.fetchDocFull(docRef, "with-ids");
+        LarkDocFetchResult fullXml = readGateway.fetchDocFull(docRef, "with-ids");
         List<String> blockIds = structureParser.parseBlockIds(fullXml.getContent());
         String lastBlockId = blockIds.isEmpty() ? "-1" : blockIds.get(blockIds.size() - 1);
         return DocumentTargetSelector.builder()
@@ -121,7 +125,7 @@ public class DocumentTargetLocator {
         if (!hasText(exactText)) {
             throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "未提供可用于精确定位的原文片段");
         }
-        String markdown = larkDocTool.fetchDocFullMarkdown(docRef).getContent();
+        String markdown = readGateway.fetchDocFullMarkdown(docRef).getContent();
         int occurrences = structureParser.countOccurrences(markdown, exactText);
         if (occurrences == 0) {
             throw new AiAssistantException(BusinessCode.NOT_FOUND_ERROR, "未在文档中找到指定原文片段");
@@ -129,7 +133,7 @@ public class DocumentTargetLocator {
         if (occurrences > 1) {
             throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "指定原文片段命中多处内容，请先明确章节或更精确的片段");
         }
-        LarkDocFetchResult keywordFetch = larkDocTool.fetchDocByKeyword(docRef, exactText, "with-ids");
+        LarkDocFetchResult keywordFetch = readGateway.fetchDocByKeyword(docRef, exactText, "with-ids");
         List<String> blockIds = structureParser.parseBlockIds(keywordFetch.getContent());
         if (blockIds.size() != 1) {
             throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "原文片段未能唯一收敛到单个 block，请改用章节定位");
@@ -153,10 +157,12 @@ public class DocumentTargetLocator {
             DocumentAnchorIntentService.AnchorDecision decision,
             String instruction
     ) {
-        LarkDocFetchResult outline = larkDocTool.fetchDocOutline(docRef);
+        LarkDocFetchResult outline = readGateway.fetchDocOutline(docRef);
         List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(outline.getContent());
         String query = hasText(decision.locatorValue()) ? decision.locatorValue() : instruction;
-        List<DocumentStructureParser.HeadingBlock> matches = structureParser.matchHeadings(query, headings);
+        List<DocumentStructureParser.HeadingBlock> matches = headings.stream()
+                .filter(h -> h.getText() != null && (h.getText().contains(query) || query.contains(h.getText())))
+                .toList();
         HeadingGranularity expectedGranularity = determineExpectedHeadingGranularity(instruction, headings);
         if (matches.isEmpty()) {
             DocumentStructureParser.HeadingBlock modelSelectedHeading = selectHeadingByModel(instruction, headings, expectedGranularity);
@@ -172,7 +178,7 @@ public class DocumentTargetLocator {
         DocumentStructureParser.HeadingBlock heading = matches.get(0);
         if (intentType == DocumentIterationIntentType.INSERT && decision.relativePosition() == DocumentRelativePosition.BEFORE) {
             String headingMarkdown = structureParser.unwrapMarkdownFragment(
-                    larkDocTool.fetchDocRangeMarkdown(docRef, heading.getBlockId(), heading.getBlockId()).getContent()
+                    readGateway.fetchDocRangeMarkdown(docRef, heading.getBlockId(), heading.getBlockId()).getContent()
             );
             return DocumentTargetSelector.builder()
                     .docId(resolveDocId(artifact))
@@ -185,8 +191,8 @@ public class DocumentTargetLocator {
                     .matchedBlockIds(List.of(heading.getBlockId()))
                     .build();
         }
-        LarkDocFetchResult sectionMarkdown = larkDocTool.fetchDocSectionMarkdown(docRef, heading.getBlockId());
-        LarkDocFetchResult sectionXml = larkDocTool.fetchDocSection(docRef, heading.getBlockId(), "with-ids");
+        LarkDocFetchResult sectionMarkdown = readGateway.fetchDocSectionMarkdown(docRef, heading.getBlockId());
+        LarkDocFetchResult sectionXml = readGateway.fetchDocSection(docRef, heading.getBlockId(), "with-ids");
         return DocumentTargetSelector.builder()
                 .docId(resolveDocId(artifact))
                 .docUrl(artifact.getExternalUrl())
@@ -352,7 +358,7 @@ public class DocumentTargetLocator {
             String instruction
     ) {
         String keyword = hasText(decision.locatorValue()) ? decision.locatorValue() : instruction;
-        LarkDocFetchResult keywordFetch = larkDocTool.fetchDocByKeyword(docRef, keyword, "with-ids");
+        LarkDocFetchResult keywordFetch = readGateway.fetchDocByKeyword(docRef, keyword, "with-ids");
         List<String> blockIds = structureParser.parseBlockIds(keywordFetch.getContent());
         if (blockIds.size() != 1) {
             throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "关键词未能唯一收敛到单个 block，请改用更明确的标题或原文片段");
@@ -380,10 +386,19 @@ public class DocumentTargetLocator {
     }
 
     private String resolveDocId(Artifact artifact) {
-        return hasText(artifact.getDocumentId()) ? artifact.getDocumentId() : larkDocTool.extractDocumentId(resolveDocRef(artifact));
+        return hasText(artifact.getDocumentId()) ? artifact.getDocumentId() : extractDocumentId(resolveDocRef(artifact));
     }
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String extractDocumentId(String docIdOrUrl) {
+        if (docIdOrUrl == null || docIdOrUrl.isBlank()) {
+            return docIdOrUrl;
+        }
+        String trimmed = docIdOrUrl.trim();
+        Matcher matcher = DOC_URL_PATTERN.matcher(trimmed);
+        return matcher.find() ? matcher.group(1) : trimmed;
     }
 }

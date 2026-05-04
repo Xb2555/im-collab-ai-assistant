@@ -6,6 +6,7 @@ public enum DocumentPatchOperationType {
     BLOCK_REPLACE,
     BLOCK_DELETE,
     BLOCK_MOVE_AFTER,
+    BLOCK_GROUP_MOVE_AFTER,
     APPEND,
     OVERWRITE,
     MEDIA_INSERT
