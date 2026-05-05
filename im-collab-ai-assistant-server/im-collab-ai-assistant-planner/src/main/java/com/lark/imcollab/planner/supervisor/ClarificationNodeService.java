@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.supervisor;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.planner.clarification.ClarificationService;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
@@ -27,6 +28,10 @@ public class ClarificationNodeService {
     }
 
     public PlanTaskSession resume(String taskId, String feedback) {
+        return resume(taskId, feedback, null);
+    }
+
+    public PlanTaskSession resume(String taskId, String feedback, WorkspaceContext workspaceContext) {
         PlanTaskSession session = sessionService.get(taskId);
         clarificationService.absorbAnswer(session, feedback);
         session.setAborted(false);
@@ -34,7 +39,7 @@ public class ClarificationNodeService {
         memoryService.appendUserTurnIfLatestDifferent(session, feedback, null, "CLARIFICATION_REPLY");
         sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(taskId, "RESUMED");
-        return planningNodeService.plan(taskId, effectiveInstruction(session, feedback), null, feedback);
+        return planningNodeService.plan(taskId, effectiveInstruction(session, feedback), workspaceContext, feedback);
     }
 
     private String effectiveInstruction(PlanTaskSession session, String fallback) {

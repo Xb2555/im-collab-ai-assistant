@@ -109,12 +109,17 @@ public class PlanningNodeService {
         qualityService.applyIntentReady(session, intent.get());
         sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(taskId, "INTENT_READY");
-        ContextCollectionOutcome intentCollection = collectContextFromIntentSource(
-                taskId,
-                rawInstruction,
-                workspaceContext,
-                intent.get()
-        );
+        ContextCollectionOutcome intentCollection = null;
+        if (!feedbackCanSatisfyIntentSource(session, intent.get(), userFeedback)) {
+            intentCollection = collectContextFromIntentSource(
+                    taskId,
+                    rawInstruction,
+                    workspaceContext,
+                    intent.get()
+            );
+        } else if (intent.get().getSourceScope() != null) {
+            log.info("Skip intent source collection because clarification feedback provides usable context: taskId={}", taskId);
+        }
         if (intentCollection != null) {
             if (intentCollection.contextResult() != null && !intentCollection.contextResult().sufficient()) {
                 questionTool.askUser(session, List.of(firstNonBlank(
@@ -447,6 +452,23 @@ public class PlanningNodeService {
             return false;
         }
         return true;
+    }
+
+    private boolean feedbackCanSatisfyIntentSource(
+            PlanTaskSession session,
+            IntentSnapshot intentSnapshot,
+            String userFeedback
+    ) {
+        return hasSupportedDeliverable(intentSnapshot)
+                && (hasSubstantialClarificationAnswer(session) || hasSubstantialFeedbackMaterial(userFeedback));
+    }
+
+    private boolean hasSubstantialFeedbackMaterial(String userFeedback) {
+        if (!hasText(userFeedback)) {
+            return false;
+        }
+        String normalized = userFeedback.trim();
+        return normalized.length() >= 12 || (normalized.contains("\n") && normalized.length() >= 8);
     }
 
     private boolean hasSupportedDeliverable(IntentSnapshot intentSnapshot) {

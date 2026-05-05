@@ -33,7 +33,7 @@ import static org.mockito.Mockito.when;
 class DocumentPatchCompilerTest {
 
     @Test
-    void insertBeforeSectionUsesExplicitBlockReplaceMatrix() {
+    void insertBeforeSectionCarriesSemanticExpectedStateForStructuralVerify() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("## 前言\n\n这是新增章节");
         DocumentPatchCompiler compiler = new DocumentPatchCompiler(chatModel);
@@ -60,14 +60,82 @@ class DocumentPatchCompilerTest {
                 strategy(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT, DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
         );
 
-        assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);
-        assertThat(plan.getPatchOperations()).singleElement().satisfies(operation -> {
-            assertThat(operation.getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);
-            assertThat(operation.getBlockId()).isEqualTo("heading-block");
-            assertThat(operation.getNewContent()).startsWith("## 前言");
-            assertThat(operation.getNewContent()).contains("一、项目背景");
-        });
-        assertThat(plan.getStrategyType()).isEqualTo(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT);
+        assertThat(plan.isRequiresApproval()).isTrue();
+        assertThat(plan.getToolCommandType()).isNull();
+        assertThat(plan.getPatchOperations()).isEmpty();
+        assertThat(plan.getReasoningSummary()).contains("稳定移动目标");
+    }
+
+    @Test
+    void insertBeforeSectionNormalizesPlainTextToHeading() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("前言\n\n这是新增章节");
+        DocumentPatchCompiler compiler = new DocumentPatchCompiler(chatModel);
+
+        DocumentEditPlan plan = compiler.compile(
+                "task-1b",
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.INSERT)
+                        .semanticAction(DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION)
+                        .userInstruction("在项目背景前新增前言")
+                        .build(),
+                snapshot(),
+                ResolvedDocumentAnchor.builder()
+                        .anchorType(DocumentAnchorType.SECTION)
+                        .sectionAnchor(DocumentSectionAnchor.builder()
+                                .headingBlockId("heading-block")
+                                .headingText("一、项目背景")
+                                .headingLevel(2)
+                                .allBlockIds(List.of("heading-block", "body-1"))
+                                .bodyBlockIds(List.of("body-1"))
+                                .build())
+                        .preview("一、项目背景")
+                        .build(),
+                strategy(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT, DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
+        );
+
+        assertThat(plan.isRequiresApproval()).isTrue();
+        assertThat(plan.getPatchOperations()).isEmpty();
+    }
+
+    @Test
+    void insertBeforeSubSectionMovesAfterParentHeadingWhenTargetIsFirstChild() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("1.2 新小节\n\n这是新增章节");
+        DocumentPatchCompiler compiler = new DocumentPatchCompiler(chatModel);
+
+        DocumentStructureSnapshot snapshot = DocumentStructureSnapshot.builder()
+                .docId("doc-sub")
+                .childrenHeadingIndex(Map.of("heading-1", List.of("heading-1-1")))
+                .sectionBlockIds(Map.of("heading-1-1", List.of("heading-1-1", "body-1")))
+                .build();
+
+        DocumentEditPlan plan = compiler.compile(
+                "task-sub",
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.INSERT)
+                        .semanticAction(DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION)
+                        .userInstruction("1.1 后插入一章1.2")
+                        .build(),
+                snapshot,
+                ResolvedDocumentAnchor.builder()
+                        .anchorType(DocumentAnchorType.SECTION)
+                        .sectionAnchor(DocumentSectionAnchor.builder()
+                                .headingBlockId("heading-1-1")
+                                .headingText("1.1 原小节")
+                                .headingLevel(3)
+                                .parentHeadingBlockId("heading-1")
+                                .allBlockIds(List.of("heading-1-1", "body-1"))
+                                .bodyBlockIds(List.of("body-1"))
+                                .build())
+                        .preview("1.1 原小节")
+                        .build(),
+                strategy(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT, DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
+        );
+
+        assertThat(plan.getPatchOperations()).hasSize(2);
+        assertThat(plan.getPatchOperations().get(1).getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER);
+        assertThat(plan.getPatchOperations().get(1).getTargetBlockId()).isEqualTo("heading-1");
     }
 
     @Test
@@ -189,8 +257,7 @@ class DocumentPatchCompilerTest {
         );
 
         assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.BLOCK_DELETE);
-        assertThat(plan.getSelector().getLocatorValue()).isEqualTo("作者：张三");
-        assertThat(plan.getSelector().getMatchedExcerpt()).isEqualTo("作者：张三");
+        assertThat(plan.getResolvedAnchor().getBlockAnchor().getPlainText()).isEqualTo("作者：张三");
         assertThat(plan.getPatchOperations()).singleElement().satisfies(operation -> {
             assertThat(operation.getBlockId()).isEqualTo("meta-1");
             assertThat(operation.getJustification()).contains("metadata");
@@ -209,11 +276,6 @@ class DocumentPatchCompilerTest {
                         .intentType(DocumentIterationIntentType.UPDATE_CONTENT)
                         .semanticAction(DocumentSemanticActionType.REWRITE_METADATA_AT_DOCUMENT_HEAD)
                         .userInstruction("修改文章开头的作者信息为李四")
-                        .parameters(Map.of(
-                                "targetRegion", "document_head",
-                                "targetSemantic", "metadata",
-                                "targetKeywords", "作者信息|作者"
-                        ))
                         .build(),
                 metadataSnapshot(),
                 ResolvedDocumentAnchor.builder()
@@ -229,7 +291,7 @@ class DocumentPatchCompilerTest {
         );
 
         assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);
-        assertThat(plan.getSelector().getMatchedExcerpt()).isEqualTo("作者：张三");
+        assertThat(plan.getResolvedAnchor().getBlockAnchor().getPlainText()).isEqualTo("作者：张三");
         assertThat(plan.getGeneratedContent()).isEqualTo("作者：李四");
         assertThat(plan.getPatchOperations()).singleElement().satisfies(operation -> {
             assertThat(operation.getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_REPLACE);

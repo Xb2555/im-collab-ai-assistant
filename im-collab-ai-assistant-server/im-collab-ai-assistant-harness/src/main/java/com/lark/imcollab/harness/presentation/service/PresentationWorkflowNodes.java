@@ -17,6 +17,7 @@ import com.lark.imcollab.harness.presentation.model.PresentationOutline;
 import com.lark.imcollab.harness.presentation.model.PresentationReviewResult;
 import com.lark.imcollab.harness.presentation.model.PresentationSlidePlan;
 import com.lark.imcollab.harness.presentation.model.PresentationSlideXml;
+import com.lark.imcollab.harness.presentation.model.PresentationSlideXmlBatch;
 import com.lark.imcollab.harness.presentation.model.PresentationStoryline;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionSupport;
 import com.lark.imcollab.harness.presentation.workflow.PresentationStateKeys;
@@ -28,6 +29,8 @@ import org.springframework.stereotype.Component;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.xml.sax.InputSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -46,9 +49,12 @@ import java.util.stream.Collectors;
 @Component
 public class PresentationWorkflowNodes {
 
+    private static final Logger log = LoggerFactory.getLogger(PresentationWorkflowNodes.class);
     private static final int MAX_SLIDES = 10;
+    private static final int BATCH_XML_MAX_ATTEMPTS = 2;
     private static final Pattern SLIDE_XML_PATTERN = Pattern.compile("(?s)<slide\\b.*?</slide>");
     private static final Pattern PAGE_COUNT_PATTERN = Pattern.compile("(\\d{1,2})\\s*(页|p|P|slides?|Slides?)");
+    private static final Pattern PARAGRAPH_PATTERN = Pattern.compile("(?s)<p(?:\\s[^>]*)?>(.*?)</p>");
 
     private final PresentationExecutionSupport support;
     private final ReactAgent storylineAgent;
@@ -92,6 +98,7 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_STORYLINE, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
+        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         String prompt = """
                 请生成 PPT 叙事主线。
@@ -105,6 +112,7 @@ public class PresentationWorkflowNodes {
                 """.formatted(instruction(state), support.writeJson(generationOptions(state)), state.value(PresentationStateKeys.USER_FEEDBACK, ""), state.value(PresentationStateKeys.UPSTREAM_CONTEXT, ""), state.value(PresentationStateKeys.UPSTREAM_ARTIFACT_SUMMARY, ""));
         PresentationStoryline storyline = invokeStoryline(prompt, taskId);
         normalizeStoryline(storyline, state);
+        recordStageElapsed(taskId, "build_storyline", startedAt, "pageCount=" + storyline.getPageCount());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.STORYLINE, storyline,
                 PresentationStateKeys.PRESENTATION_TITLE, blankToDefault(storyline.getTitle(), state.value(PresentationStateKeys.PRESENTATION_TITLE, "汇报 PPT")),
@@ -116,6 +124,7 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_OUTLINE, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
+        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationStoryline storyline = requireValue(state, PresentationStateKeys.STORYLINE, PresentationStoryline.class);
         String prompt = """
@@ -129,6 +138,7 @@ public class PresentationWorkflowNodes {
                 """.formatted(instruction(state), support.writeJson(generationOptions(state)), support.writeJson(storyline), state.value(PresentationStateKeys.UPSTREAM_CONTEXT, ""));
         PresentationOutline outline = invokeOutline(prompt, storyline, taskId);
         normalizeOutline(outline, storyline, generationOptions(state));
+        recordStageElapsed(taskId, "generate_slide_outline", startedAt, "pageCount=" + safeSlides(outline).size());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.SLIDE_OUTLINE, outline,
                 PresentationStateKeys.DONE_OUTLINE, true
@@ -139,21 +149,12 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_XML, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
+        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
-        List<PresentationSlideXml> slideXmlList = new ArrayList<>();
-        for (PresentationSlidePlan slide : safeSlides(outline)) {
-            String prompt = """
-                    请为下面这页生成飞书 Slides XML。
-                    PPT 标题：%s
-                    全局风格：%s
-                    生成参数：%s
-                    可用 XML 元素：slide/style/data/note、shape(type=text/rect)、line、content/p/ul/li。
-                    页面计划 JSON：
-                    %s
-                    """.formatted(blankToDefault(outline.getTitle(), "汇报 PPT"), blankToDefault(outline.getStyle(), "简约专业"), support.writeJson(generationOptions(state)), support.writeJson(slide));
-            slideXmlList.add(invokeSlideXml(prompt, slide, taskId));
-        }
+        List<PresentationSlidePlan> slides = safeSlides(outline);
+        List<PresentationSlideXml> slideXmlList = invokeSlideXmlBatch(buildSlideXmlBatchPrompt(outline, slides, state), slides, taskId);
+        recordStageElapsed(taskId, "generate_slide_xml_batch", startedAt, "pageCount=" + slideXmlList.size());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.SLIDE_XML_LIST, slideXmlList,
                 PresentationStateKeys.DONE_XML, true
@@ -161,6 +162,8 @@ public class PresentationWorkflowNodes {
     }
 
     public CompletableFuture<Map<String, Object>> validateSlideXml(OverAllState state, RunnableConfig config) {
+        long startedAt = System.nanoTime();
+        String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
         List<PresentationSlideXml> slideXmlList = readSlideXmlList(state);
         if (slideXmlList.isEmpty()) {
@@ -171,17 +174,26 @@ public class PresentationWorkflowNodes {
         }
         List<PresentationSlideXml> validated = new ArrayList<>();
         List<PresentationSlidePlan> plans = safeSlides(outline);
-        PresentationGenerationOptions options = generationOptions(state);
-        for (int i = 0; i < slideXmlList.size(); i++) {
-            PresentationSlideXml slideXml = slideXmlList.get(i);
-            PresentationSlidePlan plan = i < plans.size() ? plans.get(i) : null;
-            String xml = buildSlideXmlTemplate(plan == null ? planFromXml(slideXml) : plan, i + 1, slideXmlList.size(), options);
-            if (!isValidSlideXml(xml)) {
-                throw new IllegalStateException("Generated slide XML failed validation: " + blankToDefault(slideXml.getSlideId(), "slide-" + (i + 1)));
+        List<PresentationSlideXml> ordered = alignSlideXmlToPlans(slideXmlList, plans);
+        for (int i = 0; i < ordered.size(); i++) {
+            PresentationSlideXml slideXml = ordered.get(i);
+            PresentationSlidePlan plan = plans.get(i);
+            String xml = extractSlideXml(slideXml.getXml());
+            String validationFailure = validateSlideXmlReason(xml);
+            if (validationFailure != null) {
+                String slideId = blankToDefault(slideXml.getSlideId(), "slide-" + (i + 1));
+                log.warn("Generated slide XML failed validation: taskId={}, slideId={}, reason={}, xmlPreview={}",
+                        taskId, slideId, validationFailure, xmlPreview(xml));
+                throw new IllegalStateException("Generated slide XML failed validation: "
+                        + slideId + " (" + validationFailure + ")");
             }
+            slideXml.setSlideId(blankToDefault(slideXml.getSlideId(), plan.getSlideId()));
+            slideXml.setTitle(blankToDefault(slideXml.getTitle(), plan.getTitle()));
+            slideXml.setIndex(i + 1);
             slideXml.setXml(xml);
             validated.add(slideXml);
         }
+        recordStageElapsed(taskId, "validate_slide_xml", startedAt, "pageCount=" + validated.size());
         return CompletableFuture.completedFuture(Map.of(PresentationStateKeys.SLIDE_XML_LIST, validated));
     }
 
@@ -189,6 +201,7 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_REVIEW, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
+        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
         List<PresentationSlideXml> slideXmlList = readSlideXmlList(state);
@@ -206,6 +219,7 @@ public class PresentationWorkflowNodes {
         if (!reviewResult.isAccepted() && reviewResult.getMissingItems() != null && !reviewResult.getMissingItems().isEmpty()) {
             reviewResult.setSummary(blankToDefault(reviewResult.getSummary(), "PPT 已通过结构校验，仍存在内容审查建议：" + String.join("；", reviewResult.getMissingItems())));
         }
+        recordStageElapsed(taskId, "review_presentation", startedAt, "accepted=" + reviewResult.isAccepted());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.REVIEW_RESULT, reviewResult,
                 PresentationStateKeys.DONE_REVIEW, true
@@ -216,6 +230,7 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_WRITE, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
+        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         String title = blankToDefault(state.value(PresentationStateKeys.PRESENTATION_TITLE, ""), "汇报 PPT");
         List<String> xmlPages = readSlideXmlList(state).stream()
@@ -230,6 +245,7 @@ public class PresentationWorkflowNodes {
         support.saveArtifact(taskId, stepId, title, state.value(PresentationStateKeys.UPSTREAM_ARTIFACT_SUMMARY, ""), result.getPresentationId(), result.getPresentationUrl());
         support.publishEvent(taskId, stepId, TaskEventType.ARTIFACT_CREATED, support.writeJson(result));
         support.publishEvent(taskId, stepId, TaskEventType.STEP_COMPLETED, "PPT 已生成：" + blankToDefault(result.getPresentationUrl(), result.getPresentationId()));
+        recordStageElapsed(taskId, "write_slides_and_sync", startedAt, "pageCount=" + xmlPages.size());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.PRESENTATION_ID, blankToDefault(result.getPresentationId(), ""),
                 PresentationStateKeys.PRESENTATION_URL, blankToDefault(result.getPresentationUrl(), ""),
@@ -290,6 +306,129 @@ public class PresentationWorkflowNodes {
                     .speakerNotes(slide.getSpeakerNotes())
                     .build();
         }
+    }
+
+    private String buildSlideXmlBatchPrompt(
+            PresentationOutline outline,
+            List<PresentationSlidePlan> slides,
+            OverAllState state
+    ) {
+        return """
+                请一次性为整份 PPT 生成飞书 Slides XML。
+                PPT 标题：%s
+                全局风格：%s
+                生成参数：%s
+                可用 XML 元素：slide/style/data/note、shape(type=text/rect)、line、content/p/ul/li。
+                输出要求：
+                - 返回 JSON 对象，根字段只能是 slides。
+                - slides 数组长度必须等于页面计划数量：%d。
+                - 每个 slides[] 元素包含 slideId、index、title、xml、speakerNotes。
+                - 每个 xml 都必须是完整 <slide xmlns="http://www.larkoffice.com/sml/2.0">...</slide>。
+                - 不要漏页、不要新增页、不要合并页。
+                - xml 必须作为 JSON 字符串返回，双引号和换行必须正确转义。
+                - 每页必须包含 <style>、<data> 和至少 2 个 <shape type="text">。
+                - 所有文字必须写在 <content><p><span ...>文字</span></p></content> 或 <content><ul><li><p>...</p></li></ul></content> 内，不允许把文字直接放在 shape 节点文本里。
+                - 不允许使用 markdown、html、presentation 根节点、image/table/chart/动画。
+                XML 示例：
+                {"slides":[{"slideId":"slide-1","index":1,"title":"示例","xml":"<slide xmlns=\\"http://www.larkoffice.com/sml/2.0\\"><style><fill><fillColor color=\\"rgb(255,255,255)\\"/></fill></style><data><shape type=\\"text\\" topLeftX=\\"64\\" topLeftY=\\"48\\" width=\\"820\\" height=\\"88\\"><content textType=\\"title\\"><p><strong><span color=\\"rgb(20,35,60)\\" fontSize=\\"32\\">示例标题</span></strong></p></content></shape><shape type=\\"text\\" topLeftX=\\"80\\" topLeftY=\\"160\\" width=\\"760\\" height=\\"220\\"><content><ul><li><p><span color=\\"rgb(20,35,60)\\" fontSize=\\"20\\">示例要点</span></p></li></ul></content></shape></data></slide>","speakerNotes":"示例备注"}]}
+                页面大纲 JSON：
+                %s
+                全部页面计划 JSON：
+                %s
+                """.formatted(
+                blankToDefault(outline.getTitle(), "汇报 PPT"),
+                blankToDefault(outline.getStyle(), "简约专业"),
+                support.writeJson(generationOptions(state)),
+                slides.size(),
+                support.writeJson(outline),
+                support.writeJson(slides)
+        );
+    }
+
+    private List<PresentationSlideXml> invokeSlideXmlBatch(
+            String prompt,
+            List<PresentationSlidePlan> slides,
+            String taskId
+    ) {
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= BATCH_XML_MAX_ATTEMPTS; attempt++) {
+            try {
+                AssistantMessage response = callAgent(slideXmlAgent, prompt, taskId + ":presentation:slides:batch");
+                PresentationSlideXmlBatch batch = parseSlideXmlBatch(response.getText());
+                return alignSlideXmlToPlans(batch.getSlides(), slides);
+            } catch (RuntimeException exception) {
+                lastFailure = exception;
+                log.warn("PPT batch XML generation attempt failed: taskId={}, attempt={}, error={}",
+                        taskId, attempt, exception.getMessage());
+            }
+        }
+        throw new IllegalStateException("PPT batch XML generation failed after retry", lastFailure);
+    }
+
+    private PresentationSlideXmlBatch parseSlideXmlBatch(String text) {
+        String sanitized = stripJsonFence(text);
+        try {
+            return objectMapper.readValue(sanitized, PresentationSlideXmlBatch.class);
+        } catch (Exception batchException) {
+            try {
+                List<PresentationSlideXml> slides = objectMapper.readValue(sanitized, new TypeReference<>() { });
+                return PresentationSlideXmlBatch.builder().slides(slides).build();
+            } catch (Exception listException) {
+                throw new IllegalStateException("Invalid PPT batch XML JSON", batchException);
+            }
+        }
+    }
+
+    private String stripJsonFence(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        String sanitized = text.trim();
+        if (sanitized.startsWith("```")) {
+            sanitized = sanitized.replaceFirst("^```(?:json)?\\s*", "");
+            sanitized = sanitized.replaceFirst("\\s*```$", "");
+        }
+        return sanitized.trim();
+    }
+
+    private List<PresentationSlideXml> alignSlideXmlToPlans(
+            List<PresentationSlideXml> generatedSlides,
+            List<PresentationSlidePlan> plans
+    ) {
+        List<PresentationSlidePlan> safePlans = plans == null ? List.of() : plans;
+        if (safePlans.isEmpty()) {
+            throw new IllegalStateException("No slide plans available for generated XML");
+        }
+        if (generatedSlides == null || generatedSlides.size() != safePlans.size()) {
+            throw new IllegalStateException("PPT batch XML page count mismatch: expected="
+                    + safePlans.size() + ", actual=" + (generatedSlides == null ? 0 : generatedSlides.size()));
+        }
+        Map<Integer, PresentationSlideXml> byIndex = generatedSlides.stream()
+                .filter(Objects::nonNull)
+                .filter(slide -> slide.getIndex() > 0)
+                .collect(Collectors.toMap(
+                        PresentationSlideXml::getIndex,
+                        slide -> slide,
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                ));
+        List<PresentationSlideXml> ordered = new ArrayList<>();
+        for (int i = 0; i < safePlans.size(); i++) {
+            PresentationSlidePlan plan = safePlans.get(i);
+            int expectedIndex = i + 1;
+            PresentationSlideXml slideXml = byIndex.get(expectedIndex);
+            if (slideXml == null && i < generatedSlides.size()) {
+                slideXml = generatedSlides.get(i);
+            }
+            if (slideXml == null) {
+                throw new IllegalStateException("PPT batch XML missing page: index=" + expectedIndex);
+            }
+            slideXml.setSlideId(blankToDefault(slideXml.getSlideId(), plan.getSlideId()));
+            slideXml.setTitle(blankToDefault(slideXml.getTitle(), plan.getTitle()));
+            slideXml.setIndex(expectedIndex);
+            ordered.add(slideXml);
+        }
+        return ordered;
     }
 
     private PresentationReviewResult invokeReview(String prompt, String taskId) {
@@ -790,11 +929,15 @@ public class PresentationWorkflowNodes {
     }
 
     private boolean isValidSlideXml(String xml) {
+        return validateSlideXmlReason(xml) == null;
+    }
+
+    private String validateSlideXmlReason(String xml) {
         if (xml == null || xml.isBlank() || !xml.contains("<slide") || !xml.contains("<data")) {
-            return false;
+            return "missing slide or data element";
         }
         if (xml.length() > 16000 || containsOverlongText(xml)) {
-            return false;
+            return xml.length() > 16000 ? "xml too long" : "paragraph text too long";
         }
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -802,21 +945,31 @@ public class PresentationWorkflowNodes {
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
             factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setExpandEntityReferences(false);
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
             Document document = factory.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
             Element root = document.getDocumentElement();
-            return root != null
-                    && "slide".equals(root.getLocalName() == null ? root.getNodeName() : root.getLocalName())
-                    && root.getElementsByTagNameNS("*", "data").getLength() > 0
-                    && root.getElementsByTagNameNS("*", "content").getLength() > 0;
+            if (root == null || !"slide".equals(root.getLocalName() == null ? root.getNodeName() : root.getLocalName())) {
+                return "root element is not slide";
+            }
+            if (root.getElementsByTagNameNS("*", "data").getLength() == 0) {
+                return "missing data element";
+            }
+            if (root.getElementsByTagNameNS("*", "content").getLength() == 0) {
+                return "missing content element";
+            }
+            if (root.getElementsByTagNameNS("*", "shape").getLength() == 0) {
+                return "missing shape element";
+            }
+            return null;
         } catch (Exception exception) {
-            return false;
+            return "xml parse error: " + exception.getMessage();
         }
     }
 
     private boolean containsOverlongText(String xml) {
-        Matcher matcher = Pattern.compile("(?s)<p>(.*?)</p>").matcher(xml);
+        Matcher matcher = PARAGRAPH_PATTERN.matcher(xml);
         while (matcher.find()) {
             String text = matcher.group(1).replaceAll("<[^>]+>", "");
             if (text.length() > 120) {
@@ -832,6 +985,13 @@ public class PresentationWorkflowNodes {
         }
         Matcher matcher = SLIDE_XML_PATTERN.matcher(raw.trim());
         return matcher.find() ? matcher.group().trim() : raw.trim();
+    }
+
+    private String xmlPreview(String xml) {
+        if (xml == null || xml.isBlank()) {
+            return "";
+        }
+        return truncate(xml.replaceAll("\\s+", " ").trim(), 600);
     }
 
     private PresentationSlidePlan planFromXml(PresentationSlideXml slideXml) {
@@ -938,6 +1098,16 @@ public class PresentationWorkflowNodes {
                         + " | " + blankToDefault(slide.getTitle(), "")
                         + " | xmlChars=" + (slide.getXml() == null ? 0 : slide.getXml().length()))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private void recordStageElapsed(String taskId, String stage, long startedAtNanos, String detail) {
+        long elapsedMs = Math.max(0, (System.nanoTime() - startedAtNanos) / 1_000_000);
+        String message = "PPT stage " + stage + " completed in " + elapsedMs + "ms"
+                + (detail == null || detail.isBlank() ? "" : " (" + detail + ")");
+        log.info("{}: taskId={}", message, taskId);
+        if (support != null && taskId != null && !taskId.isBlank()) {
+            support.publishEvent(taskId, null, TaskEventType.PLANNING_STARTED, message);
+        }
     }
 
     private void appendIfPresent(StringBuilder builder, String label, String value) {

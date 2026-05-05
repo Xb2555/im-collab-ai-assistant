@@ -407,6 +407,59 @@ class PlanningNodeServiceTest {
     }
 
     @Test
+    void skipsIntentSourceCollectionWhenResumeFeedbackProvidesContext() throws Exception {
+        ReactAgent intentAgent = mock(ReactAgent.class);
+        ReactAgent planningAgent = mock(ReactAgent.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
+        ContextAcquisitionNodeService contextAcquisitionNodeService = mock(ContextAcquisitionNodeService.class);
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-resume")
+                .rawInstruction("根据指定材料生成采购评审文档")
+                .clarificationAnswers(List.of("新建一版，要买qq糖，100块钱的QQ糖"))
+                .build();
+        when(sessionService.getOrCreate("task-resume")).thenReturn(session);
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(intentAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"userGoal":"生成采购评审文档","deliverableTargets":["DOC"],"sourceScope":{"docRefs":["https://invalid-doc"]}}
+                        """)
+        ))));
+        when(planningAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"planCards":[{"cardId":"card-001","title":"生成采购评审文档","type":"DOC"}]}
+                        """)
+        ))));
+        PlanningNodeService planningService = new PlanningNodeService(
+                intentAgent,
+                planningAgent,
+                sessionService,
+                new PlanQualityService(new ObjectMapper(), List.of(), new ExecutionContractFactory()),
+                projectionService,
+                memoryService,
+                questionTool,
+                contextAcquisitionNodeService,
+                new ObjectMapper()
+        );
+
+        PlanTaskSession result = planningService.plan(
+                "task-resume",
+                "根据指定材料生成采购评审文档",
+                null,
+                "新建一版，要买qq糖，100块钱的QQ糖"
+        );
+
+        assertThat(result.getPlanCards()).hasSize(1);
+        verify(contextAcquisitionNodeService, never()).collect(anyString(), anyString(), any(), any());
+        verify(questionTool, never()).askUser(any(PlanTaskSession.class), any());
+        verify(planningAgent).invoke(contains("100块钱的QQ糖"), any());
+    }
+
+    @Test
     void continuesPlanningWhenInstructionEmbedsUsableMaterial() throws Exception {
         ReactAgent intentAgent = mock(ReactAgent.class);
         ReactAgent planningAgent = mock(ReactAgent.class);

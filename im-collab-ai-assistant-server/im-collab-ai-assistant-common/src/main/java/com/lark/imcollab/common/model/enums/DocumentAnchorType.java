@@ -6,5 +6,9 @@ public enum DocumentAnchorType {
     TEXT,
     BLOCK,
     SECTION,
-    NONE
+    MEDIA,
+    TABLE,
+    LAYOUT,
+    NONE,
+    UNRESOLVED
 }

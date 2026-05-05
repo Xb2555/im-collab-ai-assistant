@@ -162,6 +162,208 @@ class LarkDocToolTest {
         assertThat(commands.get(commands.size() - 1).arguments()).contains("docs", "+fetch", "--doc");
     }
 
+    @Test
+    void updateDocRetriesWithoutAsWhenCliRejectsFlag() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            List<String> args = command.arguments();
+            if (args.contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --doc string
+                              --command string
+                              --doc-format string
+                              --content string
+                        """);
+            }
+            if (args.contains("--as")) {
+                return new CliCommandResult(1, """
+                        {"error":{"message":"unknown flag: --as"}}
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"data":{"document_id":"doc-1","url":"https://example.feishu.cn/docx/doc-1","title":"文档","message":"ok"}} 
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.updateDoc("doc-1", "append", "新增内容");
+
+        assertThat(result.getDocId()).isEqualTo("doc-1");
+        assertThat(commands).hasSizeGreaterThanOrEqualTo(4);
+        assertThat(commands.get(2).arguments()).contains("--as");
+        assertThat(commands.get(commands.size() - 1).arguments()).doesNotContain("--as");
+    }
+
+    @Test
+    void updateDocAppendUsesCommandProtocol() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                        --api-version string
+                        --as string
+                        --doc string
+                        --command string
+                        --markdown string
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"success":true,"data":{"doc_id":"doc-append","mode":"append","message":"ok","revision_id":2}}
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.appendMarkdown("doc-append", "新增内容");
+
+        assertThat(result.getDocId()).isEqualTo("doc-append");
+        CliCommand updateCommand = commands.get(commands.size() - 1);
+        assertThat(updateCommand.arguments()).contains("docs", "+update", "--command", "append", "--markdown", "-");
+        assertThat(updateCommand.arguments()).doesNotContain("--mode");
+        assertThat(updateCommand.stdin()).isEqualTo("新增内容");
+    }
+
+    @Test
+    void updateByCommandStrReplaceUsesCommandProtocol() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --doc string
+                              --command string
+                              --pattern string
+                              --content string
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"success":true,"data":{"doc_id":"doc-str","mode":"str_replace","message":"ok","revision_id":3}}
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.updateByCommand("doc-str", "str_replace", "新内容", "markdown", null, "旧内容", null);
+
+        assertThat(result.getDocId()).isEqualTo("doc-str");
+        CliCommand updateCommand = commands.get(commands.size() - 1);
+        assertThat(updateCommand.arguments()).contains("docs", "+update", "--command", "str_replace");
+        assertThat(updateCommand.arguments()).doesNotContain("--mode");
+    }
+
+    @Test
+    void updateByCommandBlockInsertAfterUsesCommandProtocol() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --doc string
+                              --command string
+                              --block-id string
+                              --content string
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"success":true,"data":{"doc_id":"doc-block","mode":"block_insert_after","message":"ok","revision_id":4}}
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.updateByCommand("doc-block", "block_insert_after", "内容", "markdown", "blk-1", null, null);
+
+        assertThat(result.getDocId()).isEqualTo("doc-block");
+        CliCommand updateCommand = commands.get(commands.size() - 1);
+        assertThat(updateCommand.arguments()).contains("docs", "+update", "--command", "block_insert_after");
+        assertThat(updateCommand.arguments()).doesNotContain("--mode");
+    }
+
+    @Test
+    void updateByCommandBlockReplaceNormalizesImageDocFormat() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --doc string
+                              --command string
+                              --block-id string
+                              --doc-format string
+                              --content string
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"success":true,"data":{"doc_id":"doc-block","mode":"block_replace","message":"ok","revision_id":5}}
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.updateByCommand("doc-block", "block_replace", "内容", "image", "blk-1", null, null);
+
+        assertThat(result.getDocId()).isEqualTo("doc-block");
+        CliCommand updateCommand = commands.get(commands.size() - 1);
+        assertThat(updateCommand.arguments()).contains("docs", "+update", "--command", "block_replace", "--doc-format", "markdown");
+        assertThat(updateCommand.arguments()).doesNotContain("--mode");
+    }
+
     private LarkCliClient dummyCliClient(List<CliCommand> commands) {
         CliCommandExecutor executor = command -> {
             commands.add(command);

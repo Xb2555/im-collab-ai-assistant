@@ -31,6 +31,10 @@ import com.lark.imcollab.harness.document.iteration.support.DocumentPatchCompile
 import com.lark.imcollab.harness.document.iteration.support.DocumentPatchExecutor;
 import com.lark.imcollab.harness.document.iteration.support.DocumentStructureSnapshotBuilder;
 import com.lark.imcollab.harness.document.iteration.support.DocumentTargetStateVerifier;
+import com.lark.imcollab.harness.document.iteration.support.AssetResolutionFacade;
+import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionEngine;
+import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionPlanner;
+import com.lark.imcollab.harness.document.iteration.support.RichContentTargetStateVerifier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -61,21 +65,20 @@ class DefaultDocumentIterationExecutionServiceTest {
     @Mock private DocumentPatchExecutor patchExecutor;
     @Mock private DocumentTargetStateVerifier targetStateVerifier;
     @Mock private DocumentIterationRuntimeSupport runtimeSupport;
+    @Mock private AssetResolutionFacade assetResolutionFacade;
+    @Mock private RichContentExecutionPlanner richContentExecutionPlanner;
+    @Mock private RichContentExecutionEngine richContentExecutionEngine;
+    @Mock private RichContentTargetStateVerifier richContentTargetStateVerifier;
 
     private DefaultDocumentIterationExecutionService service;
 
     @BeforeEach
     void setUp() {
         service = new DefaultDocumentIterationExecutionService(
-                ownershipGuard,
-                intentResolver,
-                snapshotBuilder,
-                anchorResolver,
-                strategyPlanner,
-                patchCompiler,
-                patchExecutor,
-                targetStateVerifier,
-                runtimeSupport
+                ownershipGuard, intentResolver, snapshotBuilder, anchorResolver,
+                strategyPlanner, patchCompiler, patchExecutor, targetStateVerifier,
+                runtimeSupport, assetResolutionFacade, richContentExecutionPlanner,
+                richContentExecutionEngine, richContentTargetStateVerifier
         );
     }
 
@@ -156,7 +159,7 @@ class DefaultDocumentIterationExecutionServiceTest {
 
         assertThat(response.getModifiedBlocks()).containsExactly("text-match");
         assertThat(response.getEditPlan().getStrategyType()).isEqualTo(DocumentStrategyType.TEXT_REPLACE);
-        verify(targetStateVerifier).verify(eq(plan), eq(beforeSnapshot), eq(afterSnapshot));
+        verify(targetStateVerifier).verify(eq(plan), eq(beforeSnapshot), any());
         verify(runtimeSupport).touchOwnedDocument(any(), any());
     }
 
@@ -226,6 +229,73 @@ class DefaultDocumentIterationExecutionServiceTest {
         assertThatThrownBy(() -> service.execute(request()))
                 .isInstanceOf(AiAssistantException.class)
                 .hasMessageContaining("无权编辑");
+    }
+
+    @Test
+    void insertImageWithoutAssetSourceFailsFast() {
+        Artifact artifact = ownedArtifact();
+        DocumentEditIntent intent = DocumentEditIntent.builder()
+                .intentType(DocumentIterationIntentType.INSERT_MEDIA)
+                .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                .userInstruction("在一、发展概况中插入一张图片")
+                .assetSpec(com.lark.imcollab.common.model.entity.MediaAssetSpec.builder()
+                        .assetType(com.lark.imcollab.common.model.enums.MediaAssetType.IMAGE)
+                        .build())
+                .build();
+
+        when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
+        when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
+        when(intentResolver.resolve(anyString())).thenReturn(intent);
+
+        assertThatThrownBy(() -> service.execute(request()))
+                .isInstanceOf(AiAssistantException.class)
+                .hasMessageContaining("图片附件");
+        verify(snapshotBuilder, never()).build(any());
+    }
+
+    @Test
+    void richMediaExecutionUsesExecutionEngineInsteadOfPatchExecutor() {
+        Artifact artifact = ownedArtifact();
+        DocumentEditIntent intent = intent(DocumentIterationIntentType.INSERT_MEDIA, DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR);
+        DocumentStructureSnapshot snapshot = snapshot();
+        ResolvedDocumentAnchor anchor = anchor();
+        DocumentEditStrategy strategy = strategy(DocumentStrategyType.MEDIA_INSERT_AFTER, DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT);
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .taskId("doc-iter-1")
+                .intentType(DocumentIterationIntentType.INSERT_MEDIA)
+                .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                .resolvedAnchor(anchor)
+                .structureSnapshot(snapshot)
+                .expectedState(strategy.getExpectedState())
+                .strategyType(strategy.getStrategyType())
+                .generatedContent("")
+                .reasoningSummary("rich media")
+                .requiresApproval(false)
+                .resolvedAssetSpec(com.lark.imcollab.common.model.entity.MediaAssetSpec.builder()
+                        .assetType(com.lark.imcollab.common.model.enums.MediaAssetType.IMAGE)
+                        .sourceRef("https://kkimgs.yisou.com/ims?kt=url")
+                        .build())
+                .executionPlan(com.lark.imcollab.common.model.entity.ExecutionPlan.builder().steps(List.of()).build())
+                .build();
+
+        when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
+        when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
+        when(intentResolver.resolve(anyString())).thenReturn(intent);
+        when(snapshotBuilder.build(any())).thenReturn(snapshot);
+        when(anchorResolver.resolve(any(), eq(snapshot), eq(intent))).thenReturn(anchor);
+        when(strategyPlanner.plan(eq(intent), eq(anchor))).thenReturn(strategy);
+        when(patchCompiler.compile(anyString(), eq(intent), eq(snapshot), eq(anchor), eq(strategy))).thenReturn(plan);
+        when(assetResolutionFacade.resolve(any())).thenReturn(com.lark.imcollab.common.model.entity.ResolvedAsset.builder()
+                .assetType(com.lark.imcollab.common.model.enums.MediaAssetType.IMAGE)
+                .assetRef("https://kkimgs.yisou.com/ims?kt=url")
+                .requiresUpload(false)
+                .build());
+
+        DocumentIterationVO response = service.execute(request());
+
+        assertThat(response.getRecognizedIntent()).isEqualTo(DocumentIterationIntentType.INSERT_MEDIA);
+        verify(patchExecutor, never()).execute(anyString(), any());
+        verify(richContentExecutionEngine).execute(anyString(), any());
     }
 
     @Test
