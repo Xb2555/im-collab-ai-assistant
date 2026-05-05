@@ -88,6 +88,12 @@ public class DocumentTargetStateVerifier {
                     throw new IllegalStateException("目标状态校验失败：block " + blockId + " 中原文仍存在");
                 }
             }
+            if (textAnchor.getSourceBlockId() != null) {
+                DocumentStructureNode sourceNode = after == null || after.getBlockIndex() == null ? null : after.getBlockIndex().get(textAnchor.getSourceBlockId());
+                if (sourceNode == null) {
+                    throw new IllegalStateException("目标状态校验失败：原文本来源 block 已丢失");
+                }
+            }
         } else if (oldText != null) {
             // 辅助：全文不再包含旧文本
             if (fullText(after).contains(oldText)) {

@@ -201,7 +201,7 @@ class DocumentAnchorResolverTest {
                                 .anchorKind(DocumentAnchorKind.SECTION)
                                 .matchMode(DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL)
                                 .structuralOrdinal(3)
-                                .structuralOrdinalScope("SUB_SECTION")
+                                .structuralOrdinalScope("CHILD_OF_HEADING_NUMBER:1")
                                 .build())
                         .build()
         );
@@ -210,6 +210,31 @@ class DocumentAnchorResolverTest {
         assertThat(anchor.getSectionAnchor()).isNotNull();
         assertThat(anchor.getSectionAnchor().getHeadingBlockId()).isEqualTo("heading-1-3");
         assertThat(anchor.getSectionAnchor().getHeadingText()).isEqualTo("1.3 客源市场结构");
+    }
+
+    @Test
+    void byHeadingNumberResolvesExactSection() {
+        DocumentAnchorResolver resolver = new DocumentAnchorResolver(null);
+
+        ResolvedDocumentAnchor anchor = resolver.resolve(
+                Artifact.builder().externalUrl("https://example.com/docx/doc123").build(),
+                nestedHeadingSnapshot(),
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.UPDATE_CONTENT)
+                        .semanticAction(DocumentSemanticActionType.REWRITE_SECTION_BODY)
+                        .userInstruction("改写 1.3 小节")
+                        .anchorSpec(DocumentAnchorSpec.builder()
+                                .anchorKind(DocumentAnchorKind.SECTION)
+                                .matchMode(DocumentAnchorMatchMode.BY_HEADING_NUMBER)
+                                .headingNumber("1.3")
+                                .build())
+                        .build()
+        );
+
+        assertThat(anchor.getAnchorType()).isEqualTo(DocumentAnchorType.SECTION);
+        assertThat(anchor.getSectionAnchor()).isNotNull();
+        assertThat(anchor.getSectionAnchor().getHeadingBlockId()).isEqualTo("heading-1-3");
+        assertThat(anchor.getSectionAnchor().getHeadingNumber()).isEqualTo("1.3");
     }
 
     private DocumentStructureSnapshot snapshot() {
@@ -287,7 +312,36 @@ class DocumentAnchorResolverTest {
                         "heading-1-2", blockIndex.get("heading-1-2"),
                         "heading-1-3", blockIndex.get("heading-1-3")
                 ))
+                .parentHeadingIndex(Map.of(
+                        "heading-1-1", "heading-1",
+                        "heading-1-2", "heading-1",
+                        "heading-1-3", "heading-1"
+                ))
+                .childrenHeadingIndex(Map.of(
+                        "heading-1", List.of("heading-1-1", "heading-1-2", "heading-1-3")
+                ))
+                .headingPathIndexById(Map.of(
+                        "heading-1", List.of("heading-1"),
+                        "heading-1-1", List.of("heading-1", "heading-1-1"),
+                        "heading-1-2", List.of("heading-1", "heading-1-2"),
+                        "heading-1-3", List.of("heading-1", "heading-1-3")
+                ))
+                .headingPathNumberIndex(Map.of(
+                        "1", "heading-1",
+                        "1.1", "heading-1-1",
+                        "1.2", "heading-1-2",
+                        "1.3", "heading-1-3",
+                        "1/1.1", "heading-1-1",
+                        "1/1.2", "heading-1-2",
+                        "1/1.3", "heading-1-3"
+                ))
                 .orderedBlockIds(List.of("heading-1", "heading-1-1", "heading-1-2", "heading-1-3"))
+                .blockOrderIndex(Map.of(
+                        "heading-1", 0,
+                        "heading-1-1", 1,
+                        "heading-1-2", 2,
+                        "heading-1-3", 3
+                ))
                 .topLevelSequence(List.of("heading-1"))
                 .build();
     }

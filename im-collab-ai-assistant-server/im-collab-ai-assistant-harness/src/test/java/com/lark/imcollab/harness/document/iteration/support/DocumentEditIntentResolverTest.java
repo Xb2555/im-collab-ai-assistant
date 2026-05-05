@@ -208,8 +208,8 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
         assertThat(intent.getAnchorSpec()).isNotNull();
         assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
-        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
-        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.1 总体复苏态势");
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("1.1");
     }
 
     @Test
@@ -270,8 +270,8 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
         assertThat(intent.getAnchorSpec()).isNotNull();
         assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
-        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
-        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.3 客源市场结构");
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("1.3");
     }
 
     @Test
@@ -297,8 +297,10 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
         assertThat(intent.getAnchorSpec()).isNotNull();
         assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
-        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_OUTLINE_PATH);
-        assertThat(intent.getAnchorSpec().getOutlinePath()).isEqualTo("第3章/第2节");
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL);
+        assertThat(intent.getAnchorSpec().getParentHeadingNumber()).isEqualTo("3");
+        assertThat(intent.getAnchorSpec().getStructuralOrdinal()).isEqualTo(2);
+        assertThat(intent.getAnchorSpec().getStructuralOrdinalScope()).isEqualTo("CHILD_OF_HEADING_NUMBER:3");
     }
 
     @Test
@@ -352,8 +354,8 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.REWRITE_SECTION_BODY);
         assertThat(intent.getAnchorSpec()).isNotNull();
         assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
-        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_OUTLINE_PATH);
-        assertThat(intent.getAnchorSpec().getOutlinePath()).isEqualTo("1.2.3");
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_OUTLINE_PATH_NUMBERS);
+        assertThat(intent.getAnchorSpec().getOutlinePathNumbers()).isEqualTo("1.2.3");
     }
 
     @Test
@@ -381,8 +383,8 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR);
         assertThat(intent.getAnchorSpec()).isNotNull();
         assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
-        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
-        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.3 客源市场结构");
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("1.3");
     }
 
     @Test
@@ -410,7 +412,7 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.DELETE_WHOLE_SECTION);
         assertThat(intent.getAnchorSpec()).isNotNull();
         assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
-        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_TITLE);
-        assertThat(intent.getAnchorSpec().getHeadingTitle()).isEqualTo("1.3 客源市场结构");
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("1.3");
     }
 }

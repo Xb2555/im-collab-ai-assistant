@@ -18,9 +18,16 @@ public class DocumentAnchorSpec implements Serializable {
     private DocumentAnchorMatchMode matchMode;
     private String blockId;
     private String headingTitle;
+    private String headingNumber;
     private String outlinePath;
+    private String outlinePathText;
+    private String outlinePathNumbers;
+    private String parentHeadingTitle;
+    private String parentHeadingNumber;
     private Integer structuralOrdinal;
     private String structuralOrdinalScope;
     private String quotedText;
     private String mediaCaption;
+    private String relativePosition;
+    private String scopeHint;
 }
