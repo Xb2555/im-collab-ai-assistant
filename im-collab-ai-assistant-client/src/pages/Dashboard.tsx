@@ -10,8 +10,9 @@ import {
   MessageSquare, LayoutTemplate, Bot, Plus, Search, LogOut,
   Settings, PanelRightClose, Loader2, UserPlus, User,
   Play, Square, RefreshCw, CheckCircle2, CircleDashed, Check, AlertCircle,
-  X, StopCircle, Send, History, TerminalSquare, ChevronDown, ChevronUp // ✨ 新增 Chevron
+  X, StopCircle, Send, History, TerminalSquare, ChevronDown, ChevronUp //  新增 Chevron
 } from 'lucide-react';
+import { toast } from 'sonner'; //  修复：引入新版弹窗
 import confetti from 'canvas-confetti';
 import { CreateChatModal } from '@/components/chat/CreateChatModal';
 import { InviteMemberModal } from '@/components/chat/InviteMemberModal';
@@ -167,6 +168,7 @@ export default function Dashboard() {
     taskRuntime,
     setActiveTaskId,
     setPlanPreview,
+    setTaskRuntime,
     clearTask,
     aiThinkingText,
     isStreaming,
@@ -346,58 +348,89 @@ const taskToRecover = res.tasks.find(t =>
     }
   };
 
-// ✨ 替换为支持带反馈的调用
-  // ✨ 加入 RESUME 动作
-  const handleCommand = async (action: 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL' | 'RETRY_FAILED' | 'RESUME', customFeedback?: string) => {
-    if (!activeTaskId) return;
-    // ✨ 新增乐观 UI：如果点的是取消，立刻让界面进入取消等待态
+// ✨ 1. 新增全局操作锁，防止手抖双击
+  const [isActionLoading, setIsActionLoading] = useState(false);
+
+  // ✨ 2. 升级版 handleCommand：加入防抖锁与自动自愈逻辑
+  const handleCommand = async (
+    action: 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL' | 'RETRY_FAILED' | 'RESUME', 
+    customFeedback?: string,
+    extraPayload?: { artifactPolicy?: 'AUTO' | 'EDIT_EXISTING' | 'CREATE_NEW' | 'KEEP_EXISTING_CREATE_NEW', targetArtifactId?: string }
+  ) => {
+    // 如果没有任务，或者正在处理中，直接拦截（防抖）
+    if (!activeTaskId || isActionLoading) return;
+    
+    setIsActionLoading(true); // 开启锁
     if (action === 'CANCEL') setIsCancelling(true);
+    
     try {
       const newPreview = await plannerApi.executeCommand(activeTaskId, {
         action,
         feedback: customFeedback || (action === 'REPLAN' ? replanFeedback.trim() : undefined),
         version: runtimeTask?.version ?? planPreview?.version,
+        ...extraPayload
       });
       setPlanPreview(newPreview);
       
-      // 清空对应输入框
       if (action === 'REPLAN') { setIsReplanningMode(false); setReplanFeedback(''); }
       if (action === 'RETRY_FAILED') setRetryFeedback('');
-      if (action === 'RESUME') setClarifyAnswer(''); // ✨ 提交后清空追问框
+      if (action === 'RESUME') setClarifyAnswer('');
       
-    } catch (e: any) {
-      if (e.message === 'VERSION_CONFLICT') {
-        alert('多端冲突：操作已在其他端完成，请等待界面刷新！');
+} catch (e: unknown) { // ✨ 修复 1：将 any 替换为 unknown，符合 TS 规范
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      
+      if (errorMessage === 'VERSION_CONFLICT') {
+        // 核心修复：遇到冲突不要只弹窗，强制拉取最新状态让 UI 自愈！
+        toast.info('状态已更新', { description: '正在为您同步最新任务状态...' });
+        try {
+           const freshRuntime = await plannerApi.getTaskRuntime(activeTaskId);
+           setTaskRuntime(freshRuntime);
+        } catch (_ignore) {} // ✨ 修复 2：用下划线前缀或直接留空变量，消除未使用警告
       } else {
-        alert('操作失败: ' + e.message);
+        toast.error('操作失败', { description: errorMessage });
       }
-    }finally {
-      // ✨ 请求结束后释放锁
+    } finally {
       if (action === 'CANCEL') setIsCancelling(false);
+      setIsActionLoading(false); // 释放锁
     }
   };
 
+  // ✨ 场景 F：闭环交付，推送到 IM
   const handleDeliver = async () => {
-    if (!activeTaskId) return;
+    if (!activeTaskId || !activeChatId || !taskRuntime?.artifacts) return;
     
-    // 1. 触发符合我们高级紫绿主题色的撒花动画
+    // 1. 撒花庆祝
     confetti({
       particleCount: 150,
       spread: 70,
       origin: { y: 0.6 },
-      colors: ['#6353AC', '#9F9DF3', '#C9EBCA', '#D5D6F2'], // ✨ 全局主题色撒花
+      colors: ['#6353AC', '#9F9DF3', '#C9EBCA', '#D5D6F2'],
       zIndex: 9999,
     });
 
-    // 2. 预留调用后端交付接口的位置
     try {
-      // TODO: 等后端准备好后，这里需要发送 DELIVER 指令
-      // await plannerApi.executeCommand(activeTaskId, { action: 'DELIVER_AND_ARCHIVE' });
+      // 2. 构造发送到群里的富文本/普通文本总结
+      const docLink = taskRuntime.artifacts.find(a => a.type === 'DOC')?.url || '';
+      const pptLink = taskRuntime.artifacts.find(a => a.type === 'PPT')?.url || '';
       
-      // 临时用 Toast/Alert 模拟业务结果
+      const deliverText = `🎉 【Agent-Pilot 工作汇报】任务已完成！\n\n` +
+        `📝 项目文档：${docLink || '暂无'}\n` +
+        `📊 汇报演示：${pptLink || '暂无'}\n\n` +
+        `💡 您可以通过上方的链接直接预览或编辑。如有新需求，请随时在群内唤醒我。`;
+
+      // 3. 调 IM 接口发消息
+      await imApi.sendMessage({
+        chatId: activeChatId,
+        text: deliverText,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      
+      // 4. 清理工作台，功成身退
       setTimeout(() => {
-        alert('🎉 总结与交付成功！Agent 已将所有文档链接与成果卡片同步发送至飞书群聊。');
+        alert('🎉 总结与交付成功！Agent 已将成果同步至飞书协作群。');
+        clearTask(); // 关闭当前任务，将工作台置于待命状态
       }, 800);
+      
     } catch (e: any) {
       alert('交付推送失败: ' + e.message);
     }
@@ -989,34 +1022,44 @@ const taskToRecover = res.tasks.find(t =>
                         </div>
                       ) : 
                       
+                      
                       /* 1.2 待补充 (CLARIFYING) 的蓝色智能交互面板 */
-                      runtimeTask.status === 'CLARIFYING' ? (
-                        <div className="bg-blue-50 rounded-xl p-4 flex flex-col gap-3 border border-blue-200 shadow-inner animate-in slide-in-from-bottom-4">
-                          <div className="flex items-center gap-2 text-blue-700 font-bold text-sm">
-                            <Bot className="h-4 w-4" /> Agent 需要您的进一步确认
-                          </div>
-                          {clarificationQuestions.map((q, idx) => (
-                            <p key={idx} className="text-xs text-blue-900 bg-blue-100/60 p-2.5 rounded-md leading-relaxed border border-blue-200/50">
-                              {q}
-                            </p>
-                          ))}
-                          <textarea 
-                            value={clarifyAnswer} onChange={(e) => setClarifyAnswer(e.target.value)} 
-                            placeholder="请输入您的回答补充..." className="w-full text-xs p-3 rounded-lg border border-blue-200 focus:border-blue-500 outline-none resize-none bg-white shadow-sm transition-all" rows={3} 
-                          />
-                          <div className="flex gap-2 items-center mt-1">
-                            {runtimeActions.canCancel && (
-                              <Button size="sm" variant="outline" disabled={isCancelling} className="flex-1 text-zinc-500 hover:text-red-600 hover:bg-red-50 border-zinc-200 bg-white" onClick={() => handleCommand('CANCEL')}>取消任务</Button>
-                            )}
-                            {runtimeActions.canResume && (
-                              <Button size="sm" className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white shadow-md" disabled={!clarifyAnswer.trim() || isCancelling} onClick={() => handleCommand('RESUME', clarifyAnswer)}>
-                                {isCancelling ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
-                                提交回答，继续任务
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
+runtimeTask.status === 'CLARIFYING' ? (
+  <div className="bg-blue-50 rounded-xl p-4 flex flex-col gap-3 border border-blue-200 shadow-inner animate-in slide-in-from-bottom-4">
+    <div className="flex items-center gap-2 text-blue-700 font-bold text-sm">
+      <Bot className="h-4 w-4" /> Agent 需要您的进一步确认
+    </div>
+    {clarificationQuestions.map((q, idx) => (
+      <p key={idx} className="text-xs text-blue-900 bg-blue-100/60 p-2.5 rounded-md leading-relaxed border border-blue-200/50">
+        {q}
+      </p>
+    ))}
+    <textarea 
+      value={clarifyAnswer} onChange={(e) => setClarifyAnswer(e.target.value)} 
+      placeholder="请输入您的回答补充..." 
+      className="w-full text-xs p-3 rounded-lg border border-blue-200 focus:border-blue-500 outline-none resize-none bg-white shadow-sm transition-all" 
+      rows={3} 
+      disabled={isActionLoading} // ✨ 加上禁用状态
+    />
+    <div className="flex gap-2 items-center mt-1">
+      {runtimeActions.canCancel && (
+        <Button size="sm" variant="outline" disabled={isCancelling || isActionLoading} className="flex-1 text-zinc-500 hover:text-red-600 hover:bg-red-50 border-zinc-200 bg-white" onClick={() => handleCommand('CANCEL')}>取消任务</Button>
+      )}
+      {runtimeActions.canResume && (
+        <Button 
+          size="sm" 
+          className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white shadow-md" 
+          disabled={!clarifyAnswer.trim() || isActionLoading || isCancelling} // ✨ 加入防抖控制
+          onClick={() => handleCommand('RESUME', clarifyAnswer)}
+        >
+          {/* ✨ 动态展示 Loading 圈 */}
+          {isActionLoading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
+          提交回答，继续任务
+        </Button>
+      )}
+    </div>
+  </div>
+) : (
 
                       /* 1.3 协同指挥中心 (WAITING_APPROVAL) */
                       <div className="bg-blue-50 rounded-xl p-4 flex flex-col gap-4 border border-blue-200 shadow-sm animate-in slide-in-from-bottom-4">
@@ -1138,7 +1181,7 @@ const taskToRecover = res.tasks.find(t =>
                   
 
 
-                  {/* 模块 2：产物预览区域 (被放到了交互操作台下方) */}
+ {/* 模块 2：产物预览区域 */}
                   <div className="flex flex-col gap-4 mt-4 mb-2">
                     {Object.values(
                       runtimeArtifacts.reduce((acc, artifact) => {
@@ -1146,12 +1189,37 @@ const taskToRecover = res.tasks.find(t =>
                         return acc;
                       }, {} as Record<string, RuntimeArtifactVO>)
                     ).map((artifact: RuntimeArtifactVO) => {
-                      if (artifact.type === 'DOC') return <DocPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' ? 'COMPLETED' : 'GENERATING'} docUrl={artifact.url} docTitle={artifact.title} />;
-                      if (artifact.type === 'PPT') return <PptPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' ? 'COMPLETED' : 'EXECUTING'} pptUrl={artifact.url} pptTitle={artifact.title} onInterrupt={() => handleCommand('CANCEL')} />;
+                      if (artifact.type === 'DOC') {
+                        return (
+                          <DocPreviewCard 
+                            key={artifact.artifactId} 
+                            status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'GENERATING'} 
+                            docUrl={artifact.url} 
+                            docTitle={artifact.title} 
+                            canReplan={runtimeActions?.canReplan}
+                            isReplanning={isPlanning}
+                            onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })}
+                          />
+                        );
+                      }
+                      if (artifact.type === 'PPT') {
+                        return (
+                          <PptPreviewCard 
+                            key={artifact.artifactId} 
+                            status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'EXECUTING'} 
+                            pptUrl={artifact.url} 
+                            pptTitle={artifact.title} 
+                            onInterrupt={() => handleCommand('CANCEL')} 
+                            canReplan={runtimeActions?.canReplan}
+                            isReplanning={isPlanning}
+                            onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })}
+                          />
+                        );
+                      }
                       return null;
                     })}
-                    
-                    {/* 预测性骨架卡片 */}
+
+                    {/* ✨ 恢复：预测性骨架卡片 */}
                     {runtimeSteps.filter(step => isRuntimeStepRunning(step.status) && (step.type === 'DOC_CREATE' || step.type === 'PPT_CREATE')).filter(step => !runtimeArtifacts.some(a => a.type === (step.type === 'DOC_CREATE' ? 'DOC' : 'PPT'))).map(step => (
                         <div key={`skeleton-${step.stepId}`} className="border border-blue-100 bg-blue-50/30 rounded-xl p-4 flex flex-col gap-3 relative overflow-hidden animate-pulse">
                           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-400 to-transparent animate-pulse" />

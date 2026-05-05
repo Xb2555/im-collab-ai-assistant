@@ -12,7 +12,8 @@ import { listen } from '@tauri-apps/api/event';
 import Login from '@/pages/Login';
 import Callback from '@/pages/Callback';
 import Dashboard from '@/pages/Dashboard';
-
+// 在现有的 import 列表末尾增加这一行
+import { Toaster } from "sonner";
 /**
  * 全局路由守卫组件
  * 如果用户未登录，强制拦截并跳转到 /login
@@ -145,6 +146,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </DeepLinkListener>
+      <Toaster position="top-center" richColors />
     </BrowserRouter>
   );
 }

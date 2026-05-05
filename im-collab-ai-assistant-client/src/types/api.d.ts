@@ -167,6 +167,51 @@ export interface PlanCommandRequest {
   action?: string; // 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL'
   feedback?: string;
   version?: number; // ✨ 乐观锁：任务版本号，用于防冲突
+
+  // 👇 新增：针对完成态任务修改产物的策略控制
+  artifactPolicy?: 'AUTO' | 'EDIT_EXISTING' | 'CREATE_NEW' | 'KEEP_EXISTING_CREATE_NEW';
+  targetArtifactId?: string; // 如果有多个产物，需明确指定修改哪一个
+}
+
+/**
+ * ✨ 新增：文档迭代请求体 (对应 5.1. 执行文档迭代.md)
+ */
+export interface DocumentIterationRequest {
+  taskId: string;
+  docUrl: string;
+  instruction: string; // 用户的自然语言修改指令
+  workspaceContext?: WorkspaceContext; // 上下文依赖
+}
+
+/**
+ * ✨ 新增：文档迭代响应体
+ */
+export interface DocumentIterationResponse {
+  taskId: string;
+  planningPhase: string;
+  recognizedIntent: string;
+  requireInput: boolean;
+  preview: string;
+  docUrl: string;
+  modifiedBlocks: any[];
+  summary: string;
+  editPlan?: {
+    intentType: string;
+    semanticAction: string;
+    targetTitle: string;
+    generatedContent: string;
+    toolCommandType: string;
+    requiresApproval: boolean;
+    riskLevel: string;
+  };
+}
+
+/**
+ * ✨ 新增：文档迭代审批请求体 (对应 5.2)
+ */
+export interface DocumentIterationApprovalRequest {
+  action: 'APPROVE' | 'REJECT' | 'MODIFY';
+  feedback?: string;
 }
 
 /**
