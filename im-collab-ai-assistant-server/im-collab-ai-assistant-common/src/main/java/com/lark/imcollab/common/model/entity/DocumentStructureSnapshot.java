@@ -21,6 +21,13 @@ public class DocumentStructureSnapshot implements Serializable {
     private Map<String, DocumentStructureNode> blockIndex;
     private List<String> topLevelSequence;
     private List<String> orderedBlockIds;
+    private Map<String, Integer> blockOrderIndex;
+    private Map<String, String> parentHeadingIndex;
+    private Map<String, List<String>> childrenHeadingIndex;
+    private Map<String, List<String>> headingPathIndexById;
+    private Map<String, String> headingPathNumberIndex;
+    private Map<String, List<String>> headingTitleIndexNormalized;
+    private Map<String, String> headingCompositeKeyIndex;
     private String rawOutlineXml;
     private String rawFullXml;
     private String rawFullMarkdown;

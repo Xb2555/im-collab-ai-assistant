@@ -38,7 +38,9 @@ public class DocumentEditStrategyPlanner {
                     DocumentPatchOperationType.BLOCK_INSERT_AFTER,
                     ExpectedDocumentState.builder()
                             .stateType(DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
-                            .attributes(Map.of("targetHeading", anchor.getSectionAnchor() == null ? "" : anchor.getSectionAnchor().getHeadingText()))
+                            .attributes(Map.of(
+                                    "targetHeadingText", anchor.getSectionAnchor() == null ? "" : anchor.getSectionAnchor().getHeadingText(),
+                                    "targetHeadingId", anchor.getSectionAnchor() == null ? "" : anchor.getSectionAnchor().getHeadingBlockId()))
                             .build(),
                     true, DocumentRiskLevel.HIGH);
             case APPEND_SECTION_TO_DOCUMENT_END -> strategy(DocumentStrategyType.APPEND, DocumentAnchorType.DOCUMENT_TAIL,

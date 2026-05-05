@@ -36,6 +36,8 @@ class DocumentStructureSnapshotBuilderTest {
         assertThat(snapshot.getDocId()).isEqualTo("doc123");
         assertThat(snapshot.getRevisionId()).isEqualTo(9L);
         assertThat(snapshot.getTopLevelSequence()).containsExactly("heading-1", "heading-2");
+        assertThat(snapshot.getHeadingPathIndexById()).containsKey("heading-1");
+        assertThat(snapshot.getHeadingTitleIndexNormalized()).containsKey("一、项目背景".replaceAll("\\s+", "").toLowerCase());
         assertThat(snapshot.getRawOutlineXml()).contains("项目背景");
         assertThat(snapshot.getRawFullXml()).isNull();
         assertThat(snapshot.getRawFullMarkdown()).isNull();
@@ -66,6 +68,7 @@ class DocumentStructureSnapshotBuilderTest {
 
         assertThat(snapshot.getSectionBlockIds().get("heading-1")).containsExactly("heading-1", "body-1", "body-2");
         assertThat(snapshot.getBlockIndex()).containsKeys("body-1", "body-2");
+        assertThat(snapshot.getBlockOrderIndex()).containsKeys("body-1", "body-2");
         verify(readGateway).fetchDocSection("doc123", "heading-1", "with-ids");
     }
 }
