@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
@@ -204,7 +205,10 @@ class PlannerControllerCommandTest {
 
         when(repository.findSession("task-1")).thenReturn(Optional.of(asking));
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.CLARIFYING)));
-        when(plannerCommandApplicationService.resume("task-1", "使用通用知识即可", false)).thenReturn(ready);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .selectedMessages(java.util.List.of("补充材料：使用通用知识即可"))
+                .build();
+        when(plannerCommandApplicationService.resume("task-1", "使用通用知识即可", false, workspaceContext)).thenReturn(ready);
         when(plannerViewAssembler.toPlanPreview(ready)).thenReturn(new PlanPreviewVO(
                 "task-1", 3, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
@@ -213,11 +217,12 @@ class PlannerControllerCommandTest {
         request.setAction("RESUME");
         request.setVersion(2);
         request.setFeedback("使用通用知识即可");
+        request.setWorkspaceContext(workspaceContext);
 
         BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
 
         assertThat(response.getCode()).isZero();
-        verify(plannerCommandApplicationService).resume("task-1", "使用通用知识即可", false);
+        verify(plannerCommandApplicationService).resume("task-1", "使用通用知识即可", false, workspaceContext);
         verify(plannerCommandApplicationService, never()).replan(anyString(), anyString());
         verify(plannerViewAssembler).toPlanPreview(ready);
     }

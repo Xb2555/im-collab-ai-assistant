@@ -161,7 +161,8 @@ public class PlannerSupervisorGraphNodes {
     public CompletableFuture<Map<String, Object>> resume(OverAllState state, RunnableConfig config) {
         String taskId = state.value(PlannerSupervisorStateKeys.TASK_ID, "");
         String rawInstruction = state.value(PlannerSupervisorStateKeys.RAW_INSTRUCTION, "");
-        return completed(clarificationNodeService.resume(taskId, rawInstruction), "resume completed");
+        WorkspaceContext workspaceContext = workspaceContext(state);
+        return completed(clarificationNodeService.resume(taskId, rawInstruction, workspaceContext), "resume completed");
     }
 
     public CompletableFuture<Map<String, Object>> replan(OverAllState state, RunnableConfig config) {

@@ -1,5 +1,6 @@
 package com.lark.imcollab.common.model.dto;
 
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -18,6 +19,9 @@ public class PlanCommandRequest {
 
     @Schema(description = "可选：指定要调整的已有产物 ID")
     private String targetArtifactId;
+
+    @Schema(description = "追问/重规划阶段补充的工作区上下文（选中消息、文档引用等）")
+    private WorkspaceContext workspaceContext;
 
     @Schema(description = "任务版本号（用于冲突检测）", example = "1")
     private int version;

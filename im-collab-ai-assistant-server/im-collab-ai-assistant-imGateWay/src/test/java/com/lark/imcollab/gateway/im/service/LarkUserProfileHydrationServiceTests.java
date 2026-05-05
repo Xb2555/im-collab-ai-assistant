@@ -90,7 +90,7 @@ class LarkUserProfileHydrationServiceTests {
 
     @Test
     void shouldCacheDeniedHydrationAndSkipRepeatedRequests() {
-        when(redisJsonStore.get("imcollab:lark:user-profile-denied:ou_1", Boolean.class))
+        when(redisJsonStore.get("imcollab:lark:user-profile-denied:tenant:ou_1", Boolean.class))
                 .thenReturn(Optional.of(Boolean.TRUE));
 
         LarkUserProfile profile = service.resolveByTenantAccessToken("ou_1");
@@ -102,7 +102,7 @@ class LarkUserProfileHydrationServiceTests {
 
     @Test
     void shouldCacheDeniedHydrationWhenOpenApiReturnsNoAuthority() throws Exception {
-        when(redisJsonStore.get("imcollab:lark:user-profile-denied:ou_1", Boolean.class))
+        when(redisJsonStore.get("imcollab:lark:user-profile-denied:tenant:ou_1", Boolean.class))
                 .thenReturn(Optional.empty());
         when(openApiClient.getWithTenantToken(
                 eq("/open-apis/contact/v3/users/ou_1"),
@@ -113,7 +113,32 @@ class LarkUserProfileHydrationServiceTests {
 
         assertThat(profile.name()).isNull();
         assertThat(profile.avatarUrl()).isNull();
-        verify(redisJsonStore).set(eq("imcollab:lark:user-profile-denied:ou_1"), eq(Boolean.TRUE), any(Duration.class));
+        verify(redisJsonStore).set(eq("imcollab:lark:user-profile-denied:tenant:ou_1"), eq(Boolean.TRUE), any(Duration.class));
+    }
+
+    @Test
+    void userTokenDeniedCacheDoesNotBlockTenantTokenHydration() throws Exception {
+        when(redisJsonStore.get("imcollab:lark:user-profile-denied:tenant:ou_1", Boolean.class))
+                .thenReturn(Optional.empty());
+        when(openApiClient.getWithTenantToken(
+                eq("/open-apis/contact/v3/users/ou_1"),
+                eq(java.util.Map.of("user_id_type", "open_id"))
+        )).thenReturn(objectMapper.readTree("""
+                {
+                  "user": {
+                    "open_id": "ou_1",
+                    "name": "张三"
+                  }
+                }
+                """));
+
+        LarkUserProfile profile = service.resolveByTenantAccessToken("ou_1");
+
+        assertThat(profile.name()).isEqualTo("张三");
+        verify(openApiClient).getWithTenantToken(
+                eq("/open-apis/contact/v3/users/ou_1"),
+                eq(java.util.Map.of("user_id_type", "open_id"))
+        );
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.lark.imcollab.app.planner.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
@@ -109,6 +110,31 @@ class PlannerCommandApplicationServiceTest {
                 eq("给一个大概的参考就好"),
                 eq(null),
                 eq("给一个大概的参考就好")
+        );
+    }
+
+    @Test
+    void resumePassesWorkspaceContextIntoGraph() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .selectedMessages(java.util.List.of("用户补充选中消息：采购预算100元"))
+                .build();
+        when(sessionService.get("task-1")).thenReturn(current);
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq("继续整理"), eq(workspaceContext), eq("继续整理")))
+                .thenReturn(session);
+
+        service.resume("task-1", "继续整理", false, workspaceContext);
+
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.CLARIFICATION_REPLY, "clarification reply")),
+                eq("task-1"),
+                eq("继续整理"),
+                eq(workspaceContext),
+                eq("继续整理")
         );
     }
 
