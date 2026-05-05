@@ -1,7 +1,9 @@
 package com.lark.imcollab.planner.supervisor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
 import com.lark.imcollab.common.facade.PresentationIterationFacade;
+import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
@@ -9,13 +11,18 @@ import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRecord;
+import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
+import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
+import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.common.model.vo.DocumentArtifactApprovalPayload;
+import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.planner.replan.CardPlanPatchMerger;
 import com.lark.imcollab.planner.replan.PlanAdjustmentInterpreter;
@@ -58,6 +65,7 @@ class ReplanNodeServiceTest {
     private final PlannerStateStore stateStore = mock(PlannerStateStore.class);
     private final TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
     private final PresentationIterationFacade presentationIterationFacade = mock(PresentationIterationFacade.class);
+    private final DocumentArtifactIterationFacade documentArtifactIterationFacade = mock(DocumentArtifactIterationFacade.class);
     private final ReplanNodeService service = new ReplanNodeService(
             sessionService,
             adjustmentInterpreter,
@@ -68,6 +76,7 @@ class ReplanNodeServiceTest {
             stateStore,
             taskRuntimeService,
             provider(presentationIterationFacade),
+            provider(documentArtifactIterationFacade),
             new ObjectMapper()
     );
 
@@ -135,6 +144,7 @@ class ReplanNodeServiceTest {
                 stateStore,
                 taskRuntimeService,
                 provider(presentationIterationFacade),
+                provider(documentArtifactIterationFacade),
                 new ObjectMapper()
         );
 
@@ -285,25 +295,67 @@ class ReplanNodeServiceTest {
     }
 
     @Test
-    void completedDocTargetUsesGenericArtifactSelectionPathButDoesNotCallPptEditor() {
+    void completedConcreteDocEditUpdatesExistingArtifact() {
         PlanTaskSession session = completedSession();
-        ArtifactRecord doc = ArtifactRecord.builder()
-                .artifactId("artifact-doc-1")
+        ArtifactRecord doc = docArtifact();
+        TaskRecord task = TaskRecord.builder()
                 .taskId("task-1")
-                .type(ArtifactTypeEnum.DOC)
-                .title("采购评审文档")
-                .url("https://example.feishu.cn/docx/doc-token")
-                .status("COMPLETED")
-                .version(1)
-                .updatedAt(Instant.parse("2026-05-04T10:00:00Z"))
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
                 .build();
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
+                .taskId("doc-iter-1")
+                .artifactId("artifact-doc-1")
+                .docUrl(doc.getUrl())
+                .status(DocumentArtifactIterationStatus.COMPLETED)
+                .summary("已补充风险分析章节")
+                .preview("已补充风险分析章节")
+                .build());
 
         PlanTaskSession result = service.replan("task-1", "把文档补充风险提示\n目标产物ID：artifact-doc-1", null);
 
-        assertThat(result.getIntakeState().getAssistantReply()).contains("Doc 原地编辑能力暂未接入");
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已补充风险分析章节");
+        assertThat(doc.getStatus()).isEqualTo("UPDATED");
+        verify(documentArtifactIterationFacade).edit(any(DocumentArtifactIterationRequest.class));
         verify(presentationIterationFacade, never()).edit(any());
+    }
+
+    @Test
+    void completedDocEditWaitingApprovalStoresPendingApprovalContext() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord doc = docArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
+                .taskId("doc-iter-1")
+                .artifactId("artifact-doc-1")
+                .docUrl(doc.getUrl())
+                .status(DocumentArtifactIterationStatus.WAITING_APPROVAL)
+                .summary("已生成待确认的文档修改计划")
+                .approvalPayload(DocumentArtifactApprovalPayload.builder()
+                        .riskLevel(DocumentRiskLevel.MEDIUM)
+                        .targetPreview("在 1.2 后新增风险提示")
+                        .generatedContent("风险提示内容")
+                        .build())
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "在1.2后补充风险提示\n目标产物ID：artifact-doc-1", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
+        assertThat(result.getIntakeState().getPendingDocumentIterationTaskId()).isEqualTo("doc-iter-1");
+        assertThat(result.getIntakeState().getPendingDocumentArtifactId()).isEqualTo("artifact-doc-1");
+        assertThat(result.getIntakeState().getPendingDocumentDocUrl()).isEqualTo(doc.getUrl());
+        assertThat(result.getIntakeState().getPendingDocumentApprovalMode()).isEqualTo("COMPLETED_TASK_DOC_APPROVAL");
     }
 
     @Test
@@ -339,6 +391,7 @@ class ReplanNodeServiceTest {
     private static PlanTaskSession completedSession() {
         PlanTaskSession session = session();
         session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        session.setInputContext(TaskInputContext.builder().senderOpenId("ou-user").build());
         return session;
     }
 
@@ -384,40 +437,54 @@ class ReplanNodeServiceTest {
                 .build();
     }
 
-    private static ObjectProvider<PresentationIterationFacade> provider(PresentationIterationFacade facade) {
+    private static ArtifactRecord docArtifact() {
+        return ArtifactRecord.builder()
+                .artifactId("artifact-doc-1")
+                .taskId("task-1")
+                .type(ArtifactTypeEnum.DOC)
+                .title("采购评审文档")
+                .url("https://example.feishu.cn/docx/doc-token")
+                .preview("旧文档摘要")
+                .status("COMPLETED")
+                .version(1)
+                .updatedAt(Instant.parse("2026-05-04T10:00:00Z"))
+                .build();
+    }
+
+    private static <T> ObjectProvider<T> provider(T facade) {
         return new ObjectProvider<>() {
             @Override
-            public PresentationIterationFacade getObject(Object... args) {
+            public T getObject(Object... args) {
                 return facade;
             }
 
             @Override
-            public PresentationIterationFacade getIfAvailable() {
+            public T getIfAvailable() {
                 return facade;
             }
 
             @Override
-            public PresentationIterationFacade getIfUnique() {
+            public T getIfUnique() {
                 return facade;
             }
 
             @Override
-            public PresentationIterationFacade getObject() {
+            public T getObject() {
                 return facade;
             }
 
             @Override
-            public Iterator<PresentationIterationFacade> iterator() {
+            public Iterator<T> iterator() {
                 return List.of(facade).iterator();
             }
 
             @Override
-            public Stream<PresentationIterationFacade> stream() {
+            public Stream<T> stream() {
                 return Stream.of(facade);
             }
 
             @Override
-            public Stream<PresentationIterationFacade> orderedStream() {
+            public Stream<T> orderedStream() {
                 return stream();
             }
         };

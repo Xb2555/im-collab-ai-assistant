@@ -46,6 +46,21 @@ public class TaskIntakeState implements Serializable {
     @Schema(description = "完成态产物调整挂起指令")
     private String pendingAdjustmentInstruction;
 
+    @Schema(description = "完成态文档审批挂起的文档迭代任务 ID")
+    private String pendingDocumentIterationTaskId;
+
+    @Schema(description = "完成态文档审批挂起的目标产物 ID")
+    private String pendingDocumentArtifactId;
+
+    @Schema(description = "完成态文档审批挂起的目标文档 URL")
+    private String pendingDocumentDocUrl;
+
+    @Schema(description = "完成态文档审批挂起摘要")
+    private String pendingDocumentApprovalSummary;
+
+    @Schema(description = "完成态文档审批挂起模式")
+    private String pendingDocumentApprovalMode;
+
     @Schema(description = "最近一次输入时间")
     private String lastInputAt;
 }

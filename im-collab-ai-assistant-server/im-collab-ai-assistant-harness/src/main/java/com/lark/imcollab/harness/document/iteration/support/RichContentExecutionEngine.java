@@ -4,12 +4,16 @@ import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.ExecutionStep;
 import com.lark.imcollab.common.model.entity.RichContentExecutionResult;
 import com.lark.imcollab.skills.lark.doc.LarkDocReadGateway;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 @Component
 public class RichContentExecutionEngine {
+
+    private static final Logger log = LoggerFactory.getLogger(RichContentExecutionEngine.class);
 
     private final ExecutionStepHandlerRegistry registry;
     private final LarkDocReadGateway readGateway;
@@ -31,12 +35,21 @@ public class RichContentExecutionEngine {
             registry.dispatch(step, docRef, ctx);
         }
         long afterRevision = fetchRevision(docRef);
-        return RichContentExecutionResult.builder()
+        RichContentExecutionResult result = RichContentExecutionResult.builder()
                 .createdBlockIds(ctx.getCreatedBlockIds())
                 .createdAssetRefs(ctx.getCreatedAssetRefs())
                 .beforeRevision(beforeRevision)
                 .afterRevision(afterRevision)
                 .build();
+        log.info("DOC_ITER_RICH_EXEC docRef={} action={} steps={} createdBlockIds={} createdAssetRefs={} beforeRevision={} afterRevision={}",
+                docRef,
+                plan.getSemanticAction(),
+                steps.stream().map(ExecutionStep::getStepType).toList(),
+                result.getCreatedBlockIds(),
+                result.getCreatedAssetRefs(),
+                beforeRevision,
+                afterRevision);
+        return result;
     }
 
     private long fetchRevision(String docRef) {

@@ -17,7 +17,6 @@ import com.lark.imcollab.harness.presentation.model.PresentationOutline;
 import com.lark.imcollab.harness.presentation.model.PresentationReviewResult;
 import com.lark.imcollab.harness.presentation.model.PresentationSlidePlan;
 import com.lark.imcollab.harness.presentation.model.PresentationSlideXml;
-import com.lark.imcollab.harness.presentation.model.PresentationSlideXmlBatch;
 import com.lark.imcollab.harness.presentation.model.PresentationStoryline;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionSupport;
 import com.lark.imcollab.harness.presentation.workflow.PresentationStateKeys;
@@ -29,8 +28,6 @@ import org.springframework.stereotype.Component;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.xml.sax.InputSource;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -49,12 +46,15 @@ import java.util.stream.Collectors;
 @Component
 public class PresentationWorkflowNodes {
 
-    private static final Logger log = LoggerFactory.getLogger(PresentationWorkflowNodes.class);
     private static final int MAX_SLIDES = 10;
-    private static final int BATCH_XML_MAX_ATTEMPTS = 2;
     private static final Pattern SLIDE_XML_PATTERN = Pattern.compile("(?s)<slide\\b.*?</slide>");
     private static final Pattern PAGE_COUNT_PATTERN = Pattern.compile("(\\d{1,2})\\s*(页|p|P|slides?|Slides?)");
-    private static final Pattern PARAGRAPH_PATTERN = Pattern.compile("(?s)<p(?:\\s[^>]*)?>(.*?)</p>");
+    private static final List<String> COVER_VARIANTS = List.of("hero-band", "center-stack", "asymmetric-title");
+    private static final List<String> SECTION_VARIANTS = List.of("headline-panel", "rail-notes", "split-band");
+    private static final List<String> TWO_COLUMN_VARIANTS = List.of("dual-cards", "offset-columns");
+    private static final List<String> TIMELINE_VARIANTS = List.of("horizontal-milestones", "stacked-steps");
+    private static final List<String> METRIC_VARIANTS = List.of("top-stripe-cards", "compact-grid", "spotlight-metric");
+    private static final List<String> SUMMARY_VARIANTS = List.of("closing-checklist", "next-step-board");
 
     private final PresentationExecutionSupport support;
     private final ReactAgent storylineAgent;
@@ -98,7 +98,6 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_STORYLINE, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
-        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         String prompt = """
                 请生成 PPT 叙事主线。
@@ -112,7 +111,6 @@ public class PresentationWorkflowNodes {
                 """.formatted(instruction(state), support.writeJson(generationOptions(state)), state.value(PresentationStateKeys.USER_FEEDBACK, ""), state.value(PresentationStateKeys.UPSTREAM_CONTEXT, ""), state.value(PresentationStateKeys.UPSTREAM_ARTIFACT_SUMMARY, ""));
         PresentationStoryline storyline = invokeStoryline(prompt, taskId);
         normalizeStoryline(storyline, state);
-        recordStageElapsed(taskId, "build_storyline", startedAt, "pageCount=" + storyline.getPageCount());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.STORYLINE, storyline,
                 PresentationStateKeys.PRESENTATION_TITLE, blankToDefault(storyline.getTitle(), state.value(PresentationStateKeys.PRESENTATION_TITLE, "汇报 PPT")),
@@ -124,7 +122,6 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_OUTLINE, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
-        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationStoryline storyline = requireValue(state, PresentationStateKeys.STORYLINE, PresentationStoryline.class);
         String prompt = """
@@ -138,7 +135,6 @@ public class PresentationWorkflowNodes {
                 """.formatted(instruction(state), support.writeJson(generationOptions(state)), support.writeJson(storyline), state.value(PresentationStateKeys.UPSTREAM_CONTEXT, ""));
         PresentationOutline outline = invokeOutline(prompt, storyline, taskId);
         normalizeOutline(outline, storyline, generationOptions(state));
-        recordStageElapsed(taskId, "generate_slide_outline", startedAt, "pageCount=" + safeSlides(outline).size());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.SLIDE_OUTLINE, outline,
                 PresentationStateKeys.DONE_OUTLINE, true
@@ -149,12 +145,22 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_XML, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
-        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
-        List<PresentationSlidePlan> slides = safeSlides(outline);
-        List<PresentationSlideXml> slideXmlList = invokeSlideXmlBatch(buildSlideXmlBatchPrompt(outline, slides, state), slides, taskId);
-        recordStageElapsed(taskId, "generate_slide_xml_batch", startedAt, "pageCount=" + slideXmlList.size());
+        List<PresentationSlideXml> slideXmlList = new ArrayList<>();
+        for (PresentationSlidePlan slide : safeSlides(outline)) {
+            String prompt = """
+                    请为下面这页生成飞书 Slides XML。
+                    PPT 标题：%s
+                    全局风格：%s
+                    生成参数：%s
+                    可用 XML 元素：slide/style/data/note、shape(type=text/rect)、line、content/p/ul/li。
+                    页面计划 JSON：
+                    %s
+                    你必须遵守页面计划中的 layout、templateVariant、visualEmphasis，生成与该模板变体一致的结构。
+                    """.formatted(blankToDefault(outline.getTitle(), "汇报 PPT"), effectiveThemeFamily(generationOptions(state)), support.writeJson(generationOptions(state)), support.writeJson(slide));
+            slideXmlList.add(invokeSlideXml(prompt, slide, taskId));
+        }
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.SLIDE_XML_LIST, slideXmlList,
                 PresentationStateKeys.DONE_XML, true
@@ -162,8 +168,6 @@ public class PresentationWorkflowNodes {
     }
 
     public CompletableFuture<Map<String, Object>> validateSlideXml(OverAllState state, RunnableConfig config) {
-        long startedAt = System.nanoTime();
-        String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
         List<PresentationSlideXml> slideXmlList = readSlideXmlList(state);
         if (slideXmlList.isEmpty()) {
@@ -174,26 +178,17 @@ public class PresentationWorkflowNodes {
         }
         List<PresentationSlideXml> validated = new ArrayList<>();
         List<PresentationSlidePlan> plans = safeSlides(outline);
-        List<PresentationSlideXml> ordered = alignSlideXmlToPlans(slideXmlList, plans);
-        for (int i = 0; i < ordered.size(); i++) {
-            PresentationSlideXml slideXml = ordered.get(i);
-            PresentationSlidePlan plan = plans.get(i);
-            String xml = extractSlideXml(slideXml.getXml());
-            String validationFailure = validateSlideXmlReason(xml);
-            if (validationFailure != null) {
-                String slideId = blankToDefault(slideXml.getSlideId(), "slide-" + (i + 1));
-                log.warn("Generated slide XML failed validation: taskId={}, slideId={}, reason={}, xmlPreview={}",
-                        taskId, slideId, validationFailure, xmlPreview(xml));
-                throw new IllegalStateException("Generated slide XML failed validation: "
-                        + slideId + " (" + validationFailure + ")");
+        PresentationGenerationOptions options = generationOptions(state);
+        for (int i = 0; i < slideXmlList.size(); i++) {
+            PresentationSlideXml slideXml = slideXmlList.get(i);
+            PresentationSlidePlan plan = i < plans.size() ? plans.get(i) : null;
+            String xml = buildSlideXmlTemplate(plan == null ? planFromXml(slideXml) : plan, i + 1, slideXmlList.size(), options);
+            if (!isValidSlideXml(xml)) {
+                throw new IllegalStateException("Generated slide XML failed validation: " + blankToDefault(slideXml.getSlideId(), "slide-" + (i + 1)));
             }
-            slideXml.setSlideId(blankToDefault(slideXml.getSlideId(), plan.getSlideId()));
-            slideXml.setTitle(blankToDefault(slideXml.getTitle(), plan.getTitle()));
-            slideXml.setIndex(i + 1);
             slideXml.setXml(xml);
             validated.add(slideXml);
         }
-        recordStageElapsed(taskId, "validate_slide_xml", startedAt, "pageCount=" + validated.size());
         return CompletableFuture.completedFuture(Map.of(PresentationStateKeys.SLIDE_XML_LIST, validated));
     }
 
@@ -201,7 +196,6 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_REVIEW, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
-        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
         List<PresentationSlideXml> slideXmlList = readSlideXmlList(state);
@@ -219,7 +213,6 @@ public class PresentationWorkflowNodes {
         if (!reviewResult.isAccepted() && reviewResult.getMissingItems() != null && !reviewResult.getMissingItems().isEmpty()) {
             reviewResult.setSummary(blankToDefault(reviewResult.getSummary(), "PPT 已通过结构校验，仍存在内容审查建议：" + String.join("；", reviewResult.getMissingItems())));
         }
-        recordStageElapsed(taskId, "review_presentation", startedAt, "accepted=" + reviewResult.isAccepted());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.REVIEW_RESULT, reviewResult,
                 PresentationStateKeys.DONE_REVIEW, true
@@ -230,7 +223,6 @@ public class PresentationWorkflowNodes {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_WRITE, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
-        long startedAt = System.nanoTime();
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         String title = blankToDefault(state.value(PresentationStateKeys.PRESENTATION_TITLE, ""), "汇报 PPT");
         List<String> xmlPages = readSlideXmlList(state).stream()
@@ -245,7 +237,6 @@ public class PresentationWorkflowNodes {
         support.saveArtifact(taskId, stepId, title, state.value(PresentationStateKeys.UPSTREAM_ARTIFACT_SUMMARY, ""), result.getPresentationId(), result.getPresentationUrl());
         support.publishEvent(taskId, stepId, TaskEventType.ARTIFACT_CREATED, support.writeJson(result));
         support.publishEvent(taskId, stepId, TaskEventType.STEP_COMPLETED, "PPT 已生成：" + blankToDefault(result.getPresentationUrl(), result.getPresentationId()));
-        recordStageElapsed(taskId, "write_slides_and_sync", startedAt, "pageCount=" + xmlPages.size());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.PRESENTATION_ID, blankToDefault(result.getPresentationId(), ""),
                 PresentationStateKeys.PRESENTATION_URL, blankToDefault(result.getPresentationUrl(), ""),
@@ -302,133 +293,16 @@ public class PresentationWorkflowNodes {
                     .index(slide.getIndex())
                     .title(slide.getTitle())
                     .xml(xml == null || xml.isBlank() ? buildSlideXmlTemplate(slide, slide.getIndex(), 1,
-                            PresentationGenerationOptions.builder().style("minimal-professional").density("standard").build()) : xml)
+                            PresentationGenerationOptions.builder()
+                                    .style("minimal-professional")
+                                    .themeFamily("minimal-professional")
+                                    .density("standard")
+                                    .templateDiversity("balanced")
+                                    .allowVariantMixing(true)
+                                    .build()) : xml)
                     .speakerNotes(slide.getSpeakerNotes())
                     .build();
         }
-    }
-
-    private String buildSlideXmlBatchPrompt(
-            PresentationOutline outline,
-            List<PresentationSlidePlan> slides,
-            OverAllState state
-    ) {
-        return """
-                请一次性为整份 PPT 生成飞书 Slides XML。
-                PPT 标题：%s
-                全局风格：%s
-                生成参数：%s
-                可用 XML 元素：slide/style/data/note、shape(type=text/rect)、line、content/p/ul/li。
-                输出要求：
-                - 返回 JSON 对象，根字段只能是 slides。
-                - slides 数组长度必须等于页面计划数量：%d。
-                - 每个 slides[] 元素包含 slideId、index、title、xml、speakerNotes。
-                - 每个 xml 都必须是完整 <slide xmlns="http://www.larkoffice.com/sml/2.0">...</slide>。
-                - 不要漏页、不要新增页、不要合并页。
-                - xml 必须作为 JSON 字符串返回，双引号和换行必须正确转义。
-                - 每页必须包含 <style>、<data> 和至少 2 个 <shape type="text">。
-                - 所有文字必须写在 <content><p><span ...>文字</span></p></content> 或 <content><ul><li><p>...</p></li></ul></content> 内，不允许把文字直接放在 shape 节点文本里。
-                - 不允许使用 markdown、html、presentation 根节点、image/table/chart/动画。
-                XML 示例：
-                {"slides":[{"slideId":"slide-1","index":1,"title":"示例","xml":"<slide xmlns=\\"http://www.larkoffice.com/sml/2.0\\"><style><fill><fillColor color=\\"rgb(255,255,255)\\"/></fill></style><data><shape type=\\"text\\" topLeftX=\\"64\\" topLeftY=\\"48\\" width=\\"820\\" height=\\"88\\"><content textType=\\"title\\"><p><strong><span color=\\"rgb(20,35,60)\\" fontSize=\\"32\\">示例标题</span></strong></p></content></shape><shape type=\\"text\\" topLeftX=\\"80\\" topLeftY=\\"160\\" width=\\"760\\" height=\\"220\\"><content><ul><li><p><span color=\\"rgb(20,35,60)\\" fontSize=\\"20\\">示例要点</span></p></li></ul></content></shape></data></slide>","speakerNotes":"示例备注"}]}
-                页面大纲 JSON：
-                %s
-                全部页面计划 JSON：
-                %s
-                """.formatted(
-                blankToDefault(outline.getTitle(), "汇报 PPT"),
-                blankToDefault(outline.getStyle(), "简约专业"),
-                support.writeJson(generationOptions(state)),
-                slides.size(),
-                support.writeJson(outline),
-                support.writeJson(slides)
-        );
-    }
-
-    private List<PresentationSlideXml> invokeSlideXmlBatch(
-            String prompt,
-            List<PresentationSlidePlan> slides,
-            String taskId
-    ) {
-        RuntimeException lastFailure = null;
-        for (int attempt = 1; attempt <= BATCH_XML_MAX_ATTEMPTS; attempt++) {
-            try {
-                AssistantMessage response = callAgent(slideXmlAgent, prompt, taskId + ":presentation:slides:batch");
-                PresentationSlideXmlBatch batch = parseSlideXmlBatch(response.getText());
-                return alignSlideXmlToPlans(batch.getSlides(), slides);
-            } catch (RuntimeException exception) {
-                lastFailure = exception;
-                log.warn("PPT batch XML generation attempt failed: taskId={}, attempt={}, error={}",
-                        taskId, attempt, exception.getMessage());
-            }
-        }
-        throw new IllegalStateException("PPT batch XML generation failed after retry", lastFailure);
-    }
-
-    private PresentationSlideXmlBatch parseSlideXmlBatch(String text) {
-        String sanitized = stripJsonFence(text);
-        try {
-            return objectMapper.readValue(sanitized, PresentationSlideXmlBatch.class);
-        } catch (Exception batchException) {
-            try {
-                List<PresentationSlideXml> slides = objectMapper.readValue(sanitized, new TypeReference<>() { });
-                return PresentationSlideXmlBatch.builder().slides(slides).build();
-            } catch (Exception listException) {
-                throw new IllegalStateException("Invalid PPT batch XML JSON", batchException);
-            }
-        }
-    }
-
-    private String stripJsonFence(String text) {
-        if (text == null || text.isBlank()) {
-            return "";
-        }
-        String sanitized = text.trim();
-        if (sanitized.startsWith("```")) {
-            sanitized = sanitized.replaceFirst("^```(?:json)?\\s*", "");
-            sanitized = sanitized.replaceFirst("\\s*```$", "");
-        }
-        return sanitized.trim();
-    }
-
-    private List<PresentationSlideXml> alignSlideXmlToPlans(
-            List<PresentationSlideXml> generatedSlides,
-            List<PresentationSlidePlan> plans
-    ) {
-        List<PresentationSlidePlan> safePlans = plans == null ? List.of() : plans;
-        if (safePlans.isEmpty()) {
-            throw new IllegalStateException("No slide plans available for generated XML");
-        }
-        if (generatedSlides == null || generatedSlides.size() != safePlans.size()) {
-            throw new IllegalStateException("PPT batch XML page count mismatch: expected="
-                    + safePlans.size() + ", actual=" + (generatedSlides == null ? 0 : generatedSlides.size()));
-        }
-        Map<Integer, PresentationSlideXml> byIndex = generatedSlides.stream()
-                .filter(Objects::nonNull)
-                .filter(slide -> slide.getIndex() > 0)
-                .collect(Collectors.toMap(
-                        PresentationSlideXml::getIndex,
-                        slide -> slide,
-                        (left, right) -> left,
-                        LinkedHashMap::new
-                ));
-        List<PresentationSlideXml> ordered = new ArrayList<>();
-        for (int i = 0; i < safePlans.size(); i++) {
-            PresentationSlidePlan plan = safePlans.get(i);
-            int expectedIndex = i + 1;
-            PresentationSlideXml slideXml = byIndex.get(expectedIndex);
-            if (slideXml == null && i < generatedSlides.size()) {
-                slideXml = generatedSlides.get(i);
-            }
-            if (slideXml == null) {
-                throw new IllegalStateException("PPT batch XML missing page: index=" + expectedIndex);
-            }
-            slideXml.setSlideId(blankToDefault(slideXml.getSlideId(), plan.getSlideId()));
-            slideXml.setTitle(blankToDefault(slideXml.getTitle(), plan.getTitle()));
-            slideXml.setIndex(expectedIndex);
-            ordered.add(slideXml);
-        }
-        return ordered;
     }
 
     private PresentationReviewResult invokeReview(String prompt, String taskId) {
@@ -468,7 +342,7 @@ public class PresentationWorkflowNodes {
         if (storyline.getGoal() == null || storyline.getGoal().isBlank()) {
             storyline.setGoal(instruction(state));
         }
-        storyline.setStyle(canonicalStyle(blankToDefault(options.getStyle(), storyline.getStyle())));
+        storyline.setStyle(effectiveThemeFamily(options, storyline.getStyle()));
         int requestedPageCount = options.getPageCount();
         int pageCount = requestedPageCount > 0 ? requestedPageCount : storyline.getPageCount() <= 0 ? 5 : storyline.getPageCount();
         storyline.setPageCount(Math.max(1, Math.min(MAX_SLIDES, pageCount)));
@@ -484,8 +358,7 @@ public class PresentationWorkflowNodes {
         if (outline.getAudience() == null || outline.getAudience().isBlank()) {
             outline.setAudience(storyline.getAudience());
         }
-        outline.setStyle(canonicalStyle(blankToDefault(options == null ? null : options.getStyle(),
-                blankToDefault(outline.getStyle(), storyline.getStyle()))));
+        outline.setStyle(effectiveThemeFamily(options, blankToDefault(outline.getStyle(), storyline.getStyle())));
         List<PresentationSlidePlan> slides = outline.getSlides() == null ? List.of() : new ArrayList<>(outline.getSlides());
         if (slides.isEmpty()) {
             slides = fallbackOutline(storyline).getSlides();
@@ -505,6 +378,8 @@ public class PresentationWorkflowNodes {
                     .title(index == targetCount ? "总结与下一步" : "核心内容 " + index)
                     .keyPoints(storyline.getKeyMessages())
                     .layout(index == 1 ? "cover" : index == targetCount ? "summary" : "section")
+                    .templateVariant(defaultTemplateVariant(index == 1 ? "cover" : index == targetCount ? "summary" : "section", index, targetCount, options))
+                    .visualEmphasis(defaultVisualEmphasis(index == 1 ? "cover" : index == targetCount ? "summary" : "section", index, targetCount))
                     .speakerNotes("围绕本页要点进行简洁说明。")
                     .build());
         }
@@ -523,6 +398,18 @@ public class PresentationWorkflowNodes {
                 slide.setLayout(index == 1 ? "cover" : index == slides.size() ? "summary" : "section");
             }
             slide.setLayout(normalizeLayout(slide.getLayout(), index, slides.size()));
+            slide.setTemplateVariant(normalizeTemplateVariant(
+                    slide.getLayout(),
+                    slide.getTemplateVariant(),
+                    index,
+                    slides.size(),
+                    options));
+            slide.setVisualEmphasis(normalizeVisualEmphasis(
+                    slide.getVisualEmphasis(),
+                    slide.getLayout(),
+                    slide.getTemplateVariant(),
+                    index,
+                    slides.size()));
             if (options != null && !options.isSpeakerNotes()) {
                 slide.setSpeakerNotes("");
             }
@@ -541,6 +428,8 @@ public class PresentationWorkflowNodes {
                     .title(i == 1 ? storyline.getTitle() : i == pageCount ? "总结与下一步" : "核心要点 " + (i - 1))
                     .keyPoints(keyMessages)
                     .layout(i == 1 ? "cover" : i == pageCount ? "summary" : "section")
+                    .templateVariant(defaultTemplateVariant(i == 1 ? "cover" : i == pageCount ? "summary" : "section", i, pageCount, null))
+                    .visualEmphasis(defaultVisualEmphasis(i == 1 ? "cover" : i == pageCount ? "summary" : "section", i, pageCount))
                     .speakerNotes("用本页要点串联汇报主线。")
                     .build());
         }
@@ -567,10 +456,13 @@ public class PresentationWorkflowNodes {
         return PresentationGenerationOptions.builder()
                 .pageCount(resolvePageCount(merged))
                 .style(resolveStyle(merged, contract == null ? null : contract.getAudience()))
+                .themeFamily(resolveStyle(merged, contract == null ? null : contract.getAudience()))
                 .density(resolveDensity(merged))
                 .audience(blankToDefault(contract == null ? null : contract.getAudience(), "团队成员"))
                 .tone(resolveTone(merged))
                 .speakerNotes(resolveSpeakerNotes(merged))
+                .templateDiversity(resolveTemplateDiversity(merged))
+                .allowVariantMixing(resolveAllowVariantMixing(merged))
                 .build();
     }
 
@@ -579,15 +471,23 @@ public class PresentationWorkflowNodes {
         if (raw == null) {
             return PresentationGenerationOptions.builder()
                     .style("minimal-professional")
+                    .themeFamily("minimal-professional")
                     .density("standard")
                     .audience("团队成员")
                     .tone("professional")
                     .speakerNotes(true)
+                    .templateDiversity("balanced")
+                    .allowVariantMixing(true)
                     .build();
         }
         PresentationGenerationOptions options = objectMapper.convertValue(raw, PresentationGenerationOptions.class);
         if (options.getStyle() == null || options.getStyle().isBlank()) {
             options.setStyle("minimal-professional");
+        }
+        if (options.getThemeFamily() == null || options.getThemeFamily().isBlank()) {
+            options.setThemeFamily(canonicalStyle(options.getStyle()));
+        } else {
+            options.setThemeFamily(canonicalStyle(options.getThemeFamily()));
         }
         if (options.getDensity() == null || options.getDensity().isBlank()) {
             options.setDensity("standard");
@@ -598,21 +498,20 @@ public class PresentationWorkflowNodes {
         if (options.getTone() == null || options.getTone().isBlank()) {
             options.setTone("professional");
         }
+        if (options.getTemplateDiversity() == null || options.getTemplateDiversity().isBlank()) {
+            options.setTemplateDiversity("balanced");
+        }
         return options;
     }
 
     private int resolvePageCount(String text) {
         String normalized = normalize(text);
         Matcher matcher = PAGE_COUNT_PATTERN.matcher(text == null ? "" : text);
-        Integer requestedPageCount = null;
         while (matcher.find()) {
             int requested = Integer.parseInt(matcher.group(1));
             if (requested > 0) {
-                requestedPageCount = requested;
+                return Math.min(MAX_SLIDES, requested);
             }
-        }
-        if (requestedPageCount != null) {
-            return Math.min(MAX_SLIDES, requestedPageCount);
         }
         if (normalized.matches(".*(^|[^第每])一页(PPT|ppt|幻灯片|演示稿|$).*")
                 || normalized.matches(".*(单页|1页|1p|1slide).*")) {
@@ -675,6 +574,25 @@ public class PresentationWorkflowNodes {
             return "casual";
         }
         return "professional";
+    }
+
+    private String resolveTemplateDiversity(String text) {
+        String normalized = normalize(text);
+        if (normalized.matches(".*(稳定|统一|保守|规整|一致).*")) {
+            return "stable";
+        }
+        if (normalized.matches(".*(多样|丰富|变化|活泼|灵活).*")) {
+            return "rich";
+        }
+        return "balanced";
+    }
+
+    private boolean resolveAllowVariantMixing(String text) {
+        String normalized = normalize(text);
+        if (normalized.matches(".*(统一模板|同一模板|不要混用|不混用|模板统一).*")) {
+            return false;
+        }
+        return true;
     }
 
     private List<String> normalizeKeyPoints(List<String> source, List<String> fallback) {
@@ -741,19 +659,161 @@ public class PresentationWorkflowNodes {
         return "minimal-professional";
     }
 
+    private String effectiveThemeFamily(PresentationGenerationOptions options) {
+        return effectiveThemeFamily(options, null);
+    }
+
+    private String effectiveThemeFamily(PresentationGenerationOptions options, String fallback) {
+        if (options != null && hasText(options.getThemeFamily())) {
+            return canonicalStyle(options.getThemeFamily());
+        }
+        if (options != null && hasText(options.getStyle())) {
+            return canonicalStyle(options.getStyle());
+        }
+        return canonicalStyle(fallback);
+    }
+
+    private String normalizeTemplateVariant(String layout, String templateVariant, int index, int total, PresentationGenerationOptions options) {
+        String normalizedLayout = normalizeLayout(layout, index, total);
+        List<String> variants = variantsForLayout(normalizedLayout);
+        if (templateVariant != null) {
+            String requested = templateVariant.trim();
+            for (String variant : variants) {
+                if (variant.equalsIgnoreCase(requested)) {
+                    return variant;
+                }
+            }
+        }
+        return defaultTemplateVariant(normalizedLayout, index, total, options);
+    }
+
+    private String defaultTemplateVariant(String layout, int index, int total, PresentationGenerationOptions options) {
+        String normalizedLayout = normalizeLayout(layout, index, total);
+        if ("cover".equals(normalizedLayout)) {
+            return "hero-band";
+        }
+        if ("summary".equals(normalizedLayout)) {
+            return "next-step-board";
+        }
+        List<String> variants = variantsForLayout(normalizedLayout);
+        if (variants.isEmpty()) {
+            return "headline-panel";
+        }
+        if (options != null && !options.isAllowVariantMixing()) {
+            return variants.get(0);
+        }
+        int variantIndex = switch (blankToDefault(options == null ? null : options.getTemplateDiversity(), "balanced")) {
+            case "stable" -> 0;
+            case "rich" -> Math.floorMod(index * 2 + total, variants.size());
+            default -> Math.floorMod(index - 1, variants.size());
+        };
+        return variants.get(variantIndex);
+    }
+
+    private String defaultVisualEmphasis(String layout, int index, int total) {
+        String normalizedLayout = normalizeLayout(layout, index, total);
+        return switch (normalizedLayout) {
+            case "cover" -> "title";
+            case "metric-cards" -> "data";
+            case "risk-list", "summary" -> "action";
+            default -> "balance";
+        };
+    }
+
+    private String normalizeVisualEmphasis(String emphasis, String layout, String templateVariant, int index, int total) {
+        if (emphasis == null || emphasis.isBlank()) {
+            return defaultVisualEmphasis(layout, index, total);
+        }
+        String normalized = normalize(emphasis);
+        if (normalized.contains("title") || normalized.contains("标题")) {
+            return "title";
+        }
+        if (normalized.contains("data") || normalized.contains("指标") || normalized.contains("数据")) {
+            return "data";
+        }
+        if (normalized.contains("action") || normalized.contains("行动") || normalized.contains("下一步")) {
+            return "action";
+        }
+        return "balance";
+    }
+
+    private List<String> variantsForLayout(String layout) {
+        return switch (layout) {
+            case "cover" -> COVER_VARIANTS;
+            case "two-column", "comparison" -> TWO_COLUMN_VARIANTS;
+            case "timeline" -> TIMELINE_VARIANTS;
+            case "metric-cards", "risk-list" -> METRIC_VARIANTS;
+            case "summary" -> SUMMARY_VARIANTS;
+            default -> SECTION_VARIANTS;
+        };
+    }
+
     String buildSlideXmlTemplate(PresentationSlidePlan slide, int index, int total, PresentationGenerationOptions options) {
-        StyleProfile profile = styleProfile(options == null ? "" : options.getStyle());
+        StyleProfile profile = styleProfile(effectiveThemeFamily(options));
         String title = blankToDefault(slide == null ? null : slide.getTitle(), index == 1 ? "汇报 PPT" : "核心内容");
         List<String> points = normalizeKeyPointsForDensity(
                 slide == null ? List.of() : slide.getKeyPoints(),
                 List.of("明确目标", "梳理进展", "推进下一步"),
                 options == null ? "standard" : options.getDensity());
         String layout = normalizeLayout(slide == null ? "" : slide.getLayout(), index, total);
+        String templateVariant = normalizeTemplateVariant(
+                layout,
+                slide == null ? null : slide.getTemplateVariant(),
+                index,
+                total,
+                options);
+        String emphasis = normalizeVisualEmphasis(
+                slide == null ? null : slide.getVisualEmphasis(),
+                layout,
+                templateVariant,
+                index,
+                total);
         String note = options != null && options.isSpeakerNotes() && slide != null && hasText(slide.getSpeakerNotes())
                 ? "\n  <note><content textType=\"body\"><p>" + escapeXml(slide.getSpeakerNotes()) + "</p></content></note>"
                 : "";
-        if (index == 1) {
-            return """
+        return switch (layout) {
+            case "cover" -> buildCoverSlide(title, points, profile, templateVariant, emphasis, note);
+            case "two-column", "comparison" -> buildTwoColumnSlide(title, points, profile, templateVariant, emphasis, index, total, note);
+            case "timeline" -> buildTimelineSlide(title, points, profile, templateVariant, emphasis, index, total, note);
+            case "metric-cards", "risk-list" -> buildMetricCardsSlide(title, points, profile, templateVariant, emphasis, index, total, note);
+            case "summary" -> buildSummarySlide(title, points, profile, templateVariant, emphasis, index, total, note);
+            default -> buildSectionSlide(title, points, profile, templateVariant, emphasis, index, total, note);
+        };
+    }
+
+    private String buildCoverSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, String note) {
+        return switch (templateVariant) {
+            case "center-stack" -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        <shape type="rect" topLeftX="132" topLeftY="86" width="696" height="356"><fill><fillColor color="%s"/></fill><border color="%s" width="2"/></shape>
+                        <shape type="rect" topLeftX="132" topLeftY="86" width="696" height="14"><fill><fillColor color="%s"/></fill></shape>
+                        <shape type="text" topLeftX="188" topLeftY="146" width="584" height="112">%s</shape>
+                        <shape type="text" topLeftX="210" topLeftY="286" width="540" height="126"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
+                        <shape type="text" topLeftX="188" topLeftY="456" width="584" height="26">%s</shape>
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(), profile.cardFill(), profile.cardBorder(), profile.accent(),
+                    titleContent(title, profile.text(), "title".equals(emphasis) ? 40 : 36),
+                    bulletList(points, profile.text(), 19),
+                    plainContent(profile.name(), profile.muted(), 14, false, "center"), note).trim();
+            case "asymmetric-title" -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        <shape type="rect" topLeftX="0" topLeftY="0" width="220" height="540"><fill><fillColor color="%s"/></fill></shape>
+                        <shape type="rect" topLeftX="48" topLeftY="100" width="90" height="8"><fill><fillColor color="%s"/></fill></shape>
+                        <shape type="text" topLeftX="248" topLeftY="106" width="620" height="150">%s</shape>
+                        <shape type="text" topLeftX="250" topLeftY="286" width="560" height="146"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
+                        <shape type="text" topLeftX="250" topLeftY="466" width="500" height="26">%s</shape>
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(), profile.cardFill(), profile.accent(),
+                    titleContent(title, profile.text(), "title".equals(emphasis) ? 44 : 40),
+                    bulletList(points, profile.text(), 20),
+                    plainContent(profile.name(), profile.muted(), 14, false, "left"), note).trim();
+            default -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
                       <style><fill><fillColor color="%s"/></fill></style>
                       <data>
@@ -765,11 +825,89 @@ public class PresentationWorkflowNodes {
                       </data>%s
                     </slide>
                     """.formatted(profile.background(), profile.accent(), profile.accent(),
-                    titleContent(title, profile.text(), 42), bulletList(points, profile.text(), 21),
+                    titleContent(title, profile.text(), "title".equals(emphasis) ? 44 : 42),
+                    bulletList(points, profile.text(), 21),
                     plainContent(profile.name(), profile.muted(), 14, false, "left"), note).trim();
-        }
-        if ("two-column".equals(layout) || "comparison".equals(layout)) {
-            return """
+        };
+    }
+
+    private String buildSectionSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
+        return switch (templateVariant) {
+            case "rail-notes" -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        <shape type="rect" topLeftX="44" topLeftY="38" width="12" height="442"><fill><fillColor color="%s"/></fill></shape>
+                        <shape type="text" topLeftX="84" topLeftY="44" width="788" height="78">%s</shape>
+                        <shape type="text" topLeftX="104" topLeftY="156" width="428" height="252"><content textType="body" lineSpacing="multiple:1.4"><ul>%s</ul></content></shape>
+                        <shape type="rect" topLeftX="584" topLeftY="154" width="254" height="220"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="text" topLeftX="610" topLeftY="188" width="204" height="146">%s</shape>
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(), profile.accent(),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 34 : 31),
+                    bulletList(points, profile.text(), 20),
+                    profile.cardFill(), profile.cardBorder(),
+                    plainContent("关键提示\n聚焦本页一个中心观点", profile.muted(), 16, false, "left"),
+                    pageNumber(index, total, profile), note).trim();
+            case "split-band" -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        <shape type="rect" topLeftX="0" topLeftY="74" width="960" height="92"><fill><fillColor color="%s"/></fill></shape>
+                        <shape type="text" topLeftX="64" topLeftY="88" width="800" height="62">%s</shape>
+                        <shape type="rect" topLeftX="64" topLeftY="206" width="832" height="244"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="text" topLeftX="104" topLeftY="238" width="742" height="180"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(), profile.cardFill(),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 34 : 30),
+                    "data".equals(emphasis) ? profile.background() : profile.cardFill(),
+                    profile.cardBorder(),
+                    bulletList(points, profile.text(), "data".equals(emphasis) ? 22 : 20),
+                    pageNumber(index, total, profile), note).trim();
+            default -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        %s
+                        <shape type="text" topLeftX="64" topLeftY="48" width="820" height="88">%s</shape>
+                        <shape type="rect" topLeftX="72" topLeftY="154" width="800" height="270"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="text" topLeftX="108" topLeftY="188" width="720" height="206"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(), accentRail(profile),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 34 : 31),
+                    profile.cardFill(), profile.cardBorder(),
+                    bulletList(points, profile.text(), 20),
+                    pageNumber(index, total, profile), note).trim();
+        };
+    }
+
+    private String buildTwoColumnSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
+        return switch (templateVariant) {
+            case "offset-columns" -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        <shape type="text" topLeftX="64" topLeftY="44" width="760" height="78">%s</shape>
+                        <shape type="rect" topLeftX="72" topLeftY="152" width="340" height="260"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="rect" topLeftX="462" topLeftY="186" width="366" height="226"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="text" topLeftX="102" topLeftY="186" width="282" height="192"><content textType="body" lineSpacing="multiple:1.3"><ul>%s</ul></content></shape>
+                        <shape type="text" topLeftX="494" topLeftY="218" width="300" height="160"><content textType="body" lineSpacing="multiple:1.3"><ul>%s</ul></content></shape>
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
+                    profile.cardFill(), profile.cardBorder(), profile.cardFill(), profile.cardBorder(),
+                    bulletList(firstHalf(points), profile.text(), 18),
+                    bulletList(secondHalf(points), profile.text(), "data".equals(emphasis) ? 20 : 18),
+                    pageNumber(index, total, profile), note).trim();
+            default -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
                       <style><fill><fillColor color="%s"/></fill></style>
                       <data>
@@ -782,13 +920,31 @@ public class PresentationWorkflowNodes {
                         %s
                       </data>%s
                     </slide>
-                    """.formatted(profile.background(), accentRail(profile), headlineContent(title, profile.text(), 31),
+                    """.formatted(profile.background(), accentRail(profile),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
                     profile.cardFill(), profile.cardBorder(), profile.cardFill(), profile.cardBorder(),
-                    bulletList(firstHalf(points), profile.text(), 19), bulletList(secondHalf(points), profile.text(), 19),
+                    bulletList(firstHalf(points), profile.text(), 19),
+                    bulletList(secondHalf(points), profile.text(), 19),
                     pageNumber(index, total, profile), note).trim();
-        }
-        if ("timeline".equals(layout)) {
-            return """
+        };
+    }
+
+    private String buildTimelineSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
+        return switch (templateVariant) {
+            case "stacked-steps" -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
+                        %s
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
+                    stackedTimelineItems(points, profile, "action".equals(emphasis)),
+                    pageNumber(index, total, profile), note).trim();
+            default -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
                       <style><fill><fillColor color="%s"/></fill></style>
                       <data>
@@ -799,11 +955,15 @@ public class PresentationWorkflowNodes {
                         %s
                       </data>%s
                     </slide>
-                    """.formatted(profile.background(), accentRail(profile), headlineContent(title, profile.text(), 31), profile.accent(),
+                    """.formatted(profile.background(), accentRail(profile),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31), profile.accent(),
                     timelineItems(points, profile), pageNumber(index, total, profile), note).trim();
-        }
-        if ("metric-cards".equals(layout) || "risk-list".equals(layout)) {
-            return """
+        };
+    }
+
+    private String buildMetricCardsSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
+        return switch (templateVariant) {
+            case "compact-grid" -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
                       <style><fill><fillColor color="%s"/></fill></style>
                       <data>
@@ -813,22 +973,83 @@ public class PresentationWorkflowNodes {
                         %s
                       </data>%s
                     </slide>
-                    """.formatted(profile.background(), accentRail(profile), headlineContent(title, profile.text(), 31),
+                    """.formatted(profile.background(), accentRail(profile),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
+                    compactMetricGrid(points, profile, "data".equals(emphasis)),
+                    pageNumber(index, total, profile), note).trim();
+            case "spotlight-metric" -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        <shape type="text" topLeftX="64" topLeftY="40" width="820" height="78">%s</shape>
+                        <shape type="rect" topLeftX="74" topLeftY="154" width="260" height="234"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="text" topLeftX="108" topLeftY="204" width="190" height="126">%s</shape>
+                        <shape type="rect" topLeftX="376" topLeftY="154" width="492" height="234"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="text" topLeftX="410" topLeftY="188" width="424" height="170"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
+                    profile.cardFill(), profile.cardBorder(),
+                    plainContent(firstMetric(points), profile.text(), "data".equals(emphasis) ? 24 : 20, true, "center"),
+                    profile.cardFill(), profile.cardBorder(),
+                    bulletList(remainingMetrics(points), profile.text(), 18),
+                    pageNumber(index, total, profile), note).trim();
+            default -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        %s
+                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
+                        %s
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(), accentRail(profile),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
                     metricCards(points, profile), pageNumber(index, total, profile), note).trim();
-        }
-        return """
-                <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                  <style><fill><fillColor color="%s"/></fill></style>
-                  <data>
-                    %s
-                    <shape type="text" topLeftX="64" topLeftY="48" width="820" height="88">%s</shape>
-                    <shape type="rect" topLeftX="72" topLeftY="154" width="800" height="270"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                    <shape type="text" topLeftX="108" topLeftY="188" width="720" height="206"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
-                    %s
-                  </data>%s
-                </slide>
-                """.formatted(profile.background(), accentRail(profile), headlineContent(title, profile.text(), 31),
-                profile.cardFill(), profile.cardBorder(), bulletList(points, profile.text(), 20), pageNumber(index, total, profile), note).trim();
+        };
+    }
+
+    private String buildSummarySlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
+        return switch (templateVariant) {
+            case "next-step-board" -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
+                        <shape type="rect" topLeftX="74" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="rect" topLeftX="354" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="rect" topLeftX="634" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        %s
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
+                    profile.cardFill(), profile.cardBorder(),
+                    profile.cardFill(), profile.cardBorder(),
+                    profile.cardFill(), profile.cardBorder(),
+                    summaryBoard(points, profile),
+                    pageNumber(index, total, profile), note).trim();
+            default -> """
+                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                      <style><fill><fillColor color="%s"/></fill></style>
+                      <data>
+                        %s
+                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
+                        <shape type="rect" topLeftX="82" topLeftY="154" width="786" height="248"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                        <shape type="text" topLeftX="116" topLeftY="188" width="712" height="180"><content textType="body" lineSpacing="multiple:1.4"><ul>%s</ul></content></shape>
+                        %s
+                      </data>%s
+                    </slide>
+                    """.formatted(profile.background(), accentRail(profile),
+                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
+                    profile.cardFill(), profile.cardBorder(),
+                    bulletList(points, profile.text(), "action".equals(emphasis) ? 22 : 20),
+                    pageNumber(index, total, profile), note).trim();
+        };
     }
 
     private String bulletList(List<String> points, String color, int fontSize) {
@@ -928,16 +1149,85 @@ public class PresentationWorkflowNodes {
         return builder.toString().trim();
     }
 
-    private boolean isValidSlideXml(String xml) {
-        return validateSlideXmlReason(xml) == null;
+    private String stackedTimelineItems(List<String> points, StyleProfile profile, boolean emphasizeAction) {
+        List<String> safePoints = points == null || points.isEmpty() ? List.of("明确目标", "梳理方案", "推进落地") : points;
+        int count = Math.min(4, safePoints.size());
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            int y = 132 + i * 92;
+            builder.append("""
+                    <shape type="rect" topLeftX="92" topLeftY="%d" width="48" height="48"><fill><fillColor color="%s"/></fill></shape>
+                    <shape type="text" topLeftX="98" topLeftY="%d" width="36" height="34">%s</shape>
+                    <shape type="rect" topLeftX="174" topLeftY="%d" width="666" height="56"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    <shape type="text" topLeftX="204" topLeftY="%d" width="610" height="28">%s</shape>
+                    """.formatted(y, profile.accent(), y + 4,
+                    plainContent(String.valueOf(i + 1), profile.background(), 16, true, "center"),
+                    y - 4, profile.cardFill(), profile.cardBorder(), y + 10,
+                    plainContent(safePoints.get(i), profile.text(), emphasizeAction && i == count - 1 ? 20 : 18, emphasizeAction && i == count - 1, "left")));
+        }
+        return builder.toString().trim();
     }
 
-    private String validateSlideXmlReason(String xml) {
+    private String compactMetricGrid(List<String> points, StyleProfile profile, boolean emphasizeData) {
+        List<String> safePoints = points == null || points.isEmpty() ? List.of("明确目标", "关键进展", "下一步") : points;
+        int count = Math.min(4, safePoints.size());
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            int col = i % 2;
+            int row = i / 2;
+            int x = 82 + col * 394;
+            int y = 154 + row * 128;
+            builder.append("""
+                    <shape type="rect" topLeftX="%d" topLeftY="%d" width="372" height="104"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    <shape type="rect" topLeftX="%d" topLeftY="%d" width="12" height="104"><fill><fillColor color="%s"/></fill></shape>
+                    <shape type="text" topLeftX="%d" topLeftY="%d" width="314" height="58">%s</shape>
+                    """.formatted(x, y, profile.cardFill(), profile.cardBorder(),
+                    x, y, profile.accent(), x + 32, y + 22,
+                    plainContent(safePoints.get(i), profile.text(), emphasizeData ? 20 : 18, emphasizeData, "left")));
+        }
+        return builder.toString().trim();
+    }
+
+    private String firstMetric(List<String> points) {
+        if (points == null || points.isEmpty()) {
+            return "关键结论";
+        }
+        return points.get(0);
+    }
+
+    private List<String> remainingMetrics(List<String> points) {
+        if (points == null || points.size() <= 1) {
+            return List.of("补充重点", "明确行动");
+        }
+        return points.subList(1, points.size());
+    }
+
+    private String summaryBoard(List<String> points, StyleProfile profile) {
+        List<String> safePoints = points == null || points.isEmpty() ? List.of("对齐结论", "明确负责人", "安排下一步") : points;
+        List<String> buckets = new ArrayList<>(List.of("结论", "重点", "行动"));
+        while (buckets.size() < Math.min(3, safePoints.size())) {
+            buckets.add("补充");
+        }
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < Math.min(3, safePoints.size()); i++) {
+            int x = 74 + i * 280;
+            builder.append("""
+                    <shape type="text" topLeftX="%d" topLeftY="182" width="250" height="34">%s</shape>
+                    <shape type="text" topLeftX="%d" topLeftY="244" width="216" height="118">%s</shape>
+                    """.formatted(x + 20,
+                    headlineContent(buckets.get(i), profile.text(), 20),
+                    x + 20,
+                    plainContent(safePoints.get(i), profile.text(), 18, "行动".equals(buckets.get(i)), "left")));
+        }
+        return builder.toString().trim();
+    }
+
+    private boolean isValidSlideXml(String xml) {
         if (xml == null || xml.isBlank() || !xml.contains("<slide") || !xml.contains("<data")) {
-            return "missing slide or data element";
+            return false;
         }
         if (xml.length() > 16000 || containsOverlongText(xml)) {
-            return xml.length() > 16000 ? "xml too long" : "paragraph text too long";
+            return false;
         }
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -945,31 +1235,21 @@ public class PresentationWorkflowNodes {
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
             factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            factory.setExpandEntityReferences(false);
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
             Document document = factory.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
             Element root = document.getDocumentElement();
-            if (root == null || !"slide".equals(root.getLocalName() == null ? root.getNodeName() : root.getLocalName())) {
-                return "root element is not slide";
-            }
-            if (root.getElementsByTagNameNS("*", "data").getLength() == 0) {
-                return "missing data element";
-            }
-            if (root.getElementsByTagNameNS("*", "content").getLength() == 0) {
-                return "missing content element";
-            }
-            if (root.getElementsByTagNameNS("*", "shape").getLength() == 0) {
-                return "missing shape element";
-            }
-            return null;
+            return root != null
+                    && "slide".equals(root.getLocalName() == null ? root.getNodeName() : root.getLocalName())
+                    && root.getElementsByTagNameNS("*", "data").getLength() > 0
+                    && root.getElementsByTagNameNS("*", "content").getLength() > 0;
         } catch (Exception exception) {
-            return "xml parse error: " + exception.getMessage();
+            return false;
         }
     }
 
     private boolean containsOverlongText(String xml) {
-        Matcher matcher = PARAGRAPH_PATTERN.matcher(xml);
+        Matcher matcher = Pattern.compile("(?s)<p>(.*?)</p>").matcher(xml);
         while (matcher.find()) {
             String text = matcher.group(1).replaceAll("<[^>]+>", "");
             if (text.length() > 120) {
@@ -985,13 +1265,6 @@ public class PresentationWorkflowNodes {
         }
         Matcher matcher = SLIDE_XML_PATTERN.matcher(raw.trim());
         return matcher.find() ? matcher.group().trim() : raw.trim();
-    }
-
-    private String xmlPreview(String xml) {
-        if (xml == null || xml.isBlank()) {
-            return "";
-        }
-        return truncate(xml.replaceAll("\\s+", " ").trim(), 600);
     }
 
     private PresentationSlidePlan planFromXml(PresentationSlideXml slideXml) {
@@ -1098,16 +1371,6 @@ public class PresentationWorkflowNodes {
                         + " | " + blankToDefault(slide.getTitle(), "")
                         + " | xmlChars=" + (slide.getXml() == null ? 0 : slide.getXml().length()))
                 .collect(Collectors.joining("\n"));
-    }
-
-    private void recordStageElapsed(String taskId, String stage, long startedAtNanos, String detail) {
-        long elapsedMs = Math.max(0, (System.nanoTime() - startedAtNanos) / 1_000_000);
-        String message = "PPT stage " + stage + " completed in " + elapsedMs + "ms"
-                + (detail == null || detail.isBlank() ? "" : " (" + detail + ")");
-        log.info("{}: taskId={}", message, taskId);
-        if (support != null && taskId != null && !taskId.isBlank()) {
-            support.publishEvent(taskId, null, TaskEventType.PLANNING_STARTED, message);
-        }
     }
 
     private void appendIfPresent(StringBuilder builder, String label, String value) {

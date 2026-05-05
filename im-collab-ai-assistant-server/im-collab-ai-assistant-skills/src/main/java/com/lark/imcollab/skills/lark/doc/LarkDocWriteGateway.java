@@ -54,6 +54,26 @@ public class LarkDocWriteGateway {
         return updateDoc(docIdOrUrl, "append", markdown);
     }
 
+    public LarkDocUpdateResult overwriteMarkdown(String docIdOrUrl, String markdown) {
+        requireValue(docIdOrUrl, "docIdOrUrl");
+        requireValue(markdown, "markdown");
+        List<DocCommandAttempt> attempts = overwriteMarkdownAttempts(docIdOrUrl.trim(), markdown);
+        log.info("LARK_DOC_WRITE overwrite_markdown docRef={} attemptCount={} markdownLength={}",
+                docIdOrUrl.trim(), attempts.size(), markdown.length());
+        return parseUpdateResult(readGateway.executeJsonWithCompat("+update", attempts, richMediaTimeoutMillis()), "overwrite");
+    }
+
+    public LarkDocUpdateResult updateWhiteboard(String whiteboardToken, String source, String inputFormat) {
+        requireValue(whiteboardToken, "whiteboardToken");
+        requireValue(source, "source");
+        String normalizedFormat = inputFormat == null || inputFormat.isBlank() ? "raw" : inputFormat.trim().toLowerCase();
+        Set<String> supportedFlags = readGateway.supportedFlags("+whiteboard-update");
+        List<DocCommandAttempt> attempts = whiteboardUpdateAttempts(whiteboardToken.trim(), source, normalizedFormat, supportedFlags);
+        log.info("LARK_DOC_WRITE update_whiteboard token={} inputFormat={} attemptCount={} sourceLength={}",
+                whiteboardToken.trim(), normalizedFormat, attempts.size(), source.length());
+        return parseUpdateResult(readGateway.executeJsonWithCompat("+whiteboard-update", attempts, richMediaTimeoutMillis()), "whiteboard_update");
+    }
+
     // ---- internals ----
 
     private LarkDocUpdateResult directBlockDelete(String docRef, String blockId) {
@@ -91,12 +111,47 @@ public class LarkDocWriteGateway {
         return parseUpdateResult(readGateway.executeJsonWithCompat("+update", attempts, timeoutMillis), command);
     }
 
+    private List<DocCommandAttempt> overwriteMarkdownAttempts(String docRef, String markdown) {
+        Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
+        attempts.put("legacy-v1", new DocCommandAttempt(List.of(
+                "docs", "+update",
+                "--as", readGateway.resolveDocIdentity(),
+                "--doc", docRef,
+                "--mode", "overwrite",
+                "--markdown", CONTENT_STDIN_MARKER
+        ), markdown));
+        attempts.put("legacy-v1-no-as", new DocCommandAttempt(List.of(
+                "docs", "+update",
+                "--doc", docRef,
+                "--mode", "overwrite",
+                "--markdown", CONTENT_STDIN_MARKER
+        ), markdown));
+        return readGateway.distinctAttempts(attempts);
+    }
+
+    private List<DocCommandAttempt> whiteboardUpdateAttempts(String whiteboardToken, String source, String inputFormat, Set<String> supportedFlags) {
+        List<String> args = new ArrayList<>();
+        args.add("docs");
+        args.add("+whiteboard-update");
+        readGateway.appendIfSupported(args, supportedFlags, "--as", readGateway.resolveDocIdentity());
+        readGateway.appendIfSupported(args, supportedFlags, "--whiteboard-token", whiteboardToken);
+        readGateway.appendIfSupported(args, supportedFlags, "--input_format", inputFormat);
+        readGateway.appendIfSupported(args, supportedFlags, "--source", CONTENT_STDIN_MARKER);
+        if (supportedFlags.contains("--overwrite")) {
+            args.add("--overwrite");
+        }
+        if (supportedFlags.contains("--yes")) {
+            args.add("--yes");
+        }
+        return List.of(new DocCommandAttempt(args, source));
+    }
+
     private List<DocCommandAttempt> updateDocAttempts(String docRef, String command, String content, String docFormat, String blockId, String pattern, Long revisionId, Set<String> supportedFlags) {
         Map<String, DocCommandAttempt> attempts = new LinkedHashMap<>();
         attempts.put("preferred", updateDocAttempt(docRef, command, content, docFormat, blockId, pattern, revisionId, supportedFlags, true, true));
         attempts.put("no-api-version", updateDocAttempt(docRef, command, content, docFormat, blockId, pattern, revisionId, supportedFlags, false, true));
         attempts.put("basic", updateDocAttempt(docRef, command, content, docFormat, blockId, pattern, revisionId,
-                Set.of("--as", "--doc", "--command", "--content", "--doc-format", "--block-id", "--pattern", "--revision-id"), false, false));
+                Set.of("--as", "--doc", "--command", "--content", "--doc-format", "--block-id", "--pattern", "--revision-id", "--src-block-ids"), false, false));
         return readGateway.distinctAttempts(attempts);
     }
 
@@ -115,8 +170,22 @@ public class LarkDocWriteGateway {
             args.add(CONTENT_STDIN_MARKER);
             stdin = content;
         }
-        if (readGateway.hasText(blockId)) readGateway.appendIfSupported(args, supportedFlags, "--block-id", blockId.trim());
-        if (readGateway.hasText(pattern)) readGateway.appendIfSupported(args, supportedFlags, "--pattern", pattern);
+        if ("block_move_after".equals(command)) {
+            if (readGateway.hasText(pattern)) {
+                readGateway.appendIfSupported(args, supportedFlags, "--block-id", pattern.trim());
+            }
+            if (readGateway.hasText(blockId)) {
+                if (supportedFlags.contains("--src-block-ids")) {
+                    args.add("--src-block-ids");
+                    args.add(blockId.trim());
+                } else {
+                    readGateway.appendIfSupported(args, supportedFlags, "--pattern", pattern);
+                }
+            }
+        } else {
+            if (readGateway.hasText(blockId)) readGateway.appendIfSupported(args, supportedFlags, "--block-id", blockId.trim());
+            if (readGateway.hasText(pattern)) readGateway.appendIfSupported(args, supportedFlags, "--pattern", pattern);
+        }
         if (revisionId != null && revisionId >= 0) readGateway.appendIfSupported(args, supportedFlags, "--revision-id", String.valueOf(revisionId));
         return new DocCommandAttempt(args, stdin);
     }

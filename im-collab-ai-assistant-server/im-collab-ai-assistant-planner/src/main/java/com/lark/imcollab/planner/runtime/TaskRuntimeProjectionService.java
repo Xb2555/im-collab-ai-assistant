@@ -106,9 +106,10 @@ public class TaskRuntimeProjectionService {
 
     public TaskRuntimeSnapshot getSnapshot(String taskId) {
         TaskRecord task = reconcileTaskVersion(taskId);
+        List<TaskStepRecord> steps = normalizeCompletedTaskSteps(task, activeSteps(stateStore.findStepsByTaskId(taskId)));
         return TaskRuntimeSnapshot.builder()
                 .task(task)
-                .steps(activeSteps(stateStore.findStepsByTaskId(taskId)))
+                .steps(steps)
                 .artifacts(visibleArtifacts(taskId))
                 .events(stateStore.findRuntimeEventsByTaskId(taskId))
                 .build();
@@ -165,6 +166,42 @@ public class TaskRuntimeProjectionService {
         return steps.stream()
                 .filter(step -> step != null && step.getStatus() != StepStatusEnum.SUPERSEDED)
                 .toList();
+    }
+
+    private List<TaskStepRecord> normalizeCompletedTaskSteps(TaskRecord task, List<TaskStepRecord> steps) {
+        List<TaskStepRecord> activeSteps = activeSteps(steps);
+        if (task == null || task.getStatus() != TaskStatusEnum.COMPLETED || activeSteps.isEmpty()) {
+            return activeSteps;
+        }
+        Instant taskEndedAt = task.getUpdatedAt() == null ? Instant.now() : task.getUpdatedAt();
+        return activeSteps.stream()
+                .map(step -> normalizeCompletedStep(step, taskEndedAt))
+                .toList();
+    }
+
+    private TaskStepRecord normalizeCompletedStep(TaskStepRecord step, Instant taskEndedAt) {
+        if (step == null) {
+            return null;
+        }
+        if (step.getStatus() == StepStatusEnum.COMPLETED && step.getEndedAt() != null) {
+            return step;
+        }
+        return TaskStepRecord.builder()
+                .stepId(step.getStepId())
+                .taskId(step.getTaskId())
+                .type(step.getType())
+                .name(step.getName())
+                .status(StepStatusEnum.COMPLETED)
+                .inputSummary(step.getInputSummary())
+                .outputSummary(step.getOutputSummary())
+                .assignedWorker(step.getAssignedWorker())
+                .dependsOn(step.getDependsOn())
+                .retryCount(step.getRetryCount())
+                .progress(100)
+                .version(step.getVersion())
+                .startedAt(step.getStartedAt())
+                .endedAt(step.getEndedAt() == null ? taskEndedAt : step.getEndedAt())
+                .build();
     }
 
     private List<String> resolveArtifactIds(String taskId) {

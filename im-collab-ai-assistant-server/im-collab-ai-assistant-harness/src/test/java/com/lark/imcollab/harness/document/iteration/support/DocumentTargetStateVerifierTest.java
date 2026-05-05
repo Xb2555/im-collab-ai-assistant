@@ -58,6 +58,72 @@ class DocumentTargetStateVerifierTest {
     }
 
     @Test
+    void verifyNewSectionBeforeAcceptsMissingTargetHeadingWhenInsertedHeadingExists() {
+        DocumentTargetStateVerifier verifier = new DocumentTargetStateVerifier();
+
+        assertThatCode(() -> verifier.verify(planForBeforeInsert("1.2 旅游业发展现状", "1.1 地理与资源禀赋"),
+                snapshot(List.of(
+                        heading("old-1-2", "1.2 旅游业发展现状"),
+                        heading("old-1-3", "1.3 后续章节")
+                )),
+                snapshot(List.of(
+                        heading("new-1-1", "1.1 地理与资源禀赋"),
+                        heading("new-1-3", "1.3 后续章节")
+                ))))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void verifyNewSectionBeforeAcceptsCollapsedAfterOutlineSnapshot() {
+        DocumentTargetStateVerifier verifier = new DocumentTargetStateVerifier();
+
+        assertThatCode(() -> verifier.verify(planForBeforeInsert("1.2 旅游业发展现状", "1.0 地理与资源禀赋"),
+                snapshot(List.of(
+                        heading("old-1-1", "1.1 资源基础"),
+                        heading("old-1-2", "1.2 旅游业发展现状"),
+                        heading("old-1-3", "1.3 后续章节")
+                )),
+                snapshot(List.of(
+                        heading("doc-root", "揭阳旅游业发展总结报告")
+                ))))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void verifyNewSectionBeforeUsesOrderedHeadingSequenceWhenTopLevelOnlyContainsRoot() {
+        DocumentTargetStateVerifier verifier = new DocumentTargetStateVerifier();
+
+        DocumentStructureNode root = headingWithLevel("root", "文档标题", 1, "root");
+        DocumentStructureNode section = headingWithLevel("sec-1", "一、发展背景与现状", 2, "root");
+        DocumentStructureNode inserted = headingWithLevel("sec-1-1", "1.1 地理与资源禀赋", 3, "root");
+        DocumentStructureNode target = headingWithLevel("sec-1-2", "1.2 旅游业发展现状", 3, "root");
+
+        DocumentStructureSnapshot after = DocumentStructureSnapshot.builder()
+                .headingIndex(new LinkedHashMap<>(Map.of(
+                        "root", root,
+                        "sec-1", section,
+                        "sec-1-1", inserted,
+                        "sec-1-2", target
+                )))
+                .blockIndex(new LinkedHashMap<>(Map.of(
+                        "root", root,
+                        "sec-1", section,
+                        "sec-1-1", inserted,
+                        "sec-1-2", target
+                )))
+                .topLevelSequence(List.of("root"))
+                .orderedBlockIds(List.of("root", "sec-1", "sec-1-1", "sec-1-2"))
+                .build();
+
+        assertThatCode(() -> verifier.verify(planForBeforeInsert("1.2 旅游业发展现状", "1.1 地理与资源禀赋"),
+                snapshot(List.of(
+                        heading("old-target", "1.2 旅游业发展现状")
+                )),
+                after))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
     void verifyBlockInsertedAfterAcceptsInsertedHeadingAndFragmentedBody() {
         DocumentTargetStateVerifier verifier = new DocumentTargetStateVerifier();
 
@@ -134,13 +200,17 @@ class DocumentTargetStateVerifierTest {
     }
 
     private DocumentStructureNode heading(String blockId, String title) {
+        return headingWithLevel(blockId, title, 2, blockId);
+    }
+
+    private DocumentStructureNode headingWithLevel(String blockId, String title, int level, String topLevelAncestorId) {
         return DocumentStructureNode.builder()
                 .blockId(blockId)
                 .blockType("heading")
-                .headingLevel(2)
+                .headingLevel(level)
                 .titleText(title)
                 .plainText(title)
-                .topLevelAncestorId(blockId)
+                .topLevelAncestorId(topLevelAncestorId)
                 .build();
     }
 

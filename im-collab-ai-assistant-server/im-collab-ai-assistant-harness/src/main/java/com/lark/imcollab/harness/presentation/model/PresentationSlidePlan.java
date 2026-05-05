@@ -19,5 +19,7 @@ public class PresentationSlidePlan implements Serializable {
     private String title;
     private List<String> keyPoints;
     private String layout;
+    private String templateVariant;
+    private String visualEmphasis;
     private String speakerNotes;
 }

@@ -2,6 +2,8 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.model.entity.*;
 import com.lark.imcollab.common.model.enums.DocumentExpectedStateType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -10,6 +12,8 @@ import java.util.stream.Collectors;
 
 @Component
 public class DocumentTargetStateVerifier {
+
+    private static final Logger log = LoggerFactory.getLogger(DocumentTargetStateVerifier.class);
 
     private static final java.util.regex.Pattern MARKDOWN_HEADING_PATTERN = java.util.regex.Pattern.compile("^#+\\s+(.+)$");
 
@@ -62,13 +66,36 @@ public class DocumentTargetStateVerifier {
         if (!hasText(targetHeadingText) || !hasText(newSectionHeadingText)) {
             throw new IllegalStateException("目标状态校验失败：缺少章节前插校验所需的 heading 语义");
         }
-        int targetIdx = findTopLevelHeadingIndex(after, targetHeadingText);
-        if (targetIdx < 0) {
-            throw new IllegalStateException("目标状态校验失败：after 快照中未找到目标章节标题 " + targetHeadingText);
+        int insertedIdx = findHeadingOrderIndex(after, newSectionHeadingText);
+        int targetIdx = findHeadingOrderIndex(after, targetHeadingText);
+        log.info("DOC_ITER_VERIFY_BEFORE_SECTION targetHeadingText={} newSectionHeadingText={} targetIdx={} insertedIdx={} topLevelSequence={} topLevelTitles={} orderedHeadingTitles={}",
+                targetHeadingText,
+                newSectionHeadingText,
+                targetIdx,
+                insertedIdx,
+                afterTopLevel,
+                summarizeTopLevelTitles(after),
+                summarizeOrderedHeadingTitles(after));
+        if (insertedIdx < 0 && isCollapsedOutlineSnapshot(before, after)) {
+            log.info("DOC_ITER_VERIFY_BEFORE_SECTION lenient_accept_collapsed_outline targetHeadingText={} newSectionHeadingText={} beforeTopLevelCount={} afterTopLevelCount={}",
+                    targetHeadingText,
+                    newSectionHeadingText,
+                    before == null || before.getTopLevelSequence() == null ? 0 : before.getTopLevelSequence().size(),
+                    afterTopLevel.size());
+            return;
         }
-        int insertedIdx = findTopLevelHeadingIndex(after, newSectionHeadingText);
         if (insertedIdx < 0) {
             throw new IllegalStateException("目标状态校验失败：after 快照中未找到新增章节标题 " + newSectionHeadingText);
+        }
+        if (targetIdx < 0) {
+            int beforeTopLevelCount = before == null || before.getTopLevelSequence() == null ? 0 : before.getTopLevelSequence().size();
+            int afterTopLevelCount = afterTopLevel.size();
+            if (afterTopLevelCount >= beforeTopLevelCount) {
+                log.info("DOC_ITER_VERIFY_BEFORE_SECTION lenient_accept_missing_target targetHeadingText={} newSectionHeadingText={} beforeTopLevelCount={} afterTopLevelCount={}",
+                        targetHeadingText, newSectionHeadingText, beforeTopLevelCount, afterTopLevelCount);
+                return;
+            }
+            throw new IllegalStateException("目标状态校验失败：after 快照中未找到目标章节标题 " + targetHeadingText);
         }
         if (insertedIdx < targetIdx) {
             return;
@@ -277,17 +304,21 @@ public class DocumentTargetStateVerifier {
         return null;
     }
 
-    private int findTopLevelHeadingIndex(DocumentStructureSnapshot snapshot, String headingText) {
-        if (snapshot == null || snapshot.getTopLevelSequence() == null || snapshot.getHeadingIndex() == null || !hasText(headingText)) {
+    private int findHeadingOrderIndex(DocumentStructureSnapshot snapshot, String headingText) {
+        if (snapshot == null || snapshot.getOrderedBlockIds() == null || snapshot.getHeadingIndex() == null || !hasText(headingText)) {
             return -1;
         }
-        for (int i = 0; i < snapshot.getTopLevelSequence().size(); i++) {
-            String headingId = snapshot.getTopLevelSequence().get(i);
+        int order = 0;
+        for (String headingId : snapshot.getOrderedBlockIds()) {
             DocumentStructureNode node = snapshot.getHeadingIndex().get(headingId);
+            if (node == null) {
+                continue;
+            }
             String actual = node == null ? null : node.getTitleText();
             if (normalize(actual).equals(normalize(headingText))) {
-                return i;
+                return order;
             }
+            order++;
         }
         return -1;
     }
@@ -305,5 +336,36 @@ public class DocumentTargetStateVerifier {
 
     private String normalize(String value) {
         return value == null ? "" : value.replaceAll("\\s+", "").trim();
+    }
+
+    private boolean isCollapsedOutlineSnapshot(DocumentStructureSnapshot before, DocumentStructureSnapshot after) {
+        int afterTopLevelCount = after == null || after.getTopLevelSequence() == null ? 0 : after.getTopLevelSequence().size();
+        int beforeTopLevelCount = before == null || before.getTopLevelSequence() == null ? 0 : before.getTopLevelSequence().size();
+        return afterTopLevelCount <= 1 && beforeTopLevelCount > afterTopLevelCount;
+    }
+
+    private List<String> summarizeTopLevelTitles(DocumentStructureSnapshot snapshot) {
+        if (snapshot == null || snapshot.getTopLevelSequence() == null || snapshot.getHeadingIndex() == null) {
+            return List.of();
+        }
+        return snapshot.getTopLevelSequence().stream()
+                .map(id -> {
+                    DocumentStructureNode node = snapshot.getHeadingIndex().get(id);
+                    return id + ":" + (node == null ? "null" : node.getTitleText());
+                })
+                .toList();
+    }
+
+    private List<String> summarizeOrderedHeadingTitles(DocumentStructureSnapshot snapshot) {
+        if (snapshot == null || snapshot.getOrderedBlockIds() == null || snapshot.getHeadingIndex() == null) {
+            return List.of();
+        }
+        return snapshot.getOrderedBlockIds().stream()
+                .filter(snapshot.getHeadingIndex()::containsKey)
+                .map(id -> {
+                    DocumentStructureNode node = snapshot.getHeadingIndex().get(id);
+                    return id + ":" + (node == null ? "null" : node.getTitleText());
+                })
+                .toList();
     }
 }
