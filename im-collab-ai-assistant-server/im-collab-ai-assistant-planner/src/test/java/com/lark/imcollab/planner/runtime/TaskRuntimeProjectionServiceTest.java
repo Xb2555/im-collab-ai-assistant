@@ -279,6 +279,33 @@ class TaskRuntimeProjectionServiceTest {
         assertThat(store.task.getVersion()).isEqualTo(3);
     }
 
+    @Test
+    void completedTaskSnapshotClosesRunningStepsForView() {
+        InMemoryPlannerStateStore store = new InMemoryPlannerStateStore();
+        TaskRuntimeProjectionService service = new TaskRuntimeProjectionService(store, new ObjectMapper());
+        Instant endedAt = Instant.parse("2026-05-05T13:16:38.932231900Z");
+        store.saveTask(TaskRecord.builder()
+                .taskId("task-done")
+                .status(com.lark.imcollab.common.model.enums.TaskStatusEnum.COMPLETED)
+                .updatedAt(endedAt)
+                .build());
+        store.saveStep(TaskStepRecord.builder()
+                .stepId("task-done:document:iteration")
+                .taskId("task-done")
+                .type(StepTypeEnum.DOC_EDIT)
+                .name("文档迭代")
+                .status(StepStatusEnum.RUNNING)
+                .progress(20)
+                .startedAt(Instant.parse("2026-05-05T13:15:02.756089900Z"))
+                .build());
+
+        TaskStepRecord step = service.getSnapshot("task-done").getSteps().get(0);
+
+        assertThat(step.getStatus()).isEqualTo(StepStatusEnum.COMPLETED);
+        assertThat(step.getProgress()).isEqualTo(100);
+        assertThat(step.getEndedAt()).isEqualTo(endedAt);
+    }
+
     private static class InMemoryPlannerStateStore implements PlannerStateStore {
         private TaskRecord task;
         private PlanTaskSession session;

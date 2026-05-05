@@ -230,7 +230,6 @@ public class DocumentIterationRuntimeSupport {
                 .docUrl(ownedArtifact.getExternalUrl())
                 .artifactTaskId(ownedArtifact.getTaskId())
                 .intentType(editPlan.getIntentType())
-                .selector(editPlan.getSelector())
                 .editPlan(editPlan)
                 .originalRequest(request)
                 .createdAt(now)

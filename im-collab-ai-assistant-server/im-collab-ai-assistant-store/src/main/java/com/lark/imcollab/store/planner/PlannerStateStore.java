@@ -17,6 +17,11 @@ public interface PlannerStateStore {
 
     void saveSession(PlanTaskSession session);
 
+    default boolean saveSessionIfStateRevision(PlanTaskSession session, long expectedStateRevision) {
+        saveSession(session);
+        return true;
+    }
+
     Optional<PlanTaskSession> findSession(String taskId);
 
     Optional<String> findConversationTaskId(String conversationKey);
@@ -32,6 +37,17 @@ public interface PlannerStateStore {
     Optional<TaskRecord> findTask(String taskId);
 
     List<TaskRecord> findTasksByOwner(String ownerOpenId, List<TaskStatusEnum> statuses, int offset, int limit);
+
+    default List<TaskRecord> findTasksByConversation(
+            String inputSource,
+            String chatId,
+            String threadId,
+            String ownerOpenId,
+            List<TaskStatusEnum> statuses,
+            int limit
+    ) {
+        return List.of();
+    }
 
     void saveStep(TaskStepRecord step);
 

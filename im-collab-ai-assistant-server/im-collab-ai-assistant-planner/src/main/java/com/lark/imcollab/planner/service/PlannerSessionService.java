@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -67,22 +68,46 @@ public class PlannerSessionService {
 
     public PlanTaskSession save(PlanTaskSession session) {
         normalizeSession(session);
+        long expectedStateRevision = session.getStateRevision();
+        int originalVersion = session.getVersion();
         session.setVersion(session.getVersion() + 1);
-        stateRepository.saveSession(session);
+        saveWithStateRevisionCheck(session, expectedStateRevision, originalVersion, true);
         return session;
     }
 
     public PlanTaskSession saveWithoutVersionChange(PlanTaskSession session) {
         normalizeSession(session);
-        stateRepository.saveSession(session);
+        long expectedStateRevision = session.getStateRevision();
+        saveWithStateRevisionCheck(session, expectedStateRevision, session.getVersion(), false);
         return session;
     }
 
     public void checkVersion(PlanTaskSession session, int clientVersion) {
         if (session.getVersion() != clientVersion) {
-            throw new com.lark.imcollab.planner.exception.VersionConflictException(
+            throw new VersionConflictException(
                     "Version conflict: expected " + session.getVersion() + ", got " + clientVersion);
         }
+    }
+
+    private void saveWithStateRevisionCheck(
+            PlanTaskSession session,
+            long expectedStateRevision,
+            int originalVersion,
+            boolean userVisibleVersionAdvanced
+    ) {
+        long nextStateRevision = expectedStateRevision + 1;
+        session.setStateRevision(nextStateRevision);
+        if (stateRepository.saveSessionIfStateRevision(session, expectedStateRevision)) {
+            return;
+        }
+        if (userVisibleVersionAdvanced) {
+            session.setVersion(originalVersion);
+        }
+        session.setStateRevision(expectedStateRevision);
+        PlanTaskSession latest = stateRepository.findSession(session.getTaskId()).orElse(null);
+        throw new VersionConflictException("Session state conflict: taskId=" + session.getTaskId()
+                + ", expectedStateRevision=" + expectedStateRevision
+                + ", actualStateRevision=" + (latest == null ? "missing" : latest.getStateRevision()));
     }
 
     public PlanTaskSession get(String taskId) {
@@ -96,7 +121,7 @@ public class PlannerSessionService {
         session.setAborted(true);
         session.setPlanningPhase(PlanningPhaseEnum.ABORTED);
         session.setTransitionReason(reason);
-        stateRepository.saveSession(session);
+        saveWithoutVersionChange(session);
         publishEvent(taskId, "ABORTED");
     }
 

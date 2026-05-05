@@ -103,6 +103,8 @@ export interface PlanPreviewVO {
   runtimeAvailable?: boolean;  // 是否有底层的 Runtime 任务流
   transientReply?: boolean;    // 是否为瞬时闲聊回复
   assistantReply?: string;     // 大模型直接返回的闲聊文本
+  // ✨ 补上这个缺失的字段声明
+  capabilityHints?: string[];
 }
 
 export interface RuntimeTaskVO {
@@ -167,6 +169,58 @@ export interface PlanCommandRequest {
   action?: string; // 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL'
   feedback?: string;
   version?: number; // ✨ 乐观锁：任务版本号，用于防冲突
+
+  // 👇 新增：针对完成态任务修改产物的策略控制
+  artifactPolicy?: 'AUTO' | 'EDIT_EXISTING' | 'CREATE_NEW' | 'KEEP_EXISTING_CREATE_NEW';
+  targetArtifactId?: string; // 如果有多个产物，需明确指定修改哪一个
+}
+
+/**
+ * ✨ 新增：文档迭代请求体 (对应 5.1. 执行文档迭代.md)
+ */
+export interface DocumentIterationRequest {
+  taskId: string;
+  docUrl: string;
+  instruction: string; // 用户的自然语言修改指令
+  workspaceContext?: WorkspaceContext; // 上下文依赖
+}
+
+/**
+ * ✨ 新增：文档迭代响应体
+ */
+// 找到这部分，并用下面的代码替换它：
+export interface DocumentIterationResponse {
+  taskId: string;
+  planningPhase: string;
+  recognizedIntent: string;
+  requireInput: boolean;
+  preview: string;
+  docUrl: string;
+  modifiedBlocks: any[];
+  summary: string;
+  editPlan?: {
+    intentType: string;
+    semanticAction: string;
+    // ✨ 补上后端真实返回的这几个关键字段
+    anchorType?: string;     
+    strategyType?: string;   
+    expectedState?: string;  
+    targetPreview?: string;  
+    
+    targetTitle: string;
+    generatedContent: string;
+    toolCommandType: string | null; // 刚才抓包看到它可能是 null，加个联合类型防爆
+    requiresApproval: boolean;
+    riskLevel: string;
+  };
+}
+
+/**
+ * ✨ 新增：文档迭代审批请求体 (对应 5.2)
+ */
+export interface DocumentIterationApprovalRequest {
+  action: 'APPROVE' | 'REJECT' | 'MODIFY';
+  feedback?: string;
 }
 
 /**

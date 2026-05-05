@@ -82,7 +82,7 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
             builder.append("我检查了一下，当前任务结果还需要处理。");
         }
         appendArtifacts(builder, snapshot == null ? List.of() : snapshot.getArtifacts());
-        String status = replyFormatter.status(snapshot);
+        String status = replyFormatter.status(shareableStatusSnapshot(snapshot));
         if (hasText(status)) {
             builder.append("\n\n").append(status);
         }
@@ -117,7 +117,7 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
         }
         appendFailureDetails(builder, snapshot);
         appendArtifacts(builder, snapshot == null ? List.of() : snapshot.getArtifacts());
-        String status = replyFormatter.status(snapshot);
+        String status = replyFormatter.status(shareableStatusSnapshot(snapshot));
         if (hasText(status)) {
             builder.append("\n\n").append(status);
         }
@@ -271,6 +271,18 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
                 .toList();
     }
 
+    private TaskRuntimeSnapshot shareableStatusSnapshot(TaskRuntimeSnapshot snapshot) {
+        if (snapshot == null) {
+            return null;
+        }
+        return TaskRuntimeSnapshot.builder()
+                .task(snapshot.getTask())
+                .steps(snapshot.getSteps())
+                .artifacts(shareableArtifacts(snapshot.getArtifacts()))
+                .events(snapshot.getEvents())
+                .build();
+    }
+
     private String stripMarkdownHeading(String value) {
         if (!hasText(value)) {
             return value;
@@ -324,7 +336,7 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
         if (!hasText(text)) {
             return;
         }
-        String idempotencyKey = reviewIdempotencyKey(session.getTaskId(), suffix);
+        String idempotencyKey = reviewIdempotencyKey(session, suffix);
         try {
             if (isP2P(context) && hasText(context.getSenderOpenId())) {
                 replyTool.sendPrivateText(context.getSenderOpenId(), text, idempotencyKey);
@@ -352,8 +364,13 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
         }
     }
 
-    private String reviewIdempotencyKey(String taskId, String suffix) {
-        String source = "planner-review::" + firstNonBlank(taskId, "unknown") + "::" + firstNonBlank(suffix, "notify");
+    private String reviewIdempotencyKey(PlanTaskSession session, String suffix) {
+        TaskInputContext context = session == null ? null : session.getInputContext();
+        String source = "planner-review::"
+                + firstNonBlank(session == null ? null : session.getTaskId(), "unknown")
+                + "::v" + (session == null ? 0 : session.getVersion())
+                + "::" + firstNonBlank(context == null ? null : context.getMessageId(), "no-message")
+                + "::" + firstNonBlank(suffix, "notify");
         String normalizedSuffix = firstNonBlank(suffix, "notify")
                 .toLowerCase(Locale.ROOT)
                 .replaceAll("[^a-z0-9_-]", "-");

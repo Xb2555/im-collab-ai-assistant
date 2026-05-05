@@ -7,29 +7,29 @@ import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.port.ArtifactRepository;
 import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.store.planner.PlannerStateStore;
-import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class DocumentOwnershipGuard {
 
+    private static final Pattern DOC_URL_PATTERN = Pattern.compile("/(?:docx|wiki)/([A-Za-z0-9]+)");
+
     private final ArtifactRepository artifactRepository;
     private final TaskRepository taskRepository;
     private final PlannerStateStore plannerStateStore;
-    private final LarkDocTool larkDocTool;
 
     public DocumentOwnershipGuard(
             ArtifactRepository artifactRepository,
             TaskRepository taskRepository,
-            PlannerStateStore plannerStateStore,
-            LarkDocTool larkDocTool
+            PlannerStateStore plannerStateStore
     ) {
         this.artifactRepository = artifactRepository;
         this.taskRepository = taskRepository;
         this.plannerStateStore = plannerStateStore;
-        this.larkDocTool = larkDocTool;
     }
 
     public Artifact assertEditable(String docRef, String operatorOpenId, String requestedTaskId) {
@@ -39,7 +39,7 @@ public class DocumentOwnershipGuard {
         if (operatorOpenId == null || operatorOpenId.isBlank()) {
             throw new AiAssistantException(BusinessCode.NOT_LOGIN_ERROR, "operatorOpenId must be provided");
         }
-        String docId = larkDocTool.extractDocumentId(docRef);
+        String docId = extractDocumentId(docRef);
         Artifact artifact = resolveOwnedArtifact(docRef, docId, requestedTaskId)
                 .orElseThrow(() -> new AiAssistantException(
                         BusinessCode.FORBIDDEN_ERROR,
@@ -93,5 +93,14 @@ public class DocumentOwnershipGuard {
                 .filter(value -> value != null && !value.isBlank())
                 .or(() -> plannerStateStore.findTask(taskId).map(task -> task.getOwnerOpenId()))
                 .orElse(null);
+    }
+
+    private String extractDocumentId(String docIdOrUrl) {
+        if (docIdOrUrl == null || docIdOrUrl.isBlank()) {
+            return docIdOrUrl;
+        }
+        String trimmed = docIdOrUrl.trim();
+        Matcher matcher = DOC_URL_PATTERN.matcher(trimmed);
+        return matcher.find() ? matcher.group(1) : trimmed;
     }
 }

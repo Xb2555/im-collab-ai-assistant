@@ -16,5 +16,8 @@ public class DocumentTextAnchor implements Serializable {
     private String matchedText;
     private int matchCount;
     private String surroundingContext;
+    private String sourceBlockId;
     private List<String> sourceBlockIds;
+    private Integer matchStart;
+    private Integer matchEnd;
 }

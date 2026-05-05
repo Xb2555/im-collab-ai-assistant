@@ -42,7 +42,7 @@ public class PlannerViewAssembler {
                 defaultList(session.getClarificationAnswers()),
                 transientReply
                         ? new TaskActionVO(false, false, false, false, false, false)
-                        : resolveActions(session.getPlanningPhase(), session.isAborted()),
+                        : resolveActions(session.getPlanningPhase(), session.isAborted(), session.getIntakeState()),
                 !transientReply,
                 !transientReply,
                 transientReply,
@@ -84,8 +84,18 @@ public class PlannerViewAssembler {
     }
 
     private TaskActionVO resolveActions(PlanningPhaseEnum phase, boolean aborted) {
-        if (aborted || phase == PlanningPhaseEnum.ABORTED || phase == PlanningPhaseEnum.COMPLETED) {
-            return new TaskActionVO(false, false, false, false, false, false);
+        return resolveActions(phase, aborted, null);
+    }
+
+    private TaskActionVO resolveActions(PlanningPhaseEnum phase, boolean aborted, TaskIntakeState intakeState) {
+        if (aborted || phase == PlanningPhaseEnum.ABORTED) {
+            return new TaskActionVO(false, true, false, false, false, false);
+        }
+        if (hasPendingDocumentApproval(intakeState)) {
+            return new TaskActionVO(true, true, false, true, false, false);
+        }
+        if (phase == PlanningPhaseEnum.COMPLETED) {
+            return new TaskActionVO(false, true, false, false, false, false);
         }
         boolean canConfirm = phase == PlanningPhaseEnum.PLAN_READY;
         boolean canReplan = phase == PlanningPhaseEnum.PLAN_READY
@@ -110,6 +120,14 @@ public class PlannerViewAssembler {
                 || intakeType == TaskIntakeTypeEnum.CONFIRM_ACTION)
                 && session.getPlanBlueprint() == null
                 && defaultList(session.getPlanCards()).isEmpty();
+    }
+
+    private boolean hasPendingDocumentApproval(TaskIntakeState intakeState) {
+        return intakeState != null
+                && intakeState.getPendingDocumentIterationTaskId() != null
+                && !intakeState.getPendingDocumentIterationTaskId().isBlank()
+                && intakeState.getPendingDocumentApprovalMode() != null
+                && !intakeState.getPendingDocumentApprovalMode().isBlank();
     }
 
     private String resolveTitle(PlanTaskSession session) {

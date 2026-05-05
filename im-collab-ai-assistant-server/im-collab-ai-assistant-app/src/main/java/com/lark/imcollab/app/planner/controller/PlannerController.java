@@ -74,7 +74,8 @@ public class PlannerController {
             TaskStatusEnum.REVIEWING,
             TaskStatusEnum.PUBLISHING,
             TaskStatusEnum.FAILED,
-            TaskStatusEnum.COMPLETED
+            TaskStatusEnum.COMPLETED,
+            TaskStatusEnum.CANCELLED
     );
 
     private final PlannerPlanFacade plannerPlanFacade;
@@ -258,7 +259,8 @@ public class PlannerController {
         PlanTaskSession session = plannerCommandApplicationService.resume(
                 taskId,
                 request.getFeedback(),
-                request.isReplanFromRoot()
+                request.isReplanFromRoot(),
+                request.getWorkspaceContext()
         );
         return ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
     }
@@ -380,7 +382,12 @@ public class PlannerController {
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "REPLAN" -> {
-                PlanTaskSession updated = plannerCommandApplicationService.replan(taskId, request.getFeedback());
+                PlanTaskSession updated = plannerCommandApplicationService.replan(
+                        taskId,
+                        request.getFeedback(),
+                        request.getArtifactPolicy(),
+                        request.getTargetArtifactId()
+                );
                 if (!sameTaskId(taskId, updated)) {
                     log.error("Planner REPLAN returned a different task id: requested={}, returned={}",
                             taskId, updated == null ? null : updated.getTaskId());
@@ -389,7 +396,12 @@ public class PlannerController {
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "RESUME" -> {
-                PlanTaskSession updated = plannerCommandApplicationService.resume(taskId, request.getFeedback(), false);
+                PlanTaskSession updated = plannerCommandApplicationService.resume(
+                        taskId,
+                        request.getFeedback(),
+                        false,
+                        request.getWorkspaceContext()
+                );
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "CANCEL" -> {

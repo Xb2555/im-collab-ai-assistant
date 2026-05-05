@@ -1,31 +1,55 @@
 package com.lark.imcollab.harness.document.iteration.support;
 
 import com.lark.imcollab.common.domain.Artifact;
+import com.lark.imcollab.common.model.entity.DocumentAnchorSpec;
 import com.lark.imcollab.common.model.entity.DocumentBlockAnchor;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.DocumentMediaAnchor;
 import com.lark.imcollab.common.model.entity.DocumentSectionAnchor;
 import com.lark.imcollab.common.model.entity.DocumentStructureNode;
 import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
 import com.lark.imcollab.common.model.entity.DocumentTextAnchor;
 import com.lark.imcollab.common.model.entity.ResolvedDocumentAnchor;
+import com.lark.imcollab.common.model.enums.DocumentAnchorKind;
+import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentAnchorType;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.common.model.enums.MediaAssetType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.Set;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 
 @Component
 public class DocumentAnchorResolver {
 
-    private final DocumentStructureParser structureParser;
+    private static final Logger log = LoggerFactory.getLogger(DocumentAnchorResolver.class);
 
-    public DocumentAnchorResolver(DocumentStructureParser structureParser) {
-        this.structureParser = structureParser;
+    private final DocumentStructureSnapshotBuilder snapshotBuilder;
+
+    public DocumentAnchorResolver(DocumentStructureSnapshotBuilder snapshotBuilder) {
+        this.snapshotBuilder = snapshotBuilder;
     }
 
     public ResolvedDocumentAnchor resolve(Artifact artifact, DocumentStructureSnapshot snapshot, DocumentEditIntent intent) {
         DocumentSemanticActionType action = intent.getSemanticAction();
+        DocumentAnchorSpec spec = intent.getAnchorSpec();
+        log.info("DOC_ITER_ANCHOR resolve_start action={} anchorKind={} matchMode={} headingTitle='{}' headingNumber='{}' outlinePath='{}' ordinal={} ordinalScope={} quotedText='{}' docId={}",
+                action,
+                spec == null ? null : spec.getAnchorKind(),
+                spec == null ? null : spec.getMatchMode(),
+                spec == null ? null : spec.getHeadingTitle(),
+                spec == null ? null : spec.getHeadingNumber(),
+                spec == null ? null : spec.getOutlinePath(),
+                spec == null ? null : spec.getStructuralOrdinal(),
+                spec == null ? null : spec.getStructuralOrdinalScope(),
+                spec == null ? null : spec.getQuotedText(),
+                snapshot == null ? null : snapshot.getDocId());
+
         if (action == DocumentSemanticActionType.INSERT_METADATA_AT_DOCUMENT_HEAD) {
             return ResolvedDocumentAnchor.builder()
                     .anchorType(DocumentAnchorType.DOCUMENT_HEAD)
@@ -39,44 +63,715 @@ public class DocumentAnchorResolver {
                     .preview("DOC_TAIL")
                     .build();
         }
-        if (action == DocumentSemanticActionType.DELETE_METADATA_AT_DOCUMENT_HEAD) {
-            DocumentBlockAnchor blockAnchor = resolveHeadMetadataBlock(snapshot, intent);
+        if (action == DocumentSemanticActionType.DELETE_METADATA_AT_DOCUMENT_HEAD
+                || action == DocumentSemanticActionType.REWRITE_METADATA_AT_DOCUMENT_HEAD) {
+            DocumentBlockAnchor blockAnchor = resolveHeadMetadataBlock(snapshot, spec);
             return ResolvedDocumentAnchor.builder()
                     .anchorType(DocumentAnchorType.BLOCK)
                     .blockAnchor(blockAnchor)
-                    .preview(blockAnchor == null ? "" : blockAnchor.getPlainText())
+                    .preview(blockAnchor == null ? null : blockAnchor.getPlainText())
                     .build();
         }
-        if (action == DocumentSemanticActionType.REWRITE_METADATA_AT_DOCUMENT_HEAD) {
-            DocumentBlockAnchor blockAnchor = resolveHeadMetadataBlock(snapshot, intent);
+        if (targetsInsertAfterSection(action)) {
+            DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(artifact, snapshot, spec);
+            if (sectionAnchor == null) {
+                log.info("DOC_ITER_ANCHOR insert_after_unresolved action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                        action,
+                        spec == null ? null : spec.getHeadingTitle(),
+                        spec == null ? null : spec.getOutlinePath(),
+                        spec == null ? null : spec.getStructuralOrdinal(),
+                        spec == null ? null : spec.getStructuralOrdinalScope());
+                return unresolved("无法定位目标章节，请提供更明确的章节标题或序号");
+            }
+            String tailBlockId = sectionTailBlockId(sectionAnchor);
+            if (tailBlockId == null) {
+                return unresolved("章节 " + sectionAnchor.getHeadingText() + " 的尾部 block 未解析");
+            }
+            DocumentStructureNode tailNode = snapshot.getBlockIndex() == null ? null : snapshot.getBlockIndex().get(tailBlockId);
             return ResolvedDocumentAnchor.builder()
                     .anchorType(DocumentAnchorType.BLOCK)
-                    .blockAnchor(blockAnchor)
-                    .preview(blockAnchor == null ? "" : blockAnchor.getPlainText())
+                    .sectionAnchor(sectionAnchor)
+                    .blockAnchor(DocumentBlockAnchor.builder()
+                            .blockId(tailBlockId)
+                            .blockType(tailNode == null ? null : tailNode.getBlockType())
+                            .build())
+                    .insertionBlockId(tailBlockId)
+                    .preview(sectionAnchor.getHeadingText())
+                    .build();
+        }
+        if (targetsMedia(action)) {
+            MediaAssetType mediaType = mediaTypeFor(action);
+            DocumentMediaAnchor mediaAnchor = resolveMediaAnchor(snapshot, spec, mediaType);
+            if (mediaAnchor == null) {
+                return unresolved("无法定位目标媒体节点，请提供更明确的描述");
+            }
+            return ResolvedDocumentAnchor.builder()
+                    .anchorType(mediaAnchorType(action))
+                    .mediaAnchor(mediaAnchor)
+                    .preview(mediaAnchor.getPlainText())
                     .build();
         }
         if (targetsSection(action)) {
-            DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(snapshot, intent.getUserInstruction());
+            DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(artifact, snapshot, spec);
+            if (sectionAnchor == null) {
+                log.info("DOC_ITER_ANCHOR section_unresolved action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                        action,
+                        spec == null ? null : spec.getHeadingTitle(),
+                        spec == null ? null : spec.getOutlinePath(),
+                        spec == null ? null : spec.getStructuralOrdinal(),
+                        spec == null ? null : spec.getStructuralOrdinalScope());
+                return unresolved("无法唯一定位目标章节，请提供更明确的章节标题或序号");
+            }
+            log.info("DOC_ITER_ANCHOR section_resolved action={} headingBlockId={} headingText='{}' bodySize={} topLevelIndex={}",
+                    action,
+                    sectionAnchor.getHeadingBlockId(),
+                    sectionAnchor.getHeadingText(),
+                    sectionAnchor.getBodyBlockIds() == null ? null : sectionAnchor.getBodyBlockIds().size(),
+                    sectionAnchor.getTopLevelIndex());
             return ResolvedDocumentAnchor.builder()
                     .anchorType(DocumentAnchorType.SECTION)
                     .sectionAnchor(sectionAnchor)
-                    .preview(sectionPreview(sectionAnchor))
+                    .preview(sectionAnchor.getHeadingText())
                     .build();
         }
-        if (targetsText(intent)) {
-            DocumentTextAnchor textAnchor = resolveTextAnchor(snapshot, intent.getUserInstruction());
+        if (targetsText(action)) {
+            DocumentTextAnchor textAnchor = resolveTextAnchor(snapshot, spec);
+            if (textAnchor == null || textAnchor.getMatchCount() != 1) {
+                return unresolved("无法在文档中定位目标文本，请检查引用内容是否准确");
+            }
             return ResolvedDocumentAnchor.builder()
                     .anchorType(DocumentAnchorType.TEXT)
                     .textAnchor(textAnchor)
-                    .preview(textAnchor == null ? "" : textAnchor.getMatchedText())
+                    .preview(textAnchor.getMatchedText())
                     .build();
         }
-        DocumentBlockAnchor blockAnchor = resolveBlockAnchor(snapshot, intent.getUserInstruction());
+        // 默认：block 锚点
+        DocumentBlockAnchor blockAnchor = resolveBlockAnchor(snapshot, spec);
+        if (blockAnchor == null || blockAnchor.getBlockId() == null) {
+            log.info("DOC_ITER_ANCHOR block_unresolved action={} quotedText='{}'",
+                    action,
+                    spec == null ? null : spec.getQuotedText());
+            return unresolved("无法定位目标 block，请提供更明确的引用文本");
+        }
+        log.info("DOC_ITER_ANCHOR block_resolved action={} blockId={} plainText='{}'",
+                action, blockAnchor.getBlockId(), blockAnchor.getPlainText());
         return ResolvedDocumentAnchor.builder()
                 .anchorType(DocumentAnchorType.BLOCK)
                 .blockAnchor(blockAnchor)
-                .preview(blockAnchor == null ? "" : blockAnchor.getPlainText())
+                .preview(blockAnchor.getPlainText())
                 .build();
+    }
+
+    // ---- section resolution: 只消费 anchorSpec slot + snapshot 索引 ----
+
+    private DocumentSectionAnchor resolveSectionAnchor(Artifact artifact, DocumentStructureSnapshot snapshot, DocumentAnchorSpec spec) {
+        if (spec == null) return null;
+        String headingBlockId = null;
+
+        if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_BLOCK_ID && spec.getBlockId() != null) {
+            headingBlockId = resolveHeadingBlockId(snapshot, spec.getBlockId());
+        } else if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_HEADING_NUMBER && spec.getHeadingNumber() != null) {
+            headingBlockId = findHeadingByNumber(snapshot, spec.getHeadingNumber());
+        } else if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_OUTLINE_PATH_NUMBERS
+                && (spec.getOutlinePathNumbers() != null || spec.getHeadingNumber() != null)) {
+            headingBlockId = findHeadingByNumberPath(snapshot,
+                    spec.getOutlinePathNumbers() != null ? spec.getOutlinePathNumbers() : spec.getHeadingNumber());
+        } else if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_OUTLINE_PATH_TEXT
+                && effectiveOutlinePath(spec) != null) {
+            headingBlockId = findHeadingByOutlinePath(snapshot, effectiveOutlinePath(spec));
+        } else if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_STRUCTURAL_ORDINAL && spec.getStructuralOrdinal() != null) {
+            headingBlockId = findHeadingByStructuralOrdinal(snapshot, spec.getStructuralOrdinal(), spec.getStructuralOrdinalScope());
+        } else if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_HEADING_TITLE && spec.getHeadingTitle() != null) {
+            headingBlockId = findHeadingByTitle(snapshot, spec.getHeadingTitle(), spec.getParentHeadingTitle(), spec.getParentHeadingNumber());
+        } else if (spec.getMatchMode() == DocumentAnchorMatchMode.BY_OUTLINE_PATH && effectiveOutlinePath(spec) != null) {
+            headingBlockId = findHeadingByOutlinePath(snapshot, effectiveOutlinePath(spec));
+        }
+
+        if (headingBlockId == null) return null;
+        log.info("DOC_ITER_ANCHOR section_heading_candidate matchMode={} headingBlockId={}",
+                spec.getMatchMode(), headingBlockId);
+
+        // 按需抓取 section 明细
+        if (artifact != null && snapshotBuilder != null) {
+            String docRef = artifact.getExternalUrl() != null ? artifact.getExternalUrl() : artifact.getDocumentId();
+            snapshotBuilder.fetchSectionDetail(snapshot, headingBlockId, docRef);
+            String previousSiblingHeadingId = resolvePreviousSiblingHeadingId(snapshot, headingBlockId);
+            if (previousSiblingHeadingId != null) {
+                snapshotBuilder.fetchSectionDetail(snapshot, previousSiblingHeadingId, docRef);
+            }
+        }
+
+        return buildSectionAnchor(snapshot, headingBlockId);
+    }
+
+    private String findHeadingByTitle(DocumentStructureSnapshot snapshot, String title, String parentTitle, String parentNumber) {
+        if (snapshot.getHeadingIndex() == null || title == null) return null;
+        String normalized = normalize(title);
+        java.util.List<String> exactMatches = snapshot.getHeadingTitleIndexNormalized() == null
+                ? new java.util.ArrayList<>()
+                : new java.util.ArrayList<>(snapshot.getHeadingTitleIndexNormalized().getOrDefault(normalized, List.of()));
+        if ((parentTitle != null || parentNumber != null) && !exactMatches.isEmpty()) {
+            exactMatches.removeIf(id -> !matchesParentScope(snapshot, id, parentTitle, parentNumber));
+        }
+        log.info("DOC_ITER_ANCHOR title_match title='{}' normalized='{}' exactMatches={}", title, normalized, exactMatches);
+        if (exactMatches.size() == 1) {
+            return exactMatches.get(0);
+        }
+        java.util.List<String> aliasMatches = findHeadingByTitleAlias(snapshot, title, parentTitle, parentNumber);
+        log.info("DOC_ITER_ANCHOR title_alias_match title='{}' aliasMatches={}", title, aliasMatches);
+        if (aliasMatches.size() == 1) {
+            return aliasMatches.get(0);
+        }
+        String ordinalFallback = findHeadingByOrdinalTitle(snapshot, title);
+        if (ordinalFallback != null && matchesParentScopeIfNeeded(snapshot, ordinalFallback, parentTitle, parentNumber)) {
+            log.info("DOC_ITER_ANCHOR title_ordinal_match title='{}' headingBlockId={}", title, ordinalFallback);
+            return ordinalFallback;
+        }
+        return null;
+    }
+
+    private java.util.List<String> findHeadingByTitleAlias(DocumentStructureSnapshot snapshot, String title, String parentTitle, String parentNumber) {
+        if (snapshot == null || snapshot.getHeadingIndex() == null || title == null) {
+            return List.of();
+        }
+        String normalizedAlias = normalize(stripHeadingPrefix(title));
+        if (normalizedAlias.isBlank()) {
+            return List.of();
+        }
+        java.util.List<String> matches = new java.util.ArrayList<>();
+        for (Map.Entry<String, DocumentStructureNode> entry : snapshot.getHeadingIndex().entrySet()) {
+            String alias = normalize(stripHeadingPrefix(entry.getValue().getTitleText()));
+            if (!normalizedAlias.equals(alias)) {
+                continue;
+            }
+            if (!matchesParentScopeIfNeeded(snapshot, entry.getKey(), parentTitle, parentNumber)) {
+                continue;
+            }
+            matches.add(entry.getKey());
+        }
+        return matches;
+    }
+
+    private String findHeadingByOrdinalTitle(DocumentStructureSnapshot snapshot, String title) {
+        if (snapshot == null || title == null) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^第([一二三四五六七八九十百千万0-9]+)(章|节|部分)$").matcher(title.trim());
+        if (!matcher.find()) {
+            return null;
+        }
+        Integer ordinal = parseChineseOrArabicOrdinal(matcher.group(1));
+        if (ordinal == null) {
+            return null;
+        }
+        String unit = matcher.group(2);
+        if ("章".equals(unit)) {
+            return findHeadingByStructuralOrdinal(snapshot, ordinal, "TOP_LEVEL_SECTION");
+        }
+        return findHeadingByStructuralOrdinal(snapshot, ordinal, "SUB_SECTION");
+    }
+
+    private String findHeadingByOutlinePath(DocumentStructureSnapshot snapshot, String outlinePath) {
+        if (outlinePath == null || snapshot.getHeadingIndex() == null || snapshot.getHeadingPathIndexById() == null) return null;
+        String[] parts = outlinePath.split("/");
+        java.util.List<String> normalizedParts = java.util.Arrays.stream(parts)
+                .map(String::trim)
+                .filter(part -> !part.isBlank())
+                .map(this::normalize)
+                .toList();
+        java.util.List<String> matches = new java.util.ArrayList<>();
+        for (Map.Entry<String, List<String>> entry : snapshot.getHeadingPathIndexById().entrySet()) {
+            List<String> titlePath = entry.getValue().stream()
+                    .map(id -> snapshot.getHeadingIndex().get(id))
+                    .filter(Objects::nonNull)
+                    .map(DocumentStructureNode::getTitleText)
+                    .map(this::normalize)
+                    .toList();
+            if (titlePath.size() != normalizedParts.size()) {
+                continue;
+            }
+            if (titlePath.equals(normalizedParts)) {
+                matches.add(entry.getKey());
+            }
+        }
+        log.info("DOC_ITER_ANCHOR outline_path_match outlinePath='{}' matches={}", outlinePath, matches);
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    private String findHeadingByNumber(DocumentStructureSnapshot snapshot, String headingNumber) {
+        return findHeadingByNumberPath(snapshot, headingNumber);
+    }
+
+    private String findHeadingByNumberPath(DocumentStructureSnapshot snapshot, String path) {
+        if (snapshot == null || snapshot.getHeadingPathNumberIndex() == null || path == null) {
+            return null;
+        }
+        String rawPath = path.trim();
+        String normalizedPath = normalizeNumberPath(rawPath);
+        String matched = snapshot.getHeadingPathNumberIndex().get(rawPath);
+        if (matched == null) {
+            matched = snapshot.getHeadingPathNumberIndex().get(normalizedPath);
+        }
+        log.info("DOC_ITER_ANCHOR number_path_match path='{}' normalized='{}' headingBlockId={}", rawPath, normalizedPath, matched);
+        return matched;
+    }
+
+    private String findHeadingByStructuralOrdinal(DocumentStructureSnapshot snapshot, Integer ordinal, String scope) {
+        if (snapshot == null || ordinal == null || snapshot.getHeadingIndex() == null || scope == null) {
+            return null;
+        }
+        int index = ordinal - 1;
+        if (index < 0) {
+            return null;
+        }
+        if ("TOP_LEVEL_SECTION".equalsIgnoreCase(scope)) {
+            List<String> topLevel = snapshot.getTopLevelSequence();
+            if (topLevel != null && index < topLevel.size()) {
+                log.info("DOC_ITER_ANCHOR ordinal_match scope={} ordinal={} headingBlockId={}", scope, ordinal, topLevel.get(index));
+                return topLevel.get(index);
+            }
+            return null;
+        }
+        if (scope.toUpperCase(Locale.ROOT).startsWith("CHILD_OF_HEADING_NUMBER:")) {
+            String parentNumber = scope.substring("CHILD_OF_HEADING_NUMBER:".length());
+            String parentId = findHeadingByNumber(snapshot, parentNumber);
+            return nthChildHeading(snapshot, parentId, index);
+        }
+        if (scope.toUpperCase(Locale.ROOT).startsWith("CHILD_OF_HEADING_TITLE:")) {
+            String parentTitle = scope.substring("CHILD_OF_HEADING_TITLE:".length());
+            String parentId = findHeadingByTitle(snapshot, parentTitle, null, null);
+            return nthChildHeading(snapshot, parentId, index);
+        }
+        if ("SUB_SECTION".equalsIgnoreCase(scope)) {
+            List<String> topLevel = snapshot.getTopLevelSequence();
+            if (topLevel != null && topLevel.size() == 1) {
+                return nthChildHeading(snapshot, topLevel.get(0), index);
+            }
+            return null;
+        }
+        return null;
+    }
+
+    private DocumentSectionAnchor buildSectionAnchor(DocumentStructureSnapshot snapshot, String headingBlockId) {
+        DocumentStructureNode node = snapshot.getHeadingIndex() == null ? null : snapshot.getHeadingIndex().get(headingBlockId);
+        List<String> allBlockIds = sectionAllBlockIds(snapshot, headingBlockId);
+        List<String> bodyBlockIds = allBlockIds.size() <= 1 ? List.of() : allBlockIds.subList(1, allBlockIds.size());
+        int topLevelIndex = resolveTopLevelIndex(snapshot, headingBlockId);
+        List<String> topLevel = snapshot.getTopLevelSequence();
+        String prevId = topLevelIndex > 1 ? topLevel.get(topLevelIndex - 2) : null;
+        String nextId = topLevelIndex > 0 && topLevelIndex < topLevel.size() ? topLevel.get(topLevelIndex) : null;
+        List<String> pathHeadingIds = snapshot.getHeadingPathIndexById() == null
+                ? List.of(headingBlockId)
+                : snapshot.getHeadingPathIndexById().getOrDefault(headingBlockId, List.of(headingBlockId));
+        List<String> pathNumbers = pathHeadingIds.stream()
+                .map(thisId -> snapshot.getHeadingIndex().get(thisId))
+                .filter(Objects::nonNull)
+                .map(DocumentStructureNode::getTitleText)
+                .map(this::extractHeadingNumber)
+                .filter(Objects::nonNull)
+                .toList();
+        return DocumentSectionAnchor.builder()
+                .headingBlockId(headingBlockId)
+                .headingText(node == null ? "" : node.getTitleText())
+                .headingNumber(extractHeadingNumber(node == null ? null : node.getTitleText()))
+                .headingLevel(node == null ? 2 : node.getHeadingLevel())
+                .bodyBlockIds(bodyBlockIds)
+                .allBlockIds(allBlockIds)
+                .topLevelIndex(topLevelIndex)
+                .parentHeadingBlockId(node == null ? null : node.getParentBlockId())
+                .pathHeadingIds(pathHeadingIds)
+                .pathNumbers(pathNumbers)
+                .siblingOrdinalWithinParent(resolveSiblingOrdinal(snapshot, headingBlockId))
+                .absoluteOrder(snapshot.getBlockOrderIndex() == null ? null : snapshot.getBlockOrderIndex().get(headingBlockId))
+                .prevTopLevelSectionId(prevId)
+                .nextTopLevelSectionId(nextId)
+                .build();
+    }
+
+    // ---- text anchor: 基于 snapshot blockIndex，绑定 sourceBlockIds ----
+
+    private DocumentTextAnchor resolveTextAnchor(DocumentStructureSnapshot snapshot, DocumentAnchorSpec spec) {
+        String quoted = spec == null ? null : spec.getQuotedText();
+        if (quoted == null || quoted.isBlank()) return null;
+        List<String> sourceBlockIds = new java.util.ArrayList<>();
+        int matchCount = 0;
+        if (snapshot.getBlockIndex() != null) {
+            for (Map.Entry<String, DocumentStructureNode> entry : snapshot.getBlockIndex().entrySet()) {
+                String text = entry.getValue().getPlainText();
+                if (text != null && text.contains(quoted)) {
+                    matchCount++;
+                    sourceBlockIds.add(entry.getKey());
+                }
+            }
+        }
+        if (matchCount != 1) {
+            return DocumentTextAnchor.builder()
+                    .matchedText(quoted)
+                    .matchCount(matchCount)
+                    .surroundingContext(quoted)
+                    .sourceBlockIds(List.copyOf(sourceBlockIds))
+                    .build();
+        }
+        String sourceBlockId = sourceBlockIds.get(0);
+        DocumentStructureNode sourceNode = snapshot.getBlockIndex().get(sourceBlockId);
+        int matchStart = sourceNode == null || sourceNode.getPlainText() == null ? -1 : sourceNode.getPlainText().indexOf(quoted);
+        return DocumentTextAnchor.builder()
+                .matchedText(quoted)
+                .matchCount(matchCount)
+                .surroundingContext(quoted)
+                .sourceBlockId(sourceBlockId)
+                .sourceBlockIds(List.copyOf(sourceBlockIds))
+                .matchStart(matchStart >= 0 ? matchStart : null)
+                .matchEnd(matchStart >= 0 ? matchStart + quoted.length() : null)
+                .build();
+    }
+
+    // ---- block anchor: 基于 snapshot blockIndex ----
+
+    private DocumentBlockAnchor resolveBlockAnchor(DocumentStructureSnapshot snapshot, DocumentAnchorSpec spec) {
+        if (spec != null && spec.getMatchMode() == DocumentAnchorMatchMode.BY_BLOCK_ID) {
+            return resolveBlockAnchorById(snapshot, spec.getBlockId());
+        }
+        String quoted = spec == null ? null : spec.getQuotedText();
+        if (quoted == null || quoted.isBlank()) return null;
+        if (snapshot.getBlockIndex() == null) return null;
+        List<String> ordered = snapshot.getOrderedBlockIds();
+        if (ordered == null) ordered = List.copyOf(snapshot.getBlockIndex().keySet());
+        java.util.List<DocumentBlockAnchor> matches = new java.util.ArrayList<>();
+        for (String blockId : ordered) {
+            DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
+            if (isProtectedBlock(node, snapshot)) continue;
+            if (node != null && node.getPlainText() != null && node.getPlainText().contains(quoted)) {
+                matches.add(DocumentBlockAnchor.builder()
+                        .blockId(blockId)
+                        .blockType(node.getBlockType())
+                        .plainText(node.getPlainText())
+                        .topLevelAncestorId(node.getTopLevelAncestorId())
+                        .nextBlockId(node.getNextSiblingId())
+                        .prevBlockId(node.getPrevSiblingId())
+                        .build());
+            }
+        }
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    // ---- media anchor: 基于 snapshot blockIndex 的 blockType 元数据 ----
+
+    private DocumentMediaAnchor resolveMediaAnchor(DocumentStructureSnapshot snapshot, DocumentAnchorSpec spec, MediaAssetType expectedType) {
+        if (snapshot.getBlockIndex() == null) return null;
+        String caption = spec == null ? null : spec.getMediaCaption();
+        String quoted = spec == null ? null : spec.getQuotedText();
+        String hint = caption != null ? caption : quoted;
+        List<String> ordered = snapshot.getOrderedBlockIds();
+        if (ordered == null) ordered = List.copyOf(snapshot.getBlockIndex().keySet());
+        java.util.List<DocumentMediaAnchor> matches = new java.util.ArrayList<>();
+        for (int i = 0; i < ordered.size(); i++) {
+            String blockId = ordered.get(i);
+            DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
+            if (node == null || node.getBlockType() == null) continue;
+            if (!isMediaTypeMatch(node.getBlockType(), expectedType)) continue;
+            if (hint != null && !hint.isBlank()) {
+                String text = node.getPlainText() == null ? "" : node.getPlainText();
+                if (!text.contains(hint)) continue;
+            }
+            String prevId = i > 0 ? ordered.get(i - 1) : null;
+            String nextId = i + 1 < ordered.size() ? ordered.get(i + 1) : null;
+            matches.add(DocumentMediaAnchor.builder()
+                    .blockId(blockId)
+                    .mediaType(expectedType)
+                    .plainText(node.getPlainText())
+                    .prevBlockId(prevId)
+                    .nextBlockId(nextId)
+                    .build());
+        }
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    private boolean isMediaTypeMatch(String blockType, MediaAssetType expectedType) {
+        String bt = blockType.toLowerCase(Locale.ROOT);
+        if (expectedType == null) return false;
+        return switch (expectedType) {
+            case IMAGE -> bt.contains("image") || bt.contains("media");
+            case TABLE -> bt.contains("table");
+            case WHITEBOARD -> bt.contains("whiteboard");
+            default -> false;
+        };
+    }
+
+    // ---- head metadata block ----
+
+    private DocumentBlockAnchor resolveHeadMetadataBlock(DocumentStructureSnapshot snapshot, DocumentAnchorSpec spec) {
+        if (spec != null && spec.getMatchMode() == DocumentAnchorMatchMode.BY_BLOCK_ID) {
+            DocumentBlockAnchor blockAnchor = resolveBlockAnchorById(snapshot, spec.getBlockId());
+            return isHeadMetadataBlock(snapshot, blockAnchor == null ? null : blockAnchor.getBlockId()) ? blockAnchor : null;
+        }
+        if (snapshot.getBlockIndex() == null) return null;
+        String firstHeadingId = snapshot.getTopLevelSequence() == null || snapshot.getTopLevelSequence().isEmpty()
+                ? null : snapshot.getTopLevelSequence().get(0);
+        List<String> ordered = snapshot.getOrderedBlockIds();
+        if (ordered == null) ordered = List.copyOf(snapshot.getBlockIndex().keySet());
+        String hint = spec == null ? null : spec.getQuotedText();
+        java.util.List<DocumentBlockAnchor> matches = new java.util.ArrayList<>();
+        for (int i = 0; i < ordered.size(); i++) {
+            String blockId = ordered.get(i);
+            if (blockId.equals(firstHeadingId)) break;
+            DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
+            if (isProtectedBlock(node, snapshot)) continue;
+            if (node == null || node.getPlainText() == null || node.getPlainText().isBlank()) continue;
+            if (hint != null && !hint.isBlank() && !node.getPlainText().contains(hint)) continue;
+            String prevId = i > 0 ? ordered.get(i - 1) : null;
+            String nextId = i + 1 < ordered.size() ? ordered.get(i + 1) : null;
+            matches.add(DocumentBlockAnchor.builder()
+                    .blockId(blockId)
+                    .blockType(node.getBlockType())
+                    .plainText(node.getPlainText())
+                    .prevBlockId(prevId)
+                    .nextBlockId(nextId)
+                    .build());
+        }
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    // ---- helpers ----
+
+    private DocumentSectionAnchor firstSectionAnchor(DocumentStructureSnapshot snapshot) {
+        if (snapshot.getTopLevelSequence() == null || snapshot.getTopLevelSequence().isEmpty()) return null;
+        String headingBlockId = snapshot.getTopLevelSequence().get(0);
+        return buildSectionAnchor(snapshot, headingBlockId);
+    }
+
+    private List<String> sectionAllBlockIds(DocumentStructureSnapshot snapshot, String headingBlockId) {
+        if (snapshot.getSectionBlockIds() != null) {
+            List<String> ids = snapshot.getSectionBlockIds().get(headingBlockId);
+            if (ids != null && !ids.isEmpty()) return ids;
+        }
+        return List.of(headingBlockId);
+    }
+
+    private String sectionTailBlockId(DocumentSectionAnchor sectionAnchor) {
+        if (sectionAnchor == null) return null;
+        List<String> all = sectionAnchor.getAllBlockIds();
+        if (all == null || all.isEmpty()) return null;
+        return all.get(all.size() - 1);
+    }
+
+    private int resolveTopLevelIndex(DocumentStructureSnapshot snapshot, String headingBlockId) {
+        if (snapshot.getTopLevelSequence() == null) return 0;
+        int idx = snapshot.getTopLevelSequence().indexOf(headingBlockId);
+        if (idx >= 0) return idx + 1;
+        DocumentStructureNode node = snapshot.getHeadingIndex() == null ? null : snapshot.getHeadingIndex().get(headingBlockId);
+        if (node != null && node.getTopLevelAncestorId() != null) {
+            idx = snapshot.getTopLevelSequence().indexOf(node.getTopLevelAncestorId());
+            return idx >= 0 ? idx + 1 : 0;
+        }
+        return 0;
+    }
+
+    private boolean isProtectedBlock(DocumentStructureNode node, DocumentStructureSnapshot snapshot) {
+        if (node == null) return true;
+        if ("heading".equalsIgnoreCase(node.getBlockType()) || node.getHeadingLevel() != null) return true;
+        return snapshot != null && snapshot.getHeadingIndex() != null && snapshot.getHeadingIndex().containsKey(node.getBlockId());
+    }
+
+    private String resolveHeadingBlockId(DocumentStructureSnapshot snapshot, String blockId) {
+        if (snapshot == null || blockId == null || snapshot.getHeadingIndex() == null) {
+            return null;
+        }
+        DocumentStructureNode headingNode = snapshot.getHeadingIndex().get(blockId);
+        return headingNode == null ? null : blockId;
+    }
+
+    private boolean matchesParentScope(DocumentStructureSnapshot snapshot, String headingId, String parentTitle, String parentNumber) {
+        if (snapshot == null || headingId == null) {
+            return false;
+        }
+        String parentId = snapshot.getParentHeadingIndex() == null ? null : snapshot.getParentHeadingIndex().get(headingId);
+        if (parentId == null) {
+            return false;
+        }
+        DocumentStructureNode parentNode = snapshot.getHeadingIndex() == null ? null : snapshot.getHeadingIndex().get(parentId);
+        if (parentTitle != null && parentNode != null && normalize(parentNode.getTitleText()).equals(normalize(parentTitle))) {
+            return true;
+        }
+        return parentNumber != null && parentNode != null && parentNumber.equals(extractHeadingNumber(parentNode.getTitleText()));
+    }
+
+    private boolean matchesParentScopeIfNeeded(DocumentStructureSnapshot snapshot, String headingId, String parentTitle, String parentNumber) {
+        if (parentTitle == null && parentNumber == null) {
+            return true;
+        }
+        return matchesParentScope(snapshot, headingId, parentTitle, parentNumber);
+    }
+
+    private String nthChildHeading(DocumentStructureSnapshot snapshot, String parentId, int zeroBasedIndex) {
+        if (snapshot == null || parentId == null || snapshot.getChildrenHeadingIndex() == null) {
+            return null;
+        }
+        List<String> children = snapshot.getChildrenHeadingIndex().get(parentId);
+        if (children == null || zeroBasedIndex < 0 || zeroBasedIndex >= children.size()) {
+            return null;
+        }
+        String childId = children.get(zeroBasedIndex);
+        log.info("DOC_ITER_ANCHOR ordinal_match parentId={} index={} headingBlockId={}", parentId, zeroBasedIndex + 1, childId);
+        return childId;
+    }
+
+    private int resolveSiblingOrdinal(DocumentStructureSnapshot snapshot, String headingBlockId) {
+        if (snapshot == null || headingBlockId == null) {
+            return 0;
+        }
+        String parentId = snapshot.getParentHeadingIndex() == null ? null : snapshot.getParentHeadingIndex().get(headingBlockId);
+        List<String> siblings = parentId == null
+                ? snapshot.getTopLevelSequence()
+                : snapshot.getChildrenHeadingIndex() == null ? null : snapshot.getChildrenHeadingIndex().get(parentId);
+        if (siblings == null) {
+            return 0;
+        }
+        int idx = siblings.indexOf(headingBlockId);
+        return idx >= 0 ? idx + 1 : 0;
+    }
+
+    private String resolvePreviousSiblingHeadingId(DocumentStructureSnapshot snapshot, String headingBlockId) {
+        if (snapshot == null || headingBlockId == null) {
+            return null;
+        }
+        String parentId = snapshot.getParentHeadingIndex() == null ? null : snapshot.getParentHeadingIndex().get(headingBlockId);
+        List<String> siblings = parentId == null
+                ? snapshot.getTopLevelSequence()
+                : snapshot.getChildrenHeadingIndex() == null ? null : snapshot.getChildrenHeadingIndex().get(parentId);
+        if (siblings == null) {
+            return null;
+        }
+        int idx = siblings.indexOf(headingBlockId);
+        return idx > 0 ? siblings.get(idx - 1) : null;
+    }
+
+    private String effectiveOutlinePath(DocumentAnchorSpec spec) {
+        if (spec == null) {
+            return null;
+        }
+        if (spec.getOutlinePathText() != null && !spec.getOutlinePathText().isBlank()) {
+            return spec.getOutlinePathText();
+        }
+        if (spec.getOutlinePathNumbers() != null && !spec.getOutlinePathNumbers().isBlank()) {
+            return spec.getOutlinePathNumbers();
+        }
+        return spec.getOutlinePath();
+    }
+
+    private String normalizeNumberPath(String path) {
+        return path == null ? null : path.trim().replace('.', '/');
+    }
+
+    private String extractHeadingNumber(String title) {
+        if (title == null) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^(\\d+(?:\\.\\d+)*)").matcher(title.trim());
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        java.util.regex.Matcher chineseMatcher = java.util.regex.Pattern.compile("^第([一二三四五六七八九十百千万0-9]+)(章|节|部分)").matcher(title.trim());
+        if (chineseMatcher.find()) {
+            Integer ordinal = parseChineseOrArabicOrdinal(chineseMatcher.group(1));
+            return ordinal == null ? null : String.valueOf(ordinal);
+        }
+        java.util.regex.Matcher chineseListMatcher = java.util.regex.Pattern.compile("^([一二三四五六七八九十百千万]+)[、.]").matcher(title.trim());
+        if (chineseListMatcher.find()) {
+            Integer ordinal = parseChineseOrArabicOrdinal(chineseListMatcher.group(1));
+            return ordinal == null ? null : String.valueOf(ordinal);
+        }
+        return null;
+    }
+
+    private Integer parseChineseOrArabicOrdinal(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return switch (value) {
+                case "一" -> 1;
+                case "二" -> 2;
+                case "三" -> 3;
+                case "四" -> 4;
+                case "五" -> 5;
+                case "六" -> 6;
+                case "七" -> 7;
+                case "八" -> 8;
+                case "九" -> 9;
+                case "十" -> 10;
+                default -> null;
+            };
+        }
+    }
+
+    private DocumentBlockAnchor resolveBlockAnchorById(DocumentStructureSnapshot snapshot, String blockId) {
+        if (snapshot == null || blockId == null || snapshot.getBlockIndex() == null) {
+            return null;
+        }
+        DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
+        if (node == null || isProtectedBlock(node, snapshot)) {
+            return null;
+        }
+        List<String> ordered = snapshot.getOrderedBlockIds();
+        String prevId = null;
+        String nextId = null;
+        if (ordered != null) {
+            int index = ordered.indexOf(blockId);
+            if (index >= 0) {
+                prevId = index > 0 ? ordered.get(index - 1) : null;
+                nextId = index + 1 < ordered.size() ? ordered.get(index + 1) : null;
+            }
+        }
+        return DocumentBlockAnchor.builder()
+                .blockId(blockId)
+                .blockType(node.getBlockType())
+                .plainText(node.getPlainText())
+                .topLevelAncestorId(node.getTopLevelAncestorId())
+                .nextBlockId(nextId != null ? nextId : node.getNextSiblingId())
+                .prevBlockId(prevId != null ? prevId : node.getPrevSiblingId())
+                .build();
+    }
+
+    private boolean isHeadMetadataBlock(DocumentStructureSnapshot snapshot, String blockId) {
+        if (snapshot == null || blockId == null) {
+            return false;
+        }
+        String firstHeadingId = snapshot.getTopLevelSequence() == null || snapshot.getTopLevelSequence().isEmpty()
+                ? null : snapshot.getTopLevelSequence().get(0);
+        if (firstHeadingId == null) {
+            return snapshot.getBlockIndex() != null && snapshot.getBlockIndex().containsKey(blockId);
+        }
+        List<String> ordered = snapshot.getOrderedBlockIds();
+        if (ordered == null) {
+            ordered = List.copyOf(snapshot.getBlockIndex().keySet());
+        }
+        for (String currentBlockId : ordered) {
+            if (firstHeadingId.equals(currentBlockId)) {
+                return false;
+            }
+            if (blockId.equals(currentBlockId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean targetsInsertAfterSection(DocumentSemanticActionType action) {
+        return switch (action) {
+            case INSERT_BLOCK_AFTER_ANCHOR, INSERT_IMAGE_AFTER_ANCHOR, INSERT_TABLE_AFTER_ANCHOR, INSERT_WHITEBOARD_AFTER_ANCHOR -> true;
+            default -> false;
+        };
+    }
+
+    private boolean targetsMedia(DocumentSemanticActionType action) {
+        return switch (action) {
+            case REPLACE_IMAGE, DELETE_IMAGE, REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE,
+                 UPDATE_WHITEBOARD_CONTENT, MOVE_MEDIA_BLOCK -> true;
+            default -> false;
+        };
     }
 
     private boolean targetsSection(DocumentSemanticActionType action) {
@@ -86,217 +781,47 @@ public class DocumentAnchorResolver {
         };
     }
 
-    private boolean targetsText(DocumentEditIntent intent) {
-        return intent.getSemanticAction() == DocumentSemanticActionType.REWRITE_INLINE_TEXT
-                || intent.getSemanticAction() == DocumentSemanticActionType.DELETE_INLINE_TEXT;
+    private boolean targetsText(DocumentSemanticActionType action) {
+        return action == DocumentSemanticActionType.REWRITE_INLINE_TEXT
+                || action == DocumentSemanticActionType.DELETE_INLINE_TEXT;
     }
 
-    private DocumentBlockAnchor resolveHeadMetadataBlock(DocumentStructureSnapshot snapshot, DocumentEditIntent intent) {
-        if (snapshot == null || snapshot.getBlockIndex() == null || snapshot.getBlockIndex().isEmpty()) {
-            return null;
-        }
-        List<String> allBlockIds = structureParser.parseBlockIds(snapshot.getRawFullXml());
-        if (allBlockIds.isEmpty()) {
-            return null;
-        }
-        String firstHeadingId = snapshot.getTopLevelSequence() == null || snapshot.getTopLevelSequence().isEmpty()
-                ? null
-                : snapshot.getTopLevelSequence().get(0);
-        int firstHeadingIndex = firstHeadingId == null ? allBlockIds.size() : allBlockIds.indexOf(firstHeadingId);
-        if (firstHeadingIndex < 0) {
-            firstHeadingIndex = allBlockIds.size();
-        }
-        Set<String> targetKeywords = resolveIntentKeywords(intent);
-        for (int i = 0; i < firstHeadingIndex; i++) {
-            String blockId = allBlockIds.get(i);
-            DocumentStructureNode node = snapshot.getBlockIndex().get(blockId);
-            if (!isHeadMetadataCandidate(node, targetKeywords)) {
-                continue;
-            }
-            return DocumentBlockAnchor.builder()
-                    .blockId(blockId)
-                    .blockType(node.getBlockType())
-                    .plainText(node.getPlainText())
-                    .nextBlockId(i + 1 < allBlockIds.size() ? allBlockIds.get(i + 1) : null)
-                    .prevBlockId(i > 0 ? allBlockIds.get(i - 1) : null)
-                    .build();
-        }
-        return null;
+    private DocumentAnchorType mediaAnchorType(DocumentSemanticActionType action) {
+        if (action == null) return DocumentAnchorType.MEDIA;
+        return switch (action) {
+            case REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE -> DocumentAnchorType.TABLE;
+            default -> DocumentAnchorType.MEDIA;
+        };
     }
 
-    private DocumentSectionAnchor resolveSectionAnchor(DocumentStructureSnapshot snapshot, String instruction) {
-        List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(snapshot.getRawOutlineXml());
-        DocumentStructureParser.HeadingBlock matched = structureParser.resolveOrdinalHeading(instruction, headings);
-        if (matched == null) {
-            List<DocumentStructureParser.HeadingBlock> matches = structureParser.matchHeadings(instruction, headings);
-            matched = matches.isEmpty() ? null : matches.get(0);
-        }
-        if (matched == null) {
-            return null;
-        }
-        List<String> allBlockIds = sectionAllBlockIds(snapshot, matched.getBlockId());
-        List<String> bodyBlockIds = allBlockIds.size() <= 1 ? List.of() : allBlockIds.subList(1, allBlockIds.size());
-        int topLevelIndex = resolveTopLevelIndex(snapshot, matched.getBlockId());
-        String prevTopLevelSectionId = topLevelIndex > 1 ? snapshot.getTopLevelSequence().get(topLevelIndex - 2) : null;
-        String nextTopLevelSectionId = topLevelIndex > 0 && topLevelIndex < snapshot.getTopLevelSequence().size()
-                ? snapshot.getTopLevelSequence().get(topLevelIndex)
-                : null;
-        return DocumentSectionAnchor.builder()
-                .headingBlockId(matched.getBlockId())
-                .headingText(matched.getText())
-                .headingLevel(matched.getLevel())
-                .bodyBlockIds(bodyBlockIds)
-                .allBlockIds(allBlockIds)
-                .topLevelIndex(topLevelIndex)
-                .prevTopLevelSectionId(prevTopLevelSectionId)
-                .nextTopLevelSectionId(nextTopLevelSectionId)
+    private MediaAssetType mediaTypeFor(DocumentSemanticActionType action) {
+        if (action == null) return MediaAssetType.IMAGE;
+        return switch (action) {
+            case REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE -> MediaAssetType.TABLE;
+            case UPDATE_WHITEBOARD_CONTENT -> MediaAssetType.WHITEBOARD;
+            default -> MediaAssetType.IMAGE;
+        };
+    }
+
+    private ResolvedDocumentAnchor unresolved(String reason) {
+        return ResolvedDocumentAnchor.builder()
+                .anchorType(DocumentAnchorType.UNRESOLVED)
+                .preview(reason)
                 .build();
     }
 
-    private DocumentTextAnchor resolveTextAnchor(DocumentStructureSnapshot snapshot, String instruction) {
-        String quoted = structureParser.extractQuotedText(instruction);
-        if (quoted == null || quoted.isBlank()) {
-            return DocumentTextAnchor.builder()
-                    .matchedText("")
-                    .matchCount(0)
-                    .surroundingContext("")
-                    .sourceBlockIds(List.of())
-                    .build();
-        }
-        int matchCount = structureParser.countOccurrences(snapshot.getRawFullMarkdown(), quoted);
-        return DocumentTextAnchor.builder()
-                .matchedText(quoted)
-                .matchCount(matchCount)
-                .surroundingContext(quoted)
-                .sourceBlockIds(List.of())
-                .build();
+    private String normalize(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
     }
 
-    private DocumentBlockAnchor resolveBlockAnchor(DocumentStructureSnapshot snapshot, String instruction) {
-        String quoted = structureParser.extractQuotedText(instruction);
-        if (quoted == null || quoted.isBlank()) {
-            return DocumentBlockAnchor.builder().blockId(null).blockType(null).plainText("").build();
-        }
-        List<String> blockIds = structureParser.parseBlockIds(snapshot.getRawFullXml());
-        for (String blockId : blockIds) {
-            DocumentStructureNode node = snapshot.getBlockIndex() == null ? null : snapshot.getBlockIndex().get(blockId);
-            if (isProtectedBlock(node, snapshot)) {
-                continue;
-            }
-            if (node != null && node.getPlainText() != null && node.getPlainText().contains(quoted)) {
-                return DocumentBlockAnchor.builder()
-                        .blockId(blockId)
-                        .blockType(node.getBlockType())
-                        .plainText(node.getPlainText())
-                        .topLevelAncestorId(node.getTopLevelAncestorId())
-                        .nextBlockId(node.getNextSiblingId())
-                        .prevBlockId(node.getPrevSiblingId())
-                        .build();
-            }
-        }
-        return DocumentBlockAnchor.builder().blockId(null).blockType(null).plainText(quoted).build();
-    }
-
-    private DocumentSectionAnchor firstSectionAnchor(DocumentStructureSnapshot snapshot) {
-        if (snapshot.getTopLevelSequence() == null || snapshot.getTopLevelSequence().isEmpty()) {
-            return null;
-        }
-        String headingBlockId = snapshot.getTopLevelSequence().get(0);
-        DocumentStructureNode node = snapshot.getHeadingIndex() == null ? null : snapshot.getHeadingIndex().get(headingBlockId);
-        return DocumentSectionAnchor.builder()
-                .headingBlockId(headingBlockId)
-                .headingText(node == null ? "" : node.getTitleText())
-                .headingLevel(node == null ? 2 : node.getHeadingLevel())
-                .allBlockIds(sectionAllBlockIds(snapshot, headingBlockId))
-                .bodyBlockIds(sectionAllBlockIds(snapshot, headingBlockId).size() <= 1 ? List.of() : sectionAllBlockIds(snapshot, headingBlockId).subList(1, sectionAllBlockIds(snapshot, headingBlockId).size()))
-                .topLevelIndex(1)
-                .nextTopLevelSectionId(snapshot.getTopLevelSequence().size() > 1 ? snapshot.getTopLevelSequence().get(1) : null)
-                .build();
-    }
-
-    private List<String> sectionAllBlockIds(DocumentStructureSnapshot snapshot, String headingBlockId) {
-        List<String> allIds = structureParser.parseBlockIds(snapshot.getRawFullXml());
-        List<DocumentStructureParser.HeadingBlock> headings = structureParser.parseHeadings(snapshot.getRawOutlineXml());
-        int start = allIds.indexOf(headingBlockId);
-        if (start < 0) {
-            return List.of(headingBlockId);
-        }
-        int nextHeadingIndex = allIds.size();
-        for (DocumentStructureParser.HeadingBlock heading : headings) {
-            if (headingBlockId.equals(heading.getBlockId())) {
-                continue;
-            }
-            int candidate = allIds.indexOf(heading.getBlockId());
-            if (candidate > start) {
-                nextHeadingIndex = Math.min(nextHeadingIndex, candidate);
-            }
-        }
-        return List.copyOf(allIds.subList(start, nextHeadingIndex));
-    }
-
-    private int resolveTopLevelIndex(DocumentStructureSnapshot snapshot, String headingBlockId) {
-        if (snapshot.getTopLevelSequence() == null) {
-            return 0;
-        }
-        int index = snapshot.getTopLevelSequence().indexOf(headingBlockId);
-        if (index >= 0) {
-            return index + 1;
-        }
-        DocumentStructureNode node = snapshot.getHeadingIndex() == null ? null : snapshot.getHeadingIndex().get(headingBlockId);
-        if (node != null && node.getTopLevelAncestorId() != null) {
-            index = snapshot.getTopLevelSequence().indexOf(node.getTopLevelAncestorId());
-            return index >= 0 ? index + 1 : 0;
-        }
-        return 0;
-    }
-
-    private String sectionPreview(DocumentSectionAnchor anchor) {
-        if (anchor == null) {
+    private String stripHeadingPrefix(String title) {
+        if (title == null) {
             return "";
         }
-        return anchor.getHeadingText() == null ? "" : anchor.getHeadingText();
-    }
-
-    private boolean isHeadMetadataCandidate(DocumentStructureNode node, Set<String> targetKeywords) {
-        if (node == null || isProtectedBlock(node, null)) {
-            return false;
-        }
-        String plainText = node.getPlainText() == null ? "" : node.getPlainText().trim();
-        if (plainText.isBlank()) {
-            return false;
-        }
-        String normalizedText = normalizeLoose(plainText);
-        return targetKeywords.stream()
-                .map(this::normalizeLoose)
-                .filter(keyword -> !keyword.isBlank())
-                .anyMatch(normalizedText::contains);
-    }
-
-    private boolean isProtectedBlock(DocumentStructureNode node, DocumentStructureSnapshot snapshot) {
-        if (node == null) {
-            return true;
-        }
-        if ("heading".equalsIgnoreCase(node.getBlockType()) || node.getHeadingLevel() != null) {
-            return true;
-        }
-        if (snapshot != null && snapshot.getHeadingIndex() != null && snapshot.getHeadingIndex().containsKey(node.getBlockId())) {
-            return true;
-        }
-        return false;
-    }
-
-    private Set<String> resolveIntentKeywords(DocumentEditIntent intent) {
-        if (intent == null || intent.getParameters() == null) {
-            return Set.of();
-        }
-        String encodedKeywords = intent.getParameters().getOrDefault("targetKeywords", "");
-        return java.util.Arrays.stream(encodedKeywords.split("\\|"))
-                .map(String::trim)
-                .filter(keyword -> !keyword.isBlank())
-                .collect(java.util.stream.Collectors.toSet());
-    }
-
-    private String normalizeLoose(String value) {
-        return value == null ? "" : value.replaceAll("\\s+", "").toLowerCase(java.util.Locale.ROOT);
+        String normalized = title.trim();
+        normalized = normalized.replaceFirst("^\\d+(?:\\.\\d+)*\\s*", "");
+        normalized = normalized.replaceFirst("^第[一二三四五六七八九十百千万0-9]+[章节部分]\\s*", "");
+        normalized = normalized.replaceFirst("^[一二三四五六七八九十百千万]+[、.]\\s*", "");
+        return normalized.trim();
     }
 }

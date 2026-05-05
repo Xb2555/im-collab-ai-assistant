@@ -3,7 +3,7 @@ package com.lark.imcollab.harness.presentation.config;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.lark.imcollab.harness.presentation.model.PresentationOutline;
 import com.lark.imcollab.harness.presentation.model.PresentationReviewResult;
-import com.lark.imcollab.harness.presentation.model.PresentationSlideXml;
+import com.lark.imcollab.harness.presentation.model.PresentationSlideXmlBatch;
 import com.lark.imcollab.harness.presentation.model.PresentationStoryline;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.context.annotation.Bean;
@@ -80,15 +80,13 @@ public class PresentationAgentConfig {
     public ReactAgent presentationSlideXmlAgent(ChatModel chatModel) {
         return ReactAgent.builder()
                 .name("presentation-slide-xml-agent")
-                .description("Scenario D: generate Lark Slides XML for one slide")
+                .description("Scenario D: generate Lark Slides XML for all slides in one batch")
                 .systemPrompt("""
-                        你负责为单页 PPT 生成飞书 Slides XML。
+                        你负责一次性为整份 PPT 生成飞书 Slides XML。
                         输出结构化 JSON：
-                        - slideId
-                        - index
-                        - title
-                        - xml: 完整 <slide xmlns="http://www.larkoffice.com/sml/2.0">...</slide>
-                        - speakerNotes
+                        - slides: 页面数组，数组长度必须等于输入的页面计划数量
+                        - 每个 slides[] 元素包含 slideId、index、title、xml、speakerNotes
+                        - 每个 xml 都必须是完整 <slide xmlns="http://www.larkoffice.com/sml/2.0">...</slide>
                         XML 规则：
                         1. 画布为 960x540，所有坐标必须在画布内。
                         2. slide 直接子元素只能使用 style、data、note。
@@ -97,9 +95,13 @@ public class PresentationAgentConfig {
                         5. 不要输出 Markdown 代码块，不要返回 presentation 根元素。
                         6. 文本要短，适合投屏阅读。
                         7. 页面可见文本必须是完整短句，不要出现省略号或截断词。
-                        8. 渐变色必须使用 rgba() 且带百分比停靠点；shape 和文本必须保持足够对比度。
+                        8. 所有文字必须包在 content/p/span 或 content/ul/li/p/span 内，禁止把文字直接写成 shape 节点文本。
+                        9. 必须按输入页面计划逐页生成，不得漏页、合并页或新增页。
+                        10. xml 字段是 JSON 字符串，必须正确转义双引号和换行。
+                        合法 XML 片段示例：
+                        <slide xmlns="http://www.larkoffice.com/sml/2.0"><style><fill><fillColor color="rgb(255,255,255)"/></fill></style><data><shape type="text" topLeftX="64" topLeftY="48" width="820" height="88"><content textType="title"><p><strong><span color="rgb(20,35,60)" fontSize="32">示例标题</span></strong></p></content></shape><shape type="text" topLeftX="80" topLeftY="160" width="760" height="220"><content><ul><li><p><span color="rgb(20,35,60)" fontSize="20">示例要点</span></p></li></ul></content></shape></data></slide>
                         """)
-                .outputType(PresentationSlideXml.class)
+                .outputType(PresentationSlideXmlBatch.class)
                 .model(chatModel)
                 .build();
     }

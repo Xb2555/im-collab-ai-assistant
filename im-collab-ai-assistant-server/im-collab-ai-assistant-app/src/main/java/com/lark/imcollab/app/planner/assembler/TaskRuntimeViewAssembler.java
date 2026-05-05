@@ -104,7 +104,9 @@ public class TaskRuntimeViewAssembler {
         boolean canCancel = status != TaskStatusEnum.COMPLETED && status != TaskStatusEnum.CANCELLED;
         boolean canReplan = status == TaskStatusEnum.EXECUTING
                 || status == TaskStatusEnum.FAILED
-                || status == TaskStatusEnum.WAITING_APPROVAL;
+                || status == TaskStatusEnum.WAITING_APPROVAL
+                || status == TaskStatusEnum.COMPLETED
+                || status == TaskStatusEnum.CANCELLED;
         boolean canResume = task != null && task.isNeedUserAction();
         boolean canInterrupt = status == TaskStatusEnum.EXECUTING
                 && defaultList(steps).stream().anyMatch(step -> step.getStatus() == StepStatusEnum.RUNNING);
@@ -134,6 +136,7 @@ public class TaskRuntimeViewAssembler {
             case STEP_RETRY_SCHEDULED -> "步骤已进入重试";
             case USER_INTERVENTION -> "用户人工干预";
             case ARTIFACT_CREATED -> "已生成产物";
+            case ARTIFACT_UPDATED -> "产物已更新";
             case TASK_COMPLETED -> "任务已完成";
             case TASK_FAILED -> "任务执行失败";
             case TASK_CANCELLED -> "任务已取消";

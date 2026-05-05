@@ -1,9 +1,14 @@
 package com.lark.imcollab.app.planner.service;
 
-import com.lark.imcollab.common.facade.ImTaskCommandFacade;
+import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.facade.ImTaskCommandFacade;
+import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
@@ -17,6 +22,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -34,6 +40,7 @@ class PlannerCommandApplicationServiceTest {
     @Mock private ImTaskCommandFacade taskCommandFacade;
     @Mock private TaskRuntimeService taskRuntimeService;
     @Mock private PlannerSessionService sessionService;
+    @Mock private DocumentArtifactIterationFacade documentArtifactIterationFacade;
 
     private PlannerCommandApplicationService service;
 
@@ -45,7 +52,8 @@ class PlannerCommandApplicationServiceTest {
                 plannerRetryService,
                 taskCommandFacade,
                 taskRuntimeService,
-                sessionService
+                sessionService,
+                provider(documentArtifactIterationFacade)
         );
     }
 
@@ -75,8 +83,8 @@ class PlannerCommandApplicationServiceTest {
 
         org.assertj.core.api.Assertions.assertThat(result).isSameAs(aborted);
         InOrder inOrder = inOrder(taskCommandFacade, sessionService, taskRuntimeService);
-        inOrder.verify(taskCommandFacade).cancelExecution("task-1");
         inOrder.verify(sessionService).markAborted("task-1", "User cancelled from GUI command");
+        inOrder.verify(taskCommandFacade).cancelExecution("task-1");
         inOrder.verify(taskRuntimeService).projectPhaseTransition(
                 "task-1",
                 PlanningPhaseEnum.ABORTED,
@@ -90,6 +98,10 @@ class PlannerCommandApplicationServiceTest {
     void resumeAppendsUserInterventionBeforeContinuingGraph() {
         PlanTaskSession session = new PlanTaskSession();
         session.setTaskId("task-1");
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        when(sessionService.get("task-1")).thenReturn(current);
         when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
                 eq("给一个大概的参考就好"), eq(null), eq("给一个大概的参考就好")))
                 .thenReturn(session);
@@ -108,6 +120,31 @@ class PlannerCommandApplicationServiceTest {
     }
 
     @Test
+    void resumePassesWorkspaceContextIntoGraph() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .selectedMessages(java.util.List.of("用户补充选中消息：采购预算100元"))
+                .build();
+        when(sessionService.get("task-1")).thenReturn(current);
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq("继续整理"), eq(workspaceContext), eq("继续整理")))
+                .thenReturn(session);
+
+        service.resume("task-1", "继续整理", false, workspaceContext);
+
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.CLARIFICATION_REPLY, "clarification reply")),
+                eq("task-1"),
+                eq("继续整理"),
+                eq(workspaceContext),
+                eq("继续整理")
+        );
+    }
+
+    @Test
     void replanAppendsUserInterventionBeforeAdjustingPlan() {
         PlanTaskSession session = new PlanTaskSession();
         session.setTaskId("task-1");
@@ -117,8 +154,7 @@ class PlannerCommandApplicationServiceTest {
 
         service.replan("task-1", "增加风险复盘");
 
-        InOrder inOrder = inOrder(taskRuntimeService, graphRunner, taskBridgeService);
-        inOrder.verify(taskRuntimeService).appendUserIntervention("task-1", "增加风险复盘");
+        InOrder inOrder = inOrder(graphRunner, taskBridgeService);
         inOrder.verify(graphRunner).run(
                 eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "user requested plan adjustment")),
                 eq("task-1"),
@@ -127,6 +163,58 @@ class PlannerCommandApplicationServiceTest {
                 eq("增加风险复盘")
         );
         inOrder.verify(taskBridgeService).ensureTask(session);
+    }
+
+    @Test
+    void completedReplanGoesThroughPlanAdjustmentGraphWithCommandHints() {
+        PlanTaskSession completed = new PlanTaskSession();
+        completed.setTaskId("task-1");
+        completed.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        String expectedInstruction = "把第2页标题改成新标题\n产物策略：EDIT_EXISTING\n目标产物ID：artifact-1";
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq(expectedInstruction), eq(null), eq(expectedInstruction)))
+                .thenReturn(completed);
+
+        PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", "EDIT_EXISTING", "artifact-1");
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(completed);
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "user requested plan adjustment")),
+                eq("task-1"),
+                eq(expectedInstruction),
+                eq(null),
+                eq(expectedInstruction)
+        );
+        verify(taskBridgeService).ensureTask(completed);
+    }
+
+    @Test
+    void resumeCompletedAdjustmentGoesThroughPlanAdjustmentGraph() {
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        current.setIntakeState(TaskIntakeState.builder()
+                .pendingAdjustmentInstruction("修改现有 PPT")
+                .build());
+        PlanTaskSession resumed = new PlanTaskSession();
+        resumed.setTaskId("task-1");
+        when(sessionService.get("task-1")).thenReturn(current);
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq("修改现有 PPT\n用户补充：把第2页标题改成新标题"), eq(null), eq("把第2页标题改成新标题")))
+                .thenReturn(resumed);
+
+        PlanTaskSession result = service.resume("task-1", "把第2页标题改成新标题", false);
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(resumed);
+        verify(sessionService).saveWithoutVersionChange(current);
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "resume completed task adjustment")),
+                eq("task-1"),
+                eq("修改现有 PPT\n用户补充：把第2页标题改成新标题"),
+                eq(null),
+                eq("把第2页标题改成新标题")
+        );
+        verify(taskRuntimeService, never()).appendUserIntervention(any(), any());
     }
 
     @Test
@@ -144,5 +232,123 @@ class PlannerCommandApplicationServiceTest {
         inOrder.verify(plannerRetryService).isRetryable("task-1", failed);
         inOrder.verify(taskRuntimeService).appendUserIntervention("task-1", "请用备用方案重试");
         inOrder.verify(taskCommandFacade).retryExecution("task-1", "请用备用方案重试");
+    }
+
+    @Test
+    void confirmExecutionUsesDocumentApprovalWhenPendingDocApprovalExists() {
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        current.setIntakeState(TaskIntakeState.builder()
+                .pendingDocumentIterationTaskId("doc-iter-1")
+                .pendingDocumentArtifactId("artifact-doc-1")
+                .pendingDocumentDocUrl("https://example.feishu.cn/docx/doc-token")
+                .pendingDocumentApprovalMode("COMPLETED_TASK_DOC_APPROVAL")
+                .pendingAdjustmentInstruction("修改文档")
+                .build());
+        when(documentArtifactIterationFacade.decide(
+                eq("doc-iter-1"),
+                eq("artifact-doc-1"),
+                eq("https://example.feishu.cn/docx/doc-token"),
+                any(),
+                eq(null)))
+                .thenReturn(DocumentArtifactIterationResult.builder()
+                        .taskId("doc-iter-1")
+                        .artifactId("artifact-doc-1")
+                        .docUrl("https://example.feishu.cn/docx/doc-token")
+                        .status(DocumentArtifactIterationStatus.COMPLETED)
+                        .summary("文档修改已执行")
+                        .build());
+
+        PlanTaskSession result = service.confirmExecution("task-1", current);
+
+        org.assertj.core.api.Assertions.assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        verify(documentArtifactIterationFacade).decide(
+                eq("doc-iter-1"),
+                eq("artifact-doc-1"),
+                eq("https://example.feishu.cn/docx/doc-token"),
+                any(),
+                eq(null));
+        verify(taskCommandFacade, never()).confirmExecution(any());
+    }
+
+    @Test
+    void resumeUsesDocumentApprovalModifyWhenPendingDocApprovalExists() {
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        current.setIntakeState(TaskIntakeState.builder()
+                .pendingDocumentIterationTaskId("doc-iter-1")
+                .pendingDocumentArtifactId("artifact-doc-1")
+                .pendingDocumentDocUrl("https://example.feishu.cn/docx/doc-token")
+                .pendingDocumentApprovalMode("COMPLETED_TASK_DOC_APPROVAL")
+                .pendingAdjustmentInstruction("修改文档")
+                .build());
+        when(sessionService.get("task-1")).thenReturn(current);
+        when(documentArtifactIterationFacade.decide(
+                eq("doc-iter-1"),
+                eq("artifact-doc-1"),
+                eq("https://example.feishu.cn/docx/doc-token"),
+                any(),
+                eq("ou-user")))
+                .thenReturn(DocumentArtifactIterationResult.builder()
+                        .taskId("doc-iter-1")
+                        .artifactId("artifact-doc-1")
+                        .docUrl("https://example.feishu.cn/docx/doc-token")
+                        .status(DocumentArtifactIterationStatus.WAITING_APPROVAL)
+                        .summary("已按新意见重建待确认计划")
+                        .build());
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().senderOpenId("ou-user").build();
+        PlanTaskSession result = service.resume("task-1", "请把风险章节改成整章重写", false, workspaceContext);
+
+        org.assertj.core.api.Assertions.assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
+        org.assertj.core.api.Assertions.assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已按新意见重建待确认计划");
+        verify(documentArtifactIterationFacade).decide(
+                eq("doc-iter-1"),
+                eq("artifact-doc-1"),
+                eq("https://example.feishu.cn/docx/doc-token"),
+                any(),
+                eq("ou-user"));
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+    }
+
+    private static <T> ObjectProvider<T> provider(T facade) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject(Object... args) {
+                return facade;
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return facade;
+            }
+
+            @Override
+            public T getIfUnique() {
+                return facade;
+            }
+
+            @Override
+            public T getObject() {
+                return facade;
+            }
+
+            @Override
+            public java.util.Iterator<T> iterator() {
+                return java.util.List.of(facade).iterator();
+            }
+
+            @Override
+            public java.util.stream.Stream<T> stream() {
+                return java.util.stream.Stream.of(facade);
+            }
+
+            @Override
+            public java.util.stream.Stream<T> orderedStream() {
+                return stream();
+            }
+        };
     }
 }

@@ -34,6 +34,7 @@ public class IntentDecisionGuard {
         }
         if (!existingSession || session == null) {
             if (candidate.type() == TaskCommandTypeEnum.CANCEL_TASK
+                    || candidate.type() == TaskCommandTypeEnum.ADJUST_PLAN
                     || candidate.type() == TaskCommandTypeEnum.QUERY_STATUS
                     || candidate.type() == TaskCommandTypeEnum.UNKNOWN) {
                 return candidate;

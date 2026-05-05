@@ -20,6 +20,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 class LarkIMPlannerReviewNotifierTest {
@@ -198,5 +199,53 @@ class LarkIMPlannerReviewNotifierTest {
         assertThat(idempotencyKeyCaptor.getValue())
                 .startsWith("pr-")
                 .hasSizeLessThanOrEqualTo(50);
+    }
+
+    @Test
+    void reviewNoticeIdempotencyKeyChangesAcrossCompletedTaskVersions() {
+        PlanTaskSession first = PlanTaskSession.builder()
+                .taskId("task-repeat")
+                .version(3)
+                .inputContext(TaskInputContext.builder()
+                        .messageId("message-1")
+                        .build())
+                .build();
+        PlanTaskSession second = PlanTaskSession.builder()
+                .taskId("task-repeat")
+                .version(6)
+                .inputContext(TaskInputContext.builder()
+                        .messageId("message-2")
+                        .build())
+                .build();
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder()
+                        .taskId("task-repeat")
+                        .status(TaskStatusEnum.COMPLETED)
+                        .build())
+                .artifacts(List.of(ArtifactRecord.builder()
+                        .artifactId("artifact-1")
+                        .type(ArtifactTypeEnum.PPT)
+                        .title("新版 PPT")
+                        .url("https://slides.example")
+                        .build()))
+                .build();
+        TaskResultEvaluation evaluation = TaskResultEvaluation.builder()
+                .verdict(ResultVerdictEnum.PASS)
+                .build();
+
+        notifier.notifyExecutionReviewed(first, snapshot, evaluation);
+        notifier.notifyExecutionReviewed(second, snapshot, evaluation);
+
+        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool, times(2)).replyText(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                keyCaptor.capture()
+        );
+        assertThat(keyCaptor.getAllValues()).hasSize(2);
+        assertThat(keyCaptor.getAllValues().get(0)).isNotEqualTo(keyCaptor.getAllValues().get(1));
+        assertThat(keyCaptor.getAllValues()).allSatisfy(key -> assertThat(key)
+                .startsWith("pr-")
+                .hasSizeLessThanOrEqualTo(50));
     }
 }

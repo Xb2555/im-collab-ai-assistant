@@ -44,7 +44,7 @@ public class DocumentEditPlanBuilder {
             case EXPLAIN -> DocumentEditPlan.builder()
                     .taskId(taskId)
                     .intentType(intentType)
-                    .selector(selector)
+                    
                     .reasoningSummary("已定位目标片段，走只读 explain 链路")
                     .generatedContent(explain(selector.getMatchedExcerpt(), instruction))
                     .toolCommandType(null)
@@ -59,7 +59,7 @@ public class DocumentEditPlanBuilder {
             case INSERT_MEDIA, ADJUST_LAYOUT -> DocumentEditPlan.builder()
                     .taskId(taskId)
                     .intentType(intentType)
-                    .selector(selector)
+                    
                     .reasoningSummary("已识别为富媒体或布局调整意图，当前链路仅生成受控计划，不直接执行")
                     .generatedContent("")
                     .toolCommandType(null)
@@ -138,7 +138,7 @@ public class DocumentEditPlanBuilder {
         return DocumentEditPlan.builder()
                 .taskId(taskId)
                 .intentType(DocumentIterationIntentType.INSERT)
-                .selector(selector)
+                
                 .reasoningSummary("基于定位到的锚点新增内容")
                 .generatedContent(generated)
                 .toolCommandType(commandType)
@@ -208,7 +208,7 @@ public class DocumentEditPlanBuilder {
         return DocumentEditPlan.builder()
                 .taskId(taskId)
                 .intentType(intentType)
-                .selector(selector)
+                
                 .reasoningSummary(styleOnly ? "保持事实不变，按要求调整表达风格" : "基于目标片段执行内容改写")
                 .generatedContent(generated)
                 .toolCommandType(commandType)
@@ -264,7 +264,7 @@ public class DocumentEditPlanBuilder {
         return DocumentEditPlan.builder()
                 .taskId(taskId)
                 .intentType(DocumentIterationIntentType.DELETE)
-                .selector(selector)
+                
                 .reasoningSummary("删除已定位到的目标片段")
                 .generatedContent("")
                 .toolCommandType(commandType)

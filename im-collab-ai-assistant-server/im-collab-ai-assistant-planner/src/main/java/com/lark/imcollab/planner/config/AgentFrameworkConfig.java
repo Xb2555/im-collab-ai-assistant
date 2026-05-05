@@ -95,13 +95,15 @@ public class AgentFrameworkConfig {
                         Allowed intents: START_TASK, ANSWER_CLARIFICATION, ADJUST_PLAN, QUERY_STATUS, CONFIRM_ACTION, CANCEL_TASK, UNKNOWN.
                         Choose ADJUST_PLAN when the user wants any new, extra, final, changed, removed, reordered, or regenerated plan requirement.
                         Choose QUERY_STATUS only when the user asks to inspect progress, current status, existing artifacts, or the already stored plan.
-                        Choose CONFIRM_ACTION only when the user explicitly asks to execute or retry, such as "开始执行", "确认执行", "没问题，执行", or "重试一下".
+                        Choose CONFIRM_ACTION only when the user explicitly asks to execute or retry, such as "开始执行", "开始计划", "确认执行", "没问题，执行", or "重试一下".
                         Generic approval such as "这个方案还行", "可以", or "就这样" is not enough to start execution.
                         Choose START_TASK only for a real work request with a goal or deliverable. Casual chat, greetings, mood sharing, jokes, and meta questions are UNKNOWN.
                         Identity or capability questions such as "你是谁" or "你能做什么" are UNKNOWN unless they include a concrete deliverable request.
                         In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material.
                         If the pending question asks for material or range and the user asks identity/capability, chats casually, or starts a separate task, do not choose ANSWER_CLARIFICATION.
                         If the user asks to add something and also mentions a desired output, it is ADJUST_PLAN, not QUERY_STATUS.
+                        If the user explicitly asks to "新建一个任务", "新建任务", "新开一个任务", "另起一个任务", or "再开一个任务" and also gives a deliverable or work goal, choose START_TASK even when an old task is bound to the conversation.
+                        If such wording appears only inside a title, topic, slide text, or quoted content, classify by the actual command intent.
                         Choose UNKNOWN when the message cannot be safely mapped to one fixed intent, including non-task chat.
                         JSON shape: {"intent":"...","confidence":0.0,"reason":"","normalizedInput":"","needsClarification":false,"readOnlyView":"PLAN|STATUS|ARTIFACTS|"}
                         For QUERY_STATUS, set readOnlyView=PLAN when the user asks to see the stored plan or all steps.
@@ -220,23 +222,26 @@ public class AgentFrameworkConfig {
                         不要生成任务计划，不要执行任务，不要回答用户。
 
                         可用来源：
-                        - IM_MESSAGE_SEARCH：聊天或线程消息检索。需要 chatId 或 threadId；可同时携带 query、timeRange、selectionInstruction。
+                        - IM_MESSAGE_SEARCH：聊天或线程消息检索。需要 chatId 或 threadId；可同时携带 query、timeRange、startTime、endTime、selectionInstruction。
                         - LARK_DOC：飞书云文档。需要 docRefs 中的 URL 或 token。
 
                         决策规则：
                         - selectedMessages 已经有真实材料时，needCollection=false。
                         - 用户提到“刚才讨论/聊天记录/群里/这段对话/最近讨论/历史消息”且有 chatId/threadId 时，使用 IM_MESSAGE_SEARCH。
                         - 用户说“刚才关于 A、B、C 的讨论”“把前面讨论的某个主题整理成文档/摘要”时，即使主题名称很明确，也不代表材料已经在当前输入里；必须先使用 IM_MESSAGE_SEARCH 拉取相关消息。
-                        - 如果有主题词或关键词，写入 query；如果有“最近10分钟/10分钟前/今天/昨天”等时间条件，写入 timeRange；把用户原话里的完整筛选条件写入 selectionInstruction。
+                        - 如果有主题词或关键词，写入 query；如果有“最近10分钟/10分钟前/今天/昨天/昨天下午”等时间条件，写入 timeRange，并必须根据用户提示中的 Current time 语义换算 startTime/endTime；把用户原话里的完整筛选条件写入 selectionInstruction。
                         - 如果 selectedMessages 只有当前这条指令本身，仍然视为没有真实材料。
                         - 但如果用户整句话本身已经包含任务目标、已完成事项、当前进展、风险、决策、下一步、指标、需求或资料摘录等具体事实，视为已有内联材料，needCollection=false 且不要追问外部材料。
                         - 用户提到文档、链接、根据这份材料，且 docRefs 有值时，使用 LARK_DOC。
                         - docRefs 和 chatId/threadId 都有，且任务像是综合整理，允许同时使用两个来源。
                         - 没有可用 source id/ref 时，needCollection=false，并给一个自然澄清问题。
-                        - timeRange 尽量写成可解析格式：ISO 区间、epoch 秒区间，或简短相对范围如“最近10分钟”。
+                        - IM_MESSAGE_SEARCH 只要存在任何时间条件，startTime/endTime 必须非空，格式使用 ISO_OFFSET_DATE_TIME。
+                        - timeRange 保留用户原始时间说法。不要只输出 "昨天"、"昨天下午" 这种模糊 timeRange。
+                        - 参考换算：昨天下午 = Current time 所在时区的昨天 12:00:00 到 18:00:00；今天上午 = 今天 00:00:00 到 12:00:00；昨天 = 昨天 00:00:00 到今天 00:00:00。
+                        - 若时间说法无法稳定换算，提出澄清，不要默认拉最近消息。
 
                         只输出 JSON：
-                        {"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"","threadId":"","query":"","timeRange":"","docRefs":[],"selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}
+                        {"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"","threadId":"","query":"","timeRange":"","startTime":"","endTime":"","docRefs":[],"selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}
                         sourceType 只能是 IM_MESSAGE_SEARCH 或 LARK_DOC。
                         """)
                 .outputType(com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.class)

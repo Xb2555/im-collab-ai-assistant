@@ -10,6 +10,7 @@ class ExecutionCommandGuardTest {
     void acceptsExplicitExecutionAfterImLabelPrefix() {
         assertThat(ExecutionCommandGuard.isExplicitExecutionRequest("【IM闭环F4】开始执行")).isTrue();
         assertThat(ExecutionCommandGuard.isExplicitExecutionRequest("@飞书IM-test 开始执行")).isTrue();
+        assertThat(ExecutionCommandGuard.isExplicitExecutionRequest("开始计划")).isTrue();
     }
 
     @Test

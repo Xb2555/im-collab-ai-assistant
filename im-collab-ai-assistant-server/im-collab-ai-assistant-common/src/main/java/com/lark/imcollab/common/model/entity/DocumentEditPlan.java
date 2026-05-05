@@ -21,7 +21,6 @@ public class DocumentEditPlan implements Serializable {
     private String taskId;
     private DocumentIterationIntentType intentType;
     private DocumentSemanticActionType semanticAction;
-    private DocumentTargetSelector selector;
     private ResolvedDocumentAnchor resolvedAnchor;
     private DocumentStructureSnapshot structureSnapshot;
     private DocumentEditStrategy strategy;
@@ -30,6 +29,8 @@ public class DocumentEditPlan implements Serializable {
     private String generatedContent;
     private String styleProfile;
     private String mediaSpec;
+    private MediaAssetSpec resolvedAssetSpec;
+    private ExecutionPlan executionPlan;
     private String layoutSpec;
     private DocumentPatchOperationType toolCommandType;
     private DocumentStrategyType strategyType;

@@ -88,7 +88,7 @@ public class UnknownIntentReplyService {
 
     private String fallbackReply(PlanTaskSession session, String rawInput) {
         if (hasPlan(session)) {
-            return "我先不动当前计划。想看细节、调整步骤或推进执行，都可以直接说。";
+            return "我先把当前任务停在这里等你一句话。想看细节、继续调整，或者直接让我开工，都可以直说。";
         }
         return "我在。你把想整理的材料或目标发我，我会先帮你拆成计划。";
     }

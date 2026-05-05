@@ -11,6 +11,8 @@ import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
 import com.lark.imcollab.skills.lark.im.LarkMessageHistoryItem;
 import com.lark.imcollab.skills.lark.im.LarkMessageMention;
 import com.lark.imcollab.skills.lark.im.LarkMessageHistoryResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -27,6 +29,7 @@ import java.util.regex.Pattern;
 @Service
 public class LarkIMMessageProjectionService {
 
+    private static final Logger log = LoggerFactory.getLogger(LarkIMMessageProjectionService.class);
     private static final Pattern TEMPLATE_VARIABLE_PATTERN = Pattern.compile("\\{([^{}]+)}");
 
     private final LarkUserProfileHydrationService userProfileHydrationService;
@@ -80,6 +83,8 @@ public class LarkIMMessageProjectionService {
         LarkUserDisplayInfo sender = shouldHydrateSender(item.msgType())
                 ? userMap.get(normalizeOpenId(item.senderId()))
                 : null;
+        String resolvedSenderName = firstText(sender == null ? null : sender.name(), item.senderName());
+        String resolvedSenderAvatar = firstText(sender == null ? null : sender.avatar(), item.senderAvatar());
         return new LarkMessageHistoryItem(
                 item.messageId(),
                 item.rootId(),
@@ -98,8 +103,8 @@ public class LarkIMMessageProjectionService {
                 normalizeHistoryContent(item.msgType(), item.content(), userMap),
                 item.mentions(),
                 item.upperMessageId(),
-                sender == null ? null : sender.name(),
-                sender == null ? null : sender.avatar());
+                resolvedSenderName,
+                resolvedSenderAvatar);
     }
 
     private Set<String> collectOpenIds(List<LarkMessageHistoryItem> items) {
@@ -159,13 +164,30 @@ public class LarkIMMessageProjectionService {
             return userMap;
         }
         for (String openId : openIds) {
-            LarkUserProfile profile = userProfileHydrationService.resolveByUserAccessToken(userAccessToken, openId);
-            if (profile == null) {
-                continue;
+            LarkUserProfile profile = null;
+            if (userAccessToken != null && !userAccessToken.isBlank()) {
+                profile = userProfileHydrationService.resolveByUserAccessToken(userAccessToken, openId);
             }
-            userMap.put(openId, new LarkUserDisplayInfo(profile.name(), profile.avatarUrl()));
+            if (!hasDisplayData(profile)) {
+                LarkUserProfile tenantProfile = userProfileHydrationService.resolveByTenantAccessToken(openId);
+                if (hasDisplayData(tenantProfile)) {
+                    log.debug("Hydrated Lark history user profile with tenant token fallback: openId={}, userTokenPresent={}",
+                            openId, userAccessToken != null && !userAccessToken.isBlank());
+                    profile = tenantProfile;
+                }
+            }
+            userMap.put(openId, new LarkUserDisplayInfo(
+                    profile == null ? null : profile.name(),
+                    profile == null ? null : profile.avatarUrl()
+            ));
         }
         return userMap;
+    }
+
+    private boolean hasDisplayData(LarkUserProfile profile) {
+        return profile != null
+                && ((profile.name() != null && !profile.name().isBlank())
+                || (profile.avatarUrl() != null && !profile.avatarUrl().isBlank()));
     }
 
     private void addOpenId(Set<String> openIds, String value) {

@@ -183,7 +183,7 @@ public class PlannerSupervisorDecisionAgent {
                     .needsClarification(true)
                     .clarificationQuestion(firstNonBlank(
                             result.clarificationQuestion(),
-                            "我先不动当前计划。你想看细节、调整步骤，还是推进执行？"))
+                            "我先把当前任务停在这里等你一句话。想看细节、继续调整，还是直接让我开工？"))
                     .userFacingReply(result.userFacingReply())
                     .build();
         }
@@ -196,7 +196,7 @@ public class PlannerSupervisorDecisionAgent {
                 .confidence(0.0d)
                 .reason(reason)
                 .needsClarification(true)
-                .clarificationQuestion("我先不动当前计划。你想看细节、调整步骤，还是推进执行？")
+                .clarificationQuestion("我先把当前任务停在这里等你一句话。想看细节、继续调整，还是直接让我开工？")
                 .build();
     }
 

@@ -1,21 +1,25 @@
 // src/services/api/client.ts
 import axios from 'axios';
 import { useAuthStore } from '@/store/useAuthStore';
+import { Capacitor } from '@capacitor/core'; // ✨ 引入 Capacitor
 
 // ✨ 加上 (window as any) 强制绕过 TypeScript 检查
-const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__ !== undefined;
+// ✨ 将其导出，方便其他非 axios 的底层 fetch 也能复用这个逻辑
+export const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__ !== undefined;
+// ✨ 新增：判断是否为 Capacitor 移动端原生环境 (iOS/Android App)
+export const isMobileNative = Capacitor.isNativePlatform();
 
-const getBaseUrl = () => {
-  // 1. 如果是桌面端 (Tauri)，强制写死后端 Spring Boot 的绝对地址！
-  if (isTauri) {
+export const getBaseUrl = () => {
+  // ✨ 如果是桌面客户端 或 手机 App，都必须使用绝对路径直连后端！
+  if (isTauri || isMobileNative) {
     return 'http://81.71.143.236:18080'; 
   }
-  // 2. 如果是网页端开发，保持为空，走 Vite 的 Proxy 代理
+  // 网页浏览器环境，继续保持空字符串，让 Vite Proxy 接管跨域
   return '';
 };
 
 export const apiClient = axios.create({
-  baseURL: getBaseUrl(), // ✨ 使用动态判断的地址
+  baseURL: getBaseUrl(), 
   timeout: 60000, 
 });
 

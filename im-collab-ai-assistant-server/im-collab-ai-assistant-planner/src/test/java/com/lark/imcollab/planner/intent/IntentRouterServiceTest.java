@@ -76,6 +76,15 @@ class IntentRouterServiceTest {
     }
 
     @Test
+    void startPlanUsesConfirmAction() {
+        PlanTaskSession session = plannedSession();
+
+        TaskCommand command = router.route(session, "开始计划", null, true);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.CONFIRM_ACTION);
+    }
+
+    @Test
     void genericApprovalDoesNotUseHardConfirmRule() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         IntentRouterService service = router(model, new PlannerProperties());
@@ -203,6 +212,30 @@ class IntentRouterServiceTest {
 
         assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
         verify(model).classify(null, "帮我生成一个查询性能分析文档", false);
+    }
+
+    @Test
+    void explicitFreshTaskInsideExistingConversationStartsNewTaskWhenModelClassifiesIt() {
+        LlmIntentClassifier model = mock(LlmIntentClassifier.class);
+        IntentRouterService service = router(model, new PlannerProperties());
+        PlanTaskSession session = plannedSession();
+        when(model.classify(any(), anyString(), anyBoolean())).thenReturn(Optional.of(new IntentRoutingResult(
+                TaskCommandTypeEnum.START_TASK,
+                0.95d,
+                "explicit fresh task with concrete deliverable",
+                "新建一个任务：生成一份6页PPT，主题执行中修改拦截验证，每页写等待提示和重跑验证。",
+                false
+        )));
+
+        TaskCommand command = service.route(
+                session,
+                "新建一个任务：生成一份6页PPT，主题执行中修改拦截验证，每页写等待提示和重跑验证。",
+                null,
+                true
+        );
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.START_TASK);
+        verify(model).classify(session, "新建一个任务：生成一份6页PPT，主题执行中修改拦截验证，每页写等待提示和重跑验证。", true);
     }
 
     @Test

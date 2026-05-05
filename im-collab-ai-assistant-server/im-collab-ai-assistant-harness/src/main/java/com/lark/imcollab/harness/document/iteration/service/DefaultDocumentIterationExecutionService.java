@@ -16,6 +16,11 @@ import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.vo.DocumentIterationPlanVO;
 import com.lark.imcollab.common.model.vo.DocumentIterationVO;
+import com.lark.imcollab.common.model.entity.ExecutionPlan;
+import com.lark.imcollab.common.model.entity.ResolvedAsset;
+import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.common.model.entity.RichContentExecutionResult;
+import com.lark.imcollab.harness.document.iteration.support.AssetResolutionFacade;
 import com.lark.imcollab.harness.document.iteration.support.DocumentAnchorResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditIntentResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditStrategyPlanner;
@@ -25,6 +30,11 @@ import com.lark.imcollab.harness.document.iteration.support.DocumentPatchCompile
 import com.lark.imcollab.harness.document.iteration.support.DocumentPatchExecutor;
 import com.lark.imcollab.harness.document.iteration.support.DocumentStructureSnapshotBuilder;
 import com.lark.imcollab.harness.document.iteration.support.DocumentTargetStateVerifier;
+import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionEngine;
+import com.lark.imcollab.harness.document.iteration.support.RichContentExecutionPlanner;
+import com.lark.imcollab.harness.document.iteration.support.RichContentTargetStateVerifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -32,6 +42,8 @@ import java.util.Locale;
 
 @Service
 public class DefaultDocumentIterationExecutionService implements DocumentIterationExecutionService {
+
+    private static final Logger log = LoggerFactory.getLogger(DefaultDocumentIterationExecutionService.class);
 
     private final DocumentOwnershipGuard ownershipGuard;
     private final DocumentEditIntentResolver intentResolver;
@@ -42,6 +54,10 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
     private final DocumentPatchExecutor patchExecutor;
     private final DocumentTargetStateVerifier targetStateVerifier;
     private final DocumentIterationRuntimeSupport runtimeSupport;
+    private final AssetResolutionFacade assetResolutionFacade;
+    private final RichContentExecutionPlanner richContentExecutionPlanner;
+    private final RichContentExecutionEngine richContentExecutionEngine;
+    private final RichContentTargetStateVerifier richContentTargetStateVerifier;
 
     public DefaultDocumentIterationExecutionService(
             DocumentOwnershipGuard ownershipGuard,
@@ -52,7 +68,11 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentPatchCompiler patchCompiler,
             DocumentPatchExecutor patchExecutor,
             DocumentTargetStateVerifier targetStateVerifier,
-            DocumentIterationRuntimeSupport runtimeSupport
+            DocumentIterationRuntimeSupport runtimeSupport,
+            AssetResolutionFacade assetResolutionFacade,
+            RichContentExecutionPlanner richContentExecutionPlanner,
+            RichContentExecutionEngine richContentExecutionEngine,
+            RichContentTargetStateVerifier richContentTargetStateVerifier
     ) {
         this.ownershipGuard = ownershipGuard;
         this.intentResolver = intentResolver;
@@ -63,6 +83,10 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         this.patchExecutor = patchExecutor;
         this.targetStateVerifier = targetStateVerifier;
         this.runtimeSupport = runtimeSupport;
+        this.assetResolutionFacade = assetResolutionFacade;
+        this.richContentExecutionPlanner = richContentExecutionPlanner;
+        this.richContentExecutionEngine = richContentExecutionEngine;
+        this.richContentTargetStateVerifier = richContentTargetStateVerifier;
     }
 
     @Override
@@ -72,11 +96,47 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             WorkspaceContext context = request.getWorkspaceContext();
             String operator = context == null ? null : context.getSenderOpenId();
             Artifact ownedArtifact = ownershipGuard.assertEditable(request.getDocUrl(), operator, request.getTaskId());
-            DocumentEditIntent editIntent = intentResolver.resolve(request.getInstruction());
+            DocumentEditIntent editIntent = intentResolver.resolve(
+                    request.getInstruction(),
+                    request.getWorkspaceContext()
+            );
+            log.info("DOC_ITER_PLAN execute_start taskId={} instruction='{}' intentType={} action={} anchorKind={} matchMode={}",
+                    runtime.getTaskId(),
+                    request.getInstruction(),
+                    editIntent == null ? null : editIntent.getIntentType(),
+                    editIntent == null ? null : editIntent.getSemanticAction(),
+                    editIntent == null || editIntent.getAnchorSpec() == null ? null : editIntent.getAnchorSpec().getAnchorKind(),
+                    editIntent == null || editIntent.getAnchorSpec() == null ? null : editIntent.getAnchorSpec().getMatchMode());
+            if (editIntent.isClarificationNeeded()) {
+                throw new AiAssistantException(BusinessCode.PARAMS_ERROR, editIntent.getClarificationHint());
+            }
+            validateRichMediaPrerequisites(request, editIntent);
             DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
             ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, editIntent);
             DocumentEditStrategy strategy = strategyPlanner.plan(editIntent, anchor);
+            ResolvedAsset resolvedAsset = isRichMediaSemantic(editIntent.getSemanticAction())
+                    ? assetResolutionFacade.resolve(editIntent.getAssetSpec()) : null;
             DocumentEditPlan editPlan = patchCompiler.compile(runtime.getTaskId(), editIntent, snapshot, anchor, strategy);
+            log.info("DOC_ITER_PLAN compiled taskId={} intentType={} action={} anchorType={} targetPreview='{}' strategyType={} toolCommandType={} requiresApproval={} riskLevel={}",
+                    runtime.getTaskId(),
+                    editPlan.getIntentType(),
+                    editPlan.getSemanticAction(),
+                    anchor == null ? null : anchor.getAnchorType(),
+                    anchor == null ? null : anchor.getPreview(),
+                    editPlan.getStrategyType(),
+                    editPlan.getToolCommandType(),
+                    editPlan.isRequiresApproval(),
+                    editPlan.getRiskLevel());
+            if (resolvedAsset != null) {
+                ExecutionPlan executionPlan = richContentExecutionPlanner.plan(editIntent, anchor, strategy, resolvedAsset);
+                editPlan.setResolvedAssetSpec(editIntent.getAssetSpec());
+                if (executionPlan != null && isExecutableRichMediaAction(editPlan.getSemanticAction())) {
+                    editPlan.setExecutionPlan(executionPlan);
+                    editPlan.setRequiresApproval(executionPlan.isRequiresApproval());
+                } else if (isRichMediaSemantic(editIntent.getSemanticAction())) {
+                    editPlan.setRequiresApproval(true);
+                }
+            }
             if (editPlan.isRequiresApproval()) {
                 runtimeSupport.waitForApproval(runtime, request, editPlan, ownedArtifact, operator);
                 String summary = "已生成受控编辑计划，等待进一步确认";
@@ -124,11 +184,26 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentEditPlan plan = pending.getEditPlan();
             if (status == ApprovalStatus.MODIFIED) {
                 String revisedInstruction = defaultIfBlank(request == null ? null : request.getFeedback(), pending.getOriginalRequest().getInstruction());
-                DocumentEditIntent revisedIntent = intentResolver.resolve(revisedInstruction);
+                DocumentEditIntent revisedIntent = intentResolver.resolve(
+                        revisedInstruction,
+                        pending.getOriginalRequest() == null ? null : pending.getOriginalRequest().getWorkspaceContext()
+                );
+                log.info("DOC_ITER_PLAN execute_modified taskId={} revisedInstruction='{}' intentType={} action={}",
+                        taskId,
+                        revisedInstruction,
+                        revisedIntent == null ? null : revisedIntent.getIntentType(),
+                        revisedIntent == null ? null : revisedIntent.getSemanticAction());
                 DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
                 ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, revisedIntent);
                 DocumentEditStrategy strategy = strategyPlanner.plan(revisedIntent, anchor);
                 plan = patchCompiler.compile(taskId, revisedIntent, snapshot, anchor, strategy);
+                log.info("DOC_ITER_PLAN recompiled taskId={} action={} anchorType={} targetPreview='{}' strategyType={} requiresApproval={}",
+                        taskId,
+                        plan.getSemanticAction(),
+                        anchor == null ? null : anchor.getAnchorType(),
+                        anchor == null ? null : anchor.getPreview(),
+                        plan.getStrategyType(),
+                        plan.isRequiresApproval());
                 if (plan.isRequiresApproval()) {
                     DocumentIterationRequest revisedRequest = copyRequest(pending.getOriginalRequest(), revisedInstruction);
                     runtimeSupport.waitForApproval(runtime, revisedRequest, plan, ownedArtifact, operatorOpenId);
@@ -144,6 +219,12 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                     return waitingResponse(taskId, ownedArtifact, pending.getDocUrl(), plan, summary);
                 }
             }
+            log.info("DOC_ITER_DECIDE_EXECUTE taskId={} action={} strategyType={} requiresApproval={} patchOpsCount={}",
+                    taskId,
+                    plan.getSemanticAction(),
+                    plan.getStrategyType(),
+                    plan.isRequiresApproval(),
+                    plan.getPatchOperations() == null ? 0 : plan.getPatchOperations().size());
             runtimeSupport.resumeWaiting(taskId, pending.getStepId());
             return applyAndComplete(runtime, ownedArtifact, resolveDocRef(ownedArtifact, pending.getDocUrl()), plan, operatorOpenId);
         } catch (RuntimeException exception) {
@@ -173,10 +254,32 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentEditPlan editPlan,
             String operator
     ) {
-        DocumentPatchExecutor.PatchExecutionResult patchResult = editPlan.getIntentType() == DocumentIterationIntentType.EXPLAIN
-                ? new DocumentPatchExecutor.PatchExecutionResult(List.of(), -1L, -1L)
-                : patchExecutor.execute(docRef, editPlan);
-        if (editPlan.getIntentType() != DocumentIterationIntentType.EXPLAIN) {
+        List<String> modifiedBlocks;
+        long beforeRevision;
+        long afterRevision;
+
+        if (editPlan.getIntentType() == DocumentIterationIntentType.EXPLAIN) {
+            modifiedBlocks = List.of();
+            beforeRevision = -1L;
+            afterRevision = -1L;
+        } else if (isRichExecutionPlan(editPlan)) {
+            RichContentExecutionResult richResult = richContentExecutionEngine.execute(docRef, editPlan);
+            modifiedBlocks = richResult != null ? richResult.getCreatedBlockIds() : List.of();
+            beforeRevision = richResult != null ? richResult.getBeforeRevision() : -1L;
+            afterRevision = richResult != null ? richResult.getAfterRevision() : -1L;
+            if (richResult != null) {
+                Artifact runtimeArtifact = Artifact.builder()
+                        .externalUrl(resolveDocUrl(ownedArtifact, docRef))
+                        .documentId(resolveDocId(ownedArtifact))
+                        .build();
+                DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
+                richContentTargetStateVerifier.verify(editPlan, richResult, editPlan.getStructureSnapshot(), afterSnapshot);
+            }
+        } else {
+            DocumentPatchExecutor.PatchExecutionResult patchResult = patchExecutor.execute(docRef, editPlan);
+            modifiedBlocks = patchResult.getModifiedBlocks();
+            beforeRevision = patchResult.getBeforeRevision();
+            afterRevision = patchResult.getAfterRevision();
             Artifact runtimeArtifact = Artifact.builder()
                     .externalUrl(resolveDocUrl(ownedArtifact, docRef))
                     .documentId(resolveDocId(ownedArtifact))
@@ -184,8 +287,9 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
             targetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
         }
-        String summary = buildSummary(editPlan.getIntentType(), patchResult.getModifiedBlocks(), editPlan)
-                + appendRevisionSummary(patchResult);
+
+        String summary = buildSummary(editPlan.getIntentType(), modifiedBlocks, editPlan)
+                + appendRevisionSummary(beforeRevision, afterRevision);
         runtimeSupport.saveSummaryArtifact(
                 runtime,
                 "文档迭代结果",
@@ -205,17 +309,21 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                 .requireInput(false)
                 .preview(editPlan.getReasoningSummary())
                 .docUrl(resolveDocUrl(ownedArtifact, docRef))
-                .modifiedBlocks(patchResult.getModifiedBlocks())
+                .modifiedBlocks(modifiedBlocks)
                 .summary(summary)
                 .editPlan(toPlanVO(editPlan))
                 .build();
     }
 
-    private String appendRevisionSummary(DocumentPatchExecutor.PatchExecutionResult patchResult) {
-        if (patchResult.getBeforeRevision() < 0 || patchResult.getAfterRevision() < 0) {
+    private boolean isRichExecutionPlan(DocumentEditPlan editPlan) {
+        return isExecutableRichMediaAction(editPlan.getSemanticAction()) && editPlan.getExecutionPlan() != null;
+    }
+
+    private String appendRevisionSummary(long beforeRevision, long afterRevision) {
+        if (beforeRevision < 0 || afterRevision < 0) {
             return "";
         }
-        return "，revision: " + patchResult.getBeforeRevision() + " -> " + patchResult.getAfterRevision();
+        return "，revision: " + beforeRevision + " -> " + afterRevision;
     }
 
     private DocumentIterationVO waitingResponse(
@@ -242,13 +350,13 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         if (editPlan == null) {
             return null;
         }
-        String targetTitle = editPlan.getSelector() == null ? null : editPlan.getSelector().getLocatorValue();
-        String targetPreview = editPlan.getResolvedAnchor() == null ? (editPlan.getSelector() == null ? null : editPlan.getSelector().getMatchedExcerpt())
-                : editPlan.getResolvedAnchor().getPreview();
+        ResolvedDocumentAnchor anchor = editPlan.getResolvedAnchor();
+        String targetTitle = resolveTargetTitle(anchor);
+        String targetPreview = anchor == null ? null : anchor.getPreview();
         return DocumentIterationPlanVO.builder()
                 .intentType(editPlan.getIntentType())
                 .semanticAction(editPlan.getSemanticAction())
-                .anchorType(editPlan.getResolvedAnchor() == null ? null : editPlan.getResolvedAnchor().getAnchorType())
+                .anchorType(anchor == null ? null : anchor.getAnchorType())
                 .strategyType(editPlan.getStrategyType())
                 .expectedState(editPlan.getExpectedState() == null ? null : editPlan.getExpectedState().getStateType())
                 .targetTitle(targetTitle)
@@ -258,6 +366,14 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                 .requiresApproval(editPlan.isRequiresApproval())
                 .riskLevel(editPlan.getRiskLevel())
                 .build();
+    }
+
+    private String resolveTargetTitle(ResolvedDocumentAnchor anchor) {
+        if (anchor == null) return null;
+        if (anchor.getSectionAnchor() != null) return anchor.getSectionAnchor().getHeadingText();
+        if (anchor.getBlockAnchor() != null) return anchor.getBlockAnchor().getPlainText();
+        if (anchor.getTextAnchor() != null) return anchor.getTextAnchor().getMatchedText();
+        return anchor.getPreview();
     }
 
     private ApprovalStatus parseStatus(String action) {
@@ -270,6 +386,55 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             case "MODIFY", "MODIFIED" -> ApprovalStatus.MODIFIED;
             default -> throw new AiAssistantException(BusinessCode.PARAMS_ERROR, "Unsupported approval action: " + action);
         };
+    }
+
+    private boolean isExecutableRichMediaAction(DocumentSemanticActionType action) {
+        if (action == null) return false;
+        return switch (action) {
+            case INSERT_IMAGE_AFTER_ANCHOR,
+                 INSERT_TABLE_AFTER_ANCHOR, REWRITE_TABLE_DATA, APPEND_TABLE_ROW,
+                 UPDATE_WHITEBOARD_CONTENT -> true;
+            default -> false;
+        };
+    }
+
+    private boolean isRichMediaSemantic(DocumentSemanticActionType action) {
+        if (action == null) return false;
+        return switch (action) {
+            case INSERT_IMAGE_AFTER_ANCHOR, REPLACE_IMAGE, DELETE_IMAGE,
+                 INSERT_TABLE_AFTER_ANCHOR, REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE,
+                 INSERT_WHITEBOARD_AFTER_ANCHOR, UPDATE_WHITEBOARD_CONTENT,
+                 MOVE_MEDIA_BLOCK, RELAYOUT_SECTION, CONVERT_TEXT_TO_TABLE, CONVERT_TEXT_TO_IMAGE_CARD -> true;
+            default -> false;
+        };
+    }
+
+    private void validateRichMediaPrerequisites(DocumentIterationRequest request, DocumentEditIntent editIntent) {
+        if (editIntent == null || editIntent.getIntentType() != DocumentIterationIntentType.INSERT_MEDIA) {
+            return;
+        }
+        if (editIntent.getAssetSpec() == null || editIntent.getAssetSpec().getAssetType() == null) {
+            return;
+        }
+        if (editIntent.getAssetSpec().getAssetType() != com.lark.imcollab.common.model.enums.MediaAssetType.IMAGE) {
+            return;
+        }
+
+        boolean hasAttachment = request != null
+                && request.getWorkspaceContext() != null
+                && request.getWorkspaceContext().getAttachmentRefs() != null
+                && !request.getWorkspaceContext().getAttachmentRefs().isEmpty();
+        boolean hasSourceRef = editIntent.getAssetSpec().getSourceRef() != null
+                && !editIntent.getAssetSpec().getSourceRef().isBlank();
+        boolean hasGenerationPrompt = editIntent.getAssetSpec().getGenerationPrompt() != null
+                && !editIntent.getAssetSpec().getGenerationPrompt().isBlank();
+
+        if (!hasAttachment && !hasSourceRef && !hasGenerationPrompt) {
+            throw new AiAssistantException(
+                    BusinessCode.PARAMS_ERROR,
+                    "插入图片需要提供图片附件、图片链接或生成描述，不能只给出插入位置。"
+            );
+        }
     }
 
     private String defaultIfBlank(String value, String defaultValue) {

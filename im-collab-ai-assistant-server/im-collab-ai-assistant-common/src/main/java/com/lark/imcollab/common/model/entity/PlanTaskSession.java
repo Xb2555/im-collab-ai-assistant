@@ -34,6 +34,10 @@ public class PlanTaskSession implements Serializable {
     @Builder.Default
     private int version = 0;
 
+    @Schema(description = "内部状态修订号，用于后端乐观锁；不作为前端可见版本")
+    @Builder.Default
+    private long stateRevision = 0L;
+
     @Schema(description = "规划评分")
     @Builder.Default
     private int planScore = 0;
