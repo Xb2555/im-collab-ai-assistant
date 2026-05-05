@@ -15,8 +15,11 @@ public class PresentationGenerationOptions implements Serializable {
 
     private int pageCount;
     private String style;
+    private String themeFamily;
     private String density;
     private String audience;
     private String tone;
     private boolean speakerNotes;
+    private String templateDiversity;
+    private boolean allowVariantMixing;
 }

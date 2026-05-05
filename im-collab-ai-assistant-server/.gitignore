@@ -42,3 +42,6 @@ build/
 ### Local env
 .env
 .env.*
+
+.m2
+.m2-test

@@ -28,6 +28,7 @@ class PresentationWorkflowNodesTemplateTest {
                         .index(2)
                         .title("实施路径")
                         .layout("timeline")
+                        .templateVariant("horizontal-milestones")
                         .keyPoints(List.of("完成需求澄清", "生成技术方案", "输出汇报材料"))
                         .speakerNotes("按时间顺序讲清楚推进路径。")
                         .build(),
@@ -35,8 +36,11 @@ class PresentationWorkflowNodesTemplateTest {
                 4,
                 PresentationGenerationOptions.builder()
                         .style("deep-tech")
+                        .themeFamily("deep-tech")
                         .density("standard")
                         .speakerNotes(true)
+                        .templateDiversity("balanced")
+                        .allowVariantMixing(true)
                         .build());
 
         assertThat(xml)
@@ -54,14 +58,18 @@ class PresentationWorkflowNodesTemplateTest {
                         .index(3)
                         .title("关键指标")
                         .layout("metric-cards")
+                        .templateVariant("top-stripe-cards")
                         .keyPoints(List.of("预算风险需要持续跟进", "交付周期仍需确认", "合规暂无明显问题", "售后响应待补充"))
                         .build(),
                 3,
                 5,
                 PresentationGenerationOptions.builder()
                         .style("business-light")
+                        .themeFamily("business-light")
                         .density("concise")
                         .speakerNotes(false)
+                        .templateDiversity("balanced")
+                        .allowVariantMixing(true)
                         .build());
 
         assertThat(xml)
@@ -89,8 +97,11 @@ class PresentationWorkflowNodesTemplateTest {
 
         assertThat(options.getPageCount()).isEqualTo(5);
         assertThat(options.getStyle()).isEqualTo("business-light");
+        assertThat(options.getThemeFamily()).isEqualTo("business-light");
         assertThat(options.getDensity()).isEqualTo("detailed");
         assertThat(options.isSpeakerNotes()).isFalse();
+        assertThat(options.getTemplateDiversity()).isEqualTo("balanced");
+        assertThat(options.isAllowVariantMixing()).isTrue();
     }
 
     @Test
@@ -111,6 +122,7 @@ class PresentationWorkflowNodesTemplateTest {
 
         assertThat(options.getPageCount()).isEqualTo(2);
         assertThat(options.getStyle()).isEqualTo("minimal-professional");
+        assertThat(options.getThemeFamily()).isEqualTo("minimal-professional");
         assertThat(options.isSpeakerNotes()).isFalse();
     }
 
@@ -132,7 +144,64 @@ class PresentationWorkflowNodesTemplateTest {
 
         assertThat(options.getPageCount()).isEqualTo(8);
         assertThat(options.getStyle()).isEqualTo("deep-tech");
+        assertThat(options.getThemeFamily()).isEqualTo("deep-tech");
         assertThat(options.getDensity()).isEqualTo("detailed");
         assertThat(options.isSpeakerNotes()).isFalse();
+    }
+
+    @Test
+    void sameThemeDifferentVariantsProduceDifferentStructures() {
+        PresentationGenerationOptions options = PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("rich")
+                .allowVariantMixing(true)
+                .build();
+
+        String railNotes = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
+                        .index(2)
+                        .title("推进节奏")
+                        .layout("section")
+                        .templateVariant("rail-notes")
+                        .keyPoints(List.of("完成对齐", "锁定方案", "组织评审"))
+                        .build(),
+                2, 5, options);
+        String splitBand = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
+                        .index(3)
+                        .title("推进节奏")
+                        .layout("section")
+                        .templateVariant("split-band")
+                        .keyPoints(List.of("完成对齐", "锁定方案", "组织评审"))
+                        .build(),
+                3, 5, options);
+
+        assertThat(railNotes).contains("topLeftX=\"44\" topLeftY=\"38\" width=\"12\" height=\"442\"");
+        assertThat(splitBand).contains("topLeftX=\"0\" topLeftY=\"74\" width=\"960\" height=\"92\"");
+        assertThat(railNotes).isNotEqualTo(splitBand);
+    }
+
+    @Test
+    void fallbackOutlineRotatesTemplateVariants() throws Exception {
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                mock(PresentationExecutionSupport.class), null, null, null, null, null, new ObjectMapper());
+
+        var method = PresentationWorkflowNodes.class.getDeclaredMethod("fallbackOutline", com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
+        method.setAccessible(true);
+        var outline = (com.lark.imcollab.harness.presentation.model.PresentationOutline) method.invoke(localNodes,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                        .title("方案汇报")
+                        .audience("团队")
+                        .style("business-light")
+                        .pageCount(5)
+                        .goal("汇报方案")
+                        .keyMessages(List.of("背景", "方案", "风险", "下一步"))
+                        .build());
+
+        assertThat(outline.getSlides()).hasSize(5);
+        assertThat(outline.getSlides().get(0).getTemplateVariant()).isEqualTo("hero-band");
+        assertThat(outline.getSlides().get(1).getTemplateVariant()).isNotEqualTo(outline.getSlides().get(2).getTemplateVariant());
+        assertThat(outline.getSlides().get(4).getTemplateVariant()).isEqualTo("next-step-board");
     }
 }

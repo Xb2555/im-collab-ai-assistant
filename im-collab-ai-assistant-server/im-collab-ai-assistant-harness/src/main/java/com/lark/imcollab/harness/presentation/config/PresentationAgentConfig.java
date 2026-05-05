@@ -52,15 +52,24 @@ public class PresentationAgentConfig {
                         - title: PPT 标题
                         - audience: 受众
                         - style: 风格
-                        - slides: 页面数组，每页包含 slideId、index、title、keyPoints、layout、speakerNotes
+                        - slides: 页面数组，每页包含 slideId、index、title、keyPoints、layout、templateVariant、visualEmphasis、speakerNotes
                         规则：
                         1. slides 页数必须等于叙事主线 pageCount，且 1 <= 页数 <= 10。
                         2. 根据 density 控制信息密度：concise 每页 2-3 条，standard 每页 3-4 条，detailed 每页 4-5 条；每条不超过 42 个中文字符；技术枚举、接口名、状态名必须完整保留。
                         3. layout 只能使用稳定布局：cover、section、two-column、summary、timeline、risk-list、metric-cards、comparison。
-                        4. speakerNotes 写给演讲者，简短说明页面表达重点。
-                        5. 禁止把文档原文长段落塞入 keyPoints。
-                        6. keyPoints 必须是完整短句，不要使用省略号、半句话或被截断的词。
-                        7. 页面结构要多样化；不要除封面外所有页面都用同一种 layout。
+                        4. templateVariant 必须从以下稳定集合中选择：
+                           - cover: hero-band、center-stack、asymmetric-title
+                           - section: headline-panel、rail-notes、split-band
+                           - two-column/comparison: dual-cards、offset-columns
+                           - timeline: horizontal-milestones、stacked-steps
+                           - metric-cards/risk-list: top-stripe-cards、compact-grid、spotlight-metric
+                           - summary: closing-checklist、next-step-board
+                        5. visualEmphasis 只允许：title、balance、data、action。
+                        6. speakerNotes 写给演讲者，简短说明页面表达重点。
+                        7. 禁止把文档原文长段落塞入 keyPoints。
+                        8. keyPoints 必须是完整短句，不要使用省略号、半句话或被截断的词。
+                        9. 页面结构要多样化；不要除封面外所有页面都用同一种 layout。
+                        10. 同一份 PPT 至少使用 2 种正文 templateVariant；封面和总结页使用各自独立变体。
                         """)
                 .outputType(PresentationOutline.class)
                 .model(chatModel)
