@@ -65,4 +65,24 @@ class PlannerViewAssemblerTest {
         assertThat(preview.actions().canCancel()).isFalse();
         assertThat(preview.actions().canRetry()).isFalse();
     }
+
+    @Test
+    void pendingDocumentApprovalEnablesConfirmAndResume() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .intakeState(TaskIntakeState.builder()
+                        .pendingDocumentIterationTaskId("doc-iter-1")
+                        .pendingDocumentApprovalMode("COMPLETED_TASK_DOC_APPROVAL")
+                        .assistantReply("已生成待确认的文档修改计划")
+                        .build())
+                .build();
+
+        PlanPreviewVO preview = assembler.toPlanPreview(session);
+
+        assertThat(preview.actions().canConfirm()).isTrue();
+        assertThat(preview.actions().canResume()).isTrue();
+        assertThat(preview.actions().canReplan()).isTrue();
+        assertThat(preview.actions().canCancel()).isFalse();
+    }
 }

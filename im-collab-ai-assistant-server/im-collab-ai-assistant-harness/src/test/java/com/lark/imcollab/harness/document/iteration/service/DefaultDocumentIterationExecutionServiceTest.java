@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.DocumentEditStrategy;
 import com.lark.imcollab.common.model.entity.DocumentPatchOperation;
 import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
+import com.lark.imcollab.common.model.entity.ExecutionPlan;
 import com.lark.imcollab.common.model.entity.ExpectedDocumentState;
 import com.lark.imcollab.common.model.entity.PendingDocumentIteration;
 import com.lark.imcollab.common.model.entity.ResolvedDocumentAnchor;
