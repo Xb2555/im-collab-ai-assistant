@@ -388,6 +388,32 @@ class DocumentEditIntentResolverTest {
     }
 
     @Test
+    void insertAfterInstructionUsesAnchorSectionInsteadOfInsertedSectionNumber() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "semanticAction": "INSERT_SECTION_BEFORE_SECTION",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_HEADING_NUMBER",
+                    "headingNumber": "1.2"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("1.1 后插入一章1.2");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("1.1");
+    }
+
+    @Test
     void deleteWholeSectionInstructionNormalizesOrdinalAnchorToHeadingTitle() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""

@@ -103,6 +103,10 @@ public class DocumentPatchCompiler {
             insertContent = insertContent + "\n";
         }
         String newSectionHeading = headingTextOf(insertContent);
+        String moveTargetBlockId = resolveBeforeInsertMoveTarget(snapshot, sectionAnchor);
+        if (moveTargetBlockId == null || moveTargetBlockId.isBlank()) {
+            return approvalOnlyPlan(taskId, intent, snapshot, anchor, strategy, "无法确定章节前插入的稳定移动目标，需人工确认");
+        }
         return base(taskId, intent, snapshot, anchor, strategy)
                 .reasoningSummary("章节前插入：append + block_move_after")
                 .generatedContent(generated)
@@ -123,7 +127,7 @@ public class DocumentPatchCompiler {
                         DocumentPatchOperation.builder()
                                 .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
                                 .runtimeGroupKey(RUNTIME_GROUP_NEW_SECTION_BEFORE)
-                                .targetBlockId(sectionAnchor.getPrevTopLevelSectionId())
+                                .targetBlockId(moveTargetBlockId)
                                 .justification("再移动到目标章节前")
                                 .build()
                 ))
@@ -465,6 +469,45 @@ public class DocumentPatchCompiler {
             return anchor.getSectionAnchor().getHeadingBlockId();
         }
         return null;
+    }
+
+    private String resolveBeforeInsertMoveTarget(DocumentStructureSnapshot snapshot, DocumentSectionAnchor sectionAnchor) {
+        if (sectionAnchor == null) {
+            return null;
+        }
+        String previousSiblingHeadingId = resolvePreviousSiblingHeadingId(snapshot, sectionAnchor);
+        if (previousSiblingHeadingId != null) {
+            String previousTail = sectionTailBlockId(snapshot, previousSiblingHeadingId);
+            return previousTail != null ? previousTail : previousSiblingHeadingId;
+        }
+        return sectionAnchor.getParentHeadingBlockId();
+    }
+
+    private String resolvePreviousSiblingHeadingId(DocumentStructureSnapshot snapshot, DocumentSectionAnchor sectionAnchor) {
+        if (snapshot == null || sectionAnchor == null) {
+            return null;
+        }
+        String currentHeadingId = sectionAnchor.getHeadingBlockId();
+        String parentHeadingId = sectionAnchor.getParentHeadingBlockId();
+        List<String> siblings = parentHeadingId == null
+                ? snapshot.getTopLevelSequence()
+                : snapshot.getChildrenHeadingIndex() == null ? null : snapshot.getChildrenHeadingIndex().get(parentHeadingId);
+        if (siblings == null) {
+            return null;
+        }
+        int idx = siblings.indexOf(currentHeadingId);
+        return idx > 0 ? siblings.get(idx - 1) : null;
+    }
+
+    private String sectionTailBlockId(DocumentStructureSnapshot snapshot, String headingBlockId) {
+        if (snapshot == null || headingBlockId == null) {
+            return null;
+        }
+        List<String> blockIds = snapshot.getSectionBlockIds() == null ? null : snapshot.getSectionBlockIds().get(headingBlockId);
+        if (blockIds == null || blockIds.isEmpty()) {
+            return headingBlockId;
+        }
+        return blockIds.get(blockIds.size() - 1);
     }
 
     private DocumentSectionAnchor requireSectionAnchor(ResolvedDocumentAnchor anchor) {

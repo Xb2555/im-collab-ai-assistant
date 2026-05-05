@@ -195,6 +195,10 @@ public class DocumentAnchorResolver {
         if (artifact != null && snapshotBuilder != null) {
             String docRef = artifact.getExternalUrl() != null ? artifact.getExternalUrl() : artifact.getDocumentId();
             snapshotBuilder.fetchSectionDetail(snapshot, headingBlockId, docRef);
+            String previousSiblingHeadingId = resolvePreviousSiblingHeadingId(snapshot, headingBlockId);
+            if (previousSiblingHeadingId != null) {
+                snapshotBuilder.fetchSectionDetail(snapshot, previousSiblingHeadingId, docRef);
+            }
         }
 
         return buildSectionAnchor(snapshot, headingBlockId);
@@ -567,6 +571,21 @@ public class DocumentAnchorResolver {
         }
         int idx = siblings.indexOf(headingBlockId);
         return idx >= 0 ? idx + 1 : 0;
+    }
+
+    private String resolvePreviousSiblingHeadingId(DocumentStructureSnapshot snapshot, String headingBlockId) {
+        if (snapshot == null || headingBlockId == null) {
+            return null;
+        }
+        String parentId = snapshot.getParentHeadingIndex() == null ? null : snapshot.getParentHeadingIndex().get(headingBlockId);
+        List<String> siblings = parentId == null
+                ? snapshot.getTopLevelSequence()
+                : snapshot.getChildrenHeadingIndex() == null ? null : snapshot.getChildrenHeadingIndex().get(parentId);
+        if (siblings == null) {
+            return null;
+        }
+        int idx = siblings.indexOf(headingBlockId);
+        return idx > 0 ? siblings.get(idx - 1) : null;
     }
 
     private String effectiveOutlinePath(DocumentAnchorSpec spec) {

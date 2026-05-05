@@ -35,7 +35,7 @@ public class DocumentEditIntentResolver {
     private static final Pattern SECTION_ACTION_MARKER_PATTERN = Pattern.compile("(给出|补充|增加|新增|插入|改写|修改|更新|替换|删除|移到|移动|调整|优化|展开|说明|完善|重写)");
     private static final Pattern INSERT_AFTER_PATTERN = Pattern.compile("(后插入|后新增|后面插入|之后插入)");
     private static final Pattern INSERT_BEFORE_PATTERN = Pattern.compile("(前插入|前新增|前面插入|之前插入)");
-    private static final Pattern INSERTED_SECTION_CANDIDATE_PATTERN = Pattern.compile("(插入|新增)\\s*(?:第[一二三四五六七八九十百千万0-9]+[章节部分]|\\d+(?:\\.\\d+)+)");
+    private static final Pattern INSERTED_SECTION_CANDIDATE_PATTERN = Pattern.compile("(插入|新增)\\s*(?:一章|一节|一部分|第[一二三四五六七八九十百千万0-9]+[章节部分]|\\d+(?:\\.\\d+)+)");
     private static final Pattern DECIMAL_SECTION_HEADING_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)\\s*([^，。；,;\\n]+)");
     private static final Pattern DECIMAL_SECTION_PATH_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)");
     private static final Pattern CHAPTER_THEN_SECTION_PATTERN = Pattern.compile("第([一二三四五六七八九十百千万0-9]+)章第([一二三四五六七八九十百千万0-9]+)节");
@@ -413,7 +413,7 @@ public class DocumentEditIntentResolver {
         if (!looksLikeSectionInsert(intent) || !isExplicitSectionInsertInstruction(intent.getUserInstruction())) {
             return intent;
         }
-        SectionReference sectionReference = extractSectionReference(intent.getUserInstruction());
+        SectionReference sectionReference = extractInsertAnchorSectionReference(intent.getUserInstruction());
         if (sectionReference == null) {
             return intent;
         }
@@ -620,6 +620,22 @@ public class DocumentEditIntentResolver {
             }
         }
         return null;
+    }
+
+    private SectionReference extractInsertAnchorSectionReference(String instruction) {
+        if (!hasText(instruction)) {
+            return null;
+        }
+        String anchorSegment = instruction;
+        java.util.regex.Matcher afterMatcher = INSERT_AFTER_PATTERN.matcher(instruction);
+        java.util.regex.Matcher beforeMatcher = INSERT_BEFORE_PATTERN.matcher(instruction);
+        if (afterMatcher.find()) {
+            anchorSegment = instruction.substring(0, afterMatcher.start()).trim();
+        } else if (beforeMatcher.find()) {
+            anchorSegment = instruction.substring(0, beforeMatcher.start()).trim();
+        }
+        SectionReference sectionReference = extractSectionReference(anchorSegment);
+        return sectionReference != null ? sectionReference : extractSectionReference(instruction);
     }
 
     private Integer parseChineseOrArabicOrdinal(String value) {

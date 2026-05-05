@@ -60,14 +60,10 @@ class DocumentPatchCompilerTest {
                 strategy(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT, DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
         );
 
-        assertThat(plan.getToolCommandType()).isEqualTo(DocumentPatchOperationType.APPEND);
-        assertThat(plan.getPatchOperations()).hasSize(2);
-        assertThat(plan.getPatchOperations().get(0).getOperationType()).isEqualTo(DocumentPatchOperationType.APPEND);
-        assertThat(plan.getPatchOperations().get(1).getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER);
-        assertThat(plan.getExpectedState().getAttributes())
-                .containsEntry("targetHeadingText", "一、项目背景")
-                .containsEntry("newSectionHeadingText", "前言");
-        assertThat(plan.getStrategyType()).isEqualTo(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT);
+        assertThat(plan.isRequiresApproval()).isTrue();
+        assertThat(plan.getToolCommandType()).isNull();
+        assertThat(plan.getPatchOperations()).isEmpty();
+        assertThat(plan.getReasoningSummary()).contains("稳定移动目标");
     }
 
     @Test
@@ -98,8 +94,48 @@ class DocumentPatchCompilerTest {
                 strategy(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT, DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
         );
 
-        assertThat(plan.getPatchOperations()).first().satisfies(operation ->
-                assertThat(operation.getNewContent()).startsWith("## 前言"));
+        assertThat(plan.isRequiresApproval()).isTrue();
+        assertThat(plan.getPatchOperations()).isEmpty();
+    }
+
+    @Test
+    void insertBeforeSubSectionMovesAfterParentHeadingWhenTargetIsFirstChild() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("1.2 新小节\n\n这是新增章节");
+        DocumentPatchCompiler compiler = new DocumentPatchCompiler(chatModel);
+
+        DocumentStructureSnapshot snapshot = DocumentStructureSnapshot.builder()
+                .docId("doc-sub")
+                .childrenHeadingIndex(Map.of("heading-1", List.of("heading-1-1")))
+                .sectionBlockIds(Map.of("heading-1-1", List.of("heading-1-1", "body-1")))
+                .build();
+
+        DocumentEditPlan plan = compiler.compile(
+                "task-sub",
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.INSERT)
+                        .semanticAction(DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION)
+                        .userInstruction("1.1 后插入一章1.2")
+                        .build(),
+                snapshot,
+                ResolvedDocumentAnchor.builder()
+                        .anchorType(DocumentAnchorType.SECTION)
+                        .sectionAnchor(DocumentSectionAnchor.builder()
+                                .headingBlockId("heading-1-1")
+                                .headingText("1.1 原小节")
+                                .headingLevel(3)
+                                .parentHeadingBlockId("heading-1")
+                                .allBlockIds(List.of("heading-1-1", "body-1"))
+                                .bodyBlockIds(List.of("body-1"))
+                                .build())
+                        .preview("1.1 原小节")
+                        .build(),
+                strategy(DocumentStrategyType.CONTROLLED_BEFORE_SECTION_INSERT, DocumentExpectedStateType.EXPECT_NEW_SECTION_BEFORE_TARGET_SECTION)
+        );
+
+        assertThat(plan.getPatchOperations()).hasSize(2);
+        assertThat(plan.getPatchOperations().get(1).getOperationType()).isEqualTo(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER);
+        assertThat(plan.getPatchOperations().get(1).getTargetBlockId()).isEqualTo("heading-1");
     }
 
     @Test
