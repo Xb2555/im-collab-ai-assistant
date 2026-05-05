@@ -85,7 +85,7 @@ public class PlannerViewAssembler {
 
     private TaskActionVO resolveActions(PlanningPhaseEnum phase, boolean aborted) {
         if (aborted || phase == PlanningPhaseEnum.ABORTED) {
-            return new TaskActionVO(false, false, false, false, false, false);
+            return new TaskActionVO(false, true, false, false, false, false);
         }
         if (phase == PlanningPhaseEnum.COMPLETED) {
             return new TaskActionVO(false, true, false, false, false, false);

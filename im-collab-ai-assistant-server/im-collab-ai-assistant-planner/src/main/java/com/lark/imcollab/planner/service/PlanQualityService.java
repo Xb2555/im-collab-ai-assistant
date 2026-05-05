@@ -152,6 +152,7 @@ public class PlanQualityService {
         session.setIntegrationHooks(buildIntegrationHooks(normalized));
         session.setExecutionContract(contract);
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        session.setAborted(false);
         session.setTransitionReason("Plan generated");
         return session;
     }
@@ -190,6 +191,7 @@ public class PlanQualityService {
         session.setIntegrationHooks(buildIntegrationHooks(normalized));
         session.setExecutionContract(contract);
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        session.setAborted(false);
         session.setTransitionReason(hasText(reason) ? reason : "Plan adjusted");
         return session;
     }

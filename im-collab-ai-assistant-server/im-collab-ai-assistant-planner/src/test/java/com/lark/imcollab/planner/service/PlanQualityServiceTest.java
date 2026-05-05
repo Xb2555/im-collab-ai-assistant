@@ -126,6 +126,44 @@ class PlanQualityServiceTest {
                 .isEqualTo("card-002");
     }
 
+    @Test
+    void planReadyClearsAbortedFlagAfterReplan() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ABORTED)
+                .aborted(true)
+                .rawInstruction("生成技术方案文档")
+                .build();
+
+        service.applyPlanReady(session, PlanBlueprint.builder()
+                .planCards(List.of(card("card-001", "生成技术方案文档", PlanCardTypeEnum.DOC)))
+                .build());
+
+        assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.PLAN_READY);
+        assertThat(session.isAborted()).isFalse();
+    }
+
+    @Test
+    void mergedPlanAdjustmentClearsAbortedFlagAfterReplan() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ABORTED)
+                .aborted(true)
+                .rawInstruction("生成技术方案文档")
+                .build();
+
+        service.applyMergedPlanAdjustment(
+                session,
+                PlanBlueprint.builder()
+                        .planCards(List.of(card("card-001", "生成技术方案文档", PlanCardTypeEnum.DOC)))
+                        .build(),
+                "Plan adjusted"
+        );
+
+        assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.PLAN_READY);
+        assertThat(session.isAborted()).isFalse();
+    }
+
     private static UserPlanCard card(String cardId, String title, PlanCardTypeEnum type) {
         return UserPlanCard.builder()
                 .cardId(cardId)
