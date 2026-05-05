@@ -180,8 +180,31 @@ public class LarkDocTool {
     }
 
     private String normalizeMarkdown(String title, String markdown) {
-        String trimmed = markdown.trim();
-        return trimmed.startsWith("# ") ? trimmed : "# " + title.trim() + "\n\n" + trimmed;
+        String normalizedTitle = title == null ? "" : title.trim();
+        String trimmed = markdown == null ? "" : markdown.strip();
+        if (trimmed.isBlank()) {
+            return "# " + normalizedTitle;
+        }
+        String firstLine = trimmed.lines()
+                .map(String::strip)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("");
+        if (isTopLevelHeading(firstLine)) {
+            return trimmed;
+        }
+        if (normalizedTitle.isBlank()) {
+            return trimmed;
+        }
+        return "# " + normalizedTitle + "\n\n" + trimmed;
+    }
+
+    private boolean isTopLevelHeading(String line) {
+        if (line == null) {
+            return false;
+        }
+        String trimmed = line.strip();
+        return trimmed.startsWith("# ") && !trimmed.startsWith("##");
     }
 
     private String normalizeTitle(String title) {
