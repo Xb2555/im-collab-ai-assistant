@@ -1,7 +1,9 @@
 package com.lark.imcollab.planner.supervisor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
 import com.lark.imcollab.common.facade.PresentationIterationFacade;
+import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
@@ -14,10 +16,12 @@ import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
+import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.planner.replan.PlanAdjustmentInterpreter;
 import com.lark.imcollab.planner.replan.PlanPatchIntent;
@@ -58,6 +62,7 @@ public class ReplanNodeService {
     private final PlannerStateStore stateStore;
     private final TaskRuntimeService taskRuntimeService;
     private final ObjectProvider<PresentationIterationFacade> presentationIterationFacadeProvider;
+    private final ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider;
     private final ObjectMapper objectMapper;
 
     public ReplanNodeService(
@@ -70,6 +75,7 @@ public class ReplanNodeService {
             PlannerStateStore stateStore,
             TaskRuntimeService taskRuntimeService,
             ObjectProvider<PresentationIterationFacade> presentationIterationFacadeProvider,
+            ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider,
             ObjectMapper objectMapper
     ) {
         this.sessionService = sessionService;
@@ -81,6 +87,7 @@ public class ReplanNodeService {
         this.stateStore = stateStore;
         this.taskRuntimeService = taskRuntimeService;
         this.presentationIterationFacadeProvider = presentationIterationFacadeProvider;
+        this.documentArtifactIterationFacadeProvider = documentArtifactIterationFacadeProvider;
         this.objectMapper = objectMapper;
     }
 
@@ -295,11 +302,14 @@ public class ReplanNodeService {
             return editExistingPpt(session, artifact, instruction, workspaceContext);
         }
         if (artifact.getType() == ArtifactTypeEnum.DOC) {
-            return askCompletedAdjustmentQuestion(
-                    session,
-                    instruction,
-                    "Doc 原地编辑能力暂未接入。你是要保留现有文档再新建一版，还是等 Doc 原地编辑能力合入后再直接修改旧文档？"
-            );
+            if (!hasConcreteDocEditInstruction(instruction)) {
+                return askCompletedAdjustmentQuestion(
+                        session,
+                        instruction,
+                        "可以改现有文档。你想补哪一段、改哪个章节，或插入什么内容？比如“在 1.2 后补充一段风险分析”。"
+                );
+            }
+            return editExistingDoc(session, artifact, instruction, workspaceContext);
         }
         return askCompletedAdjustmentQuestion(
                 session,
@@ -363,6 +373,40 @@ public class ReplanNodeService {
         return session;
     }
 
+    private PlanTaskSession editExistingDoc(
+            PlanTaskSession session,
+            ArtifactRecord artifact,
+            String instruction,
+            WorkspaceContext workspaceContext
+    ) {
+        DocumentArtifactIterationFacade documentArtifactIterationFacade = documentArtifactIterationFacadeProvider == null
+                ? null
+                : documentArtifactIterationFacadeProvider.getIfAvailable();
+        if (documentArtifactIterationFacade == null) {
+            return askCompletedAdjustmentQuestion(session, instruction, "Doc 原地编辑能力当前不可用。你可以保留现有文档，再重新生成一版。");
+        }
+        String taskId = session.getTaskId();
+        markRuntimeStatus(taskId, TaskStatusEnum.EXECUTING);
+        appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.STEP_STARTED, "开始修改已有文档");
+        DocumentArtifactIterationResult result;
+        try {
+            result = documentArtifactIterationFacade.edit(DocumentArtifactIterationRequest.builder()
+                    .taskId(taskId)
+                    .artifactId(artifact.getArtifactId())
+                    .docUrl(artifact.getUrl())
+                    .instruction(instruction)
+                    .operatorOpenId(workspaceContext == null ? inputSender(session) : workspaceContext.getSenderOpenId())
+                    .workspaceContext(workspaceContext)
+                    .build());
+        } catch (RuntimeException exception) {
+            markRuntimeStatus(taskId, TaskStatusEnum.COMPLETED);
+            appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.STEP_FAILED,
+                    "文档修改失败：" + exception.getMessage());
+            throw exception;
+        }
+        return applyDocumentIterationResult(session, artifact, instruction, result);
+    }
+
     private PlanTaskSession askCompletedAdjustmentQuestion(
             PlanTaskSession session,
             String instruction,
@@ -372,6 +416,7 @@ public class ReplanNodeService {
         intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         intakeState.setAssistantReply(question);
         intakeState.setPendingAdjustmentInstruction(instruction);
+        clearPendingDocumentApproval(intakeState);
         intakeState.setLastUserMessage(instruction);
         session.setIntakeState(intakeState);
         questionTool.askUser(session, List.of(question));
@@ -380,6 +425,7 @@ public class ReplanNodeService {
             updated.getIntakeState().setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
             updated.getIntakeState().setAssistantReply(question);
             updated.getIntakeState().setPendingAdjustmentInstruction(instruction);
+            clearPendingDocumentApproval(updated.getIntakeState());
             updated.getIntakeState().setLastUserMessage(instruction);
             updated.setTransitionReason("Completed task adjustment needs user input");
             sessionService.saveWithoutVersionChange(updated);
@@ -561,6 +607,89 @@ public class ReplanNodeService {
         }
         return containsAny(instruction, "补充", "新增", "添加", "加入", "删除")
                 && instruction.length() >= 12;
+    }
+
+    private boolean hasConcreteDocEditInstruction(String instruction) {
+        if (!hasText(instruction)) {
+            return false;
+        }
+        return containsAny(instruction, "补充", "新增", "添加", "加入", "插入", "改成", "改为", "修改", "删除", "润色", "重写", "替换")
+                && instruction.length() >= 8;
+    }
+
+    private PlanTaskSession applyDocumentIterationResult(
+            PlanTaskSession session,
+            ArtifactRecord artifact,
+            String instruction,
+            DocumentArtifactIterationResult result
+    ) {
+        String taskId = session.getTaskId();
+        DocumentArtifactIterationStatus status = result == null ? DocumentArtifactIterationStatus.FAILED : result.getStatus();
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        intakeState.setPendingArtifactSelection(null);
+        intakeState.setPendingAdjustmentInstruction(instruction);
+        intakeState.setLastUserMessage(instruction);
+        session.setIntakeState(intakeState);
+
+        if (status == DocumentArtifactIterationStatus.COMPLETED) {
+            artifact.setPreview(firstNonBlank(result.getPreview(), result.getSummary(), artifact.getPreview()));
+            artifact.setStatus("UPDATED");
+            artifact.setVersion(artifact.getVersion() + 1);
+            artifact.setUpdatedAt(Instant.now());
+            stateStore.saveArtifact(artifact);
+            markRuntimeStatus(taskId, TaskStatusEnum.COMPLETED);
+            appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.ARTIFACT_UPDATED,
+                    firstNonBlank(result.getSummary(), "文档已更新"));
+            appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.TASK_COMPLETED, "文档原地修改完成");
+            clearPendingDocumentApproval(intakeState);
+            intakeState.setAssistantReply(firstNonBlank(result.getSummary(), "文档已更新"));
+            intakeState.setPendingAdjustmentInstruction(null);
+            session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+            session.setTransitionReason("Scenario D DOC artifact updated in place by planner replan");
+            sessionService.saveWithoutVersionChange(session);
+            sessionService.publishEvent(taskId, "COMPLETED");
+            return session;
+        }
+
+        if (status == DocumentArtifactIterationStatus.WAITING_APPROVAL) {
+            markRuntimeStatus(taskId, TaskStatusEnum.WAITING_APPROVAL);
+            intakeState.setAssistantReply(firstNonBlank(result.getSummary(), "文档修改等待确认"));
+            intakeState.setPendingDocumentIterationTaskId(result.getTaskId());
+            intakeState.setPendingDocumentArtifactId(artifact.getArtifactId());
+            intakeState.setPendingDocumentDocUrl(artifact.getUrl());
+            intakeState.setPendingDocumentApprovalSummary(result.getSummary());
+            intakeState.setPendingDocumentApprovalMode("COMPLETED_TASK_DOC_APPROVAL");
+            session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+            session.setTransitionReason("Completed DOC adjustment is waiting approval");
+            sessionService.saveWithoutVersionChange(session);
+            sessionService.publishEvent(taskId, "ASK_USER");
+            return session;
+        }
+
+        markRuntimeStatus(taskId, TaskStatusEnum.COMPLETED);
+        appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.STEP_FAILED,
+                firstNonBlank(result == null ? null : result.getSummary(), "文档修改失败"));
+        clearPendingDocumentApproval(intakeState);
+        intakeState.setAssistantReply(firstNonBlank(result == null ? null : result.getSummary(), "文档修改失败"));
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        session.setTransitionReason("Completed DOC adjustment failed");
+        sessionService.saveWithoutVersionChange(session);
+        sessionService.publishEvent(taskId, "COMPLETED");
+        return session;
+    }
+
+    private void clearPendingDocumentApproval(TaskIntakeState intakeState) {
+        if (intakeState == null) {
+            return;
+        }
+        intakeState.setPendingDocumentIterationTaskId(null);
+        intakeState.setPendingDocumentArtifactId(null);
+        intakeState.setPendingDocumentDocUrl(null);
+        intakeState.setPendingDocumentApprovalSummary(null);
+        intakeState.setPendingDocumentApprovalMode(null);
     }
 
     private String parsePresentationId(String url) {

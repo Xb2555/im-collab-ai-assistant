@@ -34,9 +34,13 @@ public class AssetResolutionFacade {
     private ResolvedAsset resolveImage(MediaAssetSpec spec) {
         boolean requiresUpload = spec.getSourceType() == MediaAssetSourceType.AI_GENERATED
                 || spec.getSourceType() == MediaAssetSourceType.INLINE_DATA;
+        if ((spec.getSourceRef() == null || spec.getSourceRef().isBlank())
+                && (spec.getGenerationPrompt() == null || spec.getGenerationPrompt().isBlank())) {
+            throw new IllegalStateException("IMAGE asset requires sourceRef or generationPrompt");
+        }
         return ResolvedAsset.builder()
                 .assetType(MediaAssetType.IMAGE)
-                .assetRef(spec.getSourceRef())
+                .assetRef(firstNonBlank(spec.getSourceRef(), spec.getGenerationPrompt()))
                 .mimeType(spec.getMimeType())
                 .caption(spec.getCaption())
                 .altText(spec.getAltText())
@@ -50,6 +54,9 @@ public class AssetResolutionFacade {
         if (tableModel == null && spec.getGenerationPrompt() != null) {
             tableModel = generateTableModel(spec.getGenerationPrompt());
         }
+        if (tableModel == null || tableModel.getColumns() == null || tableModel.getColumns().isEmpty()) {
+            throw new IllegalStateException("TABLE asset requires non-empty tableModel");
+        }
         return ResolvedAsset.builder()
                 .assetType(MediaAssetType.TABLE)
                 .tableModel(tableModel)
@@ -59,11 +66,15 @@ public class AssetResolutionFacade {
     }
 
     private ResolvedAsset resolveWhiteboard(MediaAssetSpec spec) {
+        String dsl = firstNonBlank(spec.getWhiteboardDsl(), spec.getSourceRef(), spec.getGenerationPrompt());
+        if (dsl == null || dsl.isBlank()) {
+            throw new IllegalStateException("WHITEBOARD asset requires whiteboard DSL");
+        }
         return ResolvedAsset.builder()
                 .assetType(MediaAssetType.WHITEBOARD)
-                .assetRef(spec.getWhiteboardDsl())
+                .assetRef(dsl)
                 .requiresUpload(false)
-                .requiresCreation(true)
+                .requiresCreation(false)
                 .build();
     }
 
@@ -84,5 +95,17 @@ public class AssetResolutionFacade {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 }

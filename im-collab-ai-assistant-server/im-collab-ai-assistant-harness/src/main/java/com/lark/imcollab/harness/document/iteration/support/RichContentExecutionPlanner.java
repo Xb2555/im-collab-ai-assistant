@@ -6,7 +6,7 @@ import com.lark.imcollab.common.model.entity.ExecutionPlan;
 import com.lark.imcollab.common.model.entity.ExecutionStep;
 import com.lark.imcollab.common.model.entity.ResolvedAsset;
 import com.lark.imcollab.common.model.entity.ResolvedDocumentAnchor;
-import com.lark.imcollab.common.model.enums.MediaAssetType;
+import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -21,15 +21,18 @@ public class RichContentExecutionPlanner {
             DocumentEditStrategy strategy,
             ResolvedAsset asset
     ) {
-        if (asset == null) {
+        if (intent == null || intent.getSemanticAction() == null || asset == null) {
             return null;
         }
         List<ExecutionStep> steps = new ArrayList<>();
-        switch (asset.getAssetType()) {
-            case IMAGE -> buildImageSteps(steps, asset, anchor);
-            case TABLE -> buildTableSteps(steps, asset, anchor);
-            case WHITEBOARD -> buildWhiteboardSteps(steps, asset, anchor);
-            default -> steps.add(step("UNSUPPORTED", "unsupported_asset_type", null));
+        switch (intent.getSemanticAction()) {
+            case INSERT_IMAGE_AFTER_ANCHOR -> buildImageInsertSteps(steps, asset, anchor);
+            case INSERT_TABLE_AFTER_ANCHOR -> buildTableInsertSteps(steps, asset, anchor);
+            case REWRITE_TABLE_DATA, APPEND_TABLE_ROW -> buildTableRewriteSteps(steps, asset, anchor);
+            case UPDATE_WHITEBOARD_CONTENT -> buildWhiteboardUpdateSteps(steps, asset, anchor);
+            default -> {
+                return null;
+            }
         }
         return ExecutionPlan.builder()
                 .steps(steps)
@@ -39,31 +42,55 @@ public class RichContentExecutionPlanner {
                 .build();
     }
 
-    private void buildImageSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
+    private void buildImageInsertSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
         if (asset.isRequiresUpload()) {
             steps.add(step("UPLOAD_IMAGE", "lark_drive_upload", asset.getAssetRef()));
         }
         steps.add(step("INSERT_IMAGE_BLOCK", "lark_doc_block_insert_after",
-                anchor.getInsertionBlockId() != null ? anchor.getInsertionBlockId()
-                        : anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
-        steps.add(step("VERIFY_IMAGE_NODE", "snapshot_verify", MediaAssetType.IMAGE.name()));
+                resolveInsertionBlockId(anchor)));
     }
 
-    private void buildTableSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
+    private void buildTableInsertSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
         steps.add(step("RESOLVE_TABLE_SCHEMA", "table_asset_resolver", asset.getTableModel()));
         steps.add(step("INSERT_TABLE_BLOCK", "lark_doc_block_insert_after",
-                anchor.getInsertionBlockId() != null ? anchor.getInsertionBlockId()
-                        : anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
+                resolveInsertionBlockId(anchor)));
         steps.add(step("WRITE_TABLE_DATA", "lark_doc_table_write", asset.getTableModel()));
-        steps.add(step("VERIFY_TABLE_NODE", "snapshot_verify", MediaAssetType.TABLE.name()));
     }
 
-    private void buildWhiteboardSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
-        steps.add(step("CREATE_WHITEBOARD", "lark_whiteboard_create", asset.getAssetRef()));
-        steps.add(step("INSERT_WHITEBOARD_REF", "lark_doc_block_insert_after",
-                anchor.getInsertionBlockId() != null ? anchor.getInsertionBlockId()
-                        : anchor.getBlockAnchor() != null ? anchor.getBlockAnchor().getBlockId() : null));
-        steps.add(step("VERIFY_WHITEBOARD_NODE", "snapshot_verify", MediaAssetType.WHITEBOARD.name()));
+    private void buildTableRewriteSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
+        steps.add(step("RESOLVE_TABLE_SCHEMA", "table_asset_resolver", asset.getTableModel()));
+        steps.add(step("WRITE_TABLE_DATA", "lark_doc_table_write", resolveTargetBlockId(anchor)));
+    }
+
+    private void buildWhiteboardUpdateSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
+        steps.add(step("UPDATE_WHITEBOARD", "lark_doc_whiteboard_update", resolveWhiteboardUpdateInput(asset, anchor)));
+    }
+
+    private String resolveInsertionBlockId(ResolvedDocumentAnchor anchor) {
+        if (anchor == null) {
+            return null;
+        }
+        if (anchor.getInsertionBlockId() != null) {
+            return anchor.getInsertionBlockId();
+        }
+        if (anchor.getBlockAnchor() != null) {
+            return anchor.getBlockAnchor().getBlockId();
+        }
+        if (anchor.getSectionAnchor() != null) {
+            return anchor.getSectionAnchor().getHeadingBlockId();
+        }
+        return null;
+    }
+
+    private String resolveTargetBlockId(ResolvedDocumentAnchor anchor) {
+        if (anchor == null || anchor.getMediaAnchor() == null) {
+            return null;
+        }
+        return anchor.getMediaAnchor().getBlockId();
+    }
+
+    private WhiteboardUpdateInput resolveWhiteboardUpdateInput(ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
+        return new WhiteboardUpdateInput(resolveTargetBlockId(anchor), asset.getAssetRef());
     }
 
     private ExecutionStep step(String stepType, String toolBinding, Object input) {
@@ -75,4 +102,6 @@ public class RichContentExecutionPlanner {
                 .failureMode("ABORT")
                 .build();
     }
+
+    public record WhiteboardUpdateInput(String blockId, String dsl) {}
 }

@@ -41,4 +41,29 @@ class InsertImageBlockStepHandlerTest {
         assertThat(ctx.getCreatedBlockIds()).containsExactly("img-block-1");
         assertThat(ctx.getString("imageBlockId")).isEqualTo("img-block-1");
     }
+
+    @Test
+    void handlePrefersActualImageBlockWhenNewBlocksContainContainer() {
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        when(writeGateway.updateByCommand(eq("doc123"), eq("block_insert_after"), eq("![东方明珠](file-token-1)"),
+                eq("markdown"), eq("anchor-1"), isNull(), isNull()))
+                .thenReturn(LarkDocUpdateResult.builder()
+                        .success(true)
+                        .newBlocks(List.of(
+                                LarkDocBlockRef.builder().blockId("paragraph-1").blockType("paragraph").build(),
+                                LarkDocBlockRef.builder().blockId("img-block-1").blockType("image").build()))
+                        .build());
+        InsertImageBlockStepHandler handler = new InsertImageBlockStepHandler(writeGateway);
+        RichContentExecutionContext ctx = new RichContentExecutionContext();
+        ctx.put("uploadedFileToken", "file-token-1");
+        ctx.put("imageCaption", "东方明珠");
+
+        handler.handle(ExecutionStep.builder()
+                .stepType("INSERT_IMAGE_BLOCK")
+                .input("anchor-1")
+                .build(), "doc123", ctx);
+
+        assertThat(ctx.getCreatedBlockIds()).containsExactly("img-block-1");
+        assertThat(ctx.getString("imageBlockId")).isEqualTo("img-block-1");
+    }
 }

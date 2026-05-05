@@ -237,6 +237,56 @@ class DocumentAnchorResolverTest {
         assertThat(anchor.getSectionAnchor().getHeadingNumber()).isEqualTo("1.3");
     }
 
+    @Test
+    void insertImageAfterAnchorResolvesSectionByTitleWithoutChineseListPrefix() {
+        DocumentAnchorResolver resolver = new DocumentAnchorResolver(null);
+
+        ResolvedDocumentAnchor anchor = resolver.resolve(
+                Artifact.builder().externalUrl("https://example.com/docx/doc123").build(),
+                mediaInsertSnapshot(),
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.INSERT_MEDIA)
+                        .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                        .userInstruction("一、发展现状与总体态势后插入一张广州的图片")
+                        .anchorSpec(DocumentAnchorSpec.builder()
+                                .anchorKind(DocumentAnchorKind.SECTION)
+                                .matchMode(DocumentAnchorMatchMode.BY_HEADING_TITLE)
+                                .headingTitle("发展现状与总体态势")
+                                .build())
+                        .build()
+        );
+
+        assertThat(anchor.getAnchorType()).isEqualTo(DocumentAnchorType.BLOCK);
+        assertThat(anchor.getSectionAnchor()).isNotNull();
+        assertThat(anchor.getSectionAnchor().getHeadingText()).isEqualTo("一、发展现状与总体态势");
+        assertThat(anchor.getInsertionBlockId()).isEqualTo("body-1");
+    }
+
+    @Test
+    void insertImageAfterAnchorResolvesTopLevelSectionFromChineseOrdinalTitle() {
+        DocumentAnchorResolver resolver = new DocumentAnchorResolver(null);
+
+        ResolvedDocumentAnchor anchor = resolver.resolve(
+                Artifact.builder().externalUrl("https://example.com/docx/doc123").build(),
+                mediaInsertSnapshot(),
+                DocumentEditIntent.builder()
+                        .intentType(DocumentIterationIntentType.INSERT_MEDIA)
+                        .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                        .userInstruction("第一章后插入一张广州的图片")
+                        .anchorSpec(DocumentAnchorSpec.builder()
+                                .anchorKind(DocumentAnchorKind.SECTION)
+                                .matchMode(DocumentAnchorMatchMode.BY_HEADING_TITLE)
+                                .headingTitle("第一章")
+                                .build())
+                        .build()
+        );
+
+        assertThat(anchor.getAnchorType()).isEqualTo(DocumentAnchorType.BLOCK);
+        assertThat(anchor.getSectionAnchor()).isNotNull();
+        assertThat(anchor.getSectionAnchor().getHeadingText()).isEqualTo("一、发展现状与总体态势");
+        assertThat(anchor.getInsertionBlockId()).isEqualTo("body-1");
+    }
+
     private DocumentStructureSnapshot snapshot() {
         Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
         blockIndex.put("meta-1", DocumentStructureNode.builder().blockId("meta-1").blockType("p").plainText("作者：张三").build());
@@ -342,6 +392,20 @@ class DocumentAnchorResolverTest {
                         "heading-1-2", 2,
                         "heading-1-3", 3
                 ))
+                .topLevelSequence(List.of("heading-1"))
+                .build();
+    }
+
+    private DocumentStructureSnapshot mediaInsertSnapshot() {
+        Map<String, DocumentStructureNode> blockIndex = new LinkedHashMap<>();
+        blockIndex.put("heading-1", heading("heading-1", "一、发展现状与总体态势"));
+        blockIndex.put("body-1", paragraph("body-1", "这里是章节正文"));
+        return DocumentStructureSnapshot.builder()
+                .docId("doc-media-insert")
+                .blockIndex(blockIndex)
+                .headingIndex(Map.of("heading-1", blockIndex.get("heading-1")))
+                .orderedBlockIds(List.of("heading-1", "body-1"))
+                .sectionBlockIds(Map.of("heading-1", List.of("heading-1", "body-1")))
                 .topLevelSequence(List.of("heading-1"))
                 .build();
     }

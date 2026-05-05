@@ -21,9 +21,6 @@ public class ExecutionStepHandlerRegistry {
     public void dispatch(ExecutionStep step, String docRef, RichContentExecutionContext ctx) {
         ExecutionStepHandler handler = handlers.get(step.getStepType());
         if (handler == null) {
-            if ("VERIFY_TABLE_NODE".equals(step.getStepType()) || "VERIFY_WHITEBOARD_NODE".equals(step.getStepType())) {
-                return;
-            }
             throw new IllegalStateException("No handler for step type: " + step.getStepType());
         }
         handler.handle(step, docRef, ctx);

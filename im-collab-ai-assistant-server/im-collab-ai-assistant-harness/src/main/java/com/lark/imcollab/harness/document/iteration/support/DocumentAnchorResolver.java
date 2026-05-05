@@ -217,7 +217,58 @@ public class DocumentAnchorResolver {
         if (exactMatches.size() == 1) {
             return exactMatches.get(0);
         }
+        java.util.List<String> aliasMatches = findHeadingByTitleAlias(snapshot, title, parentTitle, parentNumber);
+        log.info("DOC_ITER_ANCHOR title_alias_match title='{}' aliasMatches={}", title, aliasMatches);
+        if (aliasMatches.size() == 1) {
+            return aliasMatches.get(0);
+        }
+        String ordinalFallback = findHeadingByOrdinalTitle(snapshot, title);
+        if (ordinalFallback != null && matchesParentScopeIfNeeded(snapshot, ordinalFallback, parentTitle, parentNumber)) {
+            log.info("DOC_ITER_ANCHOR title_ordinal_match title='{}' headingBlockId={}", title, ordinalFallback);
+            return ordinalFallback;
+        }
         return null;
+    }
+
+    private java.util.List<String> findHeadingByTitleAlias(DocumentStructureSnapshot snapshot, String title, String parentTitle, String parentNumber) {
+        if (snapshot == null || snapshot.getHeadingIndex() == null || title == null) {
+            return List.of();
+        }
+        String normalizedAlias = normalize(stripHeadingPrefix(title));
+        if (normalizedAlias.isBlank()) {
+            return List.of();
+        }
+        java.util.List<String> matches = new java.util.ArrayList<>();
+        for (Map.Entry<String, DocumentStructureNode> entry : snapshot.getHeadingIndex().entrySet()) {
+            String alias = normalize(stripHeadingPrefix(entry.getValue().getTitleText()));
+            if (!normalizedAlias.equals(alias)) {
+                continue;
+            }
+            if (!matchesParentScopeIfNeeded(snapshot, entry.getKey(), parentTitle, parentNumber)) {
+                continue;
+            }
+            matches.add(entry.getKey());
+        }
+        return matches;
+    }
+
+    private String findHeadingByOrdinalTitle(DocumentStructureSnapshot snapshot, String title) {
+        if (snapshot == null || title == null) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^第([一二三四五六七八九十百千万0-9]+)(章|节|部分)$").matcher(title.trim());
+        if (!matcher.find()) {
+            return null;
+        }
+        Integer ordinal = parseChineseOrArabicOrdinal(matcher.group(1));
+        if (ordinal == null) {
+            return null;
+        }
+        String unit = matcher.group(2);
+        if ("章".equals(unit)) {
+            return findHeadingByStructuralOrdinal(snapshot, ordinal, "TOP_LEVEL_SECTION");
+        }
+        return findHeadingByStructuralOrdinal(snapshot, ordinal, "SUB_SECTION");
     }
 
     private String findHeadingByOutlinePath(DocumentStructureSnapshot snapshot, String outlinePath) {
@@ -545,6 +596,13 @@ public class DocumentAnchorResolver {
         return parentNumber != null && parentNode != null && parentNumber.equals(extractHeadingNumber(parentNode.getTitleText()));
     }
 
+    private boolean matchesParentScopeIfNeeded(DocumentStructureSnapshot snapshot, String headingId, String parentTitle, String parentNumber) {
+        if (parentTitle == null && parentNumber == null) {
+            return true;
+        }
+        return matchesParentScope(snapshot, headingId, parentTitle, parentNumber);
+    }
+
     private String nthChildHeading(DocumentStructureSnapshot snapshot, String parentId, int zeroBasedIndex) {
         if (snapshot == null || parentId == null || snapshot.getChildrenHeadingIndex() == null) {
             return null;
@@ -754,5 +812,16 @@ public class DocumentAnchorResolver {
 
     private String normalize(String value) {
         return value == null ? "" : value.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+    }
+
+    private String stripHeadingPrefix(String title) {
+        if (title == null) {
+            return "";
+        }
+        String normalized = title.trim();
+        normalized = normalized.replaceFirst("^\\d+(?:\\.\\d+)*\\s*", "");
+        normalized = normalized.replaceFirst("^第[一二三四五六七八九十百千万0-9]+[章节部分]\\s*", "");
+        normalized = normalized.replaceFirst("^[一二三四五六七八九十百千万]+[、.]\\s*", "");
+        return normalized.trim();
     }
 }
