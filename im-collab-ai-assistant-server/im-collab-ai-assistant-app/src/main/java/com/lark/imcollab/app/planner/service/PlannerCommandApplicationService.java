@@ -3,6 +3,7 @@ package com.lark.imcollab.app.planner.service;
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
@@ -44,6 +45,10 @@ public class PlannerCommandApplicationService {
     }
 
     public PlanTaskSession resume(String taskId, String feedback, boolean replanFromRoot) {
+        return resume(taskId, feedback, replanFromRoot, null);
+    }
+
+    public PlanTaskSession resume(String taskId, String feedback, boolean replanFromRoot, WorkspaceContext workspaceContext) {
         PlanTaskSession current = sessionService.get(taskId);
         TaskIntakeState intakeState = current.getIntakeState();
         if (intakeState != null
@@ -55,7 +60,7 @@ public class PlannerCommandApplicationService {
                     new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "resume completed task adjustment"),
                     taskId,
                     intakeState.getPendingAdjustmentInstruction() + "\n用户补充：" + feedback,
-                    null,
+                    workspaceContext,
                     feedback
             );
         }
@@ -67,7 +72,7 @@ public class PlannerCommandApplicationService {
                 new PlannerSupervisorDecision(action, replanFromRoot ? "resume as plan adjustment" : "clarification reply"),
                 taskId,
                 feedback,
-                null,
+                workspaceContext,
                 feedback
         );
     }

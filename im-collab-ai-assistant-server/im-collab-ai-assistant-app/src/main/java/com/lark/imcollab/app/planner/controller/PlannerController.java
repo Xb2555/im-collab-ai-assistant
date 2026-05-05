@@ -258,7 +258,8 @@ public class PlannerController {
         PlanTaskSession session = plannerCommandApplicationService.resume(
                 taskId,
                 request.getFeedback(),
-                request.isReplanFromRoot()
+                request.isReplanFromRoot(),
+                request.getWorkspaceContext()
         );
         return ResultUtils.success(plannerViewAssembler.toPlanPreview(session));
     }
@@ -394,7 +395,12 @@ public class PlannerController {
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "RESUME" -> {
-                PlanTaskSession updated = plannerCommandApplicationService.resume(taskId, request.getFeedback(), false);
+                PlanTaskSession updated = plannerCommandApplicationService.resume(
+                        taskId,
+                        request.getFeedback(),
+                        false,
+                        request.getWorkspaceContext()
+                );
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "CANCEL" -> {

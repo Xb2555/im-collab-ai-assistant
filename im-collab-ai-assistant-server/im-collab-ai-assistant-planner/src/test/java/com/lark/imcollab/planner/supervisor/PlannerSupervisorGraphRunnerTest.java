@@ -210,6 +210,40 @@ class PlannerSupervisorGraphRunnerTest {
         verifyNoInteractions(fixture.reviewGateNodeService);
     }
 
+    @Test
+    void clarificationReplyPassesWorkspaceContextToResumeNode() throws Exception {
+        Fixture fixture = new Fixture();
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .selectedMessages(java.util.List.of("追问补充材料：采购预算100元"))
+                .build();
+        PlanTaskSession current = PlanTaskSession.builder()
+                .taskId("task-6")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-6")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(fixture.sessionService.getOrCreate("task-6")).thenReturn(current);
+        when(fixture.decisionAgent.decide(any(), any(), eq("采购预算100元")))
+                .thenReturn(PlannerSupervisorDecisionResult.of(PlannerSupervisorAction.CLARIFICATION_REPLY, 1.0d, "resume"));
+        when(fixture.clarificationNodeService.resume("task-6", "采购预算100元", workspaceContext)).thenReturn(ready);
+        when(fixture.sessionService.get("task-6")).thenReturn(ready);
+        when(fixture.reviewGateNodeService.review("task-6")).thenReturn(PlanReviewResult.passed("ok"));
+        when(fixture.reviewGateNodeService.gateAndProject(eq("task-6"), any())).thenReturn(ready);
+
+        PlanTaskSession result = fixture.runner.run(
+                new PlannerSupervisorDecision(PlannerSupervisorAction.CLARIFICATION_REPLY, "resume"),
+                "task-6",
+                "采购预算100元",
+                workspaceContext,
+                "采购预算100元"
+        );
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.PLAN_READY);
+        verify(fixture.clarificationNodeService).resume("task-6", "采购预算100元", workspaceContext);
+    }
+
     private static class Fixture {
         private final PlannerSessionService sessionService = mock(PlannerSessionService.class);
         private final PlannerSupervisorDecisionAgent decisionAgent = mock(PlannerSupervisorDecisionAgent.class);
