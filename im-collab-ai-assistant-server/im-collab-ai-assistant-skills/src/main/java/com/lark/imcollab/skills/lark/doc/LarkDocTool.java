@@ -68,6 +68,11 @@ public class LarkDocTool {
         if (openApiClient == null) throw new IllegalStateException("飞书文档 OpenAPI 客户端未配置，无法创建文档。");
         String normalizedTitle = normalizeTitle(title);
         String normalizedMarkdown = normalizeMarkdown(title, markdown);
+        log.info("LARK_DOC_CREATE markdown_normalized title='{}' markdownLength={} containsMermaidFence={} preview='{}'",
+                normalizedTitle,
+                normalizedMarkdown.length(),
+                normalizedMarkdown.contains("```mermaid"),
+                previewMarkdown(normalizedMarkdown));
         MermaidWhiteboardPlan mermaidPlan = extractMermaidWhiteboardPlan(normalizedMarkdown);
         log.info("LARK_DOC_CREATE start title='{}' hasMermaid={} mermaidCount={}",
                 normalizedTitle, mermaidPlan.hasWhiteboards(), mermaidPlan.mermaidBlocks().size());
@@ -246,6 +251,11 @@ public class LarkDocTool {
             matcher.appendReplacement(replaced, Matcher.quoteReplacement("<whiteboard type=\"blank\"></whiteboard>"));
         }
         matcher.appendTail(replaced);
+        log.info("LARK_DOC_CREATE mermaid_extract markdownLength={} containsFence={} extractedCount={} extractedPreview='{}'",
+                markdown == null ? 0 : markdown.length(),
+                markdown != null && markdown.contains("```mermaid"),
+                mermaidBlocks.size(),
+                mermaidBlocks.isEmpty() ? "" : previewMarkdown(mermaidBlocks.get(0)));
         return new MermaidWhiteboardPlan(replaced.toString(), mermaidBlocks);
     }
 
@@ -260,6 +270,17 @@ public class LarkDocTool {
 
     private void requireValue(String value, String fieldName) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException(fieldName + " must be provided");
+    }
+
+    private String previewMarkdown(String markdown) {
+        if (markdown == null || markdown.isBlank()) {
+            return "";
+        }
+        String normalized = markdown.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 200) {
+            return normalized;
+        }
+        return normalized.substring(0, 200) + "...";
     }
 
     private record MermaidWhiteboardPlan(String markdownWithWhiteboardPlaceholders, List<String> mermaidBlocks) {

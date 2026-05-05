@@ -27,6 +27,7 @@ import com.lark.imcollab.harness.document.template.DocumentTemplateType;
 import com.lark.imcollab.harness.document.workflow.DocumentStateKeys;
 import com.lark.imcollab.skills.lark.doc.LarkDocCreateResult;
 import com.lark.imcollab.skills.lark.doc.LarkDocTool;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
@@ -43,6 +44,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Component
 public class DocumentWorkflowNodes {
 
@@ -292,6 +294,13 @@ public class DocumentWorkflowNodes {
                 reviewResult,
                 state.value(DocumentStateKeys.USER_FEEDBACK, "")
         );
+        log.info("DOC_WRITE markdown_ready taskId={} title='{}' markdownLength={} containsMermaidFence={} mermaidFenceCount={} preview='{}'",
+                taskId,
+                plan.getTitle(),
+                markdown == null ? 0 : markdown.length(),
+                containsMermaidFenceForLog(markdown),
+                countMermaidFencesForLog(markdown),
+                previewMarkdownForLog(markdown));
         composedDraft.setComposedMarkdown(markdown);
         ensurePublishable(plan, composedDraft);
         LarkDocCreateResult result = larkDocTool.createDoc(plan.getTitle(), markdown);
@@ -768,7 +777,7 @@ public class DocumentWorkflowNodes {
                 safeList(reviewResult == null ? null : reviewResult.getSupplementalSections()),
                 consumedSupplementals
         );
-        return ComposedDocumentDraft.builder()
+        ComposedDocumentDraft composedDraft = ComposedDocumentDraft.builder()
                 .taskId(taskId)
                 .planId(plan.getPlanId())
                 .orderedSections(orderedDrafts)
@@ -777,6 +786,14 @@ public class DocumentWorkflowNodes {
                 .completenessReport(completenessReport)
                 .version(1L)
                 .build();
+        log.info("DOC_COMPOSE composed taskId={} sections={} markdownLength={} containsMermaidFence={} mermaidFenceCount={} preview='{}'",
+                taskId,
+                orderedDrafts.size(),
+                composedDraft.getComposedMarkdown() == null ? 0 : composedDraft.getComposedMarkdown().length(),
+                containsMermaidFenceForLog(composedDraft.getComposedMarkdown()),
+                countMermaidFencesForLog(composedDraft.getComposedMarkdown()),
+                previewMarkdownForLog(composedDraft.getComposedMarkdown()));
+        return composedDraft;
     }
 
     private String renderComposedSection(DocumentPlanSection section, DocumentSectionDraft draft) {
@@ -1285,5 +1302,37 @@ public class DocumentWorkflowNodes {
         Object raw = state.data().get(key);
         if (raw == null) throw new IllegalStateException("Missing state value: " + key);
         return objectMapper.convertValue(raw, type);
+    }
+
+    private boolean containsMermaidFenceForLog(String markdown) {
+        return markdown != null && markdown.contains("```mermaid");
+    }
+
+    private int countMermaidFencesForLog(String markdown) {
+        if (markdown == null || markdown.isBlank()) {
+            return 0;
+        }
+        int count = 0;
+        int offset = 0;
+        String needle = "```mermaid";
+        while (true) {
+            offset = markdown.indexOf(needle, offset);
+            if (offset < 0) {
+                return count;
+            }
+            count++;
+            offset += needle.length();
+        }
+    }
+
+    private String previewMarkdownForLog(String markdown) {
+        if (markdown == null || markdown.isBlank()) {
+            return "";
+        }
+        String normalized = markdown.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 200) {
+            return normalized;
+        }
+        return normalized.substring(0, 200) + "...";
     }
 }
