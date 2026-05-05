@@ -22,8 +22,9 @@ import { useTaskStore } from '@/store/useTaskStore';
 import { useAgentStream } from '@/hooks/useAgentStream';
 import { DocPreviewCard } from '@/components/chat/DocPreviewCard';
 import { PptPreviewCard } from '@/components/chat/PptPreviewCard';
+import { getBaseUrl } from '@/services/api/client'; // ✨ 引入 getBaseUrl
 import type { RuntimeArtifactVO, RuntimeStepVO } from '@/types/api';
-
+import { motion } from 'framer-motion'; // ✨ 新增：用于丝滑的进度条动画
 
 const parseFeishuContent = (rawContent: string | null | undefined, msgType?: string) => {
   if (!rawContent) return '';
@@ -232,13 +233,15 @@ const taskToRecover = res.tasks.find(t =>
   // === [修复] 刷新找回任务逻辑结束 ===
 
   // === [新增] 全局工作台级 SSE 监听（对应文档 7.2 和后端最新修复） ===
+// 1. 修复全局工作台级 SSE 监听
   useEffect(() => {
     if (!accessToken) return;
     
     const ctrl = new AbortController();
     const connectGlobalSSE = async () => {
       try {
-        await fetchEventSource(`/api/planner/tasks/events/stream?activeOnly=true`, {
+        // ✨ 在这里拼接 getBaseUrl()
+        await fetchEventSource(`${getBaseUrl()}/api/planner/tasks/events/stream?activeOnly=true`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -487,7 +490,7 @@ const taskToRecover = res.tasks.find(t =>
       if (ctrl.signal.aborted) return;
 
       try {
-        await fetchEventSource(`/api/im/chats/${activeChatId}/messages/stream`, {
+        await fetchEventSource(`${getBaseUrl()}/api/im/chats/${activeChatId}/messages/stream`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${token}`,
@@ -766,8 +769,11 @@ const taskToRecover = res.tasks.find(t =>
 
                       <div className={`flex flex-col space-y-1 ${isMe ? 'items-end' : 'items-start'}`}>
                         <span className="text-[11px] font-medium text-zinc-400 px-1">{displayName}</span>
-                        <div className={`rounded-2xl px-3.5 py-2 text-sm shadow-sm leading-relaxed whitespace-pre-wrap break-words ${isMe ? 'bg-zinc-800 text-white rounded-tr-sm' : 'bg-white border border-zinc-200 text-zinc-800 rounded-tl-sm'}`}>
-                          {msg.content}
+                        {/* 父容器加上 min-w-0 防止 flex 子项撑破 */}
+                        <div className={`flex flex-col space-y-1 min-w-0 ${isMe ? 'items-end' : 'items-start'}`}>
+                          <div className={`rounded-2xl px-3.5 py-2 text-sm shadow-sm leading-relaxed whitespace-pre-wrap break-words break-all ${isMe ? 'bg-zinc-800 text-white rounded-tr-sm' : 'bg-white border border-zinc-200 text-zinc-800 rounded-tl-sm'}`}>
+                            {msg.content}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -808,437 +814,375 @@ const taskToRecover = res.tasks.find(t =>
         </section>
 
         <aside className="flex flex-1 lg:w-[360px] flex-col bg-zinc-50 shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.02)] relative z-10 border-l border-zinc-200">
-          <div className="flex h-12 items-center justify-between px-4 border-b border-zinc-200 bg-white shrink-0">
-            <h2 className="text-sm font-semibold text-zinc-800 flex items-center gap-2">
-              <LayoutTemplate className="h-4 w-4 text-blue-600" />
-              任务工作台
-            </h2>
-            <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500" onClick={clearTask}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+{/* ============================================================== */}
+          {/* 🌟 重构后的全新任务工作台 (Dashboard Right Panel)                */}
+          {/* ============================================================== */}
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-[#FAFAFC]">
             {!activeTaskId || !runtimeTask ? (
+              // 规划中的骨架屏或空状态
               isPlanning ? (
-                /* ✨ 优化体验：规划中的骨架屏占位，缓解等待焦虑 */
                 <div className="flex flex-col gap-4 animate-pulse mt-2">
                   <div className="flex items-center gap-3 mb-2">
                     <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center">
-                      <Bot className="h-4 w-4 text-blue-400 animate-bounce" />
+                      <Bot className="h-4 w-4 text-blue-600 animate-bounce" />
                     </div>
-                    <div className="flex flex-col gap-2">
-                      <div className="h-4 w-32 bg-zinc-200 rounded"></div>
-                      <div className="h-2 w-24 bg-zinc-100 rounded"></div>
+                    <div className="flex flex-col gap-2 w-full">
+                      <div className="h-4 w-1/3 bg-zinc-200 rounded"></div>
+                      <div className="h-2 w-1/4 bg-zinc-200 rounded"></div>
                     </div>
                   </div>
-                  <div className="h-24 w-full bg-zinc-100/80 rounded-xl border border-zinc-100"></div>
-                  <div className="h-32 w-full bg-zinc-100/50 rounded-xl border border-zinc-100"></div>
-                  <div className="flex justify-center mt-4 text-xs text-blue-400">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> Agent 正在深度分析您的意图，请稍候...
-                  </div>
+                  <div className="h-32 w-full bg-zinc-100 rounded-xl"></div>
                 </div>
               ) : (
-                /* 原始空状态 */
-                <div className="flex flex-col items-center justify-center h-48 space-y-3 text-center mt-10">
-                  <div className="rounded-full bg-zinc-200/50 p-3">
-                    <Bot className="h-6 w-6 text-zinc-400" />
-                  </div>
-                  <p className="text-sm text-zinc-500">
-                    当前暂无活跃任务
-                    <br />
-                    <span className="text-xs text-zinc-400">在输入框描述意图并点击"交由 Agent 办理"</span>
-                  </p>
+                <div className="flex flex-col items-center justify-center h-full space-y-3 text-center text-zinc-400">
+                  <Bot className="h-8 w-8 opacity-50" />
+                  <p className="text-sm">在左侧输入指令，唤醒 Agent</p>
                 </div>
               )
             ) : (
-              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                {aiThinkingText && (
-                  <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4 mb-4 text-sm text-zinc-700 leading-relaxed whitespace-pre-wrap font-mono relative overflow-hidden shadow-sm">
-                    <div className="absolute top-0 left-0 w-1 h-full bg-blue-500 animate-pulse"></div>
-                    {aiThinkingText}
-                    {isStreaming && <span className="inline-block w-2 h-4 bg-blue-600 ml-1 animate-pulse"></span>}
-                  </div>
-                )}
-
-                <div className="bg-white border border-zinc-200 rounded-xl p-4 shadow-sm mb-4 relative overflow-hidden">
-                  {/* 顶部标题区 */}
-                  <div className="flex items-start justify-between mb-2 gap-2">
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse shrink-0" />
-                      <h3 className="text-sm font-bold text-zinc-900 leading-snug">{runtimeTask.title || planPreview?.title || 'Agent 任务规划'}</h3>
+              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex flex-col gap-4">
+                
+                {/* 🔴 【第一层】：全局任务头部 (包含风险提示与更新时间) */}
+                <div className="bg-white border border-zinc-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
+                  <div className="flex items-start justify-between gap-3">
+                    {/* 标题与呼吸红点 */}
+                    <div className="flex items-center gap-2 flex-1">
+                      <h3 className="text-base font-extrabold text-zinc-800 leading-snug">
+                        {runtimeTask.title || planPreview?.title || 'Agent 任务规划'}
+                      </h3>
+                      {/* ✨ 找回：需求用户干预时的呼吸红点 */}
+                      {runtimeTask.needUserAction && (
+                         <span className="relative flex h-2.5 w-2.5 shrink-0 mt-0.5">
+                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                           <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500"></span>
+                         </span>
+                      )}
                     </div>
-                    {(() => {
-                      const { label, style } = getStatusDisplay(runtimeTask.status || runtimeTask.currentStage);
-                      return (
-                        <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full shrink-0 border ${style}`}>
-                          {label}
-                        </span>
-                      );
-                      })()}
-                      {/* ✨ 消费字段：任务最后鲜活更新时间 */}
-                    <span className="text-[9px] px-1 text-zinc-400 mt-1 ml-auto">
-                      更新于 {new Date(runtimeTask.updatedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                    </span>
+                    
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <div className="flex items-center gap-1.5">
+                        {(() => {
+                          const { label, style } = getStatusDisplay(runtimeTask.status || runtimeTask.currentStage);
+                          return <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${style}`}>{label}</span>;
+                        })()}
+                        {/* ✨ 叉号就在这里！找回并加强叉号逻辑 */}
+                        {(runtimeActions?.canCancel || ['PLANNING', 'CLARIFYING', 'WAITING_APPROVAL'].includes(runtimeTask.status)) && (
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            className="h-6 w-6 text-zinc-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors ml-1" 
+                            onClick={() => {
+                              // 如果后端支持取消，调正常接口
+                              if (runtimeActions?.canCancel) {
+                                handleCommand('CANCEL');
+                              } else {
+                                // 如果后端不支持取消（卡死了），前端强制清空并卸载工作台
+                                clearTask();
+                                toast.info('任务已强制关闭');
+                              }
+                            }}
+                            disabled={isCancelling}
+                            title="中止或关闭当前任务"
+                          >
+                            {isCancelling ? <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" /> : <X className="w-4 h-4" />}
+                          </Button>
+                        )}
+                      </div>
+                      {/* ✨ 找回：时间感 (最近更新时间) */}
+                      <span className="text-[9px] font-mono text-zinc-400">
+                        {runtimeTask.updatedAt ? new Date(runtimeTask.updatedAt).toLocaleTimeString() : new Date().toLocaleTimeString()}
+                      </span>
+                    </div>
                   </div>
                   
-                  {/* ✨ 新增消费 JSON：全任务超细进度条 (丝滑过渡) */}
-                  {(runtimeTask.progress ?? 0) > 0 && (
-                    <div className="w-full h-1 bg-zinc-100 rounded-full overflow-hidden mb-3">
-                      <div 
-                        className="h-full bg-blue-500 transition-all duration-500 ease-out" 
-                        style={{ width: `${runtimeTask.progress}%` }}
-                      />
-                    </div>
-                  )}
-
-                  {/* 风险标识 RiskFlags (保持不变) */}
+                  <p className="text-xs text-zinc-500 mt-2 leading-relaxed">
+                    {runtimeTask.goal || planPreview?.summary || '已收到您的意图，正在执行'}
+                  </p>
+                  
+                  {/* ✨ 找回：风险与关注点 (Agent 的免责边界) */}
                   {runtimeTask.riskFlags && runtimeTask.riskFlags.length > 0 && (
-                    <div className="mb-3 p-2.5 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-800 flex flex-col gap-1.5 shadow-sm">
-                      <div className="font-bold flex items-center gap-1.5">
-                        <AlertCircle className="w-4 h-4 text-amber-600" /> 风险与关注点
+                    <div className="mt-3 bg-amber-50/50 border border-amber-200/60 rounded-lg p-3">
+                      <div className="text-xs font-bold text-amber-600 flex items-center gap-1.5 mb-1.5">
+                        <AlertCircle className="w-3.5 h-3.5" /> 风险与关注点
                       </div>
-                      <ul className="list-disc pl-5 space-y-1">
-                        {runtimeTask.riskFlags.map((risk: string, idx: number) => (
-                          <li key={idx} className="opacity-90 leading-relaxed">{risk}</li>
+                      <ul className="list-disc list-inside space-y-1 text-amber-700/80 text-[11px] ml-1">
+                        {runtimeTask.riskFlags.map((risk: string, i: number) => (
+                          <li key={i}>{risk}</li>
                         ))}
                       </ul>
                     </div>
                   )}
 
-                  <p className="text-[11px] text-zinc-400 mb-4 leading-relaxed line-clamp-2">{runtimeTask.goal || planPreview?.summary || '已收到您的意图，生成以下执行步骤'}</p>
-
-                  {/* ✨ 升级版黑客终端：永久保留，根据状态自动静默与折叠，沉淀完整思考日志 */}
-                  {taskRuntime?.events && taskRuntime.events.length > 0 && (
-                    <div className="bg-[#1C1C1E] rounded-xl font-mono text-xs mb-6 shadow-xl border border-zinc-800 overflow-hidden animate-in fade-in slide-in-from-top-4 duration-500 transition-all">
-                      
-                      {/* 终端头部 */}
-                      <div className="flex items-center justify-between bg-zinc-800/60 px-4 py-3 border-b border-zinc-700/50 relative overflow-hidden">
-                        {/* 只有活跃时才显示流水跑马灯 */}
-                        {isTaskActive(runtimeTask.status) && <div className="absolute top-0 left-0 w-full h-[1.5px] bg-gradient-to-r from-transparent via-blue-500 to-transparent animate-pulse"></div>}
-                        
-                        <div className="flex items-center gap-3 relative z-10">
-                          {/* 机器人头像：完成时变灰，活跃时亮蓝 */}
-                          <div className={`relative flex h-7 w-7 items-center justify-center rounded-md transition-colors ${isTaskActive(runtimeTask.status) ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-zinc-700/50 text-zinc-500 border border-zinc-600/50'}`}>
-                            <Bot className="h-4 w-4" />
-                            {isTaskActive(runtimeTask.status) && (
-                              <span className="absolute -top-1 -right-1 flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                              </span>
-                            )}
-                          </div>
-                          
-                          <div className="flex flex-col gap-0.5">
-                            {/* 标题：根据状态动态改变文字和颜色 */}
-                            <span className={`text-sm font-semibold flex items-center transition-colors ${isTaskActive(runtimeTask.status) ? 'text-zinc-200' : 'text-zinc-500'}`}>
-                              {isTaskActive(runtimeTask.status) 
-                                ? (runtimeTask.status === 'PLANNING' || runtimeTask.status === 'INTENT_READY' ? 'Agent 正在分析意图并规划路径' : 'Agent 正在驱动套件执行任务') 
-                                : (runtimeTask.status === 'COMPLETED' ? 'Agent 任务执行完毕，日志已归档' : 'Agent 任务已终止，日志已归档')}
-                              
-                              {/* 跳动的省略号：只有活跃时才跳动 */}
-                              {isTaskActive(runtimeTask.status) && (
-                                <span className="flex gap-0.5 ml-2">
-                                  <span className="h-1 w-1 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                                  <span className="h-1 w-1 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                                  <span className="h-1 w-1 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                        </div>
-                        
-                        {/* 右侧控制按钮区 */}
-                        <div className="relative z-10 flex items-center gap-1">
-                          {/* 展开/折叠按钮 */}
-                          {(taskRuntime?.events?.length || 0) > 2 && (
-                            <button 
-                              onClick={() => setIsTerminalExpanded(!isTerminalExpanded)}
-                              className="flex items-center text-[10px] text-zinc-400 hover:text-blue-400 mr-2 transition-colors px-2 py-1 rounded bg-zinc-800/50 outline-none focus:outline-none"
-                            >
-                              {isTerminalExpanded ? <><ChevronUp className="w-3 h-3 mr-1"/>收起</> : <><ChevronDown className="w-3 h-3 mr-1"/>展开完整日志</>}
-                            </button>
-                          )}
-
-                          {/* 取消/中断按钮（只有活跃时才会渲染） */}
-                          {runtimeActions?.canCancel && !runtimeActions?.canInterrupt && (
-                            <Button size="sm" variant="ghost" disabled={isCancelling} className="h-7 text-xs text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-colors" onClick={() => handleCommand('CANCEL')}>
-                              {isCancelling ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <X className="h-3.5 w-3.5 mr-1" />}
-                              {isCancelling ? '中止中...' : '取消任务'}
-                            </Button>
-                          )}
-                          {runtimeActions?.canInterrupt && (
-                            <Button size="sm" variant="ghost" disabled={isCancelling} className="h-7 text-xs text-zinc-400 hover:text-red-400 hover:bg-red-500/10 transition-colors" onClick={() => handleCommand('CANCEL')}>
-                              {isCancelling ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <StopCircle className="h-3.5 w-3.5 mr-1" />}
-                              {isCancelling ? '中止中...' : '强制中止'}
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                      
-                      {/* 终端内容区 */}
-                      {/* 完成时：默认折叠状态下只展示最后 2 条，活跃时展示最后 4 条 */}
-                      <div className={`p-4 flex flex-col gap-2 opacity-90 overflow-y-auto transition-all duration-300 ${isTerminalExpanded ? 'max-h-[400px]' : (isTaskActive(runtimeTask.status) ? 'max-h-[160px]' : 'max-h-[100px]')}`}>
-                        {(isTerminalExpanded ? taskRuntime.events : taskRuntime.events.slice(isTaskActive(runtimeTask.status) ? -4 : -2)).map((e: any) => (
-                          <div key={e.eventId} className={`break-words leading-relaxed flex items-start gap-2 ${isTaskActive(runtimeTask.status) ? 'text-green-400' : 'text-zinc-500'}`}>
-                            <span className={`${isTaskActive(runtimeTask.status) ? 'text-blue-400' : 'text-zinc-600'} mt-[1px]`}>➜</span>
-                            {/* 用户的干预日志特殊高亮 */}
-                            <span className={e.type?.includes('USER') ? 'text-amber-300 font-bold' : (isTaskActive(runtimeTask.status) ? 'text-zinc-300' : 'text-zinc-400')}>
-                              {e.message}
-                            </span>
-                          </div>
-                        ))}
-                        {/* 活跃时显示跳动光标，静默时不显示 */}
-                        {isTaskActive(runtimeTask.status) && !isTerminalExpanded && <div className="animate-pulse text-blue-400 mt-1">█</div>}
-                      </div>
+                  {(runtimeTask.progress ?? 0) > 0 && (
+                    <div className="w-full h-1 bg-zinc-100 rounded-full overflow-hidden mt-4">
+                      <div className="h-full bg-blue-600 transition-all duration-500 ease-out" style={{ width: `${runtimeTask.progress}%` }} />
                     </div>
                   )}
+                </div>
 
-                                      {/* 模块 1：人工决策与干预台 (FAILED / CLARIFYING / WAITING_APPROVAL) */}
-                  {runtimeTask.status !== 'COMPLETED' && runtimeActions && (runtimeTask.status === 'FAILED' || runtimeTask.status === 'CLARIFYING' || runtimeActions.canConfirm || runtimeActions.canReplan || runtimeActions.canResume) && (
-                    <div className="bg-white rounded-xl p-4 flex flex-col gap-3 border border-zinc-200 shadow-sm mt-5 mb-2 transition-all animate-in slide-in-from-bottom-2">
-                      
-                      {/* 1.1 失败重试专用表单 */}
-                      {runtimeTask.status === 'FAILED' ? (
-                        <div className="flex flex-col gap-3 relative overflow-hidden">
-                          <div className="text-sm font-bold text-[#D04568] flex items-center gap-1.5 mt-1">
-                            <AlertCircle className="h-4 w-4 text-[#D04568] shrink-0" /> 
-                            任务执行受阻，需要您的微调
+                {/* 🔴 【第二层】：人工干预与决策层 (置顶，无嵌套) */}
+                {runtimeTask.status !== 'COMPLETED' && runtimeActions && (
+                  <div className="flex flex-col">
+                    {/* 失败重试 */}
+                    {runtimeTask.status === 'FAILED' && (
+                      <div className="bg-[#FF9BB3]/10 border border-[#FF9BB3]/30 rounded-xl p-4 flex flex-col gap-3">
+                         <div className="text-sm font-bold text-[#D04568] flex items-center gap-1.5"><AlertCircle className="h-4 w-4" /> 任务执行受阻</div>
+                         <textarea value={retryFeedback} onChange={(e) => setRetryFeedback(e.target.value)} placeholder="请描述调整建议..." className="w-full text-xs p-3 rounded-lg border border-[#FF9BB3]/20 outline-none resize-none bg-white" rows={2} />
+                         <Button size="sm" className="bg-[#D04568] hover:bg-[#b03a58] text-white w-full" onClick={() => handleCommand('RETRY_FAILED', retryFeedback)}><RefreshCw className="h-3.5 w-3.5 mr-1.5" /> 提交建议并重试</Button>
+                      </div>
+                    )}
+                    
+                    {/* 追问 (CLARIFYING) */}
+                    {runtimeTask.status === 'CLARIFYING' && (
+                      <div className="bg-blue-50/50 border border-blue-200 rounded-xl p-4 flex flex-col gap-3 shadow-sm">
+                        <div className="text-sm font-bold text-blue-700 flex items-center gap-1.5"><Bot className="h-4 w-4" /> 需要您的进一步确认</div>
+                        {clarificationQuestions.map((q, idx) => <p key={idx} className="text-xs text-blue-900 bg-white p-2.5 rounded-md border border-blue-100">{q}</p>)}
+                        
+                        {/* ✨ 找回：能力提示 (让用户知道自己能输入什么) */}
+                        {/* 把原来的 taskRuntime 换成 planPreview */}
+                        {planPreview?.capabilityHints && planPreview.capabilityHints.length > 0 && (
+                          <div className="text-[11px] text-blue-600/70 bg-blue-100/40 p-2 rounded-md border border-blue-100/50 leading-relaxed">
+                            <span className="font-bold block mb-0.5 text-blue-500">💡 Agent 提示：</span>
+                            {planPreview.capabilityHints.join(' ')}
                           </div>
-                          <textarea 
-                            value={retryFeedback} onChange={(e) => setRetryFeedback(e.target.value)} 
-                            placeholder="请描述调整建议，例如：参数错误，请跳过大纲直接生成正文..." 
-                            className="w-full text-xs p-3 rounded-lg border border-zinc-200 focus:border-[#FF9BB3] focus:ring-4 focus:ring-[#FF9BB3]/20 outline-none resize-none bg-[#FF9BB3]/5 transition-all placeholder:text-[#D04568]/40" 
-                            rows={3} 
-                          />
-                          <div className="flex gap-2 items-center justify-end mt-1">
-                            {runtimeActions.canCancel && (
-                              <Button size="sm" variant="ghost" disabled={isCancelling} className="text-zinc-500 hover:text-red-600 hover:bg-red-50" onClick={() => handleCommand('CANCEL')}>取消任务</Button>
-                            )}
-                            <Button size="sm" className="bg-[#D04568] hover:bg-[#b03a58] text-white shadow-sm px-4" onClick={() => handleCommand('RETRY_FAILED', retryFeedback)}>
-                              <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> 提交建议并重试
-                            </Button>
-                          </div>
-                        </div>
-                      ) : 
-                      
-                      
-                      /* 1.2 待补充 (CLARIFYING) 的蓝色智能交互面板 */
-runtimeTask.status === 'CLARIFYING' ? (
-  <div className="bg-blue-50 rounded-xl p-4 flex flex-col gap-3 border border-blue-200 shadow-inner animate-in slide-in-from-bottom-4">
-    <div className="flex items-center gap-2 text-blue-700 font-bold text-sm">
-      <Bot className="h-4 w-4" /> Agent 需要您的进一步确认
-    </div>
-    {clarificationQuestions.map((q, idx) => (
-      <p key={idx} className="text-xs text-blue-900 bg-blue-100/60 p-2.5 rounded-md leading-relaxed border border-blue-200/50">
-        {q}
-      </p>
-    ))}
-    <textarea 
-      value={clarifyAnswer} onChange={(e) => setClarifyAnswer(e.target.value)} 
-      placeholder="请输入您的回答补充..." 
-      className="w-full text-xs p-3 rounded-lg border border-blue-200 focus:border-blue-500 outline-none resize-none bg-white shadow-sm transition-all" 
-      rows={3} 
-      disabled={isActionLoading} // ✨ 加上禁用状态
-    />
-    <div className="flex gap-2 items-center mt-1">
-      {runtimeActions.canCancel && (
-        <Button size="sm" variant="outline" disabled={isCancelling || isActionLoading} className="flex-1 text-zinc-500 hover:text-red-600 hover:bg-red-50 border-zinc-200 bg-white" onClick={() => handleCommand('CANCEL')}>取消任务</Button>
-      )}
-      {runtimeActions.canResume && (
-        <Button 
-          size="sm" 
-          className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white shadow-md" 
-          disabled={!clarifyAnswer.trim() || isActionLoading || isCancelling} // ✨ 加入防抖控制
-          onClick={() => handleCommand('RESUME', clarifyAnswer)}
-        >
-          {/* ✨ 动态展示 Loading 圈 */}
-          {isActionLoading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
-          提交回答，继续任务
-        </Button>
-      )}
-    </div>
-  </div>
-) : (
+                        )}
 
-                      /* 1.3 协同指挥中心 (WAITING_APPROVAL) */
-                      <div className="bg-blue-50 rounded-xl p-4 flex flex-col gap-4 border border-blue-200 shadow-sm animate-in slide-in-from-bottom-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-blue-700 font-bold text-sm">
-                            <div className="p-1.5 bg-blue-100 rounded-md text-blue-600 shrink-0 border border-blue-200/50 shadow-sm"><Settings className="h-4 w-4" /></div>
-                            <span>Agent 协同指挥中心</span>
-                          </div>
-                          <span className="text-[10px] text-blue-500 bg-blue-100/50 px-2 py-0.5 rounded-full border border-blue-200/50">等待决策</span>
+                        <textarea value={clarifyAnswer} onChange={(e) => setClarifyAnswer(e.target.value)} placeholder="请输入回答..." className="w-full text-xs p-3 rounded-lg border border-blue-200 outline-none resize-none bg-white focus:border-blue-500" rows={2} disabled={isActionLoading} />
+                        <Button 
+  size="sm" 
+  className="bg-blue-600 hover:bg-blue-700 text-white w-full transition-all duration-300 relative overflow-hidden" 
+  disabled={!clarifyAnswer.trim() || isActionLoading} 
+  onClick={() => {
+    toast.success('已收到您的补充', { description: 'Agent 正在为您重新推演执行计划...' });
+    handleCommand('RESUME', clarifyAnswer);
+  }}
+>
+  {isActionLoading ? (
+    <span className="flex items-center gap-2">
+      <Loader2 className="animate-spin h-4 w-4" /> 
+      🤖 正在火速规划中...
+    </span>
+  ) : (
+    '提交回答'
+  )}
+  {/* 极简的扫光特效 */}
+  {isActionLoading && <div className="absolute inset-0 -translate-x-full animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent" />}
+</Button>
+                      </div>
+                    )}
+
+                    {/* 待确认 (WAITING_APPROVAL) */}
+                    {runtimeTask.status === 'WAITING_APPROVAL' && (
+                      <div className="bg-white border-2 border-blue-500/20 rounded-xl p-4 flex flex-col gap-3 shadow-sm">
+                        <div className="text-sm font-bold text-blue-800 flex justify-between items-center">
+                          <span className="flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-blue-600" /> 计划已就绪</span>
                         </div>
-                        <p className="text-[11px] text-blue-800/80 leading-relaxed bg-white/50 p-2.5 rounded-lg border border-blue-100">
-                          主人，初步执行计划已就绪。您可以直接 <span className="text-blue-700 font-bold">确认执行</span> 开启任务，或者点击 <span className="text-zinc-600 font-bold">重新规划</span> 让我按您的新想法调整。
-                        </p>
                         {isReplanningMode ? (
-                          <div className="flex flex-col gap-2 animate-in fade-in duration-300">
-                            <textarea value={replanFeedback} onChange={(e) => setReplanFeedback(e.target.value)} placeholder="请输入调整意见..." className="w-full text-xs p-3 rounded-lg border border-blue-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10 outline-none resize-none bg-white shadow-inner" rows={2} />
+                          <>
+                            <textarea value={replanFeedback} onChange={(e) => setReplanFeedback(e.target.value)} placeholder="请输入调整意见..." className="text-xs p-3 rounded-lg border border-zinc-200 outline-none bg-zinc-50" rows={2} />
                             <div className="flex gap-2">
-                              <Button size="sm" variant="outline" className="flex-1 border-blue-200 text-blue-600 hover:bg-blue-100 bg-white" onClick={() => setIsReplanningMode(false)}>取消</Button>
-                              <Button size="sm" className="flex-1 bg-blue-600 hover:bg-blue-700 text-white shadow-md" disabled={!replanFeedback.trim()} onClick={() => handleCommand('REPLAN')}><RefreshCw className="h-3.5 w-3.5 mr-1" /> 提交调整</Button>
+                              <Button size="sm" variant="outline" className="flex-1" onClick={() => setIsReplanningMode(false)}>取消</Button>
+                              <Button size="sm" className="flex-1 bg-blue-600 text-white" disabled={!replanFeedback.trim()} onClick={() => handleCommand('REPLAN')}>提交调整</Button>
                             </div>
-                          </div>
+                          </>
                         ) : (
-                          <div className="flex flex-col gap-2">
-                            <div className="grid grid-cols-2 gap-2">
-                              {runtimeActions.canConfirm && <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg py-5 transition-transform active:scale-95" onClick={() => handleCommand('CONFIRM_EXECUTE')}><Play className="h-4 w-4 mr-2" /> 确认执行</Button>}
-                              {runtimeActions.canReplan && <Button size="sm" variant="outline" className="border-blue-200 bg-white text-blue-700 hover:bg-blue-50 py-5 transition-transform active:scale-95" onClick={() => setIsReplanningMode(true)}><RefreshCw className="h-4 w-4 mr-2" /> 重新规划</Button>}
-                            </div>
-                            {runtimeActions.canCancel && <Button size="sm" variant="ghost" disabled={isCancelling} className="w-full text-zinc-400 hover:text-red-500 hover:bg-red-50 mt-1 h-8 text-[11px]" onClick={() => handleCommand('CANCEL')}>{isCancelling ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : <X className="h-3 w-3 mr-2" />}放弃当前任务</Button>}
+                          <div className="grid grid-cols-2 gap-2">
+                            {runtimeActions.canConfirm && <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white shadow-md h-10" onClick={() => handleCommand('CONFIRM_EXECUTE')}><Play className="h-4 w-4 mr-1.5" /> 确认执行</Button>}
+                            {runtimeActions.canReplan && <Button size="sm" variant="outline" className="h-10 text-blue-700 border-blue-200 hover:bg-blue-50" onClick={() => setIsReplanningMode(true)}><RefreshCw className="h-4 w-4 mr-1.5" /> 重新规划</Button>}
                           </div>
                         )}
                       </div>
-                      )}
-                    </div>
-                  )}
+                    )}
+                  </div>
+                )}
 
-                  {/* 步骤条 Stepper */}
-                  <div className="space-y-4 relative before:absolute before:inset-0 before:ml-[11px] before:h-full before:w-[2px] before:bg-gradient-to-b before:from-zinc-200 before:via-zinc-200 before:to-transparent mt-2">
-                    {runtimeSteps.map((step: RuntimeStepVO, idx: number) => {
-                      const duration = getDuration(step.startedAt, step.endedAt); // 计算耗时
-                      
-                      return (
-                        <div key={step.stepId || idx} className="relative flex items-start gap-3 group">
-                          {/* 状态圆形图标 */}
-                          <div className="flex items-center justify-center w-6 h-6 rounded-full border-2 border-white bg-zinc-50 text-zinc-400 shrink-0 z-10 mt-0.5 shadow-sm">
-                            {step.status === 'COMPLETED' || step.status === 'DONE' ? (
-                              <CheckCircle2 className="w-4 h-4 text-green-500" />
-                            ) : isRuntimeStepRunning(step.status) ? (
-                              <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-                            ) : step.status === 'FAILED' ? (
-                              <AlertCircle className="w-3.5 h-3.5 text-red-500" />
-                            ) : (
-                              <CircleDashed className="w-3.5 h-3.5" />
-                            )}
-                          </div>
-                          
-                          {/* 步骤内容气泡 */}
-                          {/* 步骤内容气泡：增加已完成状态的卡片质感，告别折叠错觉 */}
-                          <div className={`flex-1 p-3 rounded-lg relative transition-all duration-300 ${
-                            step.status === 'FAILED' ? 'bg-red-50 text-red-900 border border-red-100' : 
-                            isRuntimeStepRunning(step.status) ? 'bg-blue-50/40 shadow-sm border border-blue-200/60' : 
-                            (step.status === 'COMPLETED' || step.status === 'DONE') ? 'bg-white shadow-sm border border-emerald-100/60' : 
-                            'bg-zinc-50/80 border border-zinc-200/50'
-                          }`}>
-                            {step.type && (
-                              <span className="absolute top-3 right-3 text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider bg-[#D5D6F2]/40 text-[#6353AC] border border-[#9F9DF3]/30">
-                                {step.type.replace('_', ' ')}
-                              </span>
-                            )}
-                            <h4 className="text-sm font-bold text-zinc-800 pr-16 leading-tight break-words">{step.name}</h4>
+                {/* 🔴 【第三层】：当前计划执行大盘 (Stepper + Loading + 丰满元数据) */}
+                {runtimeSteps.length > 0 && (
+                  <div className="bg-white border border-zinc-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
+                    <h4 className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-4">Execution Steps</h4>
+                    <div className="space-y-4 relative before:absolute before:inset-0 before:ml-[11px] before:h-full before:w-[2px] before:bg-zinc-100">
+                      {runtimeSteps.map((step: RuntimeStepVO, idx: number) => {
+  // ✨ 终极防守逻辑：如果总任务已经完成，强制把所有步骤视为完成，无视后端的僵尸 RUNNING 状态
+  const isTaskCompleted = runtimeTask.status === 'COMPLETED';
+  const displayStatus = isTaskCompleted ? 'COMPLETED' : step.status;
+  const isRunning = isRuntimeStepRunning(displayStatus); // 用新的状态去算
+  
+  // 原有的 getDuration 也要防守一下，如果没结束时间但任务完成了，用 updatedAt 兜底
+  const duration = getDuration(step.startedAt, step.endedAt || (isTaskCompleted ? runtimeTask.updatedAt : null));
+  
+  return (
+    <div key={step.stepId || idx} className="relative flex items-start gap-3">
+      {/* 这里的图标颜色判定也要换成 displayStatus */}
+      <div className={`flex items-center justify-center w-6 h-6 rounded-full border-[3px] border-white z-10 mt-0.5 ${displayStatus === 'COMPLETED' ? 'bg-zinc-800 text-white' : isRunning ? 'bg-blue-500 text-white' : displayStatus === 'FAILED' ? 'bg-red-500 text-white' : 'bg-zinc-200 text-zinc-400'}`}>
+        {displayStatus === 'COMPLETED' ? <Check className="w-3.5 h-3.5" /> : isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : displayStatus === 'FAILED' ? <X className="w-3.5 h-3.5" /> : <CircleDashed className="w-3.5 h-3.5" />}
+      </div>
                             
-                            {(step.outputSummary || step.inputSummary) && (
-                              <p className={`text-[11px] mt-2 leading-relaxed break-words ${
-                                step.status === 'FAILED' ? 'text-red-600' : 
-                                (step.status === 'COMPLETED' || step.status === 'DONE') ? 'text-emerald-700/80' : 
-                                'text-zinc-500/90'
-                              }`}>
-                                {step.outputSummary || step.inputSummary}
-                              </p>
-                            )}
-                            
-                            {/* ✨ 新增消费 JSON：步骤级微型进度条 (当该步骤正在执行时显示) */}
-                            {isRuntimeStepRunning(step.status) && step.progress > 0 && (
-                              <div className="mt-3 w-full h-1 bg-zinc-100 rounded-full overflow-hidden">
-                                <div 
-                                  className="h-full bg-indigo-400 transition-all duration-500 ease-out" 
-                                  style={{ width: `${step.progress}%` }}
-                                />
+                            <div className="flex-1 pt-1 pb-3">
+                              <div className="flex items-start justify-between gap-2">
+                                <h4 className={`text-sm font-bold ${isRunning ? 'text-blue-600' : 'text-zinc-800'}`}>{step.name}</h4>
+                                {/* ✨ 找回：产物类型小紫标 */}
+                                {step.type && (
+                                  <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50/80 border border-indigo-100 px-1.5 py-0.5 rounded tracking-widest shrink-0">
+                                    {step.type.replace('_', ' ')}
+                                  </span>
+                                )}
                               </div>
-                            )}
-
-                            {/* ✨ 新增消费 JSON：极客指标（执行引擎与耗时） */}
-                            {(step.assignedWorker || duration || step.retryCount > 0) && (
-                              <div className="mt-2.5 pt-2 border-t border-zinc-100/80 flex flex-wrap items-center gap-1.5">
+                              
+                              {/* ✨ 找回：极客感十足的 Worker 和耗时 */}
+                              <div className="flex items-center gap-3 mt-1.5 text-[10px] font-mono text-zinc-400">
                                 {step.assignedWorker && (
-                                  <span className="text-[10px] text-zinc-400 flex items-center gap-1 font-mono">
+                                  <span className="flex items-center gap-1 bg-zinc-100/70 px-1.5 py-0.5 rounded text-zinc-500">
                                     <Bot className="w-3 h-3" /> {step.assignedWorker}
                                   </span>
                                 )}
                                 {duration && (
-                                  <span className="text-[10px] text-zinc-400 bg-zinc-50 px-1.5 rounded border border-zinc-100 font-mono">
-                                    ⏱ {duration}
+                                  <span className="flex items-center gap-1">
+                                    <History className="w-3 h-3" /> {duration}
                                   </span>
-                                )}
-                                {step.retryCount > 0 && (
-                                  <span className="text-[10px] text-amber-600 font-medium bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100">
-                                    ↺ 重试 {step.retryCount} 次
-                                  </span>
-                                )}
+          )}
+          
+          {/* ✨ 新增榨干字段：重试次数 */}
+  {step.retryCount > 0 && (
+    <span className="flex items-center gap-1 bg-amber-50 text-amber-600 border border-amber-200 px-1.5 py-0.5 rounded">
+      <RefreshCw className="w-3 h-3" /> 重试了 {step.retryCount} 次
+    </span>
+  )}
                               </div>
-                            )}
+
+                              {/* ✨ 找回：执行摘要 (Agent 思维透明化) */}
+                              {step.inputSummary && (
+                                <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed bg-zinc-50/50 p-2 rounded-md border border-zinc-100">
+                                  {step.inputSummary}
+                                </p>
+        )}
+        
+        {/* ✨ 新增榨干字段：输出结果 (闭环体现) */}
+{step.outputSummary && (
+  <p className="text-[11px] text-emerald-600 mt-1.5 leading-relaxed bg-emerald-50/50 p-2 rounded-md border border-emerald-100">
+    ✅ 成果：{step.outputSummary}
+  </p>
+)}
+                              
+                              {isRunning && (
+  <div className="mt-3 p-3 bg-blue-50/50 border border-blue-100 rounded-lg relative overflow-hidden group">
+    <div className="flex items-start justify-between mb-2">
+      <span className="text-[11px] font-medium text-blue-700 flex items-center gap-1.5 leading-relaxed">
+        <Bot className="w-4 h-4 animate-bounce text-blue-500"/> 
+        {/* ✨ 俏皮话策略：针对 PPT 生成给足情绪价值 */}
+        {step.type === 'PPT_CREATE' || step.type === 'PPT'
+          ? '正在为您精雕细琢每一页幻灯片，大概需要1分钟，喝口水休息一下吧 ☕'
+          : 'Agent 正在飞速执行作业中，请稍候...'}
+      </span>
+      <span className="text-[10px] text-blue-400 font-mono shrink-0 ml-2 mt-0.5">
+        {step.progress > 0 ? `${step.progress}%` : '预计 60s'}
+      </span>
+    </div>
+
+    {/* ✨ 伪进度条：利用 framer-motion 实现从 0 平滑到 90% 的长达 60秒 的动画 */}
+    {/* ✨ 修复版伪进度条：无视后端的微小进度，强制缓慢平滑推进到 90%，直到后端给出 100% */}
+    <div className="w-full h-1.5 bg-blue-200/50 rounded-full overflow-hidden shadow-inner mb-3">
+      <motion.div 
+        className="h-full bg-blue-500 relative"
+        initial={{ width: `${step.progress || 0}%` }}
+        // 如果后端进度大于 90 或者到达 100，直接用后端的；否则，统一缓慢跑向 90%
+        animate={{ width: step.progress >= 90 ? `${step.progress}%` : "90%" }}
+        // 如果已经完成，0.5秒顺滑到底；否则，不管当前在百分之几，都花 60 秒慢慢向 90% 爬升
+        transition={{ duration: step.progress >= 100 ? 0.5 : 60, ease: "easeOut" }}
+      >
+        <div className="absolute top-0 left-0 w-full h-full bg-white/20 animate-[shimmer_1s_infinite]" />
+      </motion.div>
+    </div>
+
+    {/* 下方骨架屏与中断按钮的布局 */}
+    <div className="flex items-end justify-between mt-2">
+      <div className="flex-1 space-y-1.5 opacity-40 mr-4">
+        <div className="h-1.5 bg-blue-300 rounded w-full animate-pulse"></div>
+        <div className="h-1.5 bg-blue-300 rounded w-5/6 animate-pulse" style={{ animationDelay: '150ms' }}></div>
+      </div>
+      
+      {/* ✨ 补全缺失的“停止”按钮，并加入防误触的 Loading 锁 */}
+      <Button 
+        variant="ghost" 
+        size="sm" 
+        disabled={isCancelling}
+        onClick={() => handleCommand('CANCEL')}
+        className="h-6 text-[10px] px-2 text-red-500 hover:text-red-600 hover:bg-red-100 border border-transparent hover:border-red-200 transition-colors"
+      >
+        {isCancelling ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <StopCircle className="w-3 h-3 mr-1" />}
+        停止执行
+      </Button>
+    </div>
+  </div>
+)}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-                  
-                {/* ====== 🚨 核心 UX 优化：把交互面板提上来，紧贴步骤条，防止被超长文档遮挡 ====== */}
-                  
+                )}
 
-
- {/* 模块 2：产物预览区域 */}
-                  <div className="flex flex-col gap-4 mt-4 mb-2">
-                    {Object.values(
-                      runtimeArtifacts.reduce((acc, artifact) => {
-                        acc[artifact.type] = artifact;
-                        return acc;
-                      }, {} as Record<string, RuntimeArtifactVO>)
-                    ).map((artifact: RuntimeArtifactVO) => {
+                {/* 🔴 【第四层】：实质产物与迭代操作 */}
+                {runtimeArtifacts.length > 0 && (
+                  <div className="flex flex-col gap-3">
+                    {runtimeArtifacts.map((artifact: RuntimeArtifactVO) => {
                       if (artifact.type === 'DOC') {
-                        return (
-                          <DocPreviewCard 
-                            key={artifact.artifactId} 
-                            status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'GENERATING'} 
-                            docUrl={artifact.url} 
-                            docTitle={artifact.title} 
-                            canReplan={runtimeActions?.canReplan}
-                            isReplanning={isPlanning}
-                            onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })}
-                          />
-                        );
+                        return <DocPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'GENERATING'} docUrl={artifact.url} docTitle={artifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading} onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })} />;
                       }
-                      if (artifact.type === 'PPT') {
-                        return (
-                          <PptPreviewCard 
-                            key={artifact.artifactId} 
-                            status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'EXECUTING'} 
-                            pptUrl={artifact.url} 
-                            pptTitle={artifact.title} 
-                            onInterrupt={() => handleCommand('CANCEL')} 
-                            canReplan={runtimeActions?.canReplan}
-                            isReplanning={isPlanning}
-                            onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })}
-                          />
-                        );
+                      // 替换 Dashboard.tsx 原有的 PptPreviewCard 渲染
+if (artifact.type === 'PPT') {
+  return <PptPreviewCard 
+    key={artifact.artifactId} 
+    status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'EXECUTING'} 
+    pptUrl={artifact.url} 
+    pptTitle={artifact.title} 
+    canReplan={runtimeActions?.canReplan} 
+    isReplanning={isActionLoading} 
+    onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })}
+    onInterrupt={() => handleCommand('CANCEL')} 
+  />;
                       }
+                      
+
+
                       return null;
                     })}
-
-                    {/* ✨ 恢复：预测性骨架卡片 */}
-                    {runtimeSteps.filter(step => isRuntimeStepRunning(step.status) && (step.type === 'DOC_CREATE' || step.type === 'PPT_CREATE')).filter(step => !runtimeArtifacts.some(a => a.type === (step.type === 'DOC_CREATE' ? 'DOC' : 'PPT'))).map(step => (
-                        <div key={`skeleton-${step.stepId}`} className="border border-blue-100 bg-blue-50/30 rounded-xl p-4 flex flex-col gap-3 relative overflow-hidden animate-pulse">
-                          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-400 to-transparent animate-pulse" />
-                          <div className="flex items-center gap-3">
-                            <div className="h-10 w-10 bg-blue-100 rounded-lg flex items-center justify-center text-blue-400"><Loader2 className="h-5 w-5 animate-spin" /></div>
-                            <div className="flex flex-col gap-2 flex-1"><div className="h-4 bg-zinc-200 rounded w-1/3"></div><div className="h-3 bg-zinc-100 rounded w-2/3"></div></div>
-                          </div>
-                        </div>
-                    ))}
                   </div>
+                )}
 
-                  {/* 模块 3：任务最终完成时的交付按钮 */}
-                  {runtimeTask.status === 'COMPLETED' && (
-                    <div className="mt-4 pt-4 border-t border-zinc-200 pb-4">
-                      <Button className="w-full h-10 font-bold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-md animate-in zoom-in duration-500" onClick={handleDeliver}>
-                        <Send className="h-4 w-4 mr-2" /> 总结与交付
-                      </Button>
+                {/* 交付按钮 */}
+                {runtimeTask.status === 'COMPLETED' && (
+                  <Button className="w-full h-10 font-bold bg-zinc-900 hover:bg-zinc-800 text-white shadow-md animate-in zoom-in duration-500" onClick={handleDeliver}>
+                    <Send className="h-4 w-4 mr-2" /> 总结与交付群聊
+                  </Button>
+                )}
+
+                {/* 🔴 【最底层】：被降级的极客日志 */}
+                {taskRuntime?.events && taskRuntime.events.length > 0 && (
+                  <div className="mt-4 border border-zinc-200 rounded-xl bg-[#1C1C1E] overflow-hidden shadow-inner">
+                    <div 
+                      className="px-3 py-2 bg-zinc-800/80 flex items-center justify-between cursor-pointer hover:bg-zinc-800 transition-colors"
+                      onClick={() => setIsTerminalExpanded(!isTerminalExpanded)}
+                    >
+                      <div className="flex items-center gap-2 text-zinc-400 text-xs font-mono">
+                        <TerminalSquare className="w-3.5 h-3.5" /> 
+                        {isTerminalExpanded ? '执行追踪器' : '最后一条日志: ' + (taskRuntime.events[taskRuntime.events.length - 1]?.message.slice(0, 25) + '...')}
+                      </div>
+                      {isTerminalExpanded ? <ChevronUp className="w-4 h-4 text-zinc-500" /> : <ChevronDown className="w-4 h-4 text-zinc-500" />}
                     </div>
-                  )}
+                    {isTerminalExpanded && (
+                      <div className="p-3 max-h-48 overflow-y-auto font-mono text-[10px] space-y-1.5 bg-[#1C1C1E]">
+                        {taskRuntime.events.map((e: any) => (
+                          <div key={e.eventId} className="flex items-start gap-2 text-zinc-500">
+                            <span className="text-zinc-600 mt-0.5">❯</span>
+                            <span className={e.message.includes('ERROR') ? 'text-red-400' : 'text-zinc-400'}>{e.message}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                
               </div>
             )}
           </div>

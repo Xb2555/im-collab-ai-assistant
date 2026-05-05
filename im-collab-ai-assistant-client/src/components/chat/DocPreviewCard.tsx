@@ -75,13 +75,40 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
         instruction: feedback
       });
       
+      // 🚨 强力拦截：如果后端明明解析失败（UNRESOLVED），却还是返回了 editPlan
+      if (res.editPlan && res.editPlan.anchorType === 'UNRESOLVED') {
+         toast.warning('Agent 找不到修改位置', { 
+           description: res.preview || res.editPlan.targetTitle || '请提供更明确的章节标题或序号（例如：“在【2.3 水果拼盘】下方插入...”）' 
+         });
+         setIterationPlan(null);
+         return;
+      }
+
+      // 🚨 强力拦截：如果后端根本没有生成新内容
+      if (res.editPlan && !res.editPlan.generatedContent?.trim()) {
+         toast.warning('修改计划生成失败', { 
+           description: 'Agent 未能生成有效的替换/插入文本，请调整您的指令。' 
+         });
+         setIterationPlan(null);
+         return;
+      }
+
+      // 只有真正合法的计划，才允许弹窗
       if (res.editPlan) {
         setIterationPlan(res.editPlan);
       } else {
         toast.warning('无法生成修改计划', { description: res.summary || '请尝试换一种描述方式' });
       }
     } catch(e: any) {
-      toast.error('精修请求失败', { description: e.message || String(e) });
+      // 优雅翻译后端的 40000 报错
+      const errorMsg = e.message || String(e);
+      if (errorMsg.includes('未指定任何文档操作目标或位置') || errorMsg.includes('40000')) {
+        toast.warning('Agent 需要更明确的坐标', { 
+          description: '请指明要修改的具体标题或段落，例如：“在【2.3 水果拼盘】下方，补充预算300左右”' 
+        });
+      } else {
+        toast.error('精修请求失败', { description: errorMsg });
+      }
     } finally {
       setIsIterating(false);
     }
@@ -158,13 +185,15 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
       </div>
 
       {/* 3. 底部操作区 */}
-      {status === 'COMPLETED' && canReplan && (
+      {/* ✨ 修改：放宽条件，允许取消(CANCELLED/ABORTED)和完成状态下都可以输入 Replan 反馈 */}
+{['COMPLETED', 'CANCELLED', 'ABORTED', 'FAILED'].includes(status) && canReplan && (
         <div className="p-3 bg-white border-t border-zinc-100 relative z-20">
           <div className="flex items-center gap-2">
             <input
               type="text"
               className="flex-1 text-sm bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all placeholder:text-zinc-400"
-              placeholder="例如：在背景介绍后补充一段关于预算的说明..."
+              // ✨ 换成强引导文案
+              placeholder="请明确指出位置（如：在【2.3 水果拼盘】标题下，补充预算300元）"
               value={feedback}
               onChange={(e) => setFeedback(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -175,7 +204,7 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
             <Button 
               size="sm" 
               onClick={handleIterate} 
-              disabled={!feedback.trim() || isReplanning || isIterating}
+              disabled={!feedback.trim() || isReplanning || isIterating || isApproving}
               className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all"
             >
               {isIterating ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Wand2 className="h-3.5 w-3.5 mr-1" />}
@@ -225,7 +254,8 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
                 <span className="text-xs font-bold text-zinc-400">预览修改内容：</span>
                 <div className="bg-[#F8F9FA] border border-zinc-200 rounded-lg p-3 text-zinc-700 whitespace-pre-wrap font-mono text-[13px] leading-relaxed relative overflow-hidden shadow-inner">
                   <div className="absolute left-0 top-0 bottom-0 w-1 bg-green-400"></div>
-                  {iterationPlan.generatedContent || '内容被移除或无实质文本变化'}
+                  {/* 这里不用加后备文本了，因为我们在 handleIterate 里已经拦截了空文本 */}
+                  {iterationPlan.generatedContent}
                 </div>
               </div>
             </div>

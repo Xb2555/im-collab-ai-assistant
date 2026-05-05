@@ -7,7 +7,8 @@ import type {
   ResumeRequest,
   ApiResponse,
   DocumentIterationRequest,
-  DocumentIterationResponse
+  DocumentIterationResponse,
+  DocumentIterationApprovalRequest // ✨ 重点：把这个补进大括号里！
 } from '@/types/api';
 
 

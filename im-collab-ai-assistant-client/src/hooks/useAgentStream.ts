@@ -5,6 +5,7 @@ import { useThrottleFn } from 'ahooks';
 import { useTaskStore } from '@/store/useTaskStore';
 import { useAuthStore } from '@/store/useAuthStore';
 import { plannerApi } from '@/services/api/planner';
+import { getBaseUrl } from '@/services/api/client';
 
 export function useAgentStream() {
   const { activeTaskId, setTaskRuntime, appendThinkingText, setIsStreaming } = useTaskStore();
@@ -50,10 +51,11 @@ export function useAgentStream() {
 
     fetchRuntimeData(activeTaskId);
 
-    const connectSSE = async () => {
+const connectSSE = async () => {
       setIsStreaming(true);
       try {
-        await fetchEventSource(`/api/planner/tasks/${activeTaskId}/events/stream`, {
+        // ✨ 在这里拼接 getBaseUrl()
+        await fetchEventSource(`${getBaseUrl()}/api/planner/tasks/${activeTaskId}/events/stream`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${token}`,
