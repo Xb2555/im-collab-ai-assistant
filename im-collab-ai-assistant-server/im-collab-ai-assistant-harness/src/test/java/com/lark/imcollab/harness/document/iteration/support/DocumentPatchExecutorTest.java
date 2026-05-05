@@ -182,12 +182,59 @@ class DocumentPatchExecutorTest {
     void appendWithoutNewBlocksRecoversRuntimeGroupFromDocumentDiff() {
         LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
         LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
-        when(readGateway.fetchDocFull("doc123", "with-ids"))
+        when(readGateway.fetchDocOutline("doc123"))
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("<doc><h2 id=\"heading-1\">1.1</h2><h2 id=\"heading-3\">1.3</h2><h2 id=\"heading-2\">1.2 游客偏好分析</h2></doc>")
+                        .build());
+        when(readGateway.fetchDocSection("doc123", "heading-2", "with-ids"))
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("<doc><h2 id=\"heading-2\">1.2 游客偏好分析</h2><p id=\"body-2\">正文</p></doc>")
+                        .build());
+        when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(2L).newBlocks(List.of()).build())
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(3L).newBlocks(List.of()).build())
+                .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(4L).newBlocks(List.of()).build());
+
+        DocumentPatchExecutor executor = new DocumentPatchExecutor(readGateway, writeGateway, new DocumentStructureParser());
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .patchOperations(List.of(
+                        DocumentPatchOperation.builder()
+                                .operationType(DocumentPatchOperationType.APPEND)
+                                .runtimeGroupKey("group-new-section")
+                                .newContent("### 1.2 游客偏好分析\n\n正文")
+                                .docFormat("markdown")
+                                .build(),
+                        DocumentPatchOperation.builder()
+                                .operationType(DocumentPatchOperationType.BLOCK_GROUP_MOVE_AFTER)
+                                .runtimeGroupKey("group-new-section")
+                                .targetBlockId("heading-1")
+                                .build()
+                ))
+                .build();
+
+        DocumentPatchExecutor.PatchExecutionResult result = executor.execute("doc123", plan);
+
+        assertThat(result.getModifiedBlocks()).contains("append", "heading-2", "body-2");
+        assertThat(result.getAfterRevision()).isEqualTo(4L);
+    }
+
+    @Test
+    void appendWithoutNewBlocksRetriesUntilDocumentDiffShowsRuntimeGroup() {
+        LarkDocReadGateway readGateway = mock(LarkDocReadGateway.class);
+        LarkDocWriteGateway writeGateway = mock(LarkDocWriteGateway.class);
+        when(readGateway.fetchDocOutline("doc123"))
                 .thenReturn(LarkDocFetchResult.builder()
                         .content("<doc><h2 id=\"heading-1\">1.1</h2><h2 id=\"heading-3\">1.3</h2></doc>")
                         .build())
                 .thenReturn(LarkDocFetchResult.builder()
-                        .content("<doc><h2 id=\"heading-1\">1.1</h2><h2 id=\"heading-3\">1.3</h2><h2 id=\"heading-2\">1.2</h2><p id=\"body-2\">正文</p></doc>")
+                        .content("<doc><h2 id=\"heading-1\">1.1</h2><h2 id=\"heading-3\">1.3</h2></doc>")
+                        .build())
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("<doc><h2 id=\"heading-1\">1.1</h2><h2 id=\"heading-3\">1.3</h2><h2 id=\"heading-2\">1.2 游客偏好分析</h2></doc>")
+                        .build());
+        when(readGateway.fetchDocSection("doc123", "heading-2", "with-ids"))
+                .thenReturn(LarkDocFetchResult.builder()
+                        .content("<doc><h2 id=\"heading-2\">1.2 游客偏好分析</h2><p id=\"body-2\">正文</p></doc>")
                         .build());
         when(writeGateway.updateByCommand(anyString(), anyString(), any(), any(), any(), any(), isNull()))
                 .thenReturn(LarkDocUpdateResult.builder().success(true).revisionId(2L).newBlocks(List.of()).build())

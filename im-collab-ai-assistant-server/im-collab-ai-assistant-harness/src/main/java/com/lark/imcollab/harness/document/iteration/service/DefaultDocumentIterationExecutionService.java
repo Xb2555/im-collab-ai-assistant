@@ -130,8 +130,9 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             if (resolvedAsset != null) {
                 ExecutionPlan executionPlan = richContentExecutionPlanner.plan(editIntent, anchor, strategy, resolvedAsset);
                 editPlan.setResolvedAssetSpec(editIntent.getAssetSpec());
-                if (executionPlan != null) {
+                if (executionPlan != null && isExecutableRichMediaAction(editPlan.getSemanticAction())) {
                     editPlan.setExecutionPlan(executionPlan);
+                    editPlan.setRequiresApproval(executionPlan.isRequiresApproval());
                 } else if (isRichMediaSemantic(editIntent.getSemanticAction())) {
                     editPlan.setRequiresApproval(true);
                 }
@@ -218,6 +219,12 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                     return waitingResponse(taskId, ownedArtifact, pending.getDocUrl(), plan, summary);
                 }
             }
+            log.info("DOC_ITER_DECIDE_EXECUTE taskId={} action={} strategyType={} requiresApproval={} patchOpsCount={}",
+                    taskId,
+                    plan.getSemanticAction(),
+                    plan.getStrategyType(),
+                    plan.isRequiresApproval(),
+                    plan.getPatchOperations() == null ? 0 : plan.getPatchOperations().size());
             runtimeSupport.resumeWaiting(taskId, pending.getStepId());
             return applyAndComplete(runtime, ownedArtifact, resolveDocRef(ownedArtifact, pending.getDocUrl()), plan, operatorOpenId);
         } catch (RuntimeException exception) {

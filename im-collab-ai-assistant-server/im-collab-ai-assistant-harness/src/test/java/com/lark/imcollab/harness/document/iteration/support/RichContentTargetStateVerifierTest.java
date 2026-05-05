@@ -44,6 +44,63 @@ class RichContentTargetStateVerifierTest {
     }
 
     @Test
+    void imageInsertPassesWhenCreatedBlockIsContainerButNewImageExistsAfterAnchor() {
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                .resolvedAnchor(ResolvedDocumentAnchor.builder().insertionBlockId("anchor-1").build())
+                .expectedState(ExpectedDocumentState.builder()
+                        .stateType(DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT)
+                        .build())
+                .build();
+        RichContentExecutionResult result = RichContentExecutionResult.builder()
+                .createdBlockIds(List.of("paragraph-1"))
+                .build();
+        DocumentStructureSnapshot before = DocumentStructureSnapshot.builder()
+                .revisionId(1L)
+                .blockIndex(Map.of("anchor-1", node("anchor-1", "text")))
+                .blockOrderIndex(Map.of("anchor-1", 1))
+                .build();
+        DocumentStructureSnapshot after = DocumentStructureSnapshot.builder()
+                .revisionId(2L)
+                .blockIndex(Map.of(
+                        "anchor-1", node("anchor-1", "text"),
+                        "paragraph-1", node("paragraph-1", "paragraph"),
+                        "img-1", node("img-1", "image")))
+                .blockOrderIndex(Map.of("anchor-1", 1, "paragraph-1", 2, "img-1", 3))
+                .build();
+
+        assertThatCode(() -> verifier.verify(plan, result, before, after)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void imageInsertPassesWhenOnlyRevisionAdvancesAndOutlineHasNoImageNode() {
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                .resolvedAnchor(ResolvedDocumentAnchor.builder().insertionBlockId("anchor-1").build())
+                .expectedState(ExpectedDocumentState.builder()
+                        .stateType(DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT)
+                        .build())
+                .build();
+        RichContentExecutionResult result = RichContentExecutionResult.builder()
+                .createdBlockIds(List.of())
+                .beforeRevision(8L)
+                .afterRevision(9L)
+                .build();
+        DocumentStructureSnapshot before = DocumentStructureSnapshot.builder()
+                .revisionId(8L)
+                .blockIndex(Map.of("anchor-1", node("anchor-1", "heading")))
+                .blockOrderIndex(Map.of("anchor-1", 1))
+                .build();
+        DocumentStructureSnapshot after = DocumentStructureSnapshot.builder()
+                .revisionId(9L)
+                .blockIndex(Map.of("anchor-1", node("anchor-1", "heading")))
+                .blockOrderIndex(Map.of("anchor-1", 1))
+                .build();
+
+        assertThatCode(() -> verifier.verify(plan, result, before, after)).doesNotThrowAnyException();
+    }
+
+    @Test
     void rewriteTablePassesWithoutCreatedBlockIds() {
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .semanticAction(DocumentSemanticActionType.REWRITE_TABLE_DATA)

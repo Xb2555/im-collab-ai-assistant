@@ -364,6 +364,45 @@ class LarkDocToolTest {
         assertThat(updateCommand.arguments()).doesNotContain("--mode");
     }
 
+    @Test
+    void updateByCommandBlockMoveAfterUsesSrcBlockIdsAndTargetBlockId() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            if (command.arguments().contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --api-version string
+                              --as string
+                              --doc string
+                              --command string
+                              --block-id string
+                              --src-block-ids string
+                        """);
+            }
+            return new CliCommandResult(0, """
+                    {"success":true,"data":{"doc_id":"doc-block","mode":"block_move_after","message":"ok","revision_id":5}}
+                    """);
+        };
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                new RecordingDocOpenApiClient(objectMapper),
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocUpdateResult result = tool.updateByCommand("doc-block", "block_move_after", null, null, "blk-1", "target-1", null);
+
+        assertThat(result.getDocId()).isEqualTo("doc-block");
+        CliCommand updateCommand = commands.get(commands.size() - 1);
+        assertThat(updateCommand.arguments()).contains("docs", "+update", "--command", "block_move_after", "--block-id", "target-1", "--src-block-ids", "blk-1");
+        assertThat(updateCommand.arguments()).doesNotContain("--target-block-id", "--pattern");
+    }
+
     private LarkCliClient dummyCliClient(List<CliCommand> commands) {
         CliCommandExecutor executor = command -> {
             commands.add(command);

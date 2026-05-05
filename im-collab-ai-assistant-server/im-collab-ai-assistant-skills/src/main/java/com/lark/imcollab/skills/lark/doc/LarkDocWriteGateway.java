@@ -96,7 +96,7 @@ public class LarkDocWriteGateway {
         attempts.put("preferred", updateDocAttempt(docRef, command, content, docFormat, blockId, pattern, revisionId, supportedFlags, true, true));
         attempts.put("no-api-version", updateDocAttempt(docRef, command, content, docFormat, blockId, pattern, revisionId, supportedFlags, false, true));
         attempts.put("basic", updateDocAttempt(docRef, command, content, docFormat, blockId, pattern, revisionId,
-                Set.of("--as", "--doc", "--command", "--content", "--doc-format", "--block-id", "--pattern", "--revision-id"), false, false));
+                Set.of("--as", "--doc", "--command", "--content", "--doc-format", "--block-id", "--pattern", "--revision-id", "--src-block-ids"), false, false));
         return readGateway.distinctAttempts(attempts);
     }
 
@@ -115,8 +115,22 @@ public class LarkDocWriteGateway {
             args.add(CONTENT_STDIN_MARKER);
             stdin = content;
         }
-        if (readGateway.hasText(blockId)) readGateway.appendIfSupported(args, supportedFlags, "--block-id", blockId.trim());
-        if (readGateway.hasText(pattern)) readGateway.appendIfSupported(args, supportedFlags, "--pattern", pattern);
+        if ("block_move_after".equals(command)) {
+            if (readGateway.hasText(pattern)) {
+                readGateway.appendIfSupported(args, supportedFlags, "--block-id", pattern.trim());
+            }
+            if (readGateway.hasText(blockId)) {
+                if (supportedFlags.contains("--src-block-ids")) {
+                    args.add("--src-block-ids");
+                    args.add(blockId.trim());
+                } else {
+                    readGateway.appendIfSupported(args, supportedFlags, "--pattern", pattern);
+                }
+            }
+        } else {
+            if (readGateway.hasText(blockId)) readGateway.appendIfSupported(args, supportedFlags, "--block-id", blockId.trim());
+            if (readGateway.hasText(pattern)) readGateway.appendIfSupported(args, supportedFlags, "--pattern", pattern);
+        }
         if (revisionId != null && revisionId >= 0) readGateway.appendIfSupported(args, supportedFlags, "--revision-id", String.valueOf(revisionId));
         return new DocCommandAttempt(args, stdin);
     }

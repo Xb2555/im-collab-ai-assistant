@@ -27,6 +27,7 @@ public class LarkIMMessageStreamController {
             @PathVariable String chatId
     ) {
         return ResponseEntity.ok()
+
                 .contentType(MediaType.TEXT_EVENT_STREAM)
                 .body(streamService.subscribe(authorization, chatId));
     }
