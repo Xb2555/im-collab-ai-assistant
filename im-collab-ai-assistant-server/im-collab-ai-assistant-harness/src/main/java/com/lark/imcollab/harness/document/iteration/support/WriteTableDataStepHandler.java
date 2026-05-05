@@ -27,6 +27,9 @@ public class WriteTableDataStepHandler implements ExecutionStepHandler {
     @Override
     public void handle(ExecutionStep step, String docRef, RichContentExecutionContext ctx) {
         String tableBlockId = ctx.getString("tableBlockId");
+        if ((tableBlockId == null || tableBlockId.isBlank()) && step.getInput() != null) {
+            tableBlockId = String.valueOf(step.getInput());
+        }
         if (tableBlockId == null || tableBlockId.isBlank()) {
             throw new IllegalStateException("WRITE_TABLE_DATA: tableBlockId not found in context");
         }

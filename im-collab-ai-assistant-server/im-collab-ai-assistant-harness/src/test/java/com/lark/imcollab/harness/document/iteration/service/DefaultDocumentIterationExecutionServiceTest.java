@@ -258,6 +258,15 @@ class DefaultDocumentIterationExecutionServiceTest {
         Artifact artifact = ownedArtifact();
         DocumentEditIntent intent = intent(DocumentIterationIntentType.INSERT_MEDIA, DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR);
         DocumentStructureSnapshot snapshot = snapshot();
+        DocumentStructureSnapshot afterSnapshot = DocumentStructureSnapshot.builder()
+                .docId("doc123")
+                .revisionId(2L)
+                .blockIndex(java.util.Map.of(
+                        "img-block-1", com.lark.imcollab.common.model.entity.DocumentStructureNode.builder()
+                                .blockId("img-block-1")
+                                .blockType("image")
+                                .build()))
+                .build();
         ResolvedDocumentAnchor anchor = anchor();
         DocumentEditStrategy strategy = strategy(DocumentStrategyType.MEDIA_INSERT_AFTER, DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT);
         DocumentEditPlan plan = DocumentEditPlan.builder()
@@ -281,7 +290,7 @@ class DefaultDocumentIterationExecutionServiceTest {
         when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
         when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
         when(intentResolver.resolve(anyString())).thenReturn(intent);
-        when(snapshotBuilder.build(any())).thenReturn(snapshot);
+        when(snapshotBuilder.build(any())).thenReturn(snapshot, afterSnapshot);
         when(anchorResolver.resolve(any(), eq(snapshot), eq(intent))).thenReturn(anchor);
         when(strategyPlanner.plan(eq(intent), eq(anchor))).thenReturn(strategy);
         when(patchCompiler.compile(anyString(), eq(intent), eq(snapshot), eq(anchor), eq(strategy))).thenReturn(plan);
@@ -290,12 +299,52 @@ class DefaultDocumentIterationExecutionServiceTest {
                 .assetRef("https://kkimgs.yisou.com/ims?kt=url")
                 .requiresUpload(false)
                 .build());
+        when(richContentExecutionEngine.execute(anyString(), any())).thenReturn(com.lark.imcollab.common.model.entity.RichContentExecutionResult.builder()
+                .createdBlockIds(List.of("img-block-1"))
+                .beforeRevision(1L)
+                .afterRevision(2L)
+                .build());
 
         DocumentIterationVO response = service.execute(request());
 
         assertThat(response.getRecognizedIntent()).isEqualTo(DocumentIterationIntentType.INSERT_MEDIA);
         verify(patchExecutor, never()).execute(anyString(), any());
         verify(richContentExecutionEngine).execute(anyString(), any());
+        verify(richContentTargetStateVerifier).verify(eq(plan), any(), eq(snapshot), any());
+    }
+
+    @Test
+    void unsupportedRichActionFallsBackToApprovalInsteadOfExecution() {
+        Artifact artifact = ownedArtifact();
+        DocumentEditIntent intent = intent(DocumentIterationIntentType.INSERT_MEDIA, DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR);
+        DocumentStructureSnapshot snapshot = snapshot();
+        ResolvedDocumentAnchor anchor = anchor();
+        DocumentEditStrategy strategy = strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT);
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .taskId("doc-iter-1")
+                .intentType(DocumentIterationIntentType.INSERT_MEDIA)
+                .semanticAction(DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR)
+                .resolvedAnchor(anchor)
+                .structureSnapshot(snapshot)
+                .expectedState(strategy.getExpectedState())
+                .strategyType(strategy.getStrategyType())
+                .generatedContent("")
+                .reasoningSummary("rich media")
+                .requiresApproval(false)
+                .build();
+
+        when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
+        when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
+        when(intentResolver.resolve(anyString())).thenReturn(intent);
+        when(snapshotBuilder.build(any())).thenReturn(snapshot);
+        when(anchorResolver.resolve(any(), eq(snapshot), eq(intent))).thenReturn(anchor);
+        when(strategyPlanner.plan(eq(intent), eq(anchor))).thenReturn(strategy);
+        when(patchCompiler.compile(anyString(), eq(intent), eq(snapshot), eq(anchor), eq(strategy))).thenReturn(plan);
+
+        DocumentIterationVO response = service.execute(request());
+
+        assertThat(response.getPlanningPhase()).isEqualTo("WAITING_APPROVAL");
+        verify(richContentExecutionEngine, never()).execute(anyString(), any());
     }
 
     @Test

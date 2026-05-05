@@ -114,7 +114,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
             ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, editIntent);
             DocumentEditStrategy strategy = strategyPlanner.plan(editIntent, anchor);
-            ResolvedAsset resolvedAsset = isRichMediaAction(editIntent.getSemanticAction())
+            ResolvedAsset resolvedAsset = isRichMediaSemantic(editIntent.getSemanticAction())
                     ? assetResolutionFacade.resolve(editIntent.getAssetSpec()) : null;
             DocumentEditPlan editPlan = patchCompiler.compile(runtime.getTaskId(), editIntent, snapshot, anchor, strategy);
             log.info("DOC_ITER_PLAN compiled taskId={} intentType={} action={} anchorType={} targetPreview='{}' strategyType={} toolCommandType={} requiresApproval={} riskLevel={}",
@@ -130,7 +130,11 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             if (resolvedAsset != null) {
                 ExecutionPlan executionPlan = richContentExecutionPlanner.plan(editIntent, anchor, strategy, resolvedAsset);
                 editPlan.setResolvedAssetSpec(editIntent.getAssetSpec());
-                if (executionPlan != null) editPlan.setExecutionPlan(executionPlan);
+                if (executionPlan != null) {
+                    editPlan.setExecutionPlan(executionPlan);
+                } else if (isRichMediaSemantic(editIntent.getSemanticAction())) {
+                    editPlan.setRequiresApproval(true);
+                }
             }
             if (editPlan.isRequiresApproval()) {
                 runtimeSupport.waitForApproval(runtime, request, editPlan, ownedArtifact, operator);
@@ -305,7 +309,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
     }
 
     private boolean isRichExecutionPlan(DocumentEditPlan editPlan) {
-        return isRichMediaAction(editPlan.getSemanticAction()) && editPlan.getExecutionPlan() != null;
+        return isExecutableRichMediaAction(editPlan.getSemanticAction()) && editPlan.getExecutionPlan() != null;
     }
 
     private String appendRevisionSummary(long beforeRevision, long afterRevision) {
@@ -377,13 +381,23 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         };
     }
 
-    private boolean isRichMediaAction(DocumentSemanticActionType action) {
+    private boolean isExecutableRichMediaAction(DocumentSemanticActionType action) {
+        if (action == null) return false;
+        return switch (action) {
+            case INSERT_IMAGE_AFTER_ANCHOR,
+                 INSERT_TABLE_AFTER_ANCHOR, REWRITE_TABLE_DATA, APPEND_TABLE_ROW,
+                 UPDATE_WHITEBOARD_CONTENT -> true;
+            default -> false;
+        };
+    }
+
+    private boolean isRichMediaSemantic(DocumentSemanticActionType action) {
         if (action == null) return false;
         return switch (action) {
             case INSERT_IMAGE_AFTER_ANCHOR, REPLACE_IMAGE, DELETE_IMAGE,
                  INSERT_TABLE_AFTER_ANCHOR, REWRITE_TABLE_DATA, APPEND_TABLE_ROW, DELETE_TABLE,
                  INSERT_WHITEBOARD_AFTER_ANCHOR, UPDATE_WHITEBOARD_CONTENT,
-                 RELAYOUT_SECTION, CONVERT_TEXT_TO_TABLE, CONVERT_TEXT_TO_IMAGE_CARD -> true;
+                 MOVE_MEDIA_BLOCK, RELAYOUT_SECTION, CONVERT_TEXT_TO_TABLE, CONVERT_TEXT_TO_IMAGE_CARD -> true;
             default -> false;
         };
     }
