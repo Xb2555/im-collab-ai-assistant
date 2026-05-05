@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -21,6 +22,7 @@ import java.util.regex.Pattern;
 public class LarkDocTool {
 
     private static final Pattern DOC_URL_PATTERN = Pattern.compile("/(?:docx|wiki)/([A-Za-z0-9]+)");
+    private static final Pattern MERMAID_BLOCK_PATTERN = Pattern.compile("(?s)```mermaid\\s*(.*?)\\s*```");
 
     private final LarkDocReadGateway readGateway;
     private final LarkDocWriteGateway writeGateway;
@@ -66,11 +68,38 @@ public class LarkDocTool {
         if (openApiClient == null) throw new IllegalStateException("飞书文档 OpenAPI 客户端未配置，无法创建文档。");
         String normalizedTitle = normalizeTitle(title);
         String normalizedMarkdown = normalizeMarkdown(title, markdown);
+        MermaidWhiteboardPlan mermaidPlan = extractMermaidWhiteboardPlan(normalizedMarkdown);
+        log.info("LARK_DOC_CREATE start title='{}' hasMermaid={} mermaidCount={}",
+                normalizedTitle, mermaidPlan.hasWhiteboards(), mermaidPlan.mermaidBlocks().size());
         JsonNode document = createEmptyDocument(normalizedTitle);
         String documentId = readGateway.firstNonBlank(readGateway.text(document, "document_id"), readGateway.text(document, "doc_id"));
         requireValue(documentId, "documentId");
-        contentCodec.writeMarkdownBlocks(documentId, normalizedMarkdown);
+        log.info("LARK_DOC_CREATE created_empty_doc docId={}", documentId);
+        if (mermaidPlan.hasWhiteboards()) {
+            log.info("LARK_DOC_CREATE mermaid_upgrade overwrite_start docId={} placeholderCount={}",
+                    documentId, mermaidPlan.mermaidBlocks().size());
+            LarkDocUpdateResult overwriteResult = writeGateway.overwriteMarkdown(documentId, mermaidPlan.markdownWithWhiteboardPlaceholders());
+            log.info("LARK_DOC_CREATE mermaid_upgrade overwrite_done docId={} boardTokens={}",
+                    documentId, overwriteResult.getBoardTokens());
+            if (overwriteResult.getBoardTokens() == null || overwriteResult.getBoardTokens().size() < mermaidPlan.mermaidBlocks().size()) {
+                throw new IllegalStateException("飞书文档 Mermaid 白板占位创建失败：返回的 board_tokens 数量不足。");
+            }
+            for (int index = 0; index < mermaidPlan.mermaidBlocks().size(); index++) {
+                String whiteboardToken = overwriteResult.getBoardTokens().get(index);
+                String mermaidSource = mermaidPlan.mermaidBlocks().get(index);
+                log.info("LARK_DOC_CREATE mermaid_upgrade whiteboard_update_start docId={} whiteboardToken={} mermaidLength={}",
+                        documentId, whiteboardToken, mermaidSource == null ? 0 : mermaidSource.length());
+                writeGateway.updateWhiteboard(whiteboardToken, mermaidSource, "mermaid");
+                log.info("LARK_DOC_CREATE mermaid_upgrade whiteboard_update_done docId={} whiteboardToken={}",
+                        documentId, whiteboardToken);
+            }
+        } else {
+            log.info("LARK_DOC_CREATE write_markdown_blocks docId={} markdownLength={}",
+                    documentId, normalizedMarkdown.length());
+            contentCodec.writeMarkdownBlocks(documentId, normalizedMarkdown);
+        }
         String docUrl = readGateway.firstNonBlank(readGateway.text(document, "url"), queryDocUrl(documentId), buildDocUrl(documentId));
+        log.info("LARK_DOC_CREATE completed docId={} docUrl={}", documentId, docUrl);
         return LarkDocCreateResult.builder()
                 .docId(documentId)
                 .docUrl(docUrl)
@@ -207,6 +236,19 @@ public class LarkDocTool {
         return trimmed.startsWith("# ") && !trimmed.startsWith("##");
     }
 
+    private MermaidWhiteboardPlan extractMermaidWhiteboardPlan(String markdown) {
+        Matcher matcher = MERMAID_BLOCK_PATTERN.matcher(markdown == null ? "" : markdown);
+        List<String> mermaidBlocks = new ArrayList<>();
+        StringBuffer replaced = new StringBuffer();
+        while (matcher.find()) {
+            String mermaid = matcher.group(1) == null ? "" : matcher.group(1).trim();
+            mermaidBlocks.add(mermaid);
+            matcher.appendReplacement(replaced, Matcher.quoteReplacement("<whiteboard type=\"blank\"></whiteboard>"));
+        }
+        matcher.appendTail(replaced);
+        return new MermaidWhiteboardPlan(replaced.toString(), mermaidBlocks);
+    }
+
     private String normalizeTitle(String title) {
         String normalized = title.trim();
         return normalized.length() <= 800 ? normalized : normalized.substring(0, 800);
@@ -218,5 +260,11 @@ public class LarkDocTool {
 
     private void requireValue(String value, String fieldName) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException(fieldName + " must be provided");
+    }
+
+    private record MermaidWhiteboardPlan(String markdownWithWhiteboardPlaceholders, List<String> mermaidBlocks) {
+        private boolean hasWhiteboards() {
+            return mermaidBlocks != null && !mermaidBlocks.isEmpty();
+        }
     }
 }

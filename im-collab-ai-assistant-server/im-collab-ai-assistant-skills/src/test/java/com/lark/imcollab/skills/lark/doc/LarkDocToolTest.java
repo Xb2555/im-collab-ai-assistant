@@ -71,6 +71,82 @@ class LarkDocToolTest {
     }
 
     @Test
+    void createDocWithMermaidUpgradesDiagramToWhiteboard() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            List<String> args = command.arguments();
+            if (args.contains("+update") && args.contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --as string
+                              --doc string
+                              --mode string
+                              --markdown string
+                        """);
+            }
+            if (args.contains("+whiteboard-update") && args.contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +whiteboard-update [flags]
+
+                        Flags:
+                              --as string
+                              --whiteboard-token string
+                              --input_format string
+                              --source string
+                              --overwrite
+                              --yes
+                        """);
+            }
+            if (args.contains("+update")) {
+                assertThat(command.stdin()).contains("<whiteboard type=\"blank\"></whiteboard>");
+                return new CliCommandResult(0, """
+                        {"success":true,"data":{"doc_id":"doc-created","mode":"overwrite","revision_id":2,"board_tokens":["wb-1"]}}
+                        """);
+            }
+            if (args.contains("+whiteboard-update")) {
+                assertThat(args).contains("--whiteboard-token", "wb-1", "--input_format", "mermaid", "--source", "-");
+                assertThat(command.stdin()).contains("graph TD");
+                return new CliCommandResult(0, """
+                        {"success":true,"data":{"message":"whiteboard updated"}}
+                        """);
+            }
+            return new CliCommandResult(1, "unexpected cli command");
+        };
+        RecordingDocOpenApiClient openApiClient = new RecordingDocOpenApiClient(objectMapper);
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                openApiClient,
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        LarkDocCreateResult result = tool.createDoc("架构设计", """
+                ## 系统架构图
+
+                ```mermaid
+                graph TD
+                    A[用户] --> B[服务]
+                ```
+                """);
+
+        assertThat(result.getDocId()).isEqualTo("doc-created");
+        assertThat(openApiClient.calls).hasSize(2);
+        assertThat(openApiClient.calls.get(0).path()).isEqualTo("/open-apis/docx/v1/documents");
+        assertThat(openApiClient.calls.get(1).path()).isEqualTo("/open-apis/drive/v1/metas/batch_query");
+        assertThat(commands).hasSize(4);
+        assertThat(commands.get(0).arguments()).contains("docs", "+update", "--help");
+        assertThat(commands.get(1).arguments()).contains("docs", "+update", "--doc", "doc-created", "--mode", "overwrite", "--markdown", "-");
+        assertThat(commands.get(2).arguments()).contains("docs", "+whiteboard-update", "--help");
+        assertThat(commands.get(3).arguments()).contains("docs", "+whiteboard-update", "--whiteboard-token", "wb-1");
+    }
+
+    @Test
     void createDocSplitsLongMarkdownIntoMultipleDocBlocks() {
         List<CliCommand> cliCommands = new ArrayList<>();
         RecordingDocOpenApiClient openApiClient = new RecordingDocOpenApiClient(objectMapper);

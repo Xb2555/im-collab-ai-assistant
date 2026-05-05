@@ -29,7 +29,7 @@ public class LarkDocReadGateway {
     private static final Set<String> FETCH_FALLBACK_FLAGS = Set.of(
             "--as", "--doc", "--format", "--limit", "--offset", "--profile"
     );
-    private static final Pattern FLAG_PATTERN = Pattern.compile("(?<!\\S)--[a-zA-Z0-9-]+");
+    private static final Pattern FLAG_PATTERN = Pattern.compile("(?<!\\S)--[a-zA-Z0-9_-]+");
 
     private final LarkCliClient larkCliClient;
     private final LarkCliProperties properties;
@@ -151,15 +151,27 @@ public class LarkDocReadGateway {
         IllegalStateException lastError = null;
         for (int index = 0; index < attempts.size(); index++) {
             DocCommandAttempt attempt = attempts.get(index);
+            log.info("LARK_DOC_CLI attempt command={} index={} args={} stdinLength={} timeoutMs={}",
+                    docsCommand,
+                    index + 1,
+                    attempt.args(),
+                    attempt.stdin() == null ? 0 : attempt.stdin().length(),
+                    timeoutMillis);
             CliCommandResult result = executeContentCommand(attempt.args(), attempt.stdin(), timeoutMillis);
             if (result.isSuccess()) {
                 try {
+                    log.info("LARK_DOC_CLI success command={} index={} outputPreview={}",
+                            docsCommand, index + 1, previewOutput(result.output()));
                     return larkCliClient.readJsonOutput(result.output());
                 } catch (Exception e) {
+                    log.error("LARK_DOC_CLI parse_failed command={} index={} outputPreview={}",
+                            docsCommand, index + 1, previewOutput(result.output()), e);
                     throw new IllegalStateException("Failed to parse lark doc response", e);
                 }
             }
             String output = result.output();
+            log.warn("LARK_DOC_CLI failed command={} index={} rawOutput={}",
+                    docsCommand, index + 1, previewOutput(output));
             String message = readableCliError(attempt.args(), output);
             lastError = new IllegalStateException(message);
             if (!isUnknownFlagError(output) || index == attempts.size() - 1) throw lastError;
@@ -171,7 +183,7 @@ public class LarkDocReadGateway {
 
     CliCommandResult executeContentCommand(List<String> args, String content, long timeoutMillis) {
         if (content == null) return larkCliClient.execute(args, null, timeoutMillis);
-        if (usesMarkdownStdin(args)) return larkCliClient.execute(args, content, timeoutMillis);
+        if (usesDirectStdin(args)) return larkCliClient.execute(args, content, timeoutMillis);
         Path contentFile = null;
         try {
             Path baseDir = cliWorkingDirectory();
@@ -179,7 +191,10 @@ public class LarkDocReadGateway {
             Files.createDirectories(tempDir);
             contentFile = Files.createTempFile(tempDir, "content-", ".md");
             Files.writeString(contentFile, content, StandardCharsets.UTF_8);
-            return larkCliClient.execute(withContentFileArg(args, baseDir.relativize(contentFile)), null, timeoutMillis);
+            List<String> rewrittenArgs = withContentFileArg(args, baseDir.relativize(contentFile));
+            log.info("LARK_DOC_CLI content_file mode args={} tempFile={} contentLength={}",
+                    rewrittenArgs, contentFile.toAbsolutePath(), content.length());
+            return larkCliClient.execute(rewrittenArgs, null, timeoutMillis);
         } catch (Exception e) {
             throw new IllegalStateException("飞书文档内容暂存失败，请稍后重试。", e);
         } finally {
@@ -189,9 +204,13 @@ public class LarkDocReadGateway {
         }
     }
 
-    private boolean usesMarkdownStdin(List<String> args) {
+    private boolean usesDirectStdin(List<String> args) {
         for (int i = 1; i < args.size(); i++) {
-            if ("--markdown".equals(args.get(i - 1)) && CONTENT_STDIN_MARKER.equals(args.get(i))) return true;
+            String previous = args.get(i - 1);
+            if ("--content".equals(previous)
+                    && CONTENT_STDIN_MARKER.equals(args.get(i))) {
+                return true;
+            }
         }
         return false;
     }
@@ -201,7 +220,8 @@ public class LarkDocReadGateway {
         String fileArg = "@" + contentFile;
         for (int i = 1; i < rewritten.size(); i++) {
             String prev = rewritten.get(i - 1);
-            if ("--content".equals(prev) && CONTENT_STDIN_MARKER.equals(rewritten.get(i))) {
+            if (("--content".equals(prev) || "--source".equals(prev) || "--markdown".equals(prev))
+                    && CONTENT_STDIN_MARKER.equals(rewritten.get(i))) {
                 rewritten.set(i, fileArg);
                 return rewritten;
             }
@@ -309,6 +329,14 @@ public class LarkDocReadGateway {
 
     private String defaultIfBlank(String value, String defaultValue) {
         return hasText(value) ? value.trim() : defaultValue;
+    }
+
+    private String previewOutput(String output) {
+        if (output == null) {
+            return "";
+        }
+        String normalized = output.replaceAll("\\s+", " ").trim();
+        return normalized.length() <= 500 ? normalized : normalized.substring(0, 500) + "...";
     }
 
     private Path cliWorkingDirectory() {
