@@ -9,8 +9,13 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.intent.IntentDecisionGuard;
+import com.lark.imcollab.planner.intent.IntentRoutingResult;
+import com.lark.imcollab.planner.intent.LlmIntentClassifier;
 import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
 import com.lark.imcollab.planner.intent.UnknownIntentReplyService;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
@@ -95,24 +100,76 @@ class PlannerSupervisorGraphRunnerTest {
     }
 
     @Test
-    void confirmNodeDoesNotExecuteWithoutExplicitUserCommand() throws Exception {
+    void confirmNodeExecutesWhenSupervisorRoutesConfirmAction() throws Exception {
         Fixture fixture = new Fixture();
         PlanTaskSession current = PlanTaskSession.builder()
                 .taskId("task-3")
                 .planningPhase(PlanningPhaseEnum.PLAN_READY)
                 .intakeState(TaskIntakeState.builder()
                         .intakeType(TaskIntakeTypeEnum.CONFIRM_ACTION)
+                        .lastUserMessage("帮我执行这个计划")
+                        .build())
+                .build();
+        PlanTaskSession executing = PlanTaskSession.builder()
+                .taskId("task-3")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build();
+        when(fixture.sessionService.getOrCreate("task-3")).thenReturn(current);
+        when(fixture.sessionService.get("task-3")).thenReturn(current, executing);
+        when(fixture.decisionAgent.decide(any(), any(), eq("帮我执行这个计划")))
+                .thenReturn(PlannerSupervisorDecisionResult.of(PlannerSupervisorAction.CONFIRM_ACTION, 0.9d, "semantic confirm"));
+        when(fixture.intentClassifier.classify(current, "帮我执行这个计划", true))
+                .thenReturn(java.util.Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.CONFIRM_ACTION,
+                        0.95d,
+                        "semantic confirm",
+                        "帮我执行这个计划",
+                        false
+                )));
+        when(fixture.executionTool.confirmExecution("task-3"))
+                .thenReturn(PlannerToolResult.success("task-3", PlanningPhaseEnum.EXECUTING, "execution started", null));
+
+        PlanTaskSession result = fixture.runner.run(
+                new PlannerSupervisorDecision(PlannerSupervisorAction.CONFIRM_ACTION, "semantic confirm"),
+                "task-3",
+                "帮我执行这个计划",
+                null,
+                null
+        );
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        verify(fixture.executionTool).confirmExecution("task-3");
+    }
+
+    @Test
+    void confirmNodeDoesNotExecuteWhenSemanticGuardRejectsExecution() throws Exception {
+        Fixture fixture = new Fixture();
+        PlanTaskSession current = PlanTaskSession.builder()
+                .taskId("task-3b")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.CONFIRM_ACTION)
                         .lastUserMessage("这个方案还行")
                         .build())
                 .build();
-        when(fixture.sessionService.getOrCreate("task-3")).thenReturn(current);
-        when(fixture.sessionService.get("task-3")).thenReturn(current);
+        when(fixture.sessionService.getOrCreate("task-3b")).thenReturn(current);
+        when(fixture.sessionService.get("task-3b")).thenReturn(current);
         when(fixture.decisionAgent.decide(any(), any(), eq("这个方案还行")))
                 .thenReturn(PlannerSupervisorDecisionResult.of(PlannerSupervisorAction.CONFIRM_ACTION, 0.9d, "model drift"));
+        when(fixture.intentClassifier.classify(current, "这个方案还行", true))
+                .thenReturn(java.util.Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.UNKNOWN,
+                        0.91d,
+                        "generic approval",
+                        "这个方案还行",
+                        true
+                )));
+        when(fixture.unknownIntentReplyService.reply(any(), eq("这个方案还行"), any()))
+                .thenReturn("我先把当前任务停在这里等你一句话。想看细节、继续调整，或者直接让我开工，都可以直说。");
 
         PlanTaskSession result = fixture.runner.run(
                 new PlannerSupervisorDecision(PlannerSupervisorAction.CONFIRM_ACTION, "model drift"),
-                "task-3",
+                "task-3b",
                 "这个方案还行",
                 null,
                 null
@@ -120,7 +177,7 @@ class PlannerSupervisorGraphRunnerTest {
 
         assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.PLAN_READY);
         assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.UNKNOWN);
-        assertThat(result.getIntakeState().getAssistantReply()).contains("保留");
+        assertThat(result.getIntakeState().getAssistantReply()).contains("我先把当前任务停在这里等你一句话");
         verifyNoInteractions(fixture.executionTool);
     }
 
@@ -258,12 +315,12 @@ class PlannerSupervisorGraphRunnerTest {
         private final ReadOnlyNodeService readOnlyNodeService = mock(ReadOnlyNodeService.class);
         private final PlannerExecutionTool executionTool = mock(PlannerExecutionTool.class);
         private final TaskRuntimeProjectionService runtimeProjectionService = mock(TaskRuntimeProjectionService.class);
+        private final LlmIntentClassifier intentClassifier = mock(LlmIntentClassifier.class);
+        private final IntentDecisionGuard intentDecisionGuard = new IntentDecisionGuard(new PlannerProperties());
         private final UnknownIntentReplyService unknownIntentReplyService = mock(UnknownIntentReplyService.class);
         private final PlannerSupervisorGraphRunner runner;
 
         private Fixture() throws Exception {
-            when(unknownIntentReplyService.reply(any(), any(), any()))
-                    .thenReturn("好的，我先保留这版计划。");
             PlannerSupervisorGraphNodes nodes = new PlannerSupervisorGraphNodes(
                     sessionService,
                     decisionAgent,
@@ -278,6 +335,8 @@ class PlannerSupervisorGraphRunnerTest {
                     readOnlyNodeService,
                     executionTool,
                     runtimeProjectionService,
+                    intentClassifier,
+                    intentDecisionGuard,
                     unknownIntentReplyService
             );
             StateGraph graph = new StateGraph();

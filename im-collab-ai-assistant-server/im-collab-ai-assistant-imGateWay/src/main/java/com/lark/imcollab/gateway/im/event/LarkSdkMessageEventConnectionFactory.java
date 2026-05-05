@@ -4,6 +4,7 @@ import com.lark.imcollab.gateway.config.LarkAppProperties;
 import com.lark.oapi.event.EventDispatcher;
 import com.lark.oapi.service.im.ImService;
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1;
+import com.lark.oapi.service.im.v1.model.P2MessageReadV1;
 import com.lark.oapi.ws.Client;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,19 +43,7 @@ public class LarkSdkMessageEventConnectionFactory implements LarkMessageEventCon
     public LarkMessageEventConnection start(Consumer<LarkMessageEvent> messageConsumer) {
         String appId = requireValue(appProperties.getAppId(), "imcollab.gateway.lark.app-id");
         String appSecret = requireValue(appProperties.getAppSecret(), "imcollab.gateway.lark.app-secret");
-        EventDispatcher eventHandler = EventDispatcher.newBuilder("", "")
-                .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
-                    @Override
-                    public void handle(P2MessageReceiveV1 event) {
-                        try {
-                            mapper.fromSdkEvent(event)
-                                    .ifPresent(mappedEvent -> eventProcessor.submit(mappedEvent, messageConsumer));
-                        } catch (RuntimeException exception) {
-                            log.warn("Failed to map Lark SDK message receive event.", exception);
-                        }
-                    }
-                })
-                .build();
+        EventDispatcher eventHandler = buildEventDispatcher(messageConsumer);
 
         Client.Builder builder = new Client.Builder(appId, appSecret)
                 .eventHandler(eventHandler)
@@ -67,6 +56,30 @@ public class LarkSdkMessageEventConnectionFactory implements LarkMessageEventCon
         Client client = builder.build();
         client.start();
         return new SdkConnection(client);
+    }
+
+    EventDispatcher buildEventDispatcher(Consumer<LarkMessageEvent> messageConsumer) {
+        return EventDispatcher.newBuilder("", "")
+                .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
+                    @Override
+                    public void handle(P2MessageReceiveV1 event) {
+                        try {
+                            mapper.fromSdkEvent(event)
+                                    .ifPresent(mappedEvent -> eventProcessor.submit(mappedEvent, messageConsumer));
+                        } catch (RuntimeException exception) {
+                            log.warn("Failed to map Lark SDK message receive event.", exception);
+                        }
+                    }
+                })
+                .onP2MessageReadV1(new ImService.P2MessageReadV1Handler() {
+                    @Override
+                    public void handle(P2MessageReadV1 event) {
+                        if (log.isDebugEnabled()) {
+                            log.debug("Ignored Lark SDK message read event.");
+                        }
+                    }
+                })
+                .build();
     }
 
     private String requireValue(String value, String propertyName) {

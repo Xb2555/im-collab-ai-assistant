@@ -89,7 +89,7 @@ public class PlannerViewAssembler {
 
     private TaskActionVO resolveActions(PlanningPhaseEnum phase, boolean aborted, TaskIntakeState intakeState) {
         if (aborted || phase == PlanningPhaseEnum.ABORTED) {
-            return new TaskActionVO(false, false, false, false, false, false);
+            return new TaskActionVO(false, true, false, false, false, false);
         }
         if (hasPendingDocumentApproval(intakeState)) {
             return new TaskActionVO(true, true, false, true, false, false);

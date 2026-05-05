@@ -5,7 +5,9 @@ import type {
   PlanPreviewVO, 
   PlanCommandRequest, 
   ResumeRequest,
-  ApiResponse 
+  ApiResponse,
+  DocumentIterationRequest,
+  DocumentIterationResponse
 } from '@/types/api';
 
 
@@ -33,9 +35,21 @@ export const plannerApi = {
 
   // 3. 提交干预指令 (确认/重规划/取消) - 会触发乐观锁拦截
   // ✨ 修复：加上 /api 前缀
-  executeCommand: async (taskId: string, data: PlanCommandRequest): Promise<PlanPreviewVO> => {
+executeCommand: async (taskId: string, data: PlanCommandRequest): Promise<PlanPreviewVO> => {
     const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(`/api/planner/tasks/${taskId}/commands`, data);
-    // 注意：如果报 40900 版本冲突，在 apiClient 拦截器里已经被拦截成 reject(Error) 了
+    if (response.data.code !== 0) throw new Error(response.data.message);
+    return response.data.data;
+  },
+
+/**
+   * [新增] 6. 执行文档细颗粒度迭代 (Doc Iteration)
+   * 对应《5.1. 执行文档迭代.md》
+   */
+  iterateDocument: async (data: DocumentIterationRequest): Promise<DocumentIterationResponse> => {
+    const response = await apiClient.post<ApiResponse<DocumentIterationResponse>>(
+      '/api/planner/tasks/document-iteration', 
+      data
+    );
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
   },
@@ -114,4 +128,16 @@ getActiveTasks: async (limit = 20, cursor = '0'): Promise<TaskListResponse> => {
     return response.data.data;
   }, 
 
+  /**
+   * [新增] 7. 审批文档迭代计划 (Doc Iteration Approval)
+   * 对应《5.2. 审批文档迭代计划》
+   */
+  approveDocumentIteration: async (taskId: string, data: DocumentIterationApprovalRequest): Promise<DocumentIterationResponse> => {
+    const response = await apiClient.post<ApiResponse<DocumentIterationResponse>>(
+      `/api/planner/tasks/${taskId}/document-iteration/approval`,
+      data
+    );
+    if (response.data.code !== 0) throw new Error(response.data.message);
+    return response.data.data;
+  },
 };

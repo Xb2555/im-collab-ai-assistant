@@ -36,6 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class MixedExecutionRuntimeTest {
 
+    private final TaskCancellationRegistry cancellationRegistry = new TaskCancellationRegistry();
+
     @Test
     void documentCompletionDoesNotCompleteMixedTaskBeforePresentation() {
         InMemoryRuntime runtime = mixedRuntime();
@@ -69,7 +71,8 @@ class MixedExecutionRuntimeTest {
                 .createdAt(Instant.now())
                 .build());
         PresentationExecutionSupport presentationSupport = new PresentationExecutionSupport(
-                runtime.taskRepository, runtime.eventRepository, runtime.artifactRepository, runtime.stateStore, new ObjectMapper());
+                runtime.taskRepository, runtime.eventRepository, runtime.artifactRepository, runtime.stateStore, new ObjectMapper(),
+                cancellationRegistry);
 
         presentationSupport.saveArtifact("task-1", "ppt-step", "技术方案汇报", "based on doc", "slides-1", "https://example.feishu.cn/slides/slides-1");
         presentationSupport.publishEvent("task-1", "ppt-step", TaskEventType.STEP_COMPLETED, "ppt done");
@@ -112,11 +115,33 @@ class MixedExecutionRuntimeTest {
         assertThat(runtime.taskRecords.get("task-1").getStatus()).isEqualTo(TaskStatusEnum.EXECUTING);
 
         PresentationExecutionSupport presentationSupport = new PresentationExecutionSupport(
-                runtime.taskRepository, runtime.eventRepository, runtime.artifactRepository, runtime.stateStore, new ObjectMapper());
+                runtime.taskRepository, runtime.eventRepository, runtime.artifactRepository, runtime.stateStore, new ObjectMapper(),
+                cancellationRegistry);
         presentationSupport.publishEvent("task-1", "ppt-step", TaskEventType.STEP_COMPLETED, "ppt done");
 
         assertThat(runtime.taskRecords.get("task-1").getStatus()).isEqualTo(TaskStatusEnum.COMPLETED);
         assertThat(runtime.tasks.get("task-1").getStatus()).isEqualTo(TaskStatus.COMPLETED);
+    }
+
+    @Test
+    void cancelledPresentationExecutionDoesNotProjectArtifactsOrCompletionEvents() {
+        InMemoryRuntime runtime = mixedRuntime();
+        cancellationRegistry.markCancelled("task-1");
+        PresentationExecutionSupport presentationSupport = new PresentationExecutionSupport(
+                runtime.taskRepository, runtime.eventRepository, runtime.artifactRepository, runtime.stateStore, new ObjectMapper(),
+                cancellationRegistry);
+
+        presentationSupport.saveArtifact("task-1", "ppt-step", "技术方案汇报", "based on doc", "slides-1",
+                "https://example.feishu.cn/slides/slides-1");
+        presentationSupport.publishEvent("task-1", "ppt-step", TaskEventType.STEP_COMPLETED, "ppt done");
+        presentationSupport.publishEvent("task-1", "ppt-step", TaskEventType.TASK_ABORTED, "cancelled");
+
+        assertThat(runtime.artifacts).isEmpty();
+        assertThat(runtime.artifactRecords).isEmpty();
+        assertThat(runtime.runtimeEvents).extracting(TaskEventRecord::getType)
+                .containsExactly(com.lark.imcollab.common.model.enums.TaskEventTypeEnum.TASK_CANCELLED);
+        assertThat(runtime.taskRecords.get("task-1").getStatus()).isEqualTo(TaskStatusEnum.CANCELLED);
+        assertThat(runtime.steps.get("ppt-step").getStatus()).isEqualTo(StepStatusEnum.SKIPPED);
     }
 
     @Test

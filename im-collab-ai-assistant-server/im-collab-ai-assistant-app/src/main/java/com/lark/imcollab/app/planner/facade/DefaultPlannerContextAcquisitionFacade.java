@@ -96,7 +96,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                 .docFragments(docFragments)
                 .sourceRefs(new ArrayList<>(sourceRefs))
                 .message(hasContent ? summary : failureMessage)
-                .clarificationQuestion(hasContent ? "" : buildNoContentQuestion(plan, failures))
+                .clarificationQuestion(hasContent ? "" : buildNoContentQuestion(plan, workspaceContext, failures))
                 .build();
     }
 
@@ -113,9 +113,13 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         if (chatId == null || chatId.isBlank()) {
             return;
         }
-        TimeRange range = hasTimeConstraint(source, workspaceContext, rawInstruction)
+        boolean timeConstrained = hasTimeConstraint(source, workspaceContext, rawInstruction);
+        TimeRange range = timeConstrained
                 ? resolveTimeRange(source, workspaceContext, rawInstruction)
                 : null;
+        if (timeConstrained && range == null) {
+            throw new IllegalStateException("时间范围无法解析，请提供明确的开始和结束时间。");
+        }
         int pageSize = normalizeLimit(firstNonNull(source.getPageSize(), source.getLimit()), 50);
         int pageLimit = firstNonNull(source.getPageLimit(), hasText(query) ? 5 : 1);
         LarkMessageSearchResult result = messageSearchTool.searchMessages(
@@ -149,7 +153,8 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                     .filter(item -> item.messageId() != null && explicitMessageIds.contains(item.messageId()))
                     .toList();
         }
-        for (LarkMessageSearchItem item : candidates) {
+        int maxMessages = normalizeLimit(source.getLimit(), configuredMaxImMessages());
+        for (LarkMessageSearchItem item : candidates.stream().limit(maxMessages).toList()) {
             selectedMessages.add(renderMessage(item));
             if (item.messageId() != null && !item.messageId().isBlank()) {
                 selectedMessageIds.add(item.messageId());
@@ -196,7 +201,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
     }
 
     private TimeRange resolveTimeRange(ContextSourceRequest source, WorkspaceContext workspaceContext, String rawInstruction) {
-        String sourceRange = source == null ? "" : firstNonBlank(source.getTimeRange(), joinRange(source.getStartTime(), source.getEndTime()));
+        String sourceRange = source == null ? "" : firstNonBlank(joinRange(source.getStartTime(), source.getEndTime()), source.getTimeRange());
         String timeRange = firstNonBlank(sourceRange, workspaceContext == null ? null : workspaceContext.getTimeRange(), rawInstruction);
         TimeRange relative = resolveRelativeTimeRange(timeRange);
         if (relative != null) {
@@ -212,9 +217,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                 }
             }
         }
-        Instant end = Instant.now();
-        Instant start = end.minusSeconds(Math.max(1, plannerProperties.getContextCollection().getDefaultLookbackMinutes()) * 60L);
-        return new TimeRange(formatSearchTime(start), formatSearchTime(end));
+        return null;
     }
 
     private TimeRange resolveRelativeTimeRange(String text) {
@@ -349,12 +352,37 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         return String.join("；", parts);
     }
 
-    private String buildNoContentQuestion(ContextAcquisitionPlan plan, List<String> failures) {
+    private String buildNoContentQuestion(
+            ContextAcquisitionPlan plan,
+            WorkspaceContext workspaceContext,
+            List<String> failures
+    ) {
         boolean hasFailure = failures != null && failures.stream().anyMatch(value -> value != null && !value.isBlank());
+        if (hasFailure && failures.stream().anyMatch(value -> value != null && value.contains("时间范围"))) {
+            return "我识别到了时间条件，但还不能稳定换算成可查询的时间窗。你可以补充具体开始和结束时间吗？";
+        }
         if (hasFailure) {
             return "我尝试读取你指定的材料时遇到问题。你可以确认一下机器人是否有权限，或直接把要整理的消息/文档链接发给我吗？";
         }
+        if (isCurrentPrivateConversationWithoutResults(plan, workspaceContext)) {
+            return "我查了当前这个私聊会话，在你指定的时间范围里没有找到可用消息。如果你是指某个群里的讨论，请直接在那个群里 @ 我，或者告诉我群和时间范围。";
+        }
         return "我按你给的条件查了一遍，但没有找到符合条件的消息。你想扩大时间范围、换个关键词，还是直接贴几条要总结的消息给我？";
+    }
+
+    private boolean isCurrentPrivateConversationWithoutResults(
+            ContextAcquisitionPlan plan,
+            WorkspaceContext workspaceContext
+    ) {
+        if (workspaceContext == null || !"p2p".equalsIgnoreCase(firstNonBlank(workspaceContext.getChatType()))) {
+            return false;
+        }
+        if (plan == null || plan.getSources() == null) {
+            return false;
+        }
+        return plan.getSources().stream().anyMatch(source -> source != null
+                && source.getSourceType() == ContextSourceTypeEnum.IM_MESSAGE_SEARCH
+                && firstNonBlank(source.getChatId()).equals(firstNonBlank(workspaceContext.getChatId())));
     }
 
     private int normalizeLimit(Integer requested, int configuredMax) {
@@ -363,6 +391,13 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             return max;
         }
         return Math.min(requested, max);
+    }
+
+    private int configuredMaxImMessages() {
+        if (plannerProperties == null || plannerProperties.getContextCollection() == null) {
+            return 30;
+        }
+        return Math.max(1, plannerProperties.getContextCollection().getMaxImMessages());
     }
 
     private Integer firstNonNull(Integer... values) {

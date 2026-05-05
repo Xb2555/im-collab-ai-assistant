@@ -20,6 +20,7 @@ import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.port.ArtifactRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.common.service.TaskCancellationRegistry;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.stereotype.Component;
 
@@ -43,18 +44,21 @@ public class PresentationExecutionSupport {
     private final ArtifactRepository artifactRepository;
     private final PlannerStateStore plannerStateStore;
     private final ObjectMapper objectMapper;
+    private final TaskCancellationRegistry cancellationRegistry;
 
     public PresentationExecutionSupport(
             TaskRepository taskRepository,
             TaskEventRepository eventRepository,
             ArtifactRepository artifactRepository,
             PlannerStateStore plannerStateStore,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TaskCancellationRegistry cancellationRegistry) {
         this.taskRepository = taskRepository;
         this.eventRepository = eventRepository;
         this.artifactRepository = artifactRepository;
         this.plannerStateStore = plannerStateStore;
         this.objectMapper = objectMapper;
+        this.cancellationRegistry = cancellationRegistry;
     }
 
     public Task loadTask(String taskId) {
@@ -74,6 +78,9 @@ public class PresentationExecutionSupport {
             String presentationId,
             String url
     ) {
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return;
+        }
         Artifact artifact = Artifact.builder()
                 .artifactId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -96,6 +103,9 @@ public class PresentationExecutionSupport {
     }
 
     public void publishEvent(String taskId, String stepId, TaskEventType type, String payload) {
+        if (cancellationRegistry.isCancelled(taskId) && type != TaskEventType.TASK_ABORTED) {
+            return;
+        }
         TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)

@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.common.model.enums.ContextSourceTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.gate.PlannerCapabilityPolicy;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
@@ -27,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -303,6 +305,56 @@ class PlannerToolsTest {
         assertThat(result.acquisitionPlan()).isNotNull();
         assertThat(result.acquisitionPlan().getSources()).hasSize(1);
         assertThat(result.acquisitionPlan().getSources().get(0).getChatId()).isEqualTo("chat-group");
+    }
+
+    @Test
+    void contextNodeRepairsImSearchTimeRangeWhenAgentOmitsStartAndEnd() throws Exception {
+        ReactAgent acquisitionAgent = mock(ReactAgent.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
+        when(acquisitionAgent.invoke(anyString(), any(RunnableConfig.class)))
+                .thenReturn(Optional.of(new OverAllState(Map.of(
+                        "messages",
+                        new AssistantMessage("""
+                                {"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"chat-group","threadId":"","timeRange":"昨天下午","docRefs":[],"selectionInstruction":"根据昨天下午的消息梳理一下消息内容总结成文档","limit":30}],"reason":"user asks for yesterday afternoon messages","clarificationQuestion":""}
+                                """)
+                ))))
+                .thenReturn(Optional.of(new OverAllState(Map.of(
+                        "messages",
+                        new AssistantMessage("""
+                                {"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"chat-group","threadId":"","timeRange":"昨天下午","start_time":"2026-05-04T12:00:00+08:00","end_time":"2026-05-04T18:00:00+08:00","docRefs":[],"selectionInstruction":"根据昨天下午的消息梳理一下消息内容总结成文档","limit":30}],"reason":"repaired relative time range","clarificationQuestion":""}
+                                """)
+                ))));
+        ContextNodeService service = new ContextNodeService(
+                mock(ReactAgent.class),
+                acquisitionAgent,
+                new PlannerContextTool(),
+                runtimeTool,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                new PlannerProperties(),
+                new ObjectMapper()
+        );
+
+        ContextSufficiencyResult result = service.check(
+                session,
+                "task-ctx",
+                "根据昨天下午的消息梳理一下消息内容总结成文档",
+                WorkspaceContext.builder()
+                        .chatId("chat-group")
+                        .chatType("group")
+                        .inputSource("LARK_GROUP")
+                        .build()
+        );
+
+        assertThat(result.collectionRequired()).isTrue();
+        assertThat(result.acquisitionPlan().getSources()).hasSize(1);
+        assertThat(result.acquisitionPlan().getSources().get(0).getSourceType())
+                .isEqualTo(ContextSourceTypeEnum.IM_MESSAGE_SEARCH);
+        assertThat(result.acquisitionPlan().getSources().get(0).getStartTime())
+                .isEqualTo("2026-05-04T12:00:00+08:00");
+        assertThat(result.acquisitionPlan().getSources().get(0).getEndTime())
+                .isEqualTo("2026-05-04T18:00:00+08:00");
+        verify(acquisitionAgent, times(2)).invoke(anyString(), any(RunnableConfig.class));
     }
 
     @Test
