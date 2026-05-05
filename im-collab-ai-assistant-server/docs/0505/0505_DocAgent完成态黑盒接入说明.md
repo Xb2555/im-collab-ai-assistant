@@ -31,6 +31,8 @@
 
 ### 1.2 我做了什么事情
 
+> 原先本地测试用的 `5.1. 执行文档迭代` 和 `5.2. 审批文档迭代计划` 接口，仍保留，防止接入失败导致功能崩盘
+
 - 没有新增新的 GUI / IM 入口。
 - GUI 仍然通过 `PlanCommandRequest` 进入 `/planner/tasks/{taskId}/commands`。
 - IM 仍然通过 `PlannerConversationService` 进入现有 Planner 对话链路。
@@ -333,34 +335,34 @@ documentArtifactIterationFacade.edit(request)
 
 #### 10.2.1 GUI 链路
 
-1. 前端调用 `/planner/tasks/{taskId}/commands`。
-2. 请求体使用 `PlanCommandRequest`：
+1. 请求体使用 `PlanCommandRequest`：
    - `action=REPLAN`
    - `feedback`
    - `artifactPolicy`
    - `targetArtifactId`
    - `workspaceContext`
    - `version`
-3. `PlannerController` 收到后调用 `PlannerCommandApplicationService.replan(...)`。
-4. `PlannerCommandApplicationService` 会把：
+2. `PlannerController` 收到后调用 `PlannerCommandApplicationService.replan(...)`。
+3. `PlannerCommandApplicationService` 会把：
    - `feedback`
    - `artifactPolicy`
    - `targetArtifactId`
    拼成新的指令文本。
-5. 然后进入 planner graph，落到 `ReplanNodeService.replan(...)`。
-6. `ReplanNodeService` 基于 `PlanTaskSession`、`TaskIntakeState`、`ArtifactRecord` 判断：
+4. 然后进入 planner graph，落到 `ReplanNodeService.replan(...)`。
+5. `ReplanNodeService` 基于 `PlanTaskSession`、`TaskIntakeState`、`ArtifactRecord` 判断：
    - 当前是不是完成态调整
    - 是不是修改已有产物
    - 目标是不是 DOC
-7. 若命中完成态 DOC 原地修改，则组装 `DocumentArtifactIterationRequest`。
-8. 调用 `DocumentArtifactIterationFacade.edit(request)`。
-9. 返回 `DocumentArtifactIterationResult`。
-10. planner 根据 `status` 回写：
+6. 若命中完成态 DOC 原地修改，则组装 `DocumentArtifactIterationRequest`。
+7. 调用 `DocumentArtifactIterationFacade.edit(request)`。
+8. 返回 `DocumentArtifactIterationResult`。
+9. planner 根据 `status` 回写：
+
    - `ArtifactRecord`
    - `TaskIntakeState`
    - `PlanTaskSession.planningPhase`
 
-#### 10.2.2 这一段用到的主要数据对象
+#### 10.2.3 这一段用到的主要数据对象
 
 - `PlanCommandRequest`：GUI 命令入参 DTO
 - `PlanTaskSession`：当前任务会话实体
@@ -447,3 +449,181 @@ documentArtifactIterationFacade.decide(
 - 当前这次改造解决的是“对上暴露稳定黑盒契约”。
 - 黑盒内部仍然复用现有 `DocumentIterationExecutionService`。
 - 如果后续 DocAgent 内部实现要替换，只需要继续满足这层 facade 契约，上层 planner / app 不需要再跟着改。
+
+## 十三、本次测试情况补充
+
+### 13.1 测试任务运行态
+
+本次用于验证的任务运行态如下：
+
+- `taskId`: `1be35437-a357-4e05-9079-30d9b11d94fa`
+- `task.status`: `COMPLETED`
+- `artifact.type`: `DOC`
+- `artifactId`: `f0ae5578-f1a4-4be4-9abe-f37ce5cc4d71`
+- `docUrl`: `https://jcneyh7qlo8i.feishu.cn/docx/XoXIdstFRoy10GxaDMocJPCnnHe`
+
+说明：
+
+- 当前任务已经是完成态。
+- 当前任务下只有 1 个 DOC artifact。
+- 理论上已经满足“完成态已有文档产物，可尝试原地修改”的前置条件。
+
+### 13.2 第一次测试：未带产物策略与目标 artifact
+
+测试请求：
+
+```json
+{
+  "action": "REPLAN",
+  "feedback": "一、学校概况后补充1.1 校园特色",
+  "version": 3
+}
+```
+
+实际返回：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "taskId": "1be35437-a357-4e05-9079-30d9b11d94fa",
+    "version": 3,
+    "planningPhase": "COMPLETED",
+    "clarificationQuestions": [
+      "请问您希望介绍广东工业大学的哪些方面？例如学校概况、历史沿革、院系设置、学科优势、校园文化等。另外，是否需要我基于公开知识生成一份通用介绍，还是您有特定的材料或数据需要整理？"
+    ],
+    "assistantReply": "我先不动当前计划。你想看细节、调整步骤，还是推进执行？"
+  },
+  "message": "ok"
+}
+```
+
+测试结论：
+
+- 这次没有命中“完成态 DOC 原地修改”分支。
+- 请求被当成了普通 `REPLAN / PLAN_ADJUSTMENT` 语义，没有进入文档迭代执行。
+
+### 13.3 第二次测试：带上 `artifactPolicy` 和 `targetArtifactId`
+
+测试请求：
+
+```json
+{
+  "action": "REPLAN",
+  "feedback": "修改已有文档：在“一、学校概况”后补充“1.1 校园特色”",
+  "artifactPolicy": "EDIT_EXISTING",
+  "targetArtifactId": "f0ae5578-f1a4-4be4-9abe-f37ce5cc4d71",
+  "version": 3
+}
+```
+
+实际返回：
+
+```json
+{
+  "code": 40100,
+  "data": null,
+  "message": "operatorOpenId must be provided"
+}
+```
+
+测试结论：
+
+- 这次已经不再是“没命中文档修改场景”的问题。
+- 请求已经推进到了文档迭代执行链路。
+- 但在执行前的文档所有权校验阶段失败，原因是操作者身份缺失。
+
+### 13.4 本次测试暴露出的真实问题
+
+根据当前代码，问题不是前端“不能传 artifactId”，而是 `REPLAN -> 完成态 DOC 修改` 链路里的操作者身份透传不完整。
+
+#### 问题 1：`/commands` 的 `REPLAN` 分支没有透传 `workspaceContext`
+
+当前 `PlannerController` 在处理：
+
+```http
+POST /planner/tasks/{taskId}/commands
+```
+
+的 `REPLAN` 分支时，调用的是：
+
+```java
+plannerCommandApplicationService.replan(
+    taskId,
+    request.getFeedback(),
+    request.getArtifactPolicy(),
+    request.getTargetArtifactId()
+)
+```
+
+也就是说：
+
+- `PlanCommandRequest` 虽然支持 `workspaceContext`
+- 但 `REPLAN` 分支当前没有把 `request.getWorkspaceContext()` 往下传
+- 所以即使前端补了 `senderOpenId`，当前这条链路也用不上
+
+#### 问题 2：黑盒适配层 `edit(...)` 没有透传 `operatorOpenId`
+
+当前 `DocumentArtifactIterationFacadeImpl.edit(...)` 内部只透传了：
+
+- `taskId`
+- `docUrl`
+- `instruction`
+- `workspaceContext`
+
+没有把 `DocumentArtifactIterationRequest.operatorOpenId` 显式透传到底层执行请求。
+
+因此：
+
+- 上层即使拿到了 `operatorOpenId`
+- 黑盒适配层当前也没有完整利用这份数据
+
+#### 问题 3：底层文档所有权校验强依赖操作者身份
+
+底层 `DocumentOwnershipGuard` 在进入编辑前会校验：
+
+- `operatorOpenId` 不能为空
+
+当前报错：
+
+```text
+operatorOpenId must be provided
+```
+
+就是在这里抛出的。
+
+### 13.5 当前对 `/api/planner/tasks/{taskId}/commands` 的判断
+
+当前可以明确得到的结论是：
+
+1. `/api/planner/tasks/{taskId}/commands` 不是默认重新生成文档。
+2. 当请求包含：
+   - `artifactPolicy=EDIT_EXISTING`
+   - `targetArtifactId`
+   - 明确的“修改已有文档”语义
+   时，链路已经可以推进到完成态 DOC 修改分支。
+3. 当前阻塞真正执行的原因，不是路由没接上，而是操作者身份透传缺口。
+
+### 13.6 当前修复建议
+
+如果要让这条链路在 GUI 场景下真正可用，至少需要补以下两处：
+
+1. `PlannerController` / `PlannerCommandApplicationService`
+
+要求：
+
+- `REPLAN` 分支支持把 `PlanCommandRequest.workspaceContext` 往下透传到 replan 链路
+
+2. `DocumentArtifactIterationFacadeImpl.edit(...)`
+
+要求：
+
+- 显式把 `DocumentArtifactIterationRequest.operatorOpenId` 透传到底层执行链路
+
+### 13.7 本次测试结论摘要
+
+本次测试已经说明：
+
+- 新黑盒 facade 已经接入完成态 DOC 修改主链路。
+- `/commands` 也已经可以路由到“修改已有文档”场景。
+- 当前剩余问题是“身份透传未打通”，不是“接口能力不存在”。
