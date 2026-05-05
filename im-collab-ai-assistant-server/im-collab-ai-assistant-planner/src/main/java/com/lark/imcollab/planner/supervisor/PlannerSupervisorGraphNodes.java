@@ -8,7 +8,10 @@ import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
-import com.lark.imcollab.common.util.ExecutionCommandGuard;
+import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
+import com.lark.imcollab.planner.intent.IntentDecisionGuard;
+import com.lark.imcollab.planner.intent.IntentRoutingResult;
+import com.lark.imcollab.planner.intent.LlmIntentClassifier;
 import com.lark.imcollab.planner.intent.UnknownIntentReplyService;
 import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
@@ -35,6 +38,8 @@ public class PlannerSupervisorGraphNodes {
     private final ReadOnlyNodeService readOnlyNodeService;
     private final PlannerExecutionTool executionTool;
     private final TaskRuntimeProjectionService runtimeProjectionService;
+    private final LlmIntentClassifier llmIntentClassifier;
+    private final IntentDecisionGuard intentDecisionGuard;
     private final UnknownIntentReplyService unknownIntentReplyService;
 
     public PlannerSupervisorGraphNodes(
@@ -51,6 +56,8 @@ public class PlannerSupervisorGraphNodes {
             ReadOnlyNodeService readOnlyNodeService,
             PlannerExecutionTool executionTool,
             TaskRuntimeProjectionService runtimeProjectionService,
+            LlmIntentClassifier llmIntentClassifier,
+            IntentDecisionGuard intentDecisionGuard,
             UnknownIntentReplyService unknownIntentReplyService
     ) {
         this.sessionService = sessionService;
@@ -66,6 +73,8 @@ public class PlannerSupervisorGraphNodes {
         this.readOnlyNodeService = readOnlyNodeService;
         this.executionTool = executionTool;
         this.runtimeProjectionService = runtimeProjectionService;
+        this.llmIntentClassifier = llmIntentClassifier;
+        this.intentDecisionGuard = intentDecisionGuard;
         this.unknownIntentReplyService = unknownIntentReplyService;
     }
 
@@ -204,8 +213,13 @@ public class PlannerSupervisorGraphNodes {
     public CompletableFuture<Map<String, Object>> confirm(OverAllState state, RunnableConfig config) {
         String taskId = state.value(PlannerSupervisorStateKeys.TASK_ID, "");
         String rawInstruction = state.value(PlannerSupervisorStateKeys.RAW_INSTRUCTION, "");
-        if (!ExecutionCommandGuard.isExplicitExecutionRequest(rawInstruction)) {
-            PlanTaskSession session = sessionService.get(taskId);
+        PlanTaskSession session = sessionService.get(taskId);
+        IntentRoutingResult semanticConfirm = session == null
+                ? null
+                : llmIntentClassifier.classify(session, rawInstruction, true)
+                .map(result -> intentDecisionGuard.guard(session, rawInstruction, true, result))
+                .orElse(null);
+        if (semanticConfirm == null || semanticConfirm.type() != TaskCommandTypeEnum.CONFIRM_ACTION) {
             if (session == null) {
                 return completed(null, "confirm ignored because session missing");
             }
@@ -216,12 +230,12 @@ public class PlannerSupervisorGraphNodes {
             }
             intakeState.setIntakeType(TaskIntakeTypeEnum.UNKNOWN);
             String reply = unknownIntentReplyService == null
-                    ? "我先不动当前计划。想看细节、调整步骤或推进执行，都可以直接说。"
-                    : unknownIntentReplyService.reply(session, rawInstruction, "not an explicit execution request");
+                    ? "我先把当前任务停在这里等你一句话。想看细节、继续调整，或者直接让我开工，都可以直说。"
+                    : unknownIntentReplyService.reply(session, rawInstruction, "confirm semantic guard rejected execution");
             intakeState.setAssistantReply(reply);
             memoryService.appendAssistantTurn(session, reply);
             sessionService.saveWithoutVersionChange(session);
-            return completed(session, "confirm ignored because user did not explicitly request execution");
+            return completed(session, "confirm ignored because semantic guard rejected execution");
         }
         PlannerToolResult result = executionTool.confirmExecution(taskId);
         return completed(sessionService.get(taskId), result.message());

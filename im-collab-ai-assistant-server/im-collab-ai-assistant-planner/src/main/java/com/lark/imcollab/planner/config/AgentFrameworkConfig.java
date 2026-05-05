@@ -95,7 +95,7 @@ public class AgentFrameworkConfig {
                         Allowed intents: START_TASK, ANSWER_CLARIFICATION, ADJUST_PLAN, QUERY_STATUS, CONFIRM_ACTION, CANCEL_TASK, UNKNOWN.
                         Choose ADJUST_PLAN when the user wants any new, extra, final, changed, removed, reordered, or regenerated plan requirement.
                         Choose QUERY_STATUS only when the user asks to inspect progress, current status, existing artifacts, or the already stored plan.
-                        Choose CONFIRM_ACTION only when the user explicitly asks to execute or retry, such as "开始执行", "确认执行", "没问题，执行", or "重试一下".
+                        Choose CONFIRM_ACTION only when the user explicitly asks to execute or retry, such as "开始执行", "开始计划", "确认执行", "没问题，执行", or "重试一下".
                         Generic approval such as "这个方案还行", "可以", or "就这样" is not enough to start execution.
                         Choose START_TASK only for a real work request with a goal or deliverable. Casual chat, greetings, mood sharing, jokes, and meta questions are UNKNOWN.
                         Identity or capability questions such as "你是谁" or "你能做什么" are UNKNOWN unless they include a concrete deliverable request.

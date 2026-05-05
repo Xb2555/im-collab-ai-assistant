@@ -38,7 +38,7 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.planReady(session);
 
-        assertThat(text).contains("我准备这样推进", "开始执行");
+        assertThat(text).contains("我准备这样推进", "你确认没问题我就开工");
         assertThat(text).contains("生成技术方案文档", "生成汇报 PPT");
         assertThat(text).contains("你还可以指定");
         assertThat(text).contains("文档目前支持基于已选消息", "PPT 目前支持创建新的飞书演示稿");
@@ -146,7 +146,7 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.clarification(session);
 
-        assertThat(text).isEqualTo("❓ 你希望基于哪些材料整理？");
+        assertThat(text).isEqualTo("❓ 我还差这一点信息：你希望基于哪些材料整理？");
     }
 
     @Test
@@ -255,6 +255,24 @@ class LarkIMTaskReplyFormatterTest {
         assertThat(text)
                 .contains("这次处理没有成功：执行链路失败", "具体原因", "生成项目汇报 PPT",
                         "飞书 Slides 创建失败：用户授权已过期");
+    }
+
+    @Test
+    void executionStartedUsesAssistantTone() {
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .steps(List.of(TaskStepRecord.builder().name("生成技术方案文档").status(StepStatusEnum.RUNNING).build()))
+                .build();
+
+        String text = formatter.executionStarted(snapshot);
+
+        assertThat(text).contains("好，我开始推进了", "先处理：生成技术方案文档", "继续同步");
+    }
+
+    @Test
+    void uncertainIntentUsesSofterWaitingTone() {
+        String text = formatter.uncertainIntent();
+
+        assertThat(text).contains("我先把当前任务停在这里等你一句话", "或者直接让我开工");
     }
 
     private static UserPlanCard card(String title, PlanCardTypeEnum type) {

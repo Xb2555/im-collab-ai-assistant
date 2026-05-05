@@ -107,7 +107,7 @@ public class LlmIntentClassifier {
         builder.append("- QUERY_STATUS means the user asks progress, status, task overview, current plan summary, full plan, existing artifacts, or what is being done.\n");
         builder.append("- For QUERY_STATUS, set readOnlyView=PLAN when the user wants the stored plan/steps; STATUS when they want progress/current status; ARTIFACTS when they want outputs/links/artifacts.\n");
         builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, or regenerate plan steps.\n");
-        builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
+        builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 开始计划 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
         builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
         builder.append("- In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material. Meta questions, identity/capability questions, greetings, or a standalone new task request are not clarification answers.\n");
         builder.append("- START_TASK requires a real task request with a work goal or deliverable. Casual chat, greetings, mood sharing, jokes, and meta questions are UNKNOWN.\n");

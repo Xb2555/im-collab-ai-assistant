@@ -29,7 +29,7 @@ public class LarkIMTaskReplyFormatter {
         StringBuilder builder = new StringBuilder("🧭 我准备这样推进：");
         appendCardSummary(builder, cards);
         appendCapabilityHints(builder, cards);
-        builder.append("\n\n🚀 没问题的话回复“开始执行”。要改的话直接说");
+        builder.append("\n\n🚀 你确认没问题我就开工。要改的话直接说");
         appendEditHint(builder, cards);
         builder.append("。");
         return builder.toString();
@@ -40,7 +40,7 @@ public class LarkIMTaskReplyFormatter {
         List<UserPlanCard> cards = cards(session);
         appendCardSummary(builder, cards);
         appendCapabilityHints(builder, cards);
-        builder.append("\n\n🚀 没问题的话回复“开始执行”。要继续改的话也可以直接说");
+        builder.append("\n\n🚀 你确认没问题我就继续推进。要继续改的话也可以直接说");
         appendEditHint(builder, cards);
         builder.append("。");
         return builder.toString();
@@ -52,7 +52,7 @@ public class LarkIMTaskReplyFormatter {
             return null;
         }
         if (questions.size() == 1) {
-            return "❓ " + stripClarificationPrefix(questions.get(0));
+            return "❓ 我还差这一点信息：" + stripClarificationPrefix(questions.get(0));
         }
         StringBuilder builder = new StringBuilder("❓ 我先确认两点：");
         for (int index = 0; index < Math.min(MAX_CLARIFICATION_QUESTIONS, questions.size()); index++) {
@@ -64,30 +64,30 @@ public class LarkIMTaskReplyFormatter {
     public String executionStarted(TaskRuntimeSnapshot snapshot) {
         String nextStep = nextStepName(snapshot);
         if (hasText(nextStep)) {
-            return "🚀 好的，开始执行。我会先处理：" + nextStep + "。完成后继续推进后续步骤。";
+            return "🚀 好，我开始推进了。先处理：" + nextStep + "。后面有进展我会继续同步。";
         }
-        return "🚀 好的，开始执行。我会按计划推进，并持续更新任务进度。";
+        return "🚀 好，我开始推进了。接下来会按计划往下做，并持续同步进度。";
     }
 
     public String retryStarted(TaskRuntimeSnapshot snapshot) {
         String nextStep = nextStepName(snapshot);
         if (hasText(nextStep)) {
-            return "🔁 好的，我会从失败的步骤重新试一次。当前先处理：" + nextStep + "。";
+            return "🔁 好，我接着重试这一步。当前先处理：" + nextStep + "。";
         }
-        return "🔁 好的，我会从失败的步骤重新试一次。";
+        return "🔁 好，我接着从失败的地方重试。";
     }
 
     public String retryUnavailable(TaskRuntimeSnapshot snapshot) {
         TaskStatusEnum status = snapshot == null || snapshot.getTask() == null ? null : snapshot.getTask().getStatus();
         if (status == TaskStatusEnum.FAILED) {
-            return "⚠️ 这个任务现在可以重试，但我还没能成功提交执行。你可以稍后再试一次。";
+            return "⚠️ 我想帮你把这个任务重新拉起来，但这次还没提交成功。你稍后再试一次就行。";
         }
-        return "ℹ️ 当前任务不是失败状态，不需要重试。你可以查看进度或继续调整计划。";
+        return "ℹ️ 当前任务不在失败状态，暂时不用重试。想看进度或继续调整都可以直接说。";
     }
 
     public String status(TaskRuntimeSnapshot snapshot) {
         if (snapshot == null || snapshot.getTask() == null) {
-            return "🔎 我还没有找到这个会话里的任务进度。你可以先发一个任务给我。";
+            return "🔎 这个会话里我还没查到任务进度。你可以直接给我一个新任务。";
         }
         TaskRecord task = snapshot.getTask();
         List<TaskStepRecord> steps = activeSteps(snapshot.getSteps());
@@ -194,15 +194,15 @@ public class LarkIMTaskReplyFormatter {
     }
 
     public String taskCancelled() {
-        return "🛑 任务已取消，后续不会继续规划或执行。";
+        return "🛑 我先把这个任务停下来了，后续不会再继续规划或执行。";
     }
 
     public String taskAccepted() {
-        return "👀 收到，我先理解需求并生成计划。你可以随时回复“进度怎么样”查看当前状态。";
+        return "👀 我先接住这条需求，整理完重点后就给你计划。你随时都可以问我进度。";
     }
 
     public String uncertainIntent() {
-        return "🤔 我先按当前计划停在确认这一步。想看细节、调整步骤，或开始执行，都可以直接说。";
+        return "🤔 我先把当前任务停在这里等你一句话。想看细节、继续调整，或者直接让我开工，都可以直说。";
     }
 
     public String uncertainIntent(PlanTaskSession session) {

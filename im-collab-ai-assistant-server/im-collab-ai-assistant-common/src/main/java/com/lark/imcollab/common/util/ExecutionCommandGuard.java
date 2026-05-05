@@ -19,6 +19,7 @@ public final class ExecutionCommandGuard {
         }
         return command.equals("执行")
                 || command.equals("开始执行")
+                || command.equals("开始计划")
                 || command.equals("确认执行")
                 || command.equals("执行吧")
                 || command.equals("开始吧")

@@ -7,7 +7,6 @@ import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
-import com.lark.imcollab.common.util.ExecutionCommandGuard;
 import com.lark.imcollab.gateway.im.dto.LarkInboundMessage;
 import com.lark.imcollab.gateway.im.event.LarkMessageEvent;
 import com.lark.imcollab.skills.lark.im.LarkMessageReplyTool;
@@ -99,29 +98,29 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
     }
 
     private void replyImmediateReceipt(LarkInboundMessage message, PlanTaskSession accepted) {
-        String receipt = immediateReceiptText(message == null ? null : message.content());
+        String receipt = immediateReceiptText(message);
         if (!hasText(receipt)) {
             return;
         }
         replyText(message, accepted, receipt, "immediate receipt");
     }
 
-    private String immediateReceiptText(String content) {
-        if (!hasText(content) || shouldSkipImmediateReceipt(content)) {
+    private String immediateReceiptText(LarkInboundMessage message) {
+        if (plannerPlanFacade == null || message == null || !hasText(message.content())) {
             return "";
         }
-        if (ExecutionCommandGuard.isExplicitExecutionRequest(content)) {
+        try {
+            return plannerPlanFacade.previewImmediateReply(
+                    message.content(),
+                    buildWorkspaceContext(message),
+                    null,
+                    null
+            );
+        } catch (RuntimeException exception) {
+            log.debug("Scenario A immediate receipt preview failed: messageId={}, chatId={}",
+                    message.messageId(), message.chatId(), exception);
             return "";
         }
-        return "👀 收到，我先帮你看一下。";
-    }
-
-    private boolean shouldSkipImmediateReceipt(String content) {
-        String compact = compact(content);
-        if (!hasText(compact)) {
-            return true;
-        }
-        return compact.matches("(完整计划|详细计划|计划是什么|进度怎么样|任务状态|已有产物|你是谁|你能做什么|哈哈+|好|好的|嗯+|行|可以|ok|OK)");
     }
 
     private void dispatchAndReply(LarkInboundMessage message) {
@@ -366,23 +365,6 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
-    }
-
-    private String compact(String input) {
-        return input == null ? "" : input.trim()
-                .replaceAll("\\s+", "")
-                .replace("“", "")
-                .replace("”", "")
-                .replace("\"", "")
-                .replace("'", "")
-                .replace("？", "")
-                .replace("?", "")
-                .replace("。", "")
-                .replace(".", "")
-                .replace("，", "")
-                .replace(",", "")
-                .replace("！", "")
-                .replace("!", "");
     }
 
     private boolean hasAssistantReply(PlanTaskSession session) {
