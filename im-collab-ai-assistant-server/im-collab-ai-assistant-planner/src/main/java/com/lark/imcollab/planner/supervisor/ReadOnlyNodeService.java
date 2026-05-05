@@ -64,7 +64,7 @@ public class ReadOnlyNodeService {
                     existingReply,
                     decision.userFacingReply(),
                     decision.clarificationQuestion(),
-                    "我先不动当前计划。你想看细节、调整步骤，还是推进执行？"
+                    "我先把当前任务停在这里等你一句话。想看细节、继续调整，还是直接让我开工？"
             );
             TaskIntakeState intakeState = session.getIntakeState();
             if (intakeState != null) {
@@ -224,7 +224,7 @@ public class ReadOnlyNodeService {
                 ? null
                 : runtimeTool.getSnapshot(session.getTaskId());
         if (snapshot == null || snapshot.getTask() == null) {
-            return "我还没有找到这个会话里的任务进度。你可以先发一个任务给我。";
+            return "我这边暂时还没查到这个会话里的任务进度。你可以直接给我一个新任务。";
         }
         TaskRecord task = snapshot.getTask();
         List<TaskStepRecord> steps = snapshot.getSteps() == null

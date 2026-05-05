@@ -74,7 +74,8 @@ public class PlannerController {
             TaskStatusEnum.REVIEWING,
             TaskStatusEnum.PUBLISHING,
             TaskStatusEnum.FAILED,
-            TaskStatusEnum.COMPLETED
+            TaskStatusEnum.COMPLETED,
+            TaskStatusEnum.CANCELLED
     );
 
     private final PlannerPlanFacade plannerPlanFacade;

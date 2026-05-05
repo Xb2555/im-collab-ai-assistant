@@ -105,7 +105,8 @@ public class TaskRuntimeViewAssembler {
         boolean canReplan = status == TaskStatusEnum.EXECUTING
                 || status == TaskStatusEnum.FAILED
                 || status == TaskStatusEnum.WAITING_APPROVAL
-                || status == TaskStatusEnum.COMPLETED;
+                || status == TaskStatusEnum.COMPLETED
+                || status == TaskStatusEnum.CANCELLED;
         boolean canResume = task != null && task.isNeedUserAction();
         boolean canInterrupt = status == TaskStatusEnum.EXECUTING
                 && defaultList(steps).stream().anyMatch(step -> step.getStatus() == StepStatusEnum.RUNNING);

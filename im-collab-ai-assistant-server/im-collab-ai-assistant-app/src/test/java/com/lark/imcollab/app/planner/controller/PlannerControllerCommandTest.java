@@ -16,6 +16,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
+import com.lark.imcollab.common.model.vo.TaskActionVO;
 import com.lark.imcollab.common.model.vo.TaskDetailVO;
 import com.lark.imcollab.common.model.vo.TaskListVO;
 import com.lark.imcollab.common.model.vo.TaskSummaryVO;
@@ -241,7 +242,8 @@ class PlannerControllerCommandTest {
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.WAITING_APPROVAL)));
         when(plannerCommandApplicationService.cancel("task-1")).thenReturn(aborted);
         when(plannerViewAssembler.toPlanPreview(aborted)).thenReturn(new PlanPreviewVO(
-                "task-1", 2, "ABORTED", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+                "task-1", 2, "ABORTED", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                new TaskActionVO(false, true, false, false, false, false)
         ));
 
         PlanCommandRequest request = new PlanCommandRequest();
@@ -251,6 +253,8 @@ class PlannerControllerCommandTest {
         BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
 
         assertThat(response.getCode()).isZero();
+        assertThat(response.getData().actions().canReplan()).isTrue();
+        assertThat(response.getData().actions().canCancel()).isFalse();
         verify(plannerCommandApplicationService).cancel("task-1");
         verify(taskRuntimeService, never()).projectPhaseTransition(anyString(), any(), any());
     }
@@ -347,17 +351,17 @@ class PlannerControllerCommandTest {
     }
 
     @Test
-    void activeTasksIncludesCompletedTasksForGuiRefreshRecovery() {
-        TaskRecord completed = ownedTask("task-completed", TaskStatusEnum.COMPLETED);
+    void activeTasksIncludesCompletedAndCancelledTasksForGuiRefreshRecovery() {
+        TaskRecord cancelled = ownedTask("task-cancelled", TaskStatusEnum.CANCELLED);
         when(repository.findTasksByOwner(eq("ou-user"), argThat(statuses ->
                 statuses != null
                         && statuses.contains(TaskStatusEnum.EXECUTING)
                         && statuses.contains(TaskStatusEnum.FAILED)
                         && statuses.contains(TaskStatusEnum.COMPLETED)
-                        && !statuses.contains(TaskStatusEnum.CANCELLED)
-        ), eq(0), eq(21))).thenReturn(java.util.List.of(completed));
-        when(taskRuntimeViewAssembler.toTaskSummary(completed)).thenReturn(new com.lark.imcollab.common.model.vo.TaskSummaryVO(
-                "task-completed", 0, "done", "goal", "COMPLETED", "COMPLETED", 100, false, java.util.List.of(), null, null
+                        && statuses.contains(TaskStatusEnum.CANCELLED)
+        ), eq(0), eq(21))).thenReturn(java.util.List.of(cancelled));
+        when(taskRuntimeViewAssembler.toTaskSummary(cancelled)).thenReturn(new com.lark.imcollab.common.model.vo.TaskSummaryVO(
+                "task-cancelled", 0, "cancelled", "goal", "CANCELLED", "CANCELLED", 0, false, java.util.List.of(), null, null
         ));
 
         BaseResponse<TaskListVO> response = controller.listMyActiveTasks(AUTHORIZATION, 20, null);
@@ -365,7 +369,7 @@ class PlannerControllerCommandTest {
         assertThat(response.getCode()).isZero();
         assertThat(response.getData().tasks()).singleElement()
                 .extracting(com.lark.imcollab.common.model.vo.TaskSummaryVO::taskId)
-                .isEqualTo("task-completed");
+                .isEqualTo("task-cancelled");
     }
 
     @Test

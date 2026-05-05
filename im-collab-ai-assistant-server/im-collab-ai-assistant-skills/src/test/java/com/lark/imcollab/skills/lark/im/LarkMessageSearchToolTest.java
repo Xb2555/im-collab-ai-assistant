@@ -87,6 +87,46 @@ class LarkMessageSearchToolTest {
     }
 
     @Test
+    void timeWindowWithoutQueryUsesChatMessagesList() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            return new CliCommandResult(0, """
+                    {"data":{"items":[{"message_id":"om_2","chat_id":"oc_1","sender":{"id":"ou_2","name":"吴纯瑶","sender_type":"user"},"body":{"content":"昨天下午讨论：先整理成文档。"}}],"has_more":false}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkMessageSearchTool tool = new LarkMessageSearchTool(
+                new LarkCliClient(executor, properties, objectMapper),
+                properties
+        );
+
+        LarkMessageSearchResult result = tool.searchMessages("", "oc_1", "2026-05-04T12:00:00+08:00", "2026-05-04T18:00:00+08:00", 50, 1);
+
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).content()).contains("昨天下午讨论");
+        assertThat(commands).hasSize(1);
+        assertThat(commands.get(0).arguments()).containsExactly(
+                "im",
+                "+chat-messages-list",
+                "--as",
+                "user",
+                "--chat-id",
+                "oc_1",
+                "--start",
+                "2026-05-04T12:00:00+08:00",
+                "--end",
+                "2026-05-04T18:00:00+08:00",
+                "--sort",
+                "asc",
+                "--page-size",
+                "50",
+                "--format",
+                "json"
+        );
+    }
+
+    @Test
     void parsesDataItemsEnvelope() throws Exception {
         LarkMessageSearchTool tool = new LarkMessageSearchTool(
                 new LarkCliClient(command -> new CliCommandResult(0, "{}"), new LarkCliProperties(), objectMapper),

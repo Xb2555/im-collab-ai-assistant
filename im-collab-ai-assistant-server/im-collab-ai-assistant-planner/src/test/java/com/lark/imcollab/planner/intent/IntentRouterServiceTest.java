@@ -76,6 +76,15 @@ class IntentRouterServiceTest {
     }
 
     @Test
+    void startPlanUsesConfirmAction() {
+        PlanTaskSession session = plannedSession();
+
+        TaskCommand command = router.route(session, "开始计划", null, true);
+
+        assertThat(command.getType()).isEqualTo(TaskCommandTypeEnum.CONFIRM_ACTION);
+    }
+
+    @Test
     void genericApprovalDoesNotUseHardConfirmRule() {
         LlmIntentClassifier model = mock(LlmIntentClassifier.class);
         IntentRouterService service = router(model, new PlannerProperties());
