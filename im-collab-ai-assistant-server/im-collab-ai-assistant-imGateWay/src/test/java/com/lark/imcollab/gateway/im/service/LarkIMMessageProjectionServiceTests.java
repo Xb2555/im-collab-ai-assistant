@@ -112,6 +112,83 @@ class LarkIMMessageProjectionServiceTests {
         assertThat(response.userMap().get("ou_li").name()).isEqualTo("李四");
     }
 
+    @Test
+    void historyUserMapFallsBackToTenantTokenWhenUserTokenCannotHydrateProfiles() {
+        when(userProfileHydrationService.resolveByUserAccessToken("user-token", "ou_zhang"))
+                .thenReturn(new LarkUserProfile("ou_zhang", null, null));
+        when(userProfileHydrationService.resolveByTenantAccessToken("ou_zhang"))
+                .thenReturn(new LarkUserProfile("ou_zhang", "张三", "https://avatar.example/zhang.png"));
+
+        LarkMessageHistoryViewResponse response = service.projectHistory(new LarkMessageHistoryResponse(
+                List.of(new LarkMessageHistoryItem(
+                        "om_1",
+                        null,
+                        null,
+                        null,
+                        "text",
+                        null,
+                        null,
+                        false,
+                        false,
+                        "oc_1",
+                        "ou_zhang",
+                        "open_id",
+                        "user",
+                        null,
+                        "{\"text\":\"hello\"}",
+                        List.of(),
+                        null,
+                        null,
+                        null
+                )),
+                false,
+                null
+        ), "user-token");
+
+        assertThat(response.userMap()).containsOnlyKeys("ou_zhang");
+        assertThat(response.userMap().get("ou_zhang").name()).isEqualTo("张三");
+        assertThat(response.items().get(0).senderName()).isEqualTo("张三");
+    }
+
+    @Test
+    void historyUserMapKeepsOpenIdEntryWhenAllProfileHydrationFails() {
+        when(userProfileHydrationService.resolveByUserAccessToken("user-token", "ou_zhang"))
+                .thenReturn(new LarkUserProfile("ou_zhang", null, null));
+        when(userProfileHydrationService.resolveByTenantAccessToken("ou_zhang"))
+                .thenReturn(new LarkUserProfile("ou_zhang", null, null));
+
+        LarkMessageHistoryViewResponse response = service.projectHistory(new LarkMessageHistoryResponse(
+                List.of(new LarkMessageHistoryItem(
+                        "om_1",
+                        null,
+                        null,
+                        null,
+                        "text",
+                        null,
+                        null,
+                        false,
+                        false,
+                        "oc_1",
+                        "ou_zhang",
+                        "open_id",
+                        "user",
+                        null,
+                        "{\"text\":\"hello\"}",
+                        List.of(),
+                        null,
+                        null,
+                        null
+                )),
+                false,
+                null
+        ), "user-token");
+
+        assertThat(response.userMap()).containsOnlyKeys("ou_zhang");
+        assertThat(response.userMap().get("ou_zhang").name()).isNull();
+        assertThat(response.userMap().get("ou_zhang").avatar()).isNull();
+        assertThat(response.items().get(0).senderName()).isNull();
+    }
+
     private String contentWithVariables() {
         return "{\"template\":\"{from_user} 创建了群聊，并邀请了 {members}\","
                 + "\"from_user\":{\"id\":\"ou_zhang\"},\"members\":[{\"id\":\"ou_li\"}],"
