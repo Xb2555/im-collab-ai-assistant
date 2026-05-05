@@ -146,7 +146,7 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.clarification(session);
 
-        assertThat(text).isEqualTo("你希望基于哪些材料整理？");
+        assertThat(text).isEqualTo("❓ 你希望基于哪些材料整理？");
     }
 
     @Test

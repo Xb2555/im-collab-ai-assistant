@@ -147,18 +147,96 @@ public class ContextNodeService {
             return Optional.empty();
         }
         try {
-            Optional<OverAllState> state = contextAcquisitionAgent.invoke(
-                    buildAcquisitionPrompt(session, rawInstruction, workspaceContext),
+            String prompt = buildAcquisitionPrompt(session, rawInstruction, workspaceContext);
+            Optional<ContextAcquisitionPlan> plan = invokeAcquisitionAgentOnce(
+                    prompt,
                     RunnableConfig.builder().threadId(taskId + ":planner:context-acquisition").build()
             );
-            if (state.isEmpty()) {
-                return Optional.empty();
+            if (plan.isPresent() && hasInvalidImSearchTimeRange(plan.get())) {
+                Optional<ContextAcquisitionPlan> repaired = invokeAcquisitionAgentOnce(
+                        buildTimeRangeRepairPrompt(rawInstruction, workspaceContext, plan.get()),
+                        RunnableConfig.builder().threadId(taskId + ":planner:context-acquisition:repair").build()
+                );
+                if (repaired.isPresent()) {
+                    return repaired;
+                }
             }
-            Map<String, Object> data = state.get().data();
-            Object structured = data.get("messages") == null ? data.get("message") : data.get("messages");
-            return extractStructured(structured, ContextAcquisitionPlan.class);
+            return plan;
         } catch (Exception ignored) {
             return Optional.empty();
+        }
+    }
+
+    private Optional<ContextAcquisitionPlan> invokeAcquisitionAgentOnce(String prompt, RunnableConfig config) throws Exception {
+        Optional<OverAllState> state = contextAcquisitionAgent.invoke(prompt, config);
+        if (state.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> data = state.get().data();
+        Object structured = data.get("messages") == null ? data.get("message") : data.get("messages");
+        return extractStructured(structured, ContextAcquisitionPlan.class);
+    }
+
+    private String buildTimeRangeRepairPrompt(
+            String rawInstruction,
+            WorkspaceContext workspaceContext,
+            ContextAcquisitionPlan invalidPlan
+    ) {
+        return """
+                You are a strict ContextAcquisitionPlan JSON repairer.
+                The previous plan is invalid because an IM_MESSAGE_SEARCH source has a timeRange but omitted startTime/endTime.
+
+                Return the corrected ContextAcquisitionPlan JSON only.
+                Preserve sourceType, chatId, threadId, query, selectionInstruction, limit, pageSize, and pageLimit.
+                Preserve the user's original time phrase in timeRange.
+                For every IM_MESSAGE_SEARCH source with any time condition, fill startTime and endTime as ISO_OFFSET_DATE_TIME strings.
+
+                Current time: %s
+                User instruction: %s
+                Workspace chatId: %s
+                Workspace threadId: %s
+                Workspace chatType: %s
+
+                Common relative time rules using Current time timezone:
+                - 昨天下午: yesterday 12:00:00 to yesterday 18:00:00.
+                - 昨天上午: yesterday 00:00:00 to yesterday 12:00:00.
+                - 昨天: yesterday 00:00:00 to today 00:00:00.
+                - 今天上午: today 00:00:00 to today 12:00:00.
+                - 今天下午: today 12:00:00 to today 18:00:00.
+                - 今天: today 00:00:00 to current time.
+                - 最近N分钟/小时: current time minus N minutes/hours to current time.
+                - N分钟前: a 10-minute window centered at N minutes before current time.
+
+                Do not return a clarification for these common relative time expressions. Resolve them.
+                If and only if the phrase is genuinely ambiguous, return {"needCollection":false,"sources":[],"reason":"ambiguous time range","clarificationQuestion":"请补充具体开始和结束时间。"}.
+
+                Previous invalid JSON:
+                %s
+                """.formatted(
+                currentTime(),
+                rawInstruction == null ? "" : rawInstruction,
+                workspaceContext == null ? "" : nullToEmpty(workspaceContext.getChatId()),
+                workspaceContext == null ? "" : nullToEmpty(workspaceContext.getThreadId()),
+                workspaceContext == null ? "" : nullToEmpty(workspaceContext.getChatType()),
+                safeJson(invalidPlan)
+        );
+    }
+
+    private boolean hasInvalidImSearchTimeRange(ContextAcquisitionPlan plan) {
+        if (plan == null || !plan.isNeedCollection() || plan.getSources() == null) {
+            return false;
+        }
+        return plan.getSources().stream().anyMatch(source -> source != null
+                && source.getSourceType() == ContextSourceTypeEnum.IM_MESSAGE_SEARCH
+                && hasText(source.getTimeRange())
+                && (!hasText(source.getStartTime()) || !hasText(source.getEndTime())));
+    }
+
+    private String safeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ignored) {
+            return String.valueOf(value);
         }
     }
 
@@ -183,6 +261,12 @@ public class ContextNodeService {
                 If the user asks to pull/read/filter/summarize messages from the current chat or group and workspace context has chatId/threadId,
                 return collectionRequired=true with an IM_MESSAGE_SEARCH acquisitionPlan.
                 Copy the keyword into query when present, copy the whole criteria into selectionInstruction, and copy the time range into timeRange when present.
+                HARD REQUIREMENT for IM_MESSAGE_SEARCH time filters:
+                - If the user mentions any time expression, startTime and endTime MUST be non-empty ISO_OFFSET_DATE_TIME strings.
+                - Keep the original phrase in timeRange for traceability, but never output only a vague timeRange such as "昨天" or "昨天下午".
+                - Use Current time below as the reference clock and local timezone.
+                - Examples: "昨天下午" means yesterday 12:00:00 to 18:00:00 in the Current time timezone; "今天上午" means today 00:00:00 to 12:00:00; "昨天" means yesterday 00:00:00 to today 00:00:00.
+                - If you cannot infer startTime/endTime, return sufficient=false with a clarificationQuestion instead of collectionRequired=true.
                 If the user asks to summarize "recent/prior discussion" or "the previous discussion about topic A/B/C",
                 the topic names are only retrieval criteria, not source material. With chatId/threadId available, return collectionRequired=true.
                 Do not treat the pull instruction itself as the messages to summarize.
@@ -216,8 +300,9 @@ public class ContextNodeService {
         builder.append("""
                 Return ContextSufficiencyResult JSON only.
                 When collectionRequired=true, include acquisitionPlan:
-                {"sufficient":false,"contextSummary":"","missingItems":["source_context"],"clarificationQuestion":"","reason":"","collectionRequired":true,"acquisitionPlan":{"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"","threadId":"","query":"","timeRange":"","selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}}
+                {"sufficient":false,"contextSummary":"","missingItems":["source_context"],"clarificationQuestion":"","reason":"","collectionRequired":true,"acquisitionPlan":{"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"","threadId":"","query":"","timeRange":"","startTime":"","endTime":"","selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}}
                 """);
+        builder.append("Current time: ").append(currentTime()).append("\n");
         return builder.toString();
     }
 
@@ -250,12 +335,18 @@ public class ContextNodeService {
                 Do not create plan steps and do not answer the user.
                 For IM_MESSAGE_SEARCH, copy the user's exact message selection criteria into selectionInstruction.
                 Examples of selection criteria include time window, topics, required marker/text, excluded marker/text, sender constraints, and "if none found then ask me".
-                timeRange should be parseable when possible: use ISO range "start/end", epoch seconds "start/end", or a concise relative range like "最近10分钟".
+                HARD REQUIREMENT for IM_MESSAGE_SEARCH time filters:
+                - If the user mentions any time expression, startTime and endTime MUST be non-empty ISO_OFFSET_DATE_TIME strings.
+                - Keep the original phrase in timeRange for traceability, but never output only a vague timeRange such as "昨天" or "昨天下午".
+                - Use Current time below as the reference clock and local timezone.
+                - Examples: "昨天下午" means yesterday 12:00:00 to 18:00:00 in the Current time timezone; "今天上午" means today 00:00:00 to 12:00:00; "昨天" means yesterday 00:00:00 to today 00:00:00.
+                - If you cannot infer startTime/endTime, return needCollection=false with a clarificationQuestion instead of returning an IM_MESSAGE_SEARCH source.
 
                 Return ContextAcquisitionPlan JSON only:
-                {"needCollection":true|false,"sources":[{"sourceType":"IM_MESSAGE_SEARCH|LARK_DOC","chatId":"","threadId":"","query":"","timeRange":"","docRefs":[],"selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}
+                {"needCollection":true|false,"sources":[{"sourceType":"IM_MESSAGE_SEARCH|LARK_DOC","chatId":"","threadId":"","query":"","timeRange":"","startTime":"","endTime":"","docRefs":[],"selectionInstruction":"","limit":30}],"reason":"","clarificationQuestion":""}
 
                 """);
+        builder.append("Current time: ").append(currentTime()).append("\n");
         builder.append("User instruction: ").append(rawInstruction == null ? "" : rawInstruction).append("\n");
         builder.append("Conversation memory:\n").append(memoryService.renderContext(session)).append("\n");
         builder.append("Workspace hints:\n");
@@ -272,6 +363,10 @@ public class ContextNodeService {
             builder.append("docRefs=").append(workspaceContext.getDocRefs() == null ? List.of() : workspaceContext.getDocRefs()).append("\n");
         }
         return builder.toString();
+    }
+
+    private String currentTime() {
+        return java.time.OffsetDateTime.now().format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
     private ContextAcquisitionPlan defaultAcquisitionPlan(WorkspaceContext workspaceContext) {

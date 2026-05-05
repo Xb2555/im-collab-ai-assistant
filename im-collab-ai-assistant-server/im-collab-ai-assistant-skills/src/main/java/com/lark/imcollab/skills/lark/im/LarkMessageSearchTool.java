@@ -33,6 +33,20 @@ public class LarkMessageSearchTool {
             Integer pageSize,
             Integer pageLimit
     ) {
+        if (!hasText(query)) {
+            return listChatMessages(chatId, startTime, endTime, pageSize, pageLimit);
+        }
+        return searchByKeyword(query, chatId, startTime, endTime, pageSize, pageLimit);
+    }
+
+    private LarkMessageSearchResult searchByKeyword(
+            String query,
+            String chatId,
+            String startTime,
+            String endTime,
+            Integer pageSize,
+            Integer pageLimit
+    ) {
         List<String> args = new ArrayList<>();
         args.add("im");
         args.add("+messages-search");
@@ -67,6 +81,66 @@ public class LarkMessageSearchTool {
         } catch (IllegalStateException exception) {
             throw new IllegalStateException(humanizeError(exception.getMessage()), exception);
         }
+    }
+
+    private LarkMessageSearchResult listChatMessages(
+            String chatId,
+            String startTime,
+            String endTime,
+            Integer pageSize,
+            Integer pageLimit
+    ) {
+        int normalizedPageSize = normalize(pageSize, DEFAULT_PAGE_SIZE, 1, 50);
+        int normalizedPageLimit = normalize(pageLimit, 1, 1, 40);
+        List<LarkMessageSearchItem> items = new ArrayList<>();
+        String pageToken = null;
+        boolean hasMore = false;
+        for (int page = 0; page < normalizedPageLimit; page++) {
+            List<String> args = new ArrayList<>();
+            args.add("im");
+            args.add("+chat-messages-list");
+            args.add("--as");
+            args.add("user");
+            if (hasText(chatId)) {
+                args.add("--chat-id");
+                args.add(chatId.trim());
+            }
+            if (hasText(startTime)) {
+                args.add("--start");
+                args.add(startTime.trim());
+            }
+            if (hasText(endTime)) {
+                args.add("--end");
+                args.add(endTime.trim());
+            }
+            args.add("--sort");
+            args.add("asc");
+            args.add("--page-size");
+            args.add(String.valueOf(normalizedPageSize));
+            if (hasText(pageToken)) {
+                args.add("--page-token");
+                args.add(pageToken);
+            }
+            args.add("--format");
+            args.add("json");
+
+            JsonNode root;
+            try {
+                root = cliClient.executeJson(args, null, commandTimeoutMillis());
+            } catch (IllegalStateException exception) {
+                throw new IllegalStateException(humanizeError(exception.getMessage()), exception);
+            }
+            LarkMessageSearchResult pageResult = parse(root);
+            if (pageResult.items() != null) {
+                items.addAll(pageResult.items());
+            }
+            hasMore = pageResult.hasMore();
+            pageToken = pageResult.pageToken();
+            if (!hasMore || !hasText(pageToken)) {
+                break;
+            }
+        }
+        return new LarkMessageSearchResult(items, hasMore, pageToken);
     }
 
     public LarkMessageSearchResult parse(JsonNode root) {

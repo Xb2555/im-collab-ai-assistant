@@ -26,21 +26,21 @@ public class LarkIMTaskReplyFormatter {
 
     public String planReady(PlanTaskSession session) {
         List<UserPlanCard> cards = cards(session);
-        StringBuilder builder = new StringBuilder("我准备这样推进：");
+        StringBuilder builder = new StringBuilder("🧭 我准备这样推进：");
         appendCardSummary(builder, cards);
         appendCapabilityHints(builder, cards);
-        builder.append("\n\n没问题的话回复“开始执行”。要改的话直接说");
+        builder.append("\n\n🚀 没问题的话回复“开始执行”。要改的话直接说");
         appendEditHint(builder, cards);
         builder.append("。");
         return builder.toString();
     }
 
     public String planAdjusted(PlanTaskSession session) {
-        StringBuilder builder = new StringBuilder("计划已更新，我会按这个顺序推进：");
+        StringBuilder builder = new StringBuilder("🔄 计划已更新，我会按这个顺序推进：");
         List<UserPlanCard> cards = cards(session);
         appendCardSummary(builder, cards);
         appendCapabilityHints(builder, cards);
-        builder.append("\n\n没问题的话回复“开始执行”。要继续改的话也可以直接说");
+        builder.append("\n\n🚀 没问题的话回复“开始执行”。要继续改的话也可以直接说");
         appendEditHint(builder, cards);
         builder.append("。");
         return builder.toString();
@@ -52,9 +52,9 @@ public class LarkIMTaskReplyFormatter {
             return null;
         }
         if (questions.size() == 1) {
-            return stripClarificationPrefix(questions.get(0));
+            return "❓ " + stripClarificationPrefix(questions.get(0));
         }
-        StringBuilder builder = new StringBuilder("我先确认两点：");
+        StringBuilder builder = new StringBuilder("❓ 我先确认两点：");
         for (int index = 0; index < Math.min(MAX_CLARIFICATION_QUESTIONS, questions.size()); index++) {
             builder.append("\n").append(index + 1).append(". ").append(stripClarificationPrefix(questions.get(index)));
         }
@@ -64,30 +64,30 @@ public class LarkIMTaskReplyFormatter {
     public String executionStarted(TaskRuntimeSnapshot snapshot) {
         String nextStep = nextStepName(snapshot);
         if (hasText(nextStep)) {
-            return "好的，开始执行。我会先处理：" + nextStep + "。完成后继续推进后续步骤。";
+            return "🚀 好的，开始执行。我会先处理：" + nextStep + "。完成后继续推进后续步骤。";
         }
-        return "好的，开始执行。我会按计划推进，并持续更新任务进度。";
+        return "🚀 好的，开始执行。我会按计划推进，并持续更新任务进度。";
     }
 
     public String retryStarted(TaskRuntimeSnapshot snapshot) {
         String nextStep = nextStepName(snapshot);
         if (hasText(nextStep)) {
-            return "好的，我会从失败的步骤重新试一次。当前先处理：" + nextStep + "。";
+            return "🔁 好的，我会从失败的步骤重新试一次。当前先处理：" + nextStep + "。";
         }
-        return "好的，我会从失败的步骤重新试一次。";
+        return "🔁 好的，我会从失败的步骤重新试一次。";
     }
 
     public String retryUnavailable(TaskRuntimeSnapshot snapshot) {
         TaskStatusEnum status = snapshot == null || snapshot.getTask() == null ? null : snapshot.getTask().getStatus();
         if (status == TaskStatusEnum.FAILED) {
-            return "这个任务现在可以重试，但我还没能成功提交执行。你可以稍后再试一次。";
+            return "⚠️ 这个任务现在可以重试，但我还没能成功提交执行。你可以稍后再试一次。";
         }
-        return "当前任务不是失败状态，不需要重试。你可以查看进度或继续调整计划。";
+        return "ℹ️ 当前任务不是失败状态，不需要重试。你可以查看进度或继续调整计划。";
     }
 
     public String status(TaskRuntimeSnapshot snapshot) {
         if (snapshot == null || snapshot.getTask() == null) {
-            return "我还没有找到这个会话里的任务进度。你可以先发一个任务给我。";
+            return "🔎 我还没有找到这个会话里的任务进度。你可以先发一个任务给我。";
         }
         TaskRecord task = snapshot.getTask();
         List<TaskStepRecord> steps = activeSteps(snapshot.getSteps());
@@ -95,30 +95,30 @@ public class LarkIMTaskReplyFormatter {
                 .filter(step -> step != null && step.getStatus() == StepStatusEnum.COMPLETED)
                 .count();
         StringBuilder builder = new StringBuilder();
-        builder.append("任务状态：").append(readableStatus(task));
+        builder.append("📌 任务状态：").append(readableStatus(task));
         String currentStep = currentStepName(steps);
         if (task.getStatus() == com.lark.imcollab.common.model.enums.TaskStatusEnum.WAITING_APPROVAL) {
-            builder.append("\n等待你确认计划");
+            builder.append("\n⏳ 等待你确认计划");
             if (hasText(currentStep)) {
-                builder.append("\n确认后下一步：").append(currentStep);
+                builder.append("\n➡️ 确认后下一步：").append(currentStep);
             }
         } else if (task.getStatus() == TaskStatusEnum.COMPLETED) {
             if (!steps.isEmpty() && completed < steps.size()) {
-                builder.append("\n主执行链路已完成，部分计划步骤可能已合并到同一产物中。");
+                builder.append("\n✅ 主执行链路已完成，部分计划步骤可能已合并到同一产物中。");
             }
         } else if (hasText(currentStep)) {
-            builder.append("\n当前步骤：").append(currentStep);
+            builder.append("\n⏳ 当前步骤：").append(currentStep);
         }
         if (!steps.isEmpty()) {
             if (task.getStatus() == TaskStatusEnum.COMPLETED && completed < steps.size()) {
-                builder.append("\n计划项：").append(steps.size()).append(" 个");
+                builder.append("\n🧩 计划项：").append(steps.size()).append(" 个");
             } else {
-                builder.append("\n步骤进度：").append(completed).append("/").append(steps.size());
+                builder.append("\n📊 步骤进度：").append(completed).append("/").append(steps.size());
             }
         }
         int artifactCount = defaultList(snapshot.getArtifacts()).size();
         if (artifactCount > 0) {
-            builder.append("\n已有产物：").append(artifactCount).append(" 个");
+            builder.append("\n📎 已有产物：").append(artifactCount).append(" 个");
             appendArtifactList(builder, defaultList(snapshot.getArtifacts()));
         }
         return builder.toString();
@@ -127,7 +127,7 @@ public class LarkIMTaskReplyFormatter {
     private void appendArtifactList(StringBuilder builder, List<ArtifactRecord> artifacts) {
         int index = 1;
         for (ArtifactRecord artifact : artifacts.stream().filter(this::visibleArtifact).limit(MAX_IM_ARTIFACTS).toList()) {
-            builder.append("\n").append(index++).append(". ");
+            builder.append("\n").append(index++).append(". 📄 ");
             if (artifact.getType() != null) {
                 builder.append("[").append(artifact.getType().name()).append("] ");
             }
@@ -138,7 +138,7 @@ public class LarkIMTaskReplyFormatter {
         }
         long remaining = artifacts.stream().filter(this::visibleArtifact).count() - MAX_IM_ARTIFACTS;
         if (remaining > 0) {
-            builder.append("\n还有 ").append(remaining).append(" 个产物可在任务工作台查看。");
+            builder.append("\n📦 还有 ").append(remaining).append(" 个产物可在任务工作台查看。");
         }
     }
 
@@ -148,7 +148,7 @@ public class LarkIMTaskReplyFormatter {
 
     public String failure(PlanTaskSession session, TaskRuntimeSnapshot snapshot) {
         String reason = session == null ? null : session.getTransitionReason();
-        StringBuilder builder = new StringBuilder("这次处理没有成功");
+        StringBuilder builder = new StringBuilder("⚠️ 这次处理没有成功");
         if (hasText(reason)) {
             builder.append("：").append(reason.trim());
         } else {
@@ -156,24 +156,24 @@ public class LarkIMTaskReplyFormatter {
         }
         String currentStep = snapshot == null ? null : currentStepName(defaultList(snapshot.getSteps()));
         if (hasText(currentStep)) {
-            builder.append("\n卡住的位置：").append(currentStep);
+            builder.append("\n📍 卡住的位置：").append(currentStep);
         }
         List<String> failedDetails = failedStepDetails(snapshot);
         if (!failedDetails.isEmpty()) {
-            builder.append("\n具体原因：");
+            builder.append("\n🧾 具体原因：");
             for (String detail : failedDetails.stream().limit(2).toList()) {
                 builder.append("\n- ").append(detail);
             }
         }
-        builder.append("\n你可以直接换个说法继续修改，或者回复“进度怎么样”查看当前状态。");
+        builder.append("\n💬 你可以直接换个说法继续修改，或者回复“进度怎么样”查看当前状态。");
         return builder.toString();
     }
 
     public String fullPlan(PlanTaskSession session) {
-        StringBuilder builder = new StringBuilder("详细计划如下：");
+        StringBuilder builder = new StringBuilder("🧾 详细计划如下：");
         List<UserPlanCard> cards = cards(session);
         if (cards.isEmpty()) {
-            builder.append("\n当前还没有生成具体步骤。");
+            builder.append("\n🔎 当前还没有生成具体步骤。");
             return builder.toString();
         }
         for (int index = 0; index < cards.size(); index++) {
@@ -194,22 +194,30 @@ public class LarkIMTaskReplyFormatter {
     }
 
     public String taskCancelled() {
-        return "任务已取消，后续不会继续规划或执行。";
+        return "🛑 任务已取消，后续不会继续规划或执行。";
     }
 
     public String taskAccepted() {
-        return "收到，我先理解需求并生成计划。你可以随时回复“进度怎么样”查看当前状态。";
+        return "👀 收到，我先理解需求并生成计划。你可以随时回复“进度怎么样”查看当前状态。";
     }
 
     public String uncertainIntent() {
-        return "我先按当前计划停在确认这一步。想看细节、调整步骤，或开始执行，都可以直接说。";
+        return "🤔 我先按当前计划停在确认这一步。想看细节、调整步骤，或开始执行，都可以直接说。";
     }
 
     public String uncertainIntent(PlanTaskSession session) {
         String reply = session == null || session.getIntakeState() == null
                 ? null
                 : session.getIntakeState().getAssistantReply();
-        return hasText(reply) ? reply.trim() : uncertainIntent();
+        return hasText(reply) ? assistantReply(reply) : uncertainIntent();
+    }
+
+    public String assistantReply(String reply) {
+        if (!hasText(reply)) {
+            return reply;
+        }
+        String trimmed = reply.trim();
+        return startsWithIcon(trimmed) ? trimmed : "💬 " + trimmed;
     }
 
     private void appendCardSummary(StringBuilder builder, List<UserPlanCard> cards) {
@@ -248,7 +256,7 @@ public class LarkIMTaskReplyFormatter {
         if (hints.isEmpty()) {
             return;
         }
-        builder.append("\n\n你还可以指定：");
+        builder.append("\n\n✨ 你还可以指定：");
         for (String hint : hints.stream().limit(3).toList()) {
             builder.append("\n- ").append(hint);
         }
@@ -457,6 +465,15 @@ public class LarkIMTaskReplyFormatter {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean startsWithIcon(String value) {
+        if (!hasText(value)) {
+            return false;
+        }
+        int codePoint = value.trim().codePointAt(0);
+        return Character.getType(codePoint) == Character.OTHER_SYMBOL
+                || Character.getType(codePoint) == Character.MATH_SYMBOL;
     }
 
     private boolean hasType(List<UserPlanCard> cards, String typeName) {

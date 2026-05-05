@@ -73,13 +73,13 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         assertThat(accepted.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTAKE);
         verify(slowPlanner, never()).plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
-        assertThat(sentPrivateTexts(asyncReplyTool)).containsExactly("收到，我先帮你看一下。");
+        assertThat(sentPrivateTexts(asyncReplyTool)).containsExactly("👀 收到，我先帮你看一下。");
         executor.runAll();
         verify(slowPlanner).plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull());
         assertThat(sentPrivateTexts(asyncReplyTool))
                 .hasSize(2)
                 .first()
-                .isEqualTo("收到，我先帮你看一下。");
+                .isEqualTo("👀 收到，我先帮你看一下。");
         assertThat(sentPrivateTexts(asyncReplyTool).get(1)).contains("我准备这样推进");
     }
 
@@ -97,7 +97,7 @@ class LoggingLarkInboundMessageDispatcherTest {
         verify(taskCommandFacade).confirmExecution("task-1");
         assertThat(sentPrivateTexts(replyTool)).singleElement()
                 .satisfies(reply -> assertThat(reply)
-                        .contains("好的，我现在开始执行")
+                        .contains("🚀 好的，开始执行")
                         .contains("任务状态：正在执行")
                         .contains("步骤进度：0/2"));
     }
@@ -114,7 +114,7 @@ class LoggingLarkInboundMessageDispatcherTest {
         verify(taskCommandFacade, never()).confirmExecution(anyString());
         assertThat(sentPrivateTexts(replyTool)).singleElement()
                 .satisfies(reply -> assertThat(reply)
-                        .contains("好的，我现在开始执行")
+                        .contains("🚀 好的，开始执行")
                         .contains("任务状态：正在执行")
                         .contains("步骤进度：0/2"));
     }
@@ -134,7 +134,7 @@ class LoggingLarkInboundMessageDispatcherTest {
         verify(taskCommandFacade, never()).confirmExecution(anyString());
         assertThat(sentPrivateTexts(replyTool)).singleElement()
                 .satisfies(reply -> assertThat(reply)
-                        .contains("好的，我现在从失败的步骤重新试一次")
+                        .contains("🔁 好的，我会从失败的步骤重新试一次")
                         .contains("任务状态：正在执行")
                         .contains("步骤进度：0/2"));
     }
@@ -164,7 +164,7 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         List<String> replies = sentPrivateTexts(replyTool);
         assertThat(replies).hasSize(2);
-        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(0)).isEqualTo("👀 收到，我先帮你看一下。");
         assertThat(replies.get(1)).contains("计划已更新", "开始执行");
         assertThat(replies.get(1)).doesNotContain("成功标准", "风险关注");
     }
@@ -223,7 +223,7 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         List<String> replies = sentPrivateTexts(replyTool);
         assertThat(replies).hasSize(2);
-        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(0)).isEqualTo("👀 收到，我先帮你看一下。");
         assertThat(replies.get(1)).contains("我还没完全判断清楚");
         assertThat(replies.get(1)).doesNotContain("计划已更新");
     }
@@ -240,7 +240,7 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         List<String> replies = sentPrivateTexts(replyTool);
         assertThat(replies).hasSize(2);
-        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(0)).isEqualTo("👀 收到，我先帮你看一下。");
         assertThat(replies.get(1))
                 .contains("已修改 PPT 第 1 页：IM指定产物修改验证2002")
                 .contains("任务状态：已完成")
@@ -260,7 +260,7 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         List<String> replies = sentPrivateTexts(replyTool);
         assertThat(replies).hasSize(2);
-        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(0)).isEqualTo("👀 收到，我先帮你看一下。");
         assertThat(replies.get(1)).contains("这次处理没有成功", "计划调整失败");
         assertThat(replies).allSatisfy(reply -> assertThat(reply).doesNotContain("任务已收到，正在处理"));
     }
@@ -276,7 +276,7 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         List<String> replies = sentPrivateTexts(replyTool);
         assertThat(replies).hasSize(2);
-        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(0)).isEqualTo("👀 收到，我先帮你看一下。");
         assertThat(replies.get(1)).contains("我有点没对上你的意思");
         assertThat(replies.get(1)).doesNotContain("我准备这样推进", "计划已更新");
     }
@@ -320,7 +320,7 @@ class LoggingLarkInboundMessageDispatcherTest {
 
         List<String> replies = sentPrivateTexts(replyTool);
         assertThat(replies).hasSize(2);
-        assertThat(replies.get(0)).isEqualTo("收到，我先帮你看一下。");
+        assertThat(replies.get(0)).isEqualTo("👀 收到，我先帮你看一下。");
         assertThat(replies.get(1)).contains("详细计划如下", "[DOC]", "[PPT]");
     }
 

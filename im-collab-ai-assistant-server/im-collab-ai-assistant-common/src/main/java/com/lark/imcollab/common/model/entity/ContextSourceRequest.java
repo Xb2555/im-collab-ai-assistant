@@ -1,5 +1,6 @@
 package com.lark.imcollab.common.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.lark.imcollab.common.model.enums.ContextSourceTypeEnum;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -23,8 +24,10 @@ public class ContextSourceRequest implements Serializable {
 
     private String timeRange;
 
+    @JsonAlias({"start_time", "start"})
     private String startTime;
 
+    @JsonAlias({"end_time", "end"})
     private String endTime;
 
     private String query;
