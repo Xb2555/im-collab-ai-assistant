@@ -4,6 +4,9 @@ import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationIterationFacade;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
+import com.lark.imcollab.common.model.entity.PresentationEditOperation;
+import com.lark.imcollab.common.model.enums.PresentationEditActionType;
+import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesFetchResult;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesTool;
@@ -16,17 +19,13 @@ import org.xml.sax.InputSource;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.StringReader;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 @Service
 public class PresentationIterationExecutionService implements PresentationIterationFacade {
-
-    private static final Pattern PAGE_PATTERN = Pattern.compile("第\\s*(\\d{1,2})\\s*页");
-    private static final Pattern CHINESE_PAGE_PATTERN = Pattern.compile("第\\s*([一二三四五六七八九十]{1,3})\\s*页");
-    private static final Pattern TITLE_TO_PATTERN = Pattern.compile("(?:标题|题目)?(?:改成|改为|换成)[:：]?\\s*([^，。\\n]+)");
 
     private final LarkSlidesTool larkSlidesTool;
     private final PresentationEditIntentFacade intentFacade;
@@ -49,54 +48,56 @@ public class PresentationIterationExecutionService implements PresentationIterat
         if (intent != null && intent.isClarificationNeeded()) {
             throw new IllegalArgumentException(firstNonBlank(intent.getClarificationHint(), "请明确要改第几页和改成什么内容"));
         }
-        LarkSlidesFetchResult before = larkSlidesTool.fetchPresentation(presentation);
-        SlideTarget target = resolveTarget(before.getXml(), instruction, intent);
-        String newText = resolveReplacementText(instruction, intent);
-        Map<String, Object> part = target.blockId() == null || target.blockId().isBlank()
-                ? insertPart(newText)
-                : replacePart(target.blockId(), newText, target.shape());
-        larkSlidesTool.replaceSlide(presentation, target.slideId(), List.of(part));
-        LarkSlidesFetchResult after = larkSlidesTool.fetchPresentation(presentation);
-        if (!containsText(after.getXml(), newText)) {
-            throw new IllegalStateException("PPT update verification failed: target text not found after replace");
+        List<PresentationEditOperation> operations = resolveOperations(instruction, intent);
+        if (operations.isEmpty()) {
+            throw new IllegalArgumentException("请明确要修改哪些页面，以及每页要改成什么内容");
+        }
+        LinkedHashSet<String> modifiedSlideIds = new LinkedHashSet<>();
+        List<String> summarySegments = new ArrayList<>();
+        for (PresentationEditOperation operation : operations) {
+            LarkSlidesFetchResult before = larkSlidesTool.fetchPresentation(presentation);
+            SlideTarget target = resolveTarget(before.getXml(), operation);
+            Map<String, Object> part = buildPart(target, operation);
+            larkSlidesTool.replaceSlide(presentation, target.slideId(), List.of(part));
+            LarkSlidesFetchResult after = larkSlidesTool.fetchPresentation(presentation);
+            if (requiresReplacement(operation) && !containsText(after.getXml(), operation.getReplacementText())) {
+                throw new IllegalStateException("PPT update verification failed: target text not found after replace");
+            }
+            modifiedSlideIds.add(target.slideId());
+            summarySegments.add(buildSummarySegment(target.pageIndex(), operation));
         }
         return PresentationIterationVO.builder()
                 .taskId(request.getTaskId())
                 .artifactId(request.getArtifactId())
-                .presentationId(firstNonBlank(request.getPresentationId(), after.getPresentationId(), presentation))
+                .presentationId(firstNonBlank(request.getPresentationId(), presentation))
                 .presentationUrl(request.getPresentationUrl())
-                .summary("已修改 PPT 第 " + target.pageIndex() + " 页：" + newText)
-                .modifiedSlides(List.of(target.slideId()))
+                .summary(joinSummary(summarySegments))
+                .modifiedSlides(new ArrayList<>(modifiedSlideIds))
                 .build();
     }
 
-    private SlideTarget resolveTarget(String xml, String instruction, PresentationEditIntent intent) {
+    private SlideTarget resolveTarget(String xml, PresentationEditOperation operation) {
         Document document = parseXml(xml);
         NodeList slides = document.getElementsByTagName("slide");
         if (slides.getLength() == 0) {
             throw new IllegalStateException("No slides found in presentation XML");
         }
-        int pageIndex = intent != null && intent.getPageIndex() != null
-                ? intent.getPageIndex()
-                : requestedPage(instruction);
+        Integer pageIndex = operation.getPageIndex();
+        if (pageIndex == null) {
+            throw new IllegalArgumentException("请明确要改第几页");
+        }
         int slideIndex = Math.min(Math.max(pageIndex, 1), slides.getLength()) - 1;
         Element slide = (Element) slides.item(slideIndex);
         String slideId = firstNonBlank(slide.getAttribute("id"));
         requireValue(slideId, "slide id");
-        Element shape = findTitleShape(slide);
+        Element shape = findTargetShape(slide, operation.getTargetElementType());
         return new SlideTarget(slideId, slideIndex + 1, shape == null ? null : shape.getAttribute("id"), shape);
     }
 
-    private String resolveReplacementText(String instruction, PresentationEditIntent intent) {
-        if (intent != null && firstNonBlank(intent.getReplacementText()) != null) {
-            return intent.getReplacementText().trim();
-        }
-        return extractReplacementText(instruction);
-    }
-
-    private Element findTitleShape(Element slide) {
+    private Element findTargetShape(Element slide, PresentationTargetElementType targetElementType) {
         NodeList shapes = slide.getElementsByTagName("shape");
         Element firstTextShape = null;
+        Element firstBodyShape = null;
         for (int i = 0; i < shapes.getLength(); i++) {
             Element shape = (Element) shapes.item(i);
             if (!"text".equalsIgnoreCase(shape.getAttribute("type"))) {
@@ -109,29 +110,55 @@ public class PresentationIterationExecutionService implements PresentationIterat
             for (int j = 0; j < contents.getLength(); j++) {
                 Element content = (Element) contents.item(j);
                 if ("title".equalsIgnoreCase(content.getAttribute("textType"))) {
-                    return shape;
+                    if (targetElementType == PresentationTargetElementType.TITLE) {
+                        return shape;
+                    }
+                }
+                if ("body".equalsIgnoreCase(content.getAttribute("textType"))) {
+                    if (firstBodyShape == null) {
+                        firstBodyShape = shape;
+                    }
+                    if (targetElementType == PresentationTargetElementType.BODY) {
+                        return shape;
+                    }
                 }
             }
+        }
+        if (targetElementType == PresentationTargetElementType.BODY && firstBodyShape != null) {
+            return firstBodyShape;
         }
         return firstTextShape;
     }
 
-    private Map<String, Object> replacePart(String blockId, String newText, Element originalShape) {
+    private Map<String, Object> buildPart(SlideTarget target, PresentationEditOperation operation) {
+        if (operation.getActionType() != PresentationEditActionType.REPLACE_SLIDE_TITLE
+                && operation.getActionType() != PresentationEditActionType.REPLACE_SLIDE_BODY) {
+            throw new IllegalArgumentException("暂不支持的 PPT 修改动作: " + operation.getActionType());
+        }
+        String newText = firstNonBlank(operation.getReplacementText());
+        String textType = operation.getTargetElementType() == PresentationTargetElementType.BODY ? "body" : "title";
+        if (target.blockId() == null || target.blockId().isBlank()) {
+            return insertPart(newText, textType);
+        }
+        return replacePart(target.blockId(), newText, target.shape(), textType);
+    }
+
+    private Map<String, Object> replacePart(String blockId, String newText, Element originalShape, String textType) {
         Map<String, Object> part = new LinkedHashMap<>();
         part.put("action", "block_replace");
         part.put("block_id", blockId);
-        part.put("replacement", buildTextShape(newText, originalShape, "title"));
+        part.put("replacement", buildTextShape(newText, originalShape, textType));
         return part;
     }
 
-    private Map<String, Object> insertPart(String newText) {
+    private Map<String, Object> insertPart(String newText, String textType) {
         Map<String, Object> part = new LinkedHashMap<>();
         part.put("action", "block_insert");
         part.put("insertion", """
                 <shape type="text" topLeftX="80" topLeftY="420" width="800" height="80">
-                  <content textType="body"><p>%s</p></content>
+                  <content textType="%s"><p>%s</p></content>
                 </shape>
-                """.formatted(escapeXml(newText)).trim());
+                """.formatted(textType, escapeXml(newText)).trim());
         return part;
     }
 
@@ -145,48 +172,6 @@ public class PresentationIterationExecutionService implements PresentationIterat
                   <content textType="%s"><p>%s</p></content>
                 </shape>
                 """.formatted(x, y, width, height, textType, escapeXml(newText)).trim();
-    }
-
-    private String extractReplacementText(String instruction) {
-        Matcher matcher = TITLE_TO_PATTERN.matcher(instruction == null ? "" : instruction);
-        if (matcher.find()) {
-            return matcher.group(1).trim();
-        }
-        return instruction == null ? "用户补充说明" : instruction.trim();
-    }
-
-    private int requestedPage(String instruction) {
-        Matcher matcher = PAGE_PATTERN.matcher(instruction == null ? "" : instruction);
-        if (matcher.find()) {
-            return Integer.parseInt(matcher.group(1));
-        }
-        matcher = CHINESE_PAGE_PATTERN.matcher(instruction == null ? "" : instruction);
-        if (matcher.find()) {
-            Integer page = chineseNumber(matcher.group(1));
-            if (page != null) {
-                return page;
-            }
-        }
-        return 1;
-    }
-
-    private Integer chineseNumber(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        return switch (value.trim()) {
-            case "一" -> 1;
-            case "二", "两" -> 2;
-            case "三" -> 3;
-            case "四" -> 4;
-            case "五" -> 5;
-            case "六" -> 6;
-            case "七" -> 7;
-            case "八" -> 8;
-            case "九" -> 9;
-            case "十" -> 10;
-            default -> null;
-        };
     }
 
     private Document parseXml(String xml) {
@@ -203,6 +188,41 @@ public class PresentationIterationExecutionService implements PresentationIterat
 
     private boolean containsText(String xml, String text) {
         return xml != null && text != null && (xml.contains(text) || xml.contains(escapeXml(text)));
+    }
+
+    private List<PresentationEditOperation> resolveOperations(String instruction, PresentationEditIntent intent) {
+        if (intent != null && intent.getOperations() != null && !intent.getOperations().isEmpty()) {
+            return intent.getOperations();
+        }
+        if (intent != null && intent.getActionType() != null) {
+            return List.of(PresentationEditOperation.builder()
+                    .actionType(intent.getActionType())
+                    .targetElementType(intent.getTargetElementType())
+                    .pageIndex(intent.getPageIndex())
+                    .replacementText(intent.getReplacementText())
+                    .build());
+        }
+        return List.of();
+    }
+
+    private boolean requiresReplacement(PresentationEditOperation operation) {
+        return operation.getActionType() == PresentationEditActionType.REPLACE_SLIDE_TITLE
+                || operation.getActionType() == PresentationEditActionType.REPLACE_SLIDE_BODY;
+    }
+
+    private String buildSummarySegment(int pageIndex, PresentationEditOperation operation) {
+        String label = operation.getTargetElementType() == PresentationTargetElementType.BODY ? "正文" : "标题";
+        return "第 " + pageIndex + " 页" + label + "改为" + firstNonBlank(operation.getReplacementText(), "指定内容");
+    }
+
+    private String joinSummary(List<String> segments) {
+        if (segments == null || segments.isEmpty()) {
+            return "PPT 已更新";
+        }
+        if (segments.size() == 1) {
+            return "已修改 PPT " + segments.get(0);
+        }
+        return "已修改 PPT：" + String.join("；", segments);
     }
 
     private String attribute(Element element, String name) {

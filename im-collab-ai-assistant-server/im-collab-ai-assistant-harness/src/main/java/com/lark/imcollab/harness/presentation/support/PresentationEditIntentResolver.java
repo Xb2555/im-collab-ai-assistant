@@ -4,10 +4,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
+import com.lark.imcollab.common.model.entity.PresentationEditOperation;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
+import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Component
 public class PresentationEditIntentResolver implements PresentationEditIntentFacade {
@@ -31,6 +36,8 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                     .userInstruction(instruction)
                     .pageIndex(root.path("pageIndex").isInt() ? root.path("pageIndex").asInt() : null)
                     .replacementText(text(root, "replacementText"))
+                    .targetElementType(parseTargetElementType(root.path("targetElementType").asText(null)))
+                    .operations(parseOperations(root.path("operations")))
                     .clarificationNeeded(root.path("clarificationNeeded").asBoolean(false))
                     .clarificationHint(text(root, "clarificationHint"))
                     .build();
@@ -52,12 +59,38 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
             return ensureHint(intent);
         }
         if (intent.getIntentType() == null || intent.getActionType() == null) {
-            return clarification(intent.getUserInstruction());
-        }
-        if (intent.getActionType() == PresentationEditActionType.REPLACE_SLIDE_TITLE) {
-            if (intent.getPageIndex() == null || !hasText(intent.getReplacementText())) {
+            List<PresentationEditOperation> operations = intent.getOperations();
+            if (operations != null && !operations.isEmpty()) {
+                intent.setActionType(operations.get(0).getActionType());
+            } else {
                 return clarification(intent.getUserInstruction());
             }
+        }
+        List<PresentationEditOperation> operations = normalizeOperations(intent);
+        if (operations.isEmpty()) {
+            return clarification(intent.getUserInstruction());
+        }
+        for (PresentationEditOperation operation : operations) {
+            if (operation.getActionType() == null || operation.getPageIndex() == null) {
+                return clarification(intent.getUserInstruction());
+            }
+            if (requiresReplacement(operation.getActionType()) && !hasText(operation.getReplacementText())) {
+                return clarification(intent.getUserInstruction());
+            }
+            if (operation.getTargetElementType() == null && operation.getActionType() == PresentationEditActionType.REPLACE_SLIDE_BODY) {
+                operation.setTargetElementType(PresentationTargetElementType.BODY);
+            }
+            if (operation.getTargetElementType() == null && operation.getActionType() == PresentationEditActionType.REPLACE_SLIDE_TITLE) {
+                operation.setTargetElementType(PresentationTargetElementType.TITLE);
+            }
+        }
+        intent.setOperations(operations);
+        PresentationEditOperation first = operations.get(0);
+        intent.setActionType(first.getActionType());
+        intent.setPageIndex(first.getPageIndex());
+        intent.setReplacementText(first.getReplacementText());
+        if (intent.getTargetElementType() == null) {
+            intent.setTargetElementType(first.getTargetElementType());
         }
         return intent;
     }
@@ -86,16 +119,27 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 {
                   "intentType": "UPDATE_CONTENT|INSERT|DELETE|EXPLAIN",
                   "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|INSERT_SLIDE|DELETE_SLIDE",
+                  "targetElementType": "TITLE|BODY",
                   "pageIndex": 1,
                   "replacementText": "新的标题或内容",
+                  "operations": [
+                    {
+                      "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|INSERT_SLIDE|DELETE_SLIDE",
+                      "targetElementType": "TITLE|BODY",
+                      "pageIndex": 1,
+                      "replacementText": "新的标题或内容"
+                    }
+                  ],
                   "clarificationNeeded": false,
                   "clarificationHint": ""
                 }
 
                 规则:
-                1. 只有在能明确识别页码和目标内容时，clarificationNeeded=false。
-                2. “把第一页标题改成7878”“第一页标题为7878”“修改第3页标题为实施收益”都应解析为 REPLACE_SLIDE_TITLE。
-                3. 无法确认页码、目标元素或新内容时，clarificationNeeded=true。
+                1. 优先输出 operations，支持一条指令包含多个页面修改操作。
+                2. 只有在每个操作都能明确识别页码、目标元素和新内容时，clarificationNeeded=false。
+                3. “把第一页标题改成7878”“第一页标题为7878”“修改第3页标题为实施收益”都应解析为 REPLACE_SLIDE_TITLE。
+                4. 如果用户要求修改正文、要点、内容，targetElementType 应为 BODY。
+                5. 无法确认页码、目标元素或新内容时，clarificationNeeded=true。
 
                 用户指令：%s
                 """.formatted(instruction == null ? "" : instruction.trim());
@@ -138,6 +182,56 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         } catch (IllegalArgumentException exception) {
             return null;
         }
+    }
+
+    private PresentationTargetElementType parseTargetElementType(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return PresentationTargetElementType.valueOf(value.trim());
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private List<PresentationEditOperation> parseOperations(JsonNode root) {
+        List<PresentationEditOperation> operations = new ArrayList<>();
+        if (root == null || !root.isArray()) {
+            return operations;
+        }
+        for (JsonNode node : root) {
+            PresentationEditOperation operation = PresentationEditOperation.builder()
+                    .actionType(parseActionType(node.path("actionType").asText(null)))
+                    .targetElementType(parseTargetElementType(node.path("targetElementType").asText(null)))
+                    .pageIndex(node.path("pageIndex").isInt() ? node.path("pageIndex").asInt() : null)
+                    .replacementText(text(node, "replacementText"))
+                    .build();
+            operations.add(operation);
+        }
+        return operations;
+    }
+
+    private List<PresentationEditOperation> normalizeOperations(PresentationEditIntent intent) {
+        List<PresentationEditOperation> operations = intent.getOperations();
+        if (operations != null && !operations.isEmpty()) {
+            return operations;
+        }
+        if (intent.getActionType() == null && intent.getPageIndex() == null && !hasText(intent.getReplacementText())) {
+            return List.of();
+        }
+        PresentationEditOperation operation = PresentationEditOperation.builder()
+                .actionType(intent.getActionType())
+                .targetElementType(intent.getTargetElementType())
+                .pageIndex(intent.getPageIndex())
+                .replacementText(intent.getReplacementText())
+                .build();
+        return new ArrayList<>(List.of(operation));
+    }
+
+    private boolean requiresReplacement(PresentationEditActionType actionType) {
+        return actionType == PresentationEditActionType.REPLACE_SLIDE_TITLE
+                || actionType == PresentationEditActionType.REPLACE_SLIDE_BODY;
     }
 
     private String text(JsonNode root, String field) {
