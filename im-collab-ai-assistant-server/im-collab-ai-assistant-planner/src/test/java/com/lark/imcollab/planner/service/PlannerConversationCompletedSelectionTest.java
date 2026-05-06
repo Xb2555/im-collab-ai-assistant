@@ -123,6 +123,50 @@ class PlannerConversationCompletedSelectionTest {
     }
 
     @Test
+    void completedTaskListQueryReturnsSelectionListWithoutRunningAdjustment() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("selector-task", false, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(resolver.conversationKey(context)).thenReturn("LARK_PRIVATE_CHAT:chat-1:chat-root");
+        when(intakeService.decide(any(), eq("我想看看这个会话里已完成的任务"), isNull(), eq(false)))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.STATUS_QUERY,
+                        "我想看看这个会话里已完成的任务",
+                        "llm completed task list query",
+                        null,
+                        "COMPLETED_TASKS"));
+        when(resolver.resolveCompletedCandidates(context)).thenReturn(List.of(
+                candidate("task-1", "采购评审 PPT"),
+                candidate("task-2", "项目周报 DOC")
+        ));
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("我想看看这个会话里已完成的任务", context, null, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTAKE);
+        assertThat(result.getIntakeState().getPendingTaskSelection()).isNotNull();
+        assertThat(result.getIntakeState().getPendingTaskSelection().getSelectionPurpose()).isEqualTo("COMPLETED_TASK_LIST");
+        assertThat(result.getIntakeState().getAssistantReply()).contains("我找到这些已完成任务").contains("回复编号即可");
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+    }
+
+    @Test
     void explicitNewTaskInsideBoundConversationUsesFreshTaskId() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
@@ -214,8 +258,57 @@ class PlannerConversationCompletedSelectionTest {
         PlanTaskSession result = service.handlePlanRequest("把第三页改成实施收益", context, null, null);
 
         assertThat(result).isSameAs(completed);
-        verify(resolver, org.mockito.Mockito.times(2)).resolveCompletedCandidates(context);
+        verify(resolver, never()).resolveCompletedCandidates(context);
         verify(graphRunner).run(any(), eq("task-1"), eq("把第三页改成实施收益"), eq(context), isNull());
+    }
+
+    @Test
+    void selectedCompletedTaskFollowupAdjustmentDoesNotPromptTaskSelectionAgain() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-2")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-2", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(resolver.conversationState(context)).thenReturn(java.util.Optional.of(ConversationTaskState.builder()
+                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                .activeTaskId("task-2")
+                .lastCompletedTaskId("task-2")
+                .build()));
+        when(sessionService.get("task-2")).thenReturn(completed);
+        when(intakeService.decide(completed, "把第三页改成实施收益", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "把第三页改成实施收益",
+                        "completed selected task followup",
+                        null));
+        when(graphRunner.run(any(), eq("task-2"), eq("把第三页改成实施收益"), eq(context), isNull()))
+                .thenReturn(completed);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("把第三页改成实施收益", context, null, null);
+
+        assertThat(result).isSameAs(completed);
+        verify(resolver, never()).resolveCompletedCandidates(context);
+        verify(graphRunner).run(any(), eq("task-2"), eq("把第三页改成实施收益"), eq(context), isNull());
+        verify(taskBridgeService).ensureTask(completed);
     }
 
     @Test
@@ -268,6 +361,60 @@ class PlannerConversationCompletedSelectionTest {
         verify(resolver).bindConversation(new TaskSessionResolution("task-2", true, "LARK_GROUP_CHAT:chat-1:thread-1"));
         verify(graphRunner).run(any(), eq("task-2"), eq("把刚才那个 PPT 第二页标题改一下"), eq(context), isNull());
         verify(taskBridgeService).ensureTask(adjusted);
+    }
+
+    @Test
+    void completedTaskListSelectionSwitchesTaskWithoutRunningAdjustment() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession pending = PlanTaskSession.builder()
+                .taskId("selector-task")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.UNKNOWN)
+                        .pendingTaskSelection(PendingTaskSelection.builder()
+                                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                                .originalInstruction("我想看看这个会话里已完成的任务")
+                                .selectionPurpose("COMPLETED_TASK_LIST")
+                                .candidates(List.of(candidate("task-1", "采购评审 PPT"), candidate("task-2", "项目周报 PPT")))
+                                .expiresAt(Instant.now().plusSeconds(60))
+                                .build())
+                        .build())
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-2")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("selector-task", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("selector-task")).thenReturn(pending);
+        when(sessionService.get("task-2")).thenReturn(completed);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("2", context, null, null);
+
+        assertThat(result.getTaskId()).isEqualTo("task-2");
+        assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.STATUS_QUERY);
+        assertThat(result.getIntakeState().getReadOnlyView()).isEqualTo("COMPLETED_TASKS");
+        assertThat(result.getIntakeState().getAssistantReply()).contains("已切换到这个已完成任务").contains("可修改产物类型");
+        verify(resolver).bindConversation(new TaskSessionResolution("task-2", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+        verify(taskBridgeService, never()).ensureTask(any());
     }
 
     @Test
@@ -573,7 +720,7 @@ class PlannerConversationCompletedSelectionTest {
         return PendingTaskCandidate.builder()
                 .taskId(taskId)
                 .title(title)
-                .artifactTypes(List.of(ArtifactTypeEnum.PPT))
+                .artifactTypes(title.contains("DOC") ? List.of(ArtifactTypeEnum.DOC) : List.of(ArtifactTypeEnum.PPT))
                 .updatedAt(Instant.now())
                 .build();
     }

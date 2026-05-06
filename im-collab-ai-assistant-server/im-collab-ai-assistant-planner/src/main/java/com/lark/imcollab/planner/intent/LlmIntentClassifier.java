@@ -102,10 +102,10 @@ public class LlmIntentClassifier {
         builder.append("You classify one user message into a fixed task command intent.\n");
         builder.append("Return JSON only. Do not plan steps, do not execute actions, do not answer the user.\n");
         builder.append("Allowed intents: START_TASK, ANSWER_CLARIFICATION, ADJUST_PLAN, QUERY_STATUS, CONFIRM_ACTION, CANCEL_TASK, UNKNOWN.\n");
-        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false,\"readOnlyView\":\"PLAN|STATUS|ARTIFACTS|\"}\n");
+        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false,\"readOnlyView\":\"PLAN|STATUS|ARTIFACTS|COMPLETED_TASKS|\"}\n");
         builder.append("Decision hints:\n");
-        builder.append("- QUERY_STATUS means the user asks progress, status, task overview, current plan summary, full plan, existing artifacts, or what is being done.\n");
-        builder.append("- For QUERY_STATUS, set readOnlyView=PLAN when the user wants the stored plan/steps; STATUS when they want progress/current status; ARTIFACTS when they want outputs/links/artifacts.\n");
+        builder.append("- QUERY_STATUS means the user asks progress, status, task overview, current plan summary, full plan, existing artifacts, completed-task list, or what is being done.\n");
+        builder.append("- For QUERY_STATUS, set readOnlyView=PLAN when the user wants the stored plan/steps; STATUS when they want progress/current status; ARTIFACTS when they want outputs/links/artifacts; COMPLETED_TASKS when they want to browse finished tasks before choosing one for artifact edits.\n");
         builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, or regenerate plan steps.\n");
         builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 开始计划 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
         builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
@@ -181,7 +181,7 @@ public class LlmIntentClassifier {
         }
         String normalized = value.trim().toUpperCase(Locale.ROOT);
         return switch (normalized) {
-            case "PLAN", "STATUS", "ARTIFACTS" -> normalized;
+            case "PLAN", "STATUS", "ARTIFACTS", "COMPLETED_TASKS" -> normalized;
             default -> null;
         };
     }

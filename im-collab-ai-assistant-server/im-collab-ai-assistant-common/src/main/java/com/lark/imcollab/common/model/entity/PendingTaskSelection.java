@@ -17,6 +17,7 @@ public class PendingTaskSelection implements Serializable {
 
     private String conversationKey;
     private String originalInstruction;
+    private String selectionPurpose;
     private List<PendingTaskCandidate> candidates;
     private Instant expiresAt;
 }

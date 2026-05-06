@@ -1,6 +1,10 @@
 package com.lark.imcollab.harness.presentation.service;
 
+import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
+import com.lark.imcollab.common.model.entity.PresentationEditIntent;
+import com.lark.imcollab.common.model.enums.PresentationEditActionType;
+import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesFetchResult;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesTool;
 import org.junit.jupiter.api.Test;
@@ -21,6 +25,7 @@ class PresentationIterationExecutionServiceTest {
     @Test
     void replacesRequestedSlideTitleAndVerifiesResult() {
         LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
         when(slidesTool.fetchPresentation("slides-1"))
                 .thenReturn(LarkSlidesFetchResult.builder()
                         .presentationId("slides-1")
@@ -32,7 +37,14 @@ class PresentationIterationExecutionServiceTest {
                         .presentationId("slides-1")
                         .xml("<presentation><slide id=\"s2\"><data><shape id=\"b2\"><content><p>新采购评审结论</p></content></shape></data></slide></presentation>")
                         .build());
-        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool);
+        when(intentFacade.resolve("把第二页标题改成新采购评审结论")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .actionType(PresentationEditActionType.REPLACE_SLIDE_TITLE)
+                .pageIndex(2)
+                .replacementText("新采购评审结论")
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
 
         var result = service.edit(PresentationIterationRequest.builder()
                 .taskId("task-1")

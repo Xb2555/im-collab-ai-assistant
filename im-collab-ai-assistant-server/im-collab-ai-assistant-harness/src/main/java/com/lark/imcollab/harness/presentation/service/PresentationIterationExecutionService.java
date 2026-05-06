@@ -1,7 +1,9 @@
 package com.lark.imcollab.harness.presentation.service;
 
+import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationIterationFacade;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
+import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesFetchResult;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesTool;
@@ -19,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 @Service
 public class PresentationIterationExecutionService implements PresentationIterationFacade {
 
@@ -28,9 +29,14 @@ public class PresentationIterationExecutionService implements PresentationIterat
     private static final Pattern TITLE_TO_PATTERN = Pattern.compile("(?:标题|题目)?(?:改成|改为|换成)[:：]?\\s*([^，。\\n]+)");
 
     private final LarkSlidesTool larkSlidesTool;
+    private final PresentationEditIntentFacade intentFacade;
 
-    public PresentationIterationExecutionService(LarkSlidesTool larkSlidesTool) {
+    public PresentationIterationExecutionService(
+            LarkSlidesTool larkSlidesTool,
+            PresentationEditIntentFacade intentFacade
+    ) {
         this.larkSlidesTool = larkSlidesTool;
+        this.intentFacade = intentFacade;
     }
 
     @Override
@@ -39,9 +45,13 @@ public class PresentationIterationExecutionService implements PresentationIterat
         String presentation = firstNonBlank(request.getPresentationId(), request.getPresentationUrl());
         requireValue(presentation, "presentationId/presentationUrl");
         String instruction = firstNonBlank(request.getInstruction(), "补充用户修改说明");
+        PresentationEditIntent intent = intentFacade == null ? null : intentFacade.resolve(instruction);
+        if (intent != null && intent.isClarificationNeeded()) {
+            throw new IllegalArgumentException(firstNonBlank(intent.getClarificationHint(), "请明确要改第几页和改成什么内容"));
+        }
         LarkSlidesFetchResult before = larkSlidesTool.fetchPresentation(presentation);
-        SlideTarget target = resolveTarget(before.getXml(), instruction);
-        String newText = extractReplacementText(instruction);
+        SlideTarget target = resolveTarget(before.getXml(), instruction, intent);
+        String newText = resolveReplacementText(instruction, intent);
         Map<String, Object> part = target.blockId() == null || target.blockId().isBlank()
                 ? insertPart(newText)
                 : replacePart(target.blockId(), newText, target.shape());
@@ -60,19 +70,28 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 .build();
     }
 
-    private SlideTarget resolveTarget(String xml, String instruction) {
+    private SlideTarget resolveTarget(String xml, String instruction, PresentationEditIntent intent) {
         Document document = parseXml(xml);
         NodeList slides = document.getElementsByTagName("slide");
         if (slides.getLength() == 0) {
             throw new IllegalStateException("No slides found in presentation XML");
         }
-        int pageIndex = requestedPage(instruction);
+        int pageIndex = intent != null && intent.getPageIndex() != null
+                ? intent.getPageIndex()
+                : requestedPage(instruction);
         int slideIndex = Math.min(Math.max(pageIndex, 1), slides.getLength()) - 1;
         Element slide = (Element) slides.item(slideIndex);
         String slideId = firstNonBlank(slide.getAttribute("id"));
         requireValue(slideId, "slide id");
         Element shape = findTitleShape(slide);
         return new SlideTarget(slideId, slideIndex + 1, shape == null ? null : shape.getAttribute("id"), shape);
+    }
+
+    private String resolveReplacementText(String instruction, PresentationEditIntent intent) {
+        if (intent != null && firstNonBlank(intent.getReplacementText()) != null) {
+            return intent.getReplacementText().trim();
+        }
+        return extractReplacementText(instruction);
     }
 
     private Element findTitleShape(Element slide) {
