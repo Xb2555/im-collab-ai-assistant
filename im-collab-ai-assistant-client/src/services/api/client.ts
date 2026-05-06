@@ -10,11 +10,19 @@ export const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_
 export const isMobileNative = Capacitor.isNativePlatform();
 
 export const getBaseUrl = () => {
-  // ✨ 如果是桌面客户端 或 手机 App，都必须使用绝对路径直连后端！
-  if (isTauri || isMobileNative) {
-    return 'http://81.71.143.236:18080'; 
+  const envBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+
+  // 优先使用显式环境变量（线上 Vercel 必须配置）
+  if (envBaseUrl) {
+    return envBaseUrl;
   }
-  // 网页浏览器环境，继续保持空字符串，让 Vite Proxy 接管跨域
+
+  // 桌面端 / 原生移动端：回退到默认后端直连地址
+  if (isTauri || isMobileNative) {
+    return 'http://81.71.143.236:18080';
+  }
+
+  // Web 开发环境：允许继续走 Vite 代理
   return '';
 };
 
@@ -56,6 +64,15 @@ apiClient.interceptors.response.use(
     return response;
   },
   (error) => {
+    const requestUrl = `${error?.config?.baseURL ?? ''}${error?.config?.url ?? ''}`;
+    console.error('[API_ERROR]', {
+      message: error?.message,
+      code: error?.code,
+      status: error?.response?.status,
+      requestUrl,
+      method: error?.config?.method,
+    });
+
     if (error.response?.status === 401) {
       useAuthStore.getState().clearAuth();
       if (window.location.pathname !== '/login') {
