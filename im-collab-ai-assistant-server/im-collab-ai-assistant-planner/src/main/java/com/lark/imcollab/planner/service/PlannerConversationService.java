@@ -5,15 +5,18 @@ import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PendingTaskCandidate;
 import com.lark.imcollab.common.model.entity.PendingTaskSelection;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.planner.supervisor.PlannerExecutionTool;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
+import com.lark.imcollab.planner.supervisor.PlannerToolResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +24,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -34,11 +38,12 @@ public class PlannerConversationService {
     private final TaskBridgeService taskBridgeService;
     private final PlannerConversationMemoryService memoryService;
     private final PlannerSupervisorGraphRunner graphRunner;
+    private final PlannerExecutionTool executionTool;
+    private final TaskRuntimeService taskRuntimeService;
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
 
-    @Autowired
     public PlannerConversationService(
             TaskSessionResolver sessionResolver,
             TaskIntakeService intakeService,
@@ -47,12 +52,28 @@ public class PlannerConversationService {
             PlannerConversationMemoryService memoryService,
             PlannerSupervisorGraphRunner graphRunner
     ) {
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null);
+    }
+
+    @Autowired
+    public PlannerConversationService(
+            TaskSessionResolver sessionResolver,
+            TaskIntakeService intakeService,
+            PlannerSessionService sessionService,
+            TaskBridgeService taskBridgeService,
+            PlannerConversationMemoryService memoryService,
+            PlannerSupervisorGraphRunner graphRunner,
+            PlannerExecutionTool executionTool,
+            TaskRuntimeService taskRuntimeService
+    ) {
         this.sessionResolver = sessionResolver;
         this.intakeService = intakeService;
         this.sessionService = sessionService;
         this.taskBridgeService = taskBridgeService;
         this.memoryService = memoryService;
         this.graphRunner = graphRunner;
+        this.executionTool = executionTool;
+        this.taskRuntimeService = taskRuntimeService;
     }
 
     public PlanTaskSession handlePlanRequest(
@@ -65,12 +86,20 @@ public class PlannerConversationService {
         PlanTaskSession session = resolution.existingSession()
                 ? sessionService.get(resolution.taskId())
                 : transientSession(resolution.taskId(), workspaceContext);
+        TaskIntakeDecision preliminaryIntakeDecision = intakeService.decide(
+                session,
+                rawInstruction,
+                userFeedback,
+                resolution.existingSession()
+        );
+        boolean bypassPendingSelections = isForcedNewTask(preliminaryIntakeDecision);
         PlanTaskSession artifactSelectionResult = tryResumePendingArtifactSelection(
                 session,
                 resolution,
                 rawInstruction,
                 userFeedback,
-                workspaceContext
+                workspaceContext,
+                bypassPendingSelections
         );
         if (artifactSelectionResult != null) {
             return artifactSelectionResult;
@@ -80,23 +109,16 @@ public class PlannerConversationService {
                 resolution,
                 rawInstruction,
                 userFeedback,
-                workspaceContext
+                workspaceContext,
+                bypassPendingSelections
         );
         if (selectionResult != null) {
             return selectionResult;
         }
         String userInput = firstText(userFeedback, rawInstruction);
 
-        TaskIntakeDecision intakeDecision = intakeService.decide(
-                session,
-                rawInstruction,
-                userFeedback,
-                resolution.existingSession()
-        );
+        TaskIntakeDecision intakeDecision = preliminaryIntakeDecision;
         intakeDecision = absorbDocLinksDuringClarification(session, resolution, workspaceContext, intakeDecision, userFeedback, rawInstruction);
-        if (shouldDeferExecutingTaskModification(taskId, resolution, session, intakeDecision)) {
-            return executingTaskModificationReply(workspaceContext, resolution, userInput);
-        }
         if (shouldStartFreshTask(taskId, resolution, intakeDecision)) {
             resolution = new TaskSessionResolution(UUID.randomUUID().toString(), false, resolution.continuationKey());
             session = transientSession(resolution.taskId(), workspaceContext);
@@ -105,7 +127,10 @@ public class PlannerConversationService {
         if (graphInstruction.isBlank()) {
             graphInstruction = intakeDecision.effectiveInput();
         }
-        if (shouldRouteCompletedAdjustment(taskId, resolution, session, intakeDecision)) {
+        if (shouldAutoInterruptExecutingTaskForReplan(taskId, resolution, session, intakeDecision, workspaceContext)) {
+            return autoInterruptExecutingTaskForReplan(session, resolution, workspaceContext, intakeDecision, graphInstruction);
+        }
+        if (shouldRouteCompletedAdjustment(taskId, resolution, session, intakeDecision, workspaceContext)) {
             PlanTaskSession adjustmentResult = routeCompletedAdjustmentTaskSelection(
                     graphInstruction,
                     workspaceContext,
@@ -155,8 +180,12 @@ public class PlannerConversationService {
             TaskSessionResolution resolution,
             String rawInstruction,
             String userFeedback,
-            WorkspaceContext workspaceContext
+            WorkspaceContext workspaceContext,
+            boolean bypassPendingSelection
     ) {
+        if (bypassPendingSelection) {
+            return null;
+        }
         PendingArtifactSelection selection = session == null || session.getIntakeState() == null
                 ? null
                 : session.getIntakeState().getPendingArtifactSelection();
@@ -226,8 +255,12 @@ public class PlannerConversationService {
             TaskSessionResolution resolution,
             String rawInstruction,
             String userFeedback,
-            WorkspaceContext workspaceContext
+            WorkspaceContext workspaceContext,
+            boolean bypassPendingSelection
     ) {
+        if (bypassPendingSelection) {
+            return null;
+        }
         PendingTaskSelection selection = session == null || session.getIntakeState() == null
                 ? null
                 : session.getIntakeState().getPendingTaskSelection();
@@ -393,57 +426,121 @@ public class PlannerConversationService {
         return session;
     }
 
-    private PlanTaskSession executingTaskModificationReply(
-            WorkspaceContext workspaceContext,
-            TaskSessionResolution currentResolution,
-            String instruction
-    ) {
-        String reply = "当前任务还在执行中，我先不直接修改或重跑，避免旧执行结果和新计划互相覆盖。"
-                + "请等它完成后再说要修改的内容；如果你确实要中断，请先回复“取消当前任务”，取消完成后再发新的调整要求。";
-        PlanTaskSession replySession = transientSession(UUID.randomUUID().toString(), workspaceContext);
-        TaskSessionResolution replyResolution = new TaskSessionResolution(
-                replySession.getTaskId(),
-                false,
-                currentResolution == null ? null : currentResolution.continuationKey()
-        );
-        updateSessionEnvelope(
-                replySession,
-                workspaceContext,
-                new TaskIntakeDecision(TaskIntakeTypeEnum.UNKNOWN, instruction, "executing task modification deferred", reply, null),
-                replyResolution,
-                instruction
-        );
-        replySession.setPlanningPhase(PlanningPhaseEnum.INTAKE);
-        sessionService.saveWithoutVersionChange(replySession);
-        return replySession;
-    }
-
-    private boolean shouldDeferExecutingTaskModification(
+    private boolean shouldAutoInterruptExecutingTaskForReplan(
             String explicitTaskId,
             TaskSessionResolution resolution,
             PlanTaskSession session,
-            TaskIntakeDecision intakeDecision
+            TaskIntakeDecision intakeDecision,
+            WorkspaceContext workspaceContext
     ) {
         if (hasText(explicitTaskId)
                 || resolution == null
                 || !resolution.existingSession()
                 || session == null
-                || session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING) {
+                || session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING
+                || !isImConversation(workspaceContext)) {
             return false;
         }
         return intakeDecision != null && intakeDecision.intakeType() == TaskIntakeTypeEnum.PLAN_ADJUSTMENT;
+    }
+
+    private PlanTaskSession autoInterruptExecutingTaskForReplan(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision intakeDecision,
+            String graphInstruction
+    ) {
+        updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution, graphInstruction);
+        memoryService.appendUserTurn(
+                session,
+                graphInstruction,
+                intakeDecision.intakeType(),
+                workspaceContext == null ? null : workspaceContext.getInputSource());
+        sessionService.saveWithoutVersionChange(session);
+        sessionService.publishEvent(session.getTaskId(), "INTAKE_ACCEPTED");
+
+        if (taskRuntimeService != null) {
+            taskRuntimeService.appendUserIntervention(session.getTaskId(), graphInstruction);
+        }
+        PlannerToolResult cancelResult = executionTool == null
+                ? PlannerToolResult.failure(session.getTaskId(), null, "执行桥接尚未就绪，无法中断当前任务。")
+                : executionTool.cancelExecution(session.getTaskId(), "interrupt execution for plan adjustment");
+        if (cancelResult == null || !cancelResult.success()) {
+            return updateExecutingAdjustmentReply(
+                    session,
+                    "当前执行还没成功中断，先不进入重规划。"
+                            + firstText(cancelResult == null ? null : cancelResult.message(), "请稍后再试一次。"),
+                    PlanningPhaseEnum.EXECUTING
+            );
+        }
+
+        sessionService.markAborted(session.getTaskId(), "User interrupted execution for IM plan adjustment: " + graphInstruction);
+        if (taskRuntimeService != null) {
+            taskRuntimeService.projectPhaseTransition(
+                    session.getTaskId(),
+                    PlanningPhaseEnum.ABORTED,
+                    com.lark.imcollab.common.model.enums.TaskEventTypeEnum.TASK_CANCELLED
+            );
+        }
+
+        PlanTaskSession replanned = graphRunner.run(
+                new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "interrupt running task and replan from IM"),
+                session.getTaskId(),
+                graphInstruction,
+                workspaceContext,
+                graphInstruction
+        );
+        taskBridgeService.ensureTask(replanned);
+        if (replanned == null) {
+            return sessionService.get(session.getTaskId());
+        }
+        if (replanned.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
+            if (replanned.getPlanningPhase() == PlanningPhaseEnum.FAILED) {
+                clearAssistantReply(replanned);
+            }
+            return replanned;
+        }
+
+        PlannerToolResult confirmResult = executionTool == null
+                ? PlannerToolResult.failure(replanned.getTaskId(), null, "执行桥接尚未就绪，无法自动继续执行。")
+                : executionTool.confirmExecution(replanned.getTaskId());
+        PlanTaskSession latest = sessionService.get(replanned.getTaskId());
+        if (confirmResult == null || !confirmResult.success() || latest.getPlanningPhase() != PlanningPhaseEnum.EXECUTING) {
+            return updateExecutingAdjustmentReply(
+                    latest,
+                    "新计划已经调整完成，但自动继续执行没有成功。你可以直接回复“开始执行”。",
+                    latest.getPlanningPhase()
+            );
+        }
+        return updateExecutingAdjustmentReply(
+                latest,
+                "已中断当前执行，并按新计划重新开始执行。",
+                PlanningPhaseEnum.EXECUTING
+        );
     }
 
     private boolean shouldRouteCompletedAdjustment(
             String explicitTaskId,
             TaskSessionResolution resolution,
             PlanTaskSession session,
-            TaskIntakeDecision intakeDecision
+            TaskIntakeDecision intakeDecision,
+            WorkspaceContext workspaceContext
     ) {
         if (intakeDecision == null || intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
             return false;
         }
-        return !hasText(explicitTaskId) && (!resolution.existingSession() || isCompleted(session));
+        if (hasText(explicitTaskId) || isForcedNewTask(intakeDecision)) {
+            return false;
+        }
+        Optional<ConversationTaskState> conversationState = sessionResolver.conversationState(workspaceContext);
+        if (conversationState.map(ConversationTaskState::getExecutingTaskId).filter(this::hasText).isPresent()) {
+            return false;
+        }
+        if (resolution == null || !resolution.existingSession() || isCompleted(session)) {
+            return !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
+        }
+        return false;
     }
 
     private boolean isCompleted(PlanTaskSession session) {
@@ -520,6 +617,10 @@ public class PlannerConversationService {
                 && resolution.existingSession()
                 && intakeDecision != null
                 && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK;
+    }
+
+    private boolean isForcedNewTask(TaskIntakeDecision intakeDecision) {
+        return intakeService.isForcedNewTaskDecision(intakeDecision);
     }
 
     private boolean shouldBindConversation(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
@@ -617,6 +718,42 @@ public class PlannerConversationService {
         return second == null ? "" : second.trim();
     }
 
+    private PlanTaskSession updateExecutingAdjustmentReply(
+            PlanTaskSession session,
+            String reply,
+            PlanningPhaseEnum fallbackPhase
+    ) {
+        if (session == null) {
+            return null;
+        }
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        intakeState.setAssistantReply(reply);
+        session.setIntakeState(intakeState);
+        if (session.getPlanningPhase() == null && fallbackPhase != null) {
+            session.setPlanningPhase(fallbackPhase);
+        }
+        sessionService.saveWithoutVersionChange(session);
+        return session;
+    }
+
+    private void clearAssistantReply(PlanTaskSession session) {
+        if (session == null || session.getIntakeState() == null) {
+            return;
+        }
+        session.getIntakeState().setAssistantReply(null);
+        sessionService.saveWithoutVersionChange(session);
+    }
+
+    private boolean isImConversation(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null || workspaceContext.getInputSource() == null) {
+            return false;
+        }
+        return workspaceContext.getInputSource().toUpperCase(Locale.ROOT).contains("LARK");
+    }
+
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
@@ -634,4 +771,5 @@ public class PlannerConversationService {
         } while (!normalized.equals(previous));
         return normalized;
     }
+
 }

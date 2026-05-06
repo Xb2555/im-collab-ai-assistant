@@ -97,6 +97,32 @@ public class RedisArtifactRepository implements ArtifactRepository {
                 });
     }
 
+    @Override
+    public void deleteArtifact(String taskId, String artifactId) {
+        if (!hasText(taskId) || !hasText(artifactId)) {
+            return;
+        }
+        List<Artifact> list = findByTaskId(taskId);
+        Artifact removed = list.stream()
+                .filter(artifact -> artifact != null && artifactId.trim().equals(artifact.getArtifactId()))
+                .findFirst()
+                .orElse(null);
+        list.removeIf(artifact -> artifact != null && artifactId.trim().equals(artifact.getArtifactId()));
+        if (list.isEmpty()) {
+            store.delete(PREFIX + taskId.trim());
+        } else {
+            store.set(PREFIX + taskId.trim(), list, TTL);
+        }
+        if (removed != null) {
+            if (hasText(removed.getDocumentId())) {
+                store.delete(DOC_ID_PREFIX + removed.getDocumentId().trim());
+            }
+            if (hasText(removed.getExternalUrl())) {
+                store.delete(DOC_URL_PREFIX + removed.getExternalUrl().trim());
+            }
+        }
+    }
+
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }

@@ -2,6 +2,7 @@ package com.lark.imcollab.store.planner;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
@@ -37,6 +38,7 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     private static final String SUBMISSION_KEY_PREFIX = "planner:submission:";
     private static final String EVALUATION_KEY_PREFIX = "planner:evaluation:";
     private static final String CONVERSATION_KEY_PREFIX = "planner:conversation:";
+    private static final String CONVERSATION_STATE_KEY_PREFIX = "planner:conversation-state:";
     private static final String USER_TASK_KEY_PREFIX = "planner:user-tasks:";
     private static final Duration SESSION_TTL = Duration.ofDays(7);
     private static final DefaultRedisScript<Long> SAVE_SESSION_IF_REVISION_SCRIPT = new DefaultRedisScript<>("""
@@ -113,6 +115,51 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     @Override
     public void saveConversationTaskBinding(String conversationKey, String taskId) {
         redisTemplate.opsForValue().set(CONVERSATION_KEY_PREFIX + conversationKey, taskId, SESSION_TTL);
+    }
+
+    @Override
+    public Optional<ConversationTaskState> findConversationTaskState(String conversationKey) {
+        try {
+            String json = redisTemplate.opsForValue().get(CONVERSATION_STATE_KEY_PREFIX + conversationKey);
+            if (json == null) {
+                return Optional.empty();
+            }
+            return Optional.of(objectMapper.readValue(json, ConversationTaskState.class));
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load conversation task state: " + conversationKey, e);
+        }
+    }
+
+    @Override
+    public void saveConversationTaskState(ConversationTaskState state) {
+        try {
+            if (state == null || state.getConversationKey() == null || state.getConversationKey().isBlank()) {
+                return;
+            }
+            redisTemplate.opsForValue().set(
+                    CONVERSATION_STATE_KEY_PREFIX + state.getConversationKey(),
+                    objectMapper.writeValueAsString(state),
+                    SESSION_TTL
+            );
+            if (hasText(state.getActiveTaskId())) {
+                saveConversationTaskBinding(state.getConversationKey(), state.getActiveTaskId());
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to save conversation task state: "
+                    + (state == null ? null : state.getConversationKey()), e);
+        }
+    }
+
+    @Override
+    public void clearConversationExecutingTask(String conversationKey, String taskId) {
+        findConversationTaskState(conversationKey).ifPresent(state -> {
+            if (!sameText(taskId, state.getExecutingTaskId())) {
+                return;
+            }
+            state.setExecutingTaskId(null);
+            state.setUpdatedAt(Instant.now());
+            saveConversationTaskState(state);
+        });
     }
 
     @Override
@@ -279,6 +326,16 @@ public class RedisPlannerStateStore implements PlannerStateStore {
         } catch (Exception e) {
             throw new RuntimeException("Failed to load runtime artifacts for task: " + taskId, e);
         }
+    }
+
+    @Override
+    public void deleteArtifact(String taskId, String artifactId) {
+        if (!hasText(taskId) || !hasText(artifactId)) {
+            return;
+        }
+        redisTemplate.delete(ARTIFACT_KEY_PREFIX + artifactId.trim());
+        redisTemplate.opsForSet().remove(TASK_ARTIFACT_KEY_PREFIX + taskId.trim(), artifactId.trim());
+        redisTemplate.expire(TASK_ARTIFACT_KEY_PREFIX + taskId.trim(), SESSION_TTL);
     }
 
     @Override

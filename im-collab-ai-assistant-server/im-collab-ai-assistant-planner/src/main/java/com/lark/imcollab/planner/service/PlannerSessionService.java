@@ -13,8 +13,8 @@ import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.store.planner.PlannerStateStore;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -29,12 +29,27 @@ import java.util.concurrent.ConcurrentHashMap;
 @Deprecated
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class PlannerSessionService {
 
     private final PlannerStateStore stateRepository;
     private final PlannerProperties plannerProperties;
+    private final ConversationTaskStateService conversationTaskStateService;
     private final ConcurrentHashMap<String, Integer> eventIndexMap = new ConcurrentHashMap<>();
+
+    public PlannerSessionService(PlannerStateStore stateRepository, PlannerProperties plannerProperties) {
+        this(stateRepository, plannerProperties, null);
+    }
+
+    @Autowired
+    public PlannerSessionService(
+            PlannerStateStore stateRepository,
+            PlannerProperties plannerProperties,
+            ConversationTaskStateService conversationTaskStateService
+    ) {
+        this.stateRepository = stateRepository;
+        this.plannerProperties = plannerProperties;
+        this.conversationTaskStateService = conversationTaskStateService;
+    }
 
     public int getLastEventIndex(String taskId) {
         return eventIndexMap.getOrDefault(taskId, 0);
@@ -98,6 +113,7 @@ public class PlannerSessionService {
         long nextStateRevision = expectedStateRevision + 1;
         session.setStateRevision(nextStateRevision);
         if (stateRepository.saveSessionIfStateRevision(session, expectedStateRevision)) {
+            syncConversationTaskState(session);
             return;
         }
         if (userVisibleVersionAdvanced) {
@@ -108,6 +124,13 @@ public class PlannerSessionService {
         throw new VersionConflictException("Session state conflict: taskId=" + session.getTaskId()
                 + ", expectedStateRevision=" + expectedStateRevision
                 + ", actualStateRevision=" + (latest == null ? "missing" : latest.getStateRevision()));
+    }
+
+    private void syncConversationTaskState(PlanTaskSession session) {
+        if (conversationTaskStateService == null || session == null) {
+            return;
+        }
+        conversationTaskStateService.syncFromSession(session);
     }
 
     public PlanTaskSession get(String taskId) {

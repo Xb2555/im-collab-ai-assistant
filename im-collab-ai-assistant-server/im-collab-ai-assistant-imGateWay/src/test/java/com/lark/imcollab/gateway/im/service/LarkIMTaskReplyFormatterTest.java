@@ -258,6 +258,27 @@ class LarkIMTaskReplyFormatterTest {
     }
 
     @Test
+    void executionReplannedReplyAlwaysStatesInterruptAndRestart() {
+        String text = formatter.executionReplannedAndRestarted("已将第3页改为“实施收益”");
+
+        assertThat(text).contains("已中断当前执行", "按新计划重新开始执行", "已将第3页改为“实施收益”");
+    }
+
+    @Test
+    void executionReplannedReplyDoesNotRepeatPlanPhrase() {
+        String text = formatter.executionReplannedAndRestarted("已中断当前执行，并按新计划重新开始执行。");
+
+        assertThat(text).isEqualTo("💬 已中断当前执行，并按新计划重新开始执行。");
+    }
+
+    @Test
+    void completedArtifactEditClarificationExplicitlySaysNoRestart() {
+        String text = formatter.completedArtifactEditClarification("已修改 PPT 第 3 页：实施收益");
+
+        assertThat(text).contains("当前上一轮任务已完成", "按现有 PPT 修改处理", "不是重新启动执行", "已修改 PPT 第 3 页");
+    }
+
+    @Test
     void executionStartedUsesAssistantTone() {
         TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
                 .steps(List.of(TaskStepRecord.builder().name("生成技术方案文档").status(StepStatusEnum.RUNNING).build()))

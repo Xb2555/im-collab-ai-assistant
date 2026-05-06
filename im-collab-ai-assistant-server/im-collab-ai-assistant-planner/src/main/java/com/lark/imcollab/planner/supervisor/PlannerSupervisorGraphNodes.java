@@ -244,6 +244,7 @@ public class PlannerSupervisorGraphNodes {
     public CompletableFuture<Map<String, Object>> cancel(OverAllState state, RunnableConfig config) {
         String taskId = state.value(PlannerSupervisorStateKeys.TASK_ID, "");
         String rawInstruction = state.value(PlannerSupervisorStateKeys.RAW_INSTRUCTION, "");
+        executionTool.cancelExecution(taskId, "cancel requested from planner conversation");
         sessionService.markAborted(taskId, "User cancelled from conversation: " + rawInstruction);
         PlanTaskSession cancelled = sessionService.get(taskId);
         memoryService.appendAssistantTurn(cancelled, "任务已取消");

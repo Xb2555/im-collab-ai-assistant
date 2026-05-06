@@ -163,10 +163,23 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
                 && session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED
                 && hasAssistantReply(session)) {
-            replyText(message, session,
-                    replyFormatter.assistantReply(session.getIntakeState().getAssistantReply())
-                            + "\n\n" + replyFormatter.status(snapshot(session)),
+            String detail = session.getIntakeState().getAssistantReply();
+            String confirmation = requestsResumeExecution(message == null ? null : message.content())
+                    ? replyFormatter.completedArtifactEditClarification(detail)
+                    : replyFormatter.completedArtifactEditApplied(detail);
+            replyText(message, session, confirmation + "\n\n" + replyFormatter.status(snapshot(session)),
                     "plan adjustment completed");
+            return;
+        }
+        if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
+            String confirmation = replyFormatter.executionReplannedAndRestarted(
+                    session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply());
+            replyText(message, session, withStatus(confirmation, snapshot(session)), "plan adjustment resumed execution");
+            return;
+        }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.FAILED) {
+            replyText(message, session, replyFormatter.failure(session, snapshot(session)), "failed");
             return;
         }
         if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT && hasAssistantReply(session)) {
@@ -188,10 +201,6 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.ABORTED) {
             replyText(message, session, replyFormatter.taskCancelled(), "cancelled");
-            return;
-        }
-        if (session.getPlanningPhase() == PlanningPhaseEnum.FAILED) {
-            replyText(message, session, replyFormatter.failure(session, snapshot(session)), "failed");
             return;
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED) {
@@ -397,5 +406,14 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
 
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private boolean requestsResumeExecution(String text) {
+        if (!hasText(text)) {
+            return false;
+        }
+        return text.contains("继续跑")
+                || text.contains("继续执行")
+                || text.contains("重新开始执行");
     }
 }

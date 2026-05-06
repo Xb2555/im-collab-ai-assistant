@@ -94,6 +94,7 @@ class PlannerSupervisorGraphRunnerTest {
 
         assertThat(result.getTaskId()).isEqualTo("task-2");
         assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ABORTED);
+        verify(fixture.executionTool).cancelExecution("task-2", "cancel requested from planner conversation");
         verify(fixture.sessionService).markAborted("task-2", "User cancelled from conversation: 取消任务");
         verify(fixture.runtimeProjectionService).projectStage(aborted, TaskEventTypeEnum.TASK_CANCELLED, "任务已取消");
         verifyNoInteractions(fixture.planningNodeService);

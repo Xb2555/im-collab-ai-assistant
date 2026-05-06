@@ -44,6 +44,12 @@ public class TaskIntakeService {
         this(intentRouterService, new UnknownIntentReplyService());
     }
 
+    public boolean isForcedNewTaskDecision(TaskIntakeDecision decision) {
+        return decision != null
+                && decision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
+                && "hard rule force new task".equals(decision.routingReason());
+    }
+
     private TaskIntakeTypeEnum map(TaskCommandTypeEnum type) {
         if (type == null) {
             return TaskIntakeTypeEnum.UNKNOWN;

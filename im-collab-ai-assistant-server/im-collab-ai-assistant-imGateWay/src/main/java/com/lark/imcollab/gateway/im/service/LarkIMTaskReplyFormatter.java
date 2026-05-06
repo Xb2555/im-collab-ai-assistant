@@ -220,6 +220,24 @@ public class LarkIMTaskReplyFormatter {
         return startsWithIcon(trimmed) ? trimmed : "💬 " + trimmed;
     }
 
+    public String executionReplannedAndRestarted(String detail) {
+        StringBuilder builder = new StringBuilder("💬 已中断当前执行，并按新计划重新开始执行。");
+        appendDetail(builder, detail, "已中断当前执行", "并按新计划", "重新开始执行");
+        return builder.toString();
+    }
+
+    public String completedArtifactEditApplied(String detail) {
+        StringBuilder builder = new StringBuilder("💬 当前上一轮任务已完成，我按现有 PPT 修改处理。");
+        appendDetail(builder, detail, "当前上一轮任务已完成", "按现有 PPT 修改处理");
+        return builder.toString();
+    }
+
+    public String completedArtifactEditClarification(String detail) {
+        StringBuilder builder = new StringBuilder("💬 当前上一轮任务已完成，我按现有 PPT 修改处理，这次不是重新启动执行。");
+        appendDetail(builder, detail, "当前上一轮任务已完成", "按现有 PPT 修改处理", "不是重新启动执行");
+        return builder.toString();
+    }
+
     private void appendCardSummary(StringBuilder builder, List<UserPlanCard> cards) {
         if (cards.isEmpty()) {
             builder.append("\n1. 先理解你的需求并生成可执行步骤");
@@ -236,6 +254,30 @@ public class LarkIMTaskReplyFormatter {
         if (cards.size() > limit) {
             builder.append("\n").append(limit + 1).append(". 还有 ").append(cards.size() - limit).append(" 个后续步骤会继续串起来");
         }
+    }
+
+    private void appendDetail(StringBuilder builder, String detail, String... suppressedFragments) {
+        if (!hasText(detail)) {
+            return;
+        }
+        String normalized = stripLeadingIcon(detail.trim());
+        for (String fragment : suppressedFragments) {
+            if (hasText(fragment) && normalized.contains(fragment)) {
+                normalized = normalized.replace(fragment, "").trim();
+            }
+        }
+        normalized = normalized.replaceFirst("^[，。；;、\\s]+", "").trim();
+        if (!hasText(normalized)) {
+            return;
+        }
+        builder.append("\n").append(normalized);
+    }
+
+    private String stripLeadingIcon(String text) {
+        if (!hasText(text)) {
+            return text;
+        }
+        return text.replaceFirst("^[^\\p{IsHan}\\p{L}\\p{N}]+\\s*", "").trim();
     }
 
     private void appendEditHint(StringBuilder builder, List<UserPlanCard> cards) {

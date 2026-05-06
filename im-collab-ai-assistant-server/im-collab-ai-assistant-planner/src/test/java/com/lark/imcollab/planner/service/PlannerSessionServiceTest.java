@@ -2,6 +2,7 @@ package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
+import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
@@ -13,8 +14,10 @@ import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
+import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.store.planner.PlannerStateStore;
@@ -129,8 +132,38 @@ class PlannerSessionServiceTest {
         assertThat(event.getSubtasks().get(0).getRetryCount()).isEqualTo(2);
     }
 
+    @Test
+    void syncsConversationAnchorsWhenSessionPhaseChanges() {
+        InMemoryStore store = new InMemoryStore();
+        ConversationTaskStateService stateService = new ConversationTaskStateService(store);
+        PlannerSessionService service = new PlannerSessionService(store, new PlannerProperties(), stateService);
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.NEW_TASK)
+                        .continuationKey("LARK:chat-1:chat-root")
+                        .build())
+                .build();
+
+        service.saveWithoutVersionChange(session);
+
+        ConversationTaskState executing = store.findConversationTaskState("LARK:chat-1:chat-root").orElseThrow();
+        assertThat(executing.getActiveTaskId()).isEqualTo("task-1");
+        assertThat(executing.getExecutingTaskId()).isEqualTo("task-1");
+
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        service.saveWithoutVersionChange(session);
+
+        ConversationTaskState completed = store.findConversationTaskState("LARK:chat-1:chat-root").orElseThrow();
+        assertThat(completed.getActiveTaskId()).isEqualTo("task-1");
+        assertThat(completed.getExecutingTaskId()).isNull();
+        assertThat(completed.getLastCompletedTaskId()).isEqualTo("task-1");
+    }
+
     private static class InMemoryStore implements PlannerStateStore {
         private final Map<String, PlanTaskSession> sessions = new HashMap<>();
+        private final Map<String, ConversationTaskState> conversationStates = new HashMap<>();
         private final List<TaskEvent> events = new ArrayList<>();
         private final List<TaskStepRecord> steps = new ArrayList<>();
 
@@ -163,6 +196,12 @@ class PlannerSessionServiceTest {
 
         @Override public Optional<String> findConversationTaskId(String conversationKey) { return Optional.empty(); }
         @Override public void saveConversationTaskBinding(String conversationKey, String taskId) {}
+        @Override public Optional<ConversationTaskState> findConversationTaskState(String conversationKey) {
+            return Optional.ofNullable(conversationStates.get(conversationKey));
+        }
+        @Override public void saveConversationTaskState(ConversationTaskState state) {
+            conversationStates.put(state.getConversationKey(), state);
+        }
         @Override public void appendEvent(TaskEvent event) { events.add(event); }
         @Override public List<String> getEventJsonList(String taskId) { return List.of(); }
         @Override public void saveTask(TaskRecord task) {}

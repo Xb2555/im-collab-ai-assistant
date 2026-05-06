@@ -21,13 +21,18 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -36,6 +41,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -47,6 +53,7 @@ class DefaultImTaskCommandFacadeTest {
     private final TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
     private final HarnessFacade harnessFacade = mock(HarnessFacade.class);
     private final PlannerExecutionReviewService reviewService = mock(PlannerExecutionReviewService.class);
+    private final TaskArtifactResetService taskArtifactResetService = mock(TaskArtifactResetService.class);
     private final TaskUserNotificationFacade notificationFacade = mock(TaskUserNotificationFacade.class);
     private final HoldingAsyncExecutor executor = new HoldingAsyncExecutor();
     private final HoldingScheduledExecutor timeoutScheduler = new HoldingScheduledExecutor();
@@ -59,6 +66,7 @@ class DefaultImTaskCommandFacadeTest {
             taskRuntimeService,
             harnessFacade,
             reviewService,
+            taskArtifactResetService,
             List.of(notificationFacade),
             executor,
             timeoutScheduler,
@@ -77,6 +85,7 @@ class DefaultImTaskCommandFacadeTest {
         PlanTaskSession returned = facade.confirmExecution("task-1");
 
         assertThat(returned.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        verify(taskArtifactResetService).clearGeneratedArtifactsBeforeExecution("task-1");
         verify(taskBridgeService).ensureTask(session);
         verify(sessionService).save(session);
         verify(sessionService).publishEvent("task-1", "EXECUTING");
@@ -182,6 +191,7 @@ class DefaultImTaskCommandFacadeTest {
         PlanTaskSession returned = facade.retryExecution("task-1", "请用备用方案重试");
 
         assertThat(returned).isEqualTo(retrying);
+        verify(taskArtifactResetService).clearGeneratedArtifactsBeforeExecution("task-1");
         verify(taskBridgeService).ensureTask(retrying);
         verify(harnessFacade, never()).startExecution("task-1");
 
@@ -227,6 +237,83 @@ class DefaultImTaskCommandFacadeTest {
         verify(reviewService, never()).reviewAndNotify("task-1");
     }
 
+    @Test
+    void confirmExecutionWaitsForCancelledRunningExecutionToDrainBeforeRestarting() throws Exception {
+        PlannerExecutionProperties properties = executionProperties();
+        DirectAsyncExecutor directExecutor = new DirectAsyncExecutor();
+        HoldingScheduledExecutor scheduledExecutor = new HoldingScheduledExecutor();
+        TaskCancellationRegistry registry = new TaskCancellationRegistry();
+        DefaultImTaskCommandFacade blockingFacade = new DefaultImTaskCommandFacade(
+                sessionService,
+                taskBridgeService,
+                plannerRetryService,
+                taskRuntimeService,
+                harnessFacade,
+                reviewService,
+                taskArtifactResetService,
+                List.of(notificationFacade),
+                directExecutor,
+                scheduledExecutor,
+                properties,
+                registry
+        );
+        PlanTaskSession first = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        PlanTaskSession second = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(sessionService.get("task-1")).thenReturn(first, second);
+
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean inFlight = new AtomicBoolean(false);
+        AtomicInteger starts = new AtomicInteger();
+        when(harnessFacade.startExecution("task-1")).thenAnswer(invocation -> {
+            if (!inFlight.compareAndSet(false, true)) {
+                throw new IllegalStateException("Task is already executing");
+            }
+            starts.incrementAndGet();
+            running.countDown();
+            try {
+                release.await(2, TimeUnit.SECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } finally {
+                inFlight.set(false);
+            }
+            return null;
+        });
+
+        blockingFacade.confirmExecution("task-1");
+        assertThat(running.await(1, TimeUnit.SECONDS)).isTrue();
+
+        blockingFacade.cancelExecution("task-1");
+
+        Thread restart = new Thread(() -> blockingFacade.confirmExecution("task-1"));
+        restart.start();
+        assertEventuallyEquals(starts, 1, 500);
+
+        release.countDown();
+        restart.join(2_000L);
+
+        assertEventuallyEquals(starts, 2, 2_000);
+        verify(harnessFacade, times(2)).startExecution("task-1");
+    }
+
+    private static void assertEventuallyEquals(AtomicInteger value, int expected, long timeoutMillis) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (System.nanoTime() < deadline) {
+            if (value.get() == expected) {
+                return;
+            }
+            Thread.sleep(10L);
+        }
+        assertThat(value.get()).isEqualTo(expected);
+    }
+
     private static PlannerExecutionProperties executionProperties() {
         PlannerExecutionProperties properties = new PlannerExecutionProperties();
         properties.setTimeoutSeconds(1);
@@ -264,6 +351,31 @@ class DefaultImTaskCommandFacadeTest {
         void runAll() {
             tasks.forEach(Runnable::run);
             tasks.clear();
+        }
+    }
+
+    private static class DirectAsyncExecutor implements AsyncTaskExecutor {
+
+        private final ExecutorService executorService = Executors.newCachedThreadPool();
+
+        @Override
+        public void execute(Runnable command) {
+            executorService.execute(command);
+        }
+
+        @Override
+        public void execute(Runnable task, long startTimeout) {
+            executorService.execute(task);
+        }
+
+        @Override
+        public Future<?> submit(Runnable task) {
+            return executorService.submit(task);
+        }
+
+        @Override
+        public <T> Future<T> submit(Callable<T> task) {
+            return executorService.submit(task);
         }
     }
 

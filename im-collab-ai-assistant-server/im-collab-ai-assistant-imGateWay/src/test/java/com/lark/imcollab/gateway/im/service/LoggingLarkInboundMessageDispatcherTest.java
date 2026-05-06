@@ -175,6 +175,23 @@ class LoggingLarkInboundMessageDispatcherTest {
     }
 
     @Test
+    void executingPlanAdjustmentRepliesRestartedExecutionAndStatus() {
+        PlanTaskSession executing = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.EXECUTING);
+        executing.getIntakeState().setAssistantReply("已中断当前执行，并按新计划重新开始执行。");
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(executing);
+        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshot(TaskStatusEnum.EXECUTING));
+
+        dispatcher.dispatch(message("把第三页改一下并继续跑"));
+
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
+                        .contains("已中断当前执行，并按新计划重新开始执行")
+                        .contains("任务状态：正在执行")
+                        .contains("步骤进度：0/2"));
+    }
+
+    @Test
     void imRawInstructionIsNotPassedAsSelectedWorkspaceMaterial() {
         PlanTaskSession clarification = session(TaskIntakeTypeEnum.NEW_TASK, PlanningPhaseEnum.ASK_USER);
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
@@ -246,10 +263,30 @@ class LoggingLarkInboundMessageDispatcherTest {
         List<String> replies = sentPrivateTexts(replyTool);
         assertThat(replies).singleElement()
                 .satisfies(reply -> assertThat(reply)
+                        .contains("当前上一轮任务已完成")
+                        .contains("按现有 PPT 修改处理")
                         .contains("已修改 PPT 第 1 页：IM指定产物修改验证2002")
                         .contains("任务状态：已完成")
                         .contains("[PPT] IM指定产物修改验证")
                         .contains("https://example.feishu.cn/slides/abc123"));
+    }
+
+    @Test
+    void completedPlanAdjustmentWithContinueWordsStillClarifiesNoRestart() {
+        PlanTaskSession completed = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.COMPLETED);
+        completed.getIntakeState().setAssistantReply("已修改 PPT 第 3 页：实施收益");
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(completed);
+        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshotWithArtifact());
+
+        dispatcher.dispatch(message("把第三页改一下并继续执行"));
+
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
+                        .contains("当前上一轮任务已完成")
+                        .contains("按现有 PPT 修改处理")
+                        .contains("不是重新启动执行")
+                        .contains("已修改 PPT 第 3 页：实施收益"));
     }
 
     @Test

@@ -13,4 +13,16 @@ public interface ArtifactRepository {
     Optional<Artifact> findOwnedDocumentRecordByExternalUrl(String externalUrl);
     Optional<Artifact> findOwnedDocumentRecordByDocumentId(String documentId);
     Optional<Artifact> findLatestDocArtifactByTaskId(String taskId);
+
+    default void deleteArtifact(String taskId, String artifactId) {
+    }
+
+    default void deleteByTaskId(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            return;
+        }
+        findByTaskId(taskId).stream()
+                .filter(artifact -> artifact != null && artifact.getArtifactId() != null && !artifact.getArtifactId().isBlank())
+                .forEach(artifact -> deleteArtifact(taskId, artifact.getArtifactId()));
+    }
 }
