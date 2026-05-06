@@ -191,7 +191,7 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
 
   // 3. 聊天室历史记录与 SSE 流 (与桌面端逻辑一致)
   useEffect(() => {
-    if (!activeChatId) return;
+    if (!activeChatId || !accessToken) return;
     if (abortControllerRef.current) abortControllerRef.current.abort();
     abortControllerRef.current = new AbortController();
     const ctrl = abortControllerRef.current;
@@ -243,6 +243,10 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
               } catch (e) {}
             }
           },
+          onerror(err) {
+            console.error('Mobile IM SSE 流异常，停止重试:', err);
+            throw err;
+          }
         });
       } catch (err) {}
     };

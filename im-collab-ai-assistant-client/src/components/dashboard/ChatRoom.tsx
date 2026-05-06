@@ -161,7 +161,7 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
 
   // 3. 聊天室历史记录与 SSE 流
   useEffect(() => {
-    if (!activeChatId) return;
+    if (!activeChatId || !accessToken) return;
 
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -239,6 +239,12 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
               }
             }
           },
+// 2. 补上 onerror 方法！在抛出异常时阻断库的默认无限重试
+          onerror(err) {
+            console.error('IM SSE 流异常，停止重试:', err);
+            throw err; // 抛出异常即可阻止 fetchEventSource 再次重试
+          }
+
         });
       } catch (err: unknown) {
         if (err instanceof Error && err.name !== 'AbortError') console.error('SSE 流断开:', err);
