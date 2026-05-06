@@ -382,11 +382,13 @@ public class PlannerController {
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "REPLAN" -> {
+                PlanCommandRequest ownedRequest = withCurrentUser(request, user.get());
                 PlanTaskSession updated = plannerCommandApplicationService.replan(
                         taskId,
-                        request.getFeedback(),
-                        request.getArtifactPolicy(),
-                        request.getTargetArtifactId()
+                        ownedRequest.getFeedback(),
+                        ownedRequest.getArtifactPolicy(),
+                        ownedRequest.getTargetArtifactId(),
+                        ownedRequest.getWorkspaceContext()
                 );
                 if (!sameTaskId(taskId, updated)) {
                     log.error("Planner REPLAN returned a different task id: requested={}, returned={}",
@@ -503,6 +505,18 @@ public class PlannerController {
 
     private DocumentIterationRequest withCurrentUser(DocumentIterationRequest request, LarkFrontendUserResponse user) {
         DocumentIterationRequest owned = request == null ? new DocumentIterationRequest() : request;
+        WorkspaceContext context = owned.getWorkspaceContext();
+        if (context == null) {
+            context = new WorkspaceContext();
+            owned.setWorkspaceContext(context);
+        }
+        context.setSenderOpenId(user.openId());
+        context.setInputSource(InputSourceEnum.GUI.name());
+        return owned;
+    }
+
+    private PlanCommandRequest withCurrentUser(PlanCommandRequest request, LarkFrontendUserResponse user) {
+        PlanCommandRequest owned = request == null ? new PlanCommandRequest() : request;
         WorkspaceContext context = owned.getWorkspaceContext();
         if (context == null) {
             context = new WorkspaceContext();

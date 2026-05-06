@@ -20,10 +20,12 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.Optional;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -137,5 +139,59 @@ class TaskRuntimeServiceTest {
         assertThat(eventCaptor.getValue().getType()).isEqualTo(TaskEventTypeEnum.USER_INTERVENTION);
         assertThat(eventCaptor.getValue().getVersion()).isEqualTo(7);
         assertThat(eventCaptor.getValue().getPayloadJson()).contains("用户人工干预：给一个大概的参考就好");
+    }
+
+    @Test
+    void projectPhaseTransitionMarksNonTerminalStepsSkippedWhenTaskAborted() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        TaskRepository taskRepository = mock(TaskRepository.class);
+        TaskRecord plannerTask = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.EXECUTING)
+                .version(2)
+                .build();
+        Task domainTask = Task.builder()
+                .taskId("task-1")
+                .status(TaskStatus.EXECUTING)
+                .build();
+        TaskStepRecord running = TaskStepRecord.builder()
+                .taskId("task-1")
+                .stepId("step-running")
+                .status(StepStatusEnum.RUNNING)
+                .build();
+        TaskStepRecord ready = TaskStepRecord.builder()
+                .taskId("task-1")
+                .stepId("step-ready")
+                .status(StepStatusEnum.READY)
+                .build();
+        TaskStepRecord completed = TaskStepRecord.builder()
+                .taskId("task-1")
+                .stepId("step-done")
+                .status(StepStatusEnum.COMPLETED)
+                .build();
+        when(stateStore.findSession("task-1")).thenReturn(Optional.of(PlanTaskSession.builder()
+                .taskId("task-1")
+                .version(3)
+                .build()));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(plannerTask));
+        when(taskRepository.findById("task-1")).thenReturn(Optional.of(domainTask));
+        when(stateStore.findStepsByTaskId("task-1")).thenReturn(List.of(running, ready, completed));
+        TaskRuntimeService service = new TaskRuntimeService(
+                stateStore,
+                mock(PlanGraphBuilder.class),
+                new ObjectMapper(),
+                taskRepository,
+                mock(ExecutionContractFactory.class),
+                mock(TaskRuntimeProjectionService.class)
+        );
+
+        service.projectPhaseTransition("task-1", PlanningPhaseEnum.ABORTED, TaskEventTypeEnum.TASK_CANCELLED);
+
+        assertThat(running.getStatus()).isEqualTo(StepStatusEnum.SKIPPED);
+        assertThat(ready.getStatus()).isEqualTo(StepStatusEnum.SKIPPED);
+        assertThat(completed.getStatus()).isEqualTo(StepStatusEnum.COMPLETED);
+        assertThat(running.getEndedAt()).isNotNull();
+        assertThat(ready.getEndedAt()).isNotNull();
+        verify(stateStore, times(2)).saveStep(org.mockito.ArgumentMatchers.any(TaskStepRecord.class));
     }
 }

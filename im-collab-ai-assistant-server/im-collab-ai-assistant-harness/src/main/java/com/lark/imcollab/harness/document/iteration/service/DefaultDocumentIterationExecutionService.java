@@ -273,6 +273,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                         .documentId(resolveDocId(ownedArtifact))
                         .build();
                 DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
+                hydrateVerificationSnapshot(editPlan, afterSnapshot, resolveDocUrl(ownedArtifact, docRef));
                 richContentTargetStateVerifier.verify(editPlan, richResult, editPlan.getStructureSnapshot(), afterSnapshot);
             }
         } else {
@@ -285,6 +286,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                     .documentId(resolveDocId(ownedArtifact))
                     .build();
             DocumentStructureSnapshot afterSnapshot = snapshotBuilder.build(runtimeArtifact);
+            hydrateVerificationSnapshot(editPlan, afterSnapshot, resolveDocUrl(ownedArtifact, docRef));
             targetStateVerifier.verify(editPlan, editPlan.getStructureSnapshot(), afterSnapshot);
         }
 
@@ -315,6 +317,27 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                 .build();
     }
 
+    private void hydrateVerificationSnapshot(
+            DocumentEditPlan editPlan,
+            DocumentStructureSnapshot afterSnapshot,
+            String docRef
+    ) {
+        if (editPlan == null || afterSnapshot == null || docRef == null || docRef.isBlank()) {
+            return;
+        }
+        ResolvedDocumentAnchor anchor = editPlan.getResolvedAnchor();
+        if (anchor == null) {
+            return;
+        }
+        if (anchor.getSectionAnchor() != null && hasText(anchor.getSectionAnchor().getHeadingBlockId())) {
+            snapshotBuilder.fetchSectionDetail(afterSnapshot, anchor.getSectionAnchor().getHeadingBlockId(), docRef);
+            return;
+        }
+        if (anchor.getBlockAnchor() != null && hasText(anchor.getBlockAnchor().getTopLevelAncestorId())) {
+            snapshotBuilder.fetchSectionDetail(afterSnapshot, anchor.getBlockAnchor().getTopLevelAncestorId(), docRef);
+        }
+    }
+
     private boolean isRichExecutionPlan(DocumentEditPlan editPlan) {
         return isExecutableRichMediaAction(editPlan.getSemanticAction()) && editPlan.getExecutionPlan() != null;
     }
@@ -324,6 +347,10 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             return "";
         }
         return "，revision: " + beforeRevision + " -> " + afterRevision;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private DocumentIterationVO waitingResponse(

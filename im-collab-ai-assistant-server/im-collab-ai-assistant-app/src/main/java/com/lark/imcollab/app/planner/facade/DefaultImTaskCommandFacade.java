@@ -27,11 +27,15 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 
 @Service
 public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultImTaskCommandFacade.class);
+    private static final long EXECUTION_DRAIN_TIMEOUT_MILLIS = 3_000L;
+    private static final long EXECUTION_DRAIN_POLL_MILLIS = 25L;
 
     private final PlannerSessionService sessionService;
     private final TaskBridgeService taskBridgeService;
@@ -39,6 +43,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     private final TaskRuntimeService taskRuntimeService;
     private final HarnessFacade harnessFacade;
     private final PlannerExecutionReviewService reviewService;
+    private final TaskArtifactResetService taskArtifactResetService;
     private final List<TaskUserNotificationFacade> notificationFacades;
     private final AsyncTaskExecutor executionExecutor;
     private final ScheduledExecutorService executionTimeoutScheduler;
@@ -53,6 +58,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             TaskRuntimeService taskRuntimeService,
             HarnessFacade harnessFacade,
             PlannerExecutionReviewService reviewService,
+            TaskArtifactResetService taskArtifactResetService,
             List<TaskUserNotificationFacade> notificationFacades,
             @Qualifier("executionTaskExecutor") AsyncTaskExecutor executionExecutor,
             ScheduledExecutorService executionTimeoutScheduler,
@@ -65,6 +71,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         this.taskRuntimeService = taskRuntimeService;
         this.harnessFacade = harnessFacade;
         this.reviewService = reviewService;
+        this.taskArtifactResetService = taskArtifactResetService;
         this.notificationFacades = notificationFacades == null ? List.of() : List.copyOf(notificationFacades);
         this.executionExecutor = executionExecutor;
         this.executionTimeoutScheduler = executionTimeoutScheduler;
@@ -78,7 +85,12 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         if (session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
             return session;
         }
+        if (!awaitPreviousExecutionDrain(taskId)) {
+            log.warn("Skip execution restart because previous run is still draining: taskId={}", taskId);
+            return session;
+        }
         cancellationRegistry.clear(taskId);
+        taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
         taskBridgeService.ensureTask(session);
         session.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
         session.setTransitionReason("User confirmed execution from IM");
@@ -95,7 +107,12 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         if (!plannerRetryService.isRetryable(taskId, session)) {
             return session;
         }
+        if (!awaitPreviousExecutionDrain(taskId)) {
+            log.warn("Skip retry because previous run is still draining: taskId={}", taskId);
+            return session;
+        }
         cancellationRegistry.clear(taskId);
+        taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
         PlanTaskSession retrying = plannerRetryService.prepareRetry(taskId, feedback);
         taskBridgeService.ensureTask(retrying);
         submitExecution(taskId);
@@ -105,10 +122,13 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     @Override
     public void cancelExecution(String taskId) {
         cancellationRegistry.markCancelled(taskId);
-        ActiveExecution execution = activeExecutions.remove(taskId);
+        ActiveExecution execution = activeExecutions.get(taskId);
         if (execution != null) {
             execution.future.cancel(true);
             execution.timeoutFuture.cancel(false);
+            if (!execution.hasStarted()) {
+                activeExecutions.remove(taskId, execution);
+            }
             log.info("Cancelled active execution: taskId={}", taskId);
         }
         submitAbort(taskId);
@@ -125,7 +145,9 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             return;
         }
         try {
+            AtomicBoolean started = new AtomicBoolean(false);
             FutureTask<Void> future = new FutureTask<>(() -> {
+                started.set(true);
                 startHarness(taskId);
                 return null;
             });
@@ -134,7 +156,8 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
                     Math.max(1, executionProperties.getTimeoutSeconds()),
                     TimeUnit.SECONDS
             );
-            ActiveExecution previous = activeExecutions.putIfAbsent(taskId, new ActiveExecution(future, timeoutFuture));
+            ActiveExecution execution = new ActiveExecution(future, timeoutFuture, started);
+            ActiveExecution previous = activeExecutions.putIfAbsent(taskId, execution);
             if (previous != null) {
                 timeoutFuture.cancel(false);
                 future.cancel(true);
@@ -227,6 +250,23 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         execution.timeoutFuture.cancel(false);
     }
 
+    private boolean awaitPreviousExecutionDrain(String taskId) {
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(EXECUTION_DRAIN_TIMEOUT_MILLIS);
+        ActiveExecution execution = activeExecutions.get(taskId);
+        while (execution != null) {
+            if (!execution.hasStarted()) {
+                activeExecutions.remove(taskId, execution);
+                return true;
+            }
+            if (System.nanoTime() >= deadlineNanos) {
+                return false;
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(EXECUTION_DRAIN_POLL_MILLIS));
+            execution = activeExecutions.get(taskId);
+        }
+        return true;
+    }
+
     private void notifyExecutionFailed(PlanTaskSession session, TaskRuntimeSnapshot snapshot, String taskId, String reason) {
         if (notificationFacades.isEmpty()) {
             return;
@@ -256,6 +296,10 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
                 && snapshot.getTask().getStatus() == TaskStatusEnum.FAILED;
     }
 
-    private record ActiveExecution(Future<?> future, ScheduledFuture<?> timeoutFuture) {
+    private record ActiveExecution(Future<?> future, ScheduledFuture<?> timeoutFuture, AtomicBoolean started) {
+
+        private boolean hasStarted() {
+            return started.get();
+        }
     }
 }

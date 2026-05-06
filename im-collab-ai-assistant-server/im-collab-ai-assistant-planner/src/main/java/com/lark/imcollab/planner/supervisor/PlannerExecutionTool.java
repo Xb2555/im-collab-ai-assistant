@@ -32,6 +32,30 @@ public class PlannerExecutionTool {
         );
     }
 
+    @Tool(description = "Scenario B/E: interrupt a running planner task using the existing execution cancel bridge.")
+    public PlannerToolResult cancelExecution(String taskId, String reason) {
+        ImTaskCommandFacade commandFacade = commandFacadeProvider.getIfAvailable();
+        if (commandFacade == null) {
+            return PlannerToolResult.failure(taskId, null, "执行桥接尚未就绪，无法从 Planner 直接中断任务。");
+        }
+        try {
+            commandFacade.cancelExecution(taskId);
+            TaskRuntimeSnapshot snapshot = commandFacade.getRuntimeSnapshot(taskId);
+            return PlannerToolResult.success(
+                    taskId,
+                    resolvePhase(snapshot),
+                    reason == null || reason.isBlank() ? "execution cancelled" : reason.trim(),
+                    snapshot
+            );
+        } catch (RuntimeException exception) {
+            return PlannerToolResult.failure(
+                    taskId,
+                    null,
+                    "执行中断失败：" + exception.getMessage()
+            );
+        }
+    }
+
     private PlanningPhaseEnum resolvePhase(TaskRuntimeSnapshot snapshot) {
         if (snapshot == null || snapshot.getTask() == null || snapshot.getTask().getCurrentStage() == null) {
             return PlanningPhaseEnum.EXECUTING;

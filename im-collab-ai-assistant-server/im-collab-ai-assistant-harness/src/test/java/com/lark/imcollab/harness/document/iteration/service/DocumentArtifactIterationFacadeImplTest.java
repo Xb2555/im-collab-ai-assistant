@@ -2,6 +2,8 @@ package com.lark.imcollab.harness.document.iteration.service;
 
 import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.DocumentIterationApprovalRequest;
+import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
 import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
@@ -14,6 +16,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -77,6 +80,33 @@ class DocumentArtifactIterationFacadeImplTest {
         assertThat(result.getApprovalPayload().getTargetPreview()).isEqualTo("在 1.2 后新增风险提示");
         assertThat(result.getApprovalPayload().getGeneratedContent()).isEqualTo("风险提示内容");
         assertThat(result.getApprovalPayload().getRiskLevel()).isEqualTo(DocumentRiskLevel.HIGH);
+    }
+
+    @Test
+    void editBackfillsOperatorOpenIdIntoWorkspaceContext() {
+        when(executionService.execute(any())).thenReturn(DocumentIterationVO.builder()
+                .taskId("iter-operator")
+                .planningPhase("COMPLETED")
+                .summary("文档已更新")
+                .build());
+
+        facade.edit(DocumentArtifactIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-doc-1")
+                .docUrl("https://example.feishu.cn/docx/doc-1")
+                .instruction("补充风险分析")
+                .operatorOpenId("ou-user")
+                .workspaceContext(WorkspaceContext.builder()
+                        .selectedMessages(List.of("补充风险分析"))
+                        .build())
+                .build());
+
+        verify(executionService).execute(argThat((DocumentIterationRequest request) ->
+                request != null
+                        && request.getWorkspaceContext() != null
+                        && "ou-user".equals(request.getWorkspaceContext().getSenderOpenId())
+                        && request.getWorkspaceContext().getSelectedMessages() != null
+                        && request.getWorkspaceContext().getSelectedMessages().contains("补充风险分析")));
     }
 
     @Test

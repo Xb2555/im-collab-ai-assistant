@@ -70,6 +70,14 @@ public class HardRuleIntentClassifier {
             "介绍一下你",
             "自我介绍一下"
     );
+    private static final Set<String> FORCE_NEW_TASK_PHRASES = Set.of(
+            "新建一个任务",
+            "新开一个任务",
+            "另起一个任务",
+            "重新开始一个新任务",
+            "忽略上一个任务",
+            "从头开始一个新任务"
+    );
 
     public Optional<IntentRoutingResult> classify(
             PlanTaskSession session,
@@ -85,6 +93,9 @@ public class HardRuleIntentClassifier {
         }
         if (isConfirmCommand(normalized)) {
             return Optional.of(result(TaskCommandTypeEnum.CONFIRM_ACTION, 1.0d, "hard rule confirm", normalized, false));
+        }
+        if (isForceNewTaskCommand(normalized)) {
+            return Optional.of(result(TaskCommandTypeEnum.START_TASK, 1.0d, "hard rule force new task", normalized, false));
         }
         Optional<IntentRoutingResult> readOnlyQuery = classifyReadOnlyQuery(normalized);
         if (readOnlyQuery.isPresent()) {
@@ -138,6 +149,11 @@ public class HardRuleIntentClassifier {
 
     boolean isConfirmCommand(String input) {
         return ExecutionCommandGuard.isExplicitExecutionRequest(input);
+    }
+
+    boolean isForceNewTaskCommand(String input) {
+        String normalized = normalize(input);
+        return FORCE_NEW_TASK_PHRASES.stream().anyMatch(normalized::contains);
     }
 
     private Optional<IntentRoutingResult> classifyReadOnlyQuery(String input) {

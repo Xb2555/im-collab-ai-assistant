@@ -155,15 +155,63 @@ class PlannerControllerCommandTest {
         request.setAction("REPLAN");
         request.setVersion(1);
         request.setFeedback("change it");
-        when(plannerCommandApplicationService.replan("task-1", "change it", null, null)).thenReturn(session);
+        when(plannerCommandApplicationService.replan(
+                eq("task-1"),
+                eq("change it"),
+                eq(null),
+                eq(null),
+                argThat(context -> context != null
+                        && "ou-user".equals(context.getSenderOpenId())
+                        && "GUI".equals(context.getInputSource()))
+        )).thenReturn(session);
         when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
                 "task-1", 1, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
         ));
 
         controller.command("task-1", request, AUTHORIZATION);
 
-        verify(plannerCommandApplicationService).replan("task-1", "change it", null, null);
+        verify(plannerCommandApplicationService).replan(
+                eq("task-1"),
+                eq("change it"),
+                eq(null),
+                eq(null),
+                argThat(context -> context != null
+                        && "ou-user".equals(context.getSenderOpenId())
+                        && "GUI".equals(context.getInputSource()))
+        );
         verify(plannerCommandApplicationService, never()).resume(anyString(), anyString(), anyBoolean());
+    }
+
+    @Test
+    void replanCommandPassesWorkspaceContextThroughPlannerReplanPath() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        session.setVersion(1);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .selectedMessages(java.util.List.of("把标题改成 666"))
+                .build();
+
+        when(repository.findSession("task-1")).thenReturn(Optional.of(session));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.COMPLETED)));
+        when(plannerCommandApplicationService.replan("task-1", "change it", "EDIT_EXISTING", "artifact-1", workspaceContext))
+                .thenReturn(session);
+        when(plannerViewAssembler.toPlanPreview(session)).thenReturn(new PlanPreviewVO(
+                "task-1", 1, "COMPLETED", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+        ));
+
+        PlanCommandRequest request = new PlanCommandRequest();
+        request.setAction("REPLAN");
+        request.setVersion(1);
+        request.setFeedback("change it");
+        request.setArtifactPolicy("EDIT_EXISTING");
+        request.setTargetArtifactId("artifact-1");
+        request.setWorkspaceContext(workspaceContext);
+
+        BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
+
+        assertThat(response.getCode()).isZero();
+        verify(plannerCommandApplicationService).replan("task-1", "change it", "EDIT_EXISTING", "artifact-1", workspaceContext);
     }
 
     @Test
@@ -179,7 +227,15 @@ class PlannerControllerCommandTest {
 
         when(repository.findSession("task-1")).thenReturn(Optional.of(session));
         when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.WAITING_APPROVAL)));
-        when(plannerCommandApplicationService.replan("task-1", "change it", null, null)).thenReturn(wrongTask);
+        when(plannerCommandApplicationService.replan(
+                eq("task-1"),
+                eq("change it"),
+                eq(null),
+                eq(null),
+                argThat(context -> context != null
+                        && "ou-user".equals(context.getSenderOpenId())
+                        && "GUI".equals(context.getInputSource()))
+        )).thenReturn(wrongTask);
 
         PlanCommandRequest request = new PlanCommandRequest();
         request.setAction("REPLAN");

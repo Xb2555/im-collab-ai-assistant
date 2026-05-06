@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.PendingTaskCandidate;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRecord;
@@ -31,6 +32,17 @@ public class TaskSessionResolver {
         String continuationKey = buildConversationKey(workspaceContext);
         if (!hasText(continuationKey)) {
             return new TaskSessionResolution(UUID.randomUUID().toString(), false, null);
+        }
+
+        Optional<ConversationTaskState> conversationState = stateStore.findConversationTaskState(continuationKey);
+        Optional<String> stateTaskId = conversationState
+                .flatMap(this::preferredTaskId)
+                .filter(this::hasText);
+        if (stateTaskId.isPresent()) {
+            Optional<PlanTaskSession> existingSession = stateStore.findSession(stateTaskId.get());
+            if (existingSession.isPresent()) {
+                return new TaskSessionResolution(stateTaskId.get(), true, continuationKey);
+            }
         }
 
         Optional<String> boundTaskId = stateStore.findConversationTaskId(continuationKey);
@@ -72,6 +84,14 @@ public class TaskSessionResolver {
         return buildConversationKey(workspaceContext);
     }
 
+    public Optional<ConversationTaskState> conversationState(WorkspaceContext workspaceContext) {
+        String key = buildConversationKey(workspaceContext);
+        if (!hasText(key)) {
+            return Optional.empty();
+        }
+        return stateStore.findConversationTaskState(key);
+    }
+
     private PendingTaskCandidate toCandidate(TaskRecord task) {
         List<ArtifactTypeEnum> artifactTypes = stateStore.findArtifactsByTaskId(task.getTaskId()).stream()
                 .map(ArtifactRecord::getType)
@@ -85,6 +105,19 @@ public class TaskSessionResolver {
                 .artifactTypes(artifactTypes)
                 .updatedAt(task.getUpdatedAt())
                 .build();
+    }
+
+    private Optional<String> preferredTaskId(ConversationTaskState state) {
+        if (state == null) {
+            return Optional.empty();
+        }
+        if (hasText(state.getExecutingTaskId())) {
+            return Optional.of(state.getExecutingTaskId().trim());
+        }
+        if (hasText(state.getActiveTaskId())) {
+            return Optional.of(state.getActiveTaskId().trim());
+        }
+        return Optional.empty();
     }
 
     private String buildConversationKey(WorkspaceContext workspaceContext) {

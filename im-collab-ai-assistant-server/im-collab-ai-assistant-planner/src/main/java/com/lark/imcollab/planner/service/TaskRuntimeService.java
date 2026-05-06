@@ -57,6 +57,7 @@ public class TaskRuntimeService {
                 .map(PlanTaskSession::getVersion)
                 .orElse(0);
         syncTaskState(taskId, phase, version);
+        syncRuntimeStepsForPhase(taskId, phase, version);
         appendRuntimeEvent(taskId, version, eventType, null);
     }
 
@@ -216,6 +217,39 @@ public class TaskRuntimeService {
             task.setUpdatedAt(Instant.now());
             taskRepository.save(task);
         });
+    }
+
+    private void syncRuntimeStepsForPhase(String taskId, PlanningPhaseEnum phase, int version) {
+        if (phase != PlanningPhaseEnum.ABORTED && phase != PlanningPhaseEnum.FAILED) {
+            return;
+        }
+        List<TaskStepRecord> steps = stateStore.findStepsByTaskId(taskId);
+        if (steps == null || steps.isEmpty()) {
+            return;
+        }
+        Instant now = Instant.now();
+        StepStatusEnum terminalStatus = phase == PlanningPhaseEnum.ABORTED
+                ? StepStatusEnum.SKIPPED
+                : StepStatusEnum.FAILED;
+        for (TaskStepRecord step : steps) {
+            if (step == null || isTerminalStep(step.getStatus())) {
+                continue;
+            }
+            step.setStatus(terminalStatus);
+            step.setVersion(version);
+            if (step.getEndedAt() == null) {
+                step.setEndedAt(now);
+            }
+            stateStore.saveStep(step);
+        }
+    }
+
+    private boolean isTerminalStep(StepStatusEnum status) {
+        return status == null
+                || status == StepStatusEnum.COMPLETED
+                || status == StepStatusEnum.SKIPPED
+                || status == StepStatusEnum.SUPERSEDED
+                || status == StepStatusEnum.FAILED;
     }
 
     private TaskStatus mapDomainTaskStatus(PlanningPhaseEnum phase) {

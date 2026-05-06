@@ -2,6 +2,7 @@ package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
@@ -71,6 +72,56 @@ class TaskSessionResolverTest {
     }
 
     @Test
+    void executingTaskInConversationStateWinsOverLegacyBinding() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .build();
+        when(stateStore.findConversationTaskState("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of(ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-active")
+                        .executingTaskId("task-running")
+                        .lastCompletedTaskId("task-done")
+                        .build()));
+        when(stateStore.findSession("task-running")).thenReturn(Optional.of(PlanTaskSession.builder()
+                .taskId("task-running")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build()));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        TaskSessionResolution resolution = resolver.resolve(null, context);
+
+        assertThat(resolution.taskId()).isEqualTo("task-running");
+        assertThat(resolution.existingSession()).isTrue();
+    }
+
+    @Test
+    void activeTaskInConversationStateWinsWhenNoExecutingTaskExists() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .build();
+        when(stateStore.findConversationTaskState("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of(ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-active")
+                        .build()));
+        when(stateStore.findSession("task-active")).thenReturn(Optional.of(PlanTaskSession.builder()
+                .taskId("task-active")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build()));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        TaskSessionResolution resolution = resolver.resolve(null, context);
+
+        assertThat(resolution.taskId()).isEqualTo("task-active");
+        assertThat(resolution.existingSession()).isTrue();
+    }
+
+    @Test
     void completedCandidatesAreScopedToCurrentConversationAndOwner() {
         PlannerStateStore stateStore = mock(PlannerStateStore.class);
         WorkspaceContext context = WorkspaceContext.builder()
@@ -103,4 +154,5 @@ class TaskSessionResolverTest {
         assertThat(candidates.get(0).getTaskId()).isEqualTo("task-1");
         assertThat(candidates.get(0).getArtifactTypes()).containsExactly(ArtifactTypeEnum.PPT);
     }
+
 }

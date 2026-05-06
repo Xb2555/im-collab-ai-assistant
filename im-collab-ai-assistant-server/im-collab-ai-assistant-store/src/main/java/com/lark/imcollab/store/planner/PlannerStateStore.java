@@ -2,6 +2,7 @@ package com.lark.imcollab.store.planner;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.TaskEvent;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskRecord;
@@ -27,6 +28,16 @@ public interface PlannerStateStore {
     Optional<String> findConversationTaskId(String conversationKey);
 
     void saveConversationTaskBinding(String conversationKey, String taskId);
+
+    default Optional<ConversationTaskState> findConversationTaskState(String conversationKey) {
+        return Optional.empty();
+    }
+
+    default void saveConversationTaskState(ConversationTaskState state) {
+    }
+
+    default void clearConversationExecutingTask(String conversationKey, String taskId) {
+    }
 
     void appendEvent(TaskEvent event);
 
@@ -58,6 +69,9 @@ public interface PlannerStateStore {
     void saveArtifact(ArtifactRecord artifact);
 
     List<ArtifactRecord> findArtifactsByTaskId(String taskId);
+
+    default void deleteArtifact(String taskId, String artifactId) {
+    }
 
     void appendRuntimeEvent(TaskEventRecord event);
 
