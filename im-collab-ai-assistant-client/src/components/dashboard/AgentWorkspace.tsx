@@ -59,7 +59,7 @@ export function AgentWorkspace() {
   const [isReplanningMode, setIsReplanningMode] = useState(false);
   const [replanFeedback, setReplanFeedback] = useState('');
   const [isActionLoading, setIsActionLoading] = useState(false);
-
+const [isDelivering, setIsDelivering] = useState(false);
   const runtimeTask = taskRuntime?.task;
   const runtimeActions = taskRuntime?.actions;
   const runtimeSteps = taskRuntime?.steps ?? [];
@@ -102,16 +102,20 @@ export function AgentWorkspace() {
   };
 
   const handleDeliver = async () => {
-    if (!activeTaskId || !activeChatId || !taskRuntime?.artifacts) return;
+    if (!activeTaskId || !activeChatId || !taskRuntime?.artifacts || isDelivering) return;
+    setIsDelivering(true);
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#6353AC', '#9F9DF3', '#C9EBCA', '#D5D6F2'], zIndex: 9999 });
     try {
       const docLink = taskRuntime.artifacts.find(a => a.type === 'DOC')?.url || '';
       const pptLink = taskRuntime.artifacts.find(a => a.type === 'PPT')?.url || '';
       const deliverText = `🎉 【Agent-Pilot 工作汇报】任务已完成！\n\n📝 项目文档：${docLink || '暂无'}\n📊 汇报演示：${pptLink || '暂无'}\n\n💡 您可以通过上方的链接直接预览或编辑。如有新需求，请随时在群内唤醒我。`;
       await imApi.sendMessage({ chatId: activeChatId, text: deliverText, idempotencyKey: crypto.randomUUID() });
-      setTimeout(() => { alert('🎉 总结与交付成功！Agent 已将成果同步至飞书协作群。'); clearTask(); }, 800);
+      toast.success('🎉 总结与交付成功！', { description: 'Agent 已将成果同步至飞书协作群。' });
+      setTimeout(() => clearTask(), 500);
     } catch (e: any) {
-      alert('交付推送失败: ' + e.message);
+      toast.error('交付推送失败', { description: e.message });
+    } finally {
+      setIsDelivering(false);
     }
   };
 
@@ -178,6 +182,26 @@ export function AgentWorkspace() {
             </div>
             <p className="text-xs text-zinc-500 mt-2 leading-relaxed">{runtimeTask.goal || planPreview?.summary || '已收到您的意图，正在执行'}</p>
             
+              {/* ✨ 新增：针对 PLANNING 状态的无缝衔接动画（对齐移动端） */}
+            {runtimeTask.status === 'PLANNING' && (
+              <div className="mt-3 p-3 bg-indigo-50/50 rounded-xl border border-indigo-100 overflow-hidden relative">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] text-indigo-600 flex items-center gap-1.5 font-medium">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Agent 正在进行深度推演与路径规划...
+                  </span>
+                  <span className="text-[10px] text-indigo-400 font-mono">预计 10s</span>
+                </div>
+                <div className="w-full h-1.5 bg-indigo-100/50 rounded-full overflow-hidden shadow-inner">
+                   <motion.div 
+                     initial={{ x: '-100%' }} 
+                     animate={{ x: '200%' }} 
+                     transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }} 
+                     className="w-1/2 h-full bg-indigo-500 rounded-full" 
+                   />
+                </div>
+              </div>
+            )}
+
             {runtimeTask.riskFlags && runtimeTask.riskFlags.length > 0 && (
               <div className="mt-3 bg-amber-50/50 border border-amber-200/60 rounded-lg p-3">
                 <div className="text-xs font-bold text-amber-600 flex items-center gap-1.5 mb-1.5"><AlertCircle className="w-3.5 h-3.5" /> 风险与关注点</div>
@@ -271,7 +295,7 @@ export function AgentWorkspace() {
                                 <Bot className="w-4 h-4 animate-bounce text-blue-500"/> 
                                 {step.type === 'PPT_CREATE' || step.type === 'PPT' ? '正在为您精雕细琢每一页幻灯片，大概需要1分钟，喝口水休息一下吧 ☕' : 'Agent 正在飞速执行作业中，请稍候...'}
                               </span>
-                              <span className="text-[10px] text-blue-400 font-mono shrink-0 ml-2 mt-0.5">{step.progress > 0 ? `${step.progress}%` : '预计 60s'}</span>
+                              <span className="text-[10px] text-blue-400 font-mono shrink-0 ml-2 mt-0.5">预计 60s</span>
                             </div>
                             <div className="w-full h-1.5 bg-blue-200/50 rounded-full overflow-hidden shadow-inner mb-3">
                               <motion.div className="h-full bg-blue-500 relative" initial={{ width: `${step.progress || 0}%` }} animate={{ width: step.progress >= 90 ? `${step.progress}%` : "90%" }} transition={{ duration: step.progress >= 100 ? 0.5 : 60, ease: "easeOut" }}>
@@ -308,8 +332,13 @@ export function AgentWorkspace() {
           )}
 
           {runtimeTask.status === 'COMPLETED' && (
-            <Button className="w-full h-10 font-bold bg-zinc-900 hover:bg-zinc-800 text-white shadow-md animate-in zoom-in duration-500" onClick={handleDeliver}>
-              <Send className="h-4 w-4 mr-2" /> 总结与交付群聊
+            <Button 
+              className="w-full h-10 font-bold bg-zinc-900 hover:bg-zinc-800 text-white shadow-md animate-in zoom-in duration-500 disabled:opacity-50" 
+              onClick={handleDeliver}
+              disabled={isDelivering}
+            >
+              {isDelivering ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />} 
+              {isDelivering ? '正在同步...' : '总结与交付群聊'}
             </Button>
           )}
 

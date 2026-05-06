@@ -17,19 +17,74 @@ const parseFeishuContent = (rawContent: string | null | undefined, msgType?: str
   if (msgType !== 'system') {
     try {
       const json = JSON.parse(rawContent);
-      return json.text || rawContent;
+      if (json.text) return json.text;
+      return rawContent;
     } catch {
       return rawContent;
     }
   }
-  return '[系统消息] 系统通知';
+
+  const fallbackSystemText = (template?: string) => {
+    if (!template) return '[系统消息] 系统通知';
+    if (template.includes('group administrators')) return '[系统消息] 系统更新了管理员设置';
+    if (template.includes('started the group chat')) return '[系统消息] 系统创建了群聊';
+    if (template.includes('invited') && template.includes('to the group')) return '[系统消息] 系统更新了群成员';
+    if (template.includes('revoked') || template.includes('removed from the group')) return '[系统消息] 系统调整了群成员';
+    if (template.includes('Welcome to')) return '[系统消息] 欢迎加入群聊';
+    return '[系统消息] 系统通知';
+  };
+
+  try {
+    const json = JSON.parse(rawContent);
+    if (json.text) return `[系统消息] ${json.text}`;
+    const template: string | undefined = json.template;
+    if (!template) return '[系统消息] 系统通知';
+    const variables = json.variables && typeof json.variables === 'object' ? json.variables : {};
+
+    let hasMeaningfulValue = false;
+    const rendered = template.replace(/\{([^{}]+)\}/g, (_m: string, key: string) => {
+      const fromVariables = variables?.[key];
+      const fromTopLevel = json?.[key];
+      const rawValue = fromVariables ?? fromTopLevel;
+      let values: string[] = [];
+      if (Array.isArray(rawValue)) {
+        values = rawValue.filter((v: unknown) => typeof v === 'string' && v.trim()).map((v: string) => v.trim());
+      } else if (typeof rawValue === 'string' && rawValue.trim()) {
+        values = [rawValue.trim()];
+      }
+      if (values.length > 0) {
+        hasMeaningfulValue = true;
+        return values.join('、');
+      }
+      if (key === 'group_type') return '群聊';
+      return '某人';
+    });
+
+    if (!hasMeaningfulValue) return fallbackSystemText(template);
+
+    const localized = rendered
+      .replace(' invited ', ' 邀请了 ')
+      .replace(' to the group. New members can view all chat history.', ' 入群，新成员可查看全部聊天记录。')
+      .replace(' revoked the group invitation, ', ' 撤销了群邀请，')
+      .replace(' was removed from the group chat.', ' 已被移出群聊。')
+      .replace(' started the group chat and assigned ', ' 创建了群聊，并指定 ')
+      .replace(' as the group owner.', ' 为群主。')
+      .replace(' added ', ' 将 ')
+      .replace(' to group administrators.', ' 设为了群管理员。')
+      .replace('Welcome to 群聊', '欢迎加入群聊');
+
+    return `[系统消息] ${localized}`;
+  } catch {
+    return `[系统] ${rawContent}`;
+  }
 };
 
 interface ChatRoomMobileProps {
   onOpenHistory: () => void;
+  onSwitchToWorkspace?: () => void; // ✨ 新增跳转回调
 }
 
-export function ChatRoomMobile({ onOpenHistory }: ChatRoomMobileProps) {
+export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomMobileProps) {
   const { user, accessToken } = useAuthStore();
   const { activeChatId } = useChatStore();
   const { setActiveTaskId, setPlanPreview, isPlanning, setIsPlanning } = useTaskStore();
@@ -45,8 +100,10 @@ export function ChatRoomMobile({ onOpenHistory }: ChatRoomMobileProps) {
   const [isAgentDrawerOpen, setIsAgentDrawerOpen] = useState(false);
   const [agentInstruction, setAgentInstruction] = useState('');
 
+  // 👇 将其替换为浏览器兼容的类型：
   const abortControllerRef = useRef<AbortController | null>(null);
-  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // ✨ 修复：使用 ReturnType 让 TS 自动推导环境定时器类型，兼容性最好
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 1. 发送常规消息
   const handleSendMessage = async () => {
@@ -91,6 +148,8 @@ export function ChatRoomMobile({ onOpenHistory }: ChatRoomMobileProps) {
       } else {
         setActiveTaskId(preview.taskId || null);
         setPlanPreview(preview);
+        // ✨ 新增：成功唤醒后，自动跳转到工作台
+        onSwitchToWorkspace?.();
       }
       
       // 清理状态
@@ -202,7 +261,9 @@ export function ChatRoomMobile({ onOpenHistory }: ChatRoomMobileProps) {
           <div className="text-center text-sm text-zinc-400 mt-10">暂无消息记录</div>
         ) : (
           messages.map((msg) => {
-            const isSystem = msg.content?.startsWith('[系统消息]');
+            // ✨ 增强系统消息的识别判断
+            const messageType = (msg.messageType || msg.msgType || '').toLowerCase();
+            const isSystem = messageType === 'system' || (typeof msg.content === 'string' && msg.content.startsWith('[系统消息]'));
             const isBot = msg.senderType === 'app' || msg.senderOpenId?.includes('bot');
             const isMe = !isSystem && msg.senderName === user?.name;
             const isSelected = selectedMessageIds.includes(msg.eventId);
@@ -225,17 +286,18 @@ export function ChatRoomMobile({ onOpenHistory }: ChatRoomMobileProps) {
 
                 <div className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} transition-transform ${isSelectionMode && isSelected ? 'scale-[0.98] opacity-80' : ''}`}>
                   <div className={`flex max-w-[85%] gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
-                    <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full overflow-hidden ${isBot ? 'bg-blue-600 text-white' : 'bg-zinc-200'}`}>
-                      {isBot ? <Bot className="h-4 w-4" /> : msg.senderAvatar ? <img src={msg.senderAvatar} alt="avatar" /> : <span className="text-xs">{msg.senderName?.charAt(0)}</span>}
+                    {/* ✨ 修复点：让 isSystem 也应用蓝色背景和 Bot 图标 */}
+                    <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm overflow-hidden ${(isBot || isSystem) ? 'bg-blue-600 text-white' : 'bg-zinc-200 text-zinc-600'}`}>
+                      {(isBot || isSystem) ? <Bot className="h-4 w-4" /> : msg.senderAvatar ? <img src={msg.senderAvatar} alt="avatar" /> : <span className="text-xs font-bold">{msg.senderName?.charAt(0)}</span>}
                     </div>
                     {/* ✨ 加上 min-w-0 防止被长文本撑爆 */}
-<div className={`flex flex-col min-w-0 ${isMe ? 'items-end' : 'items-start'}`}>
-  <span className="text-[10px] text-zinc-400 mb-1 px-1 shrink-0">{isBot ? 'Agent Pilot' : msg.senderName}</span>
-  {/* ✨ 加上 break-all 强制超长链接换行 */}
-  <div className={`px-3.5 py-2 text-sm shadow-sm leading-relaxed break-words break-all whitespace-pre-wrap ${isMe ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm' : 'bg-white border border-zinc-200 text-zinc-800 rounded-2xl rounded-tl-sm'}`}>
-    {msg.content}
-  </div>
-</div>
+                    <div className={`flex flex-col min-w-0 ${isMe ? 'items-end' : 'items-start'}`}>
+                      <span className="text-[10px] text-zinc-400 mb-1 px-1 shrink-0">{isSystem ? '系统通知' : (isBot ? 'Agent Pilot' : msg.senderName)}</span>
+                      {/* ✨ 加上 break-all 强制超长链接换行 */}
+                      <div className={`px-3.5 py-2 text-sm shadow-sm leading-relaxed break-words break-all whitespace-pre-wrap ${isMe ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm' : 'bg-white border border-zinc-200 text-zinc-800 rounded-2xl rounded-tl-sm'}`}>
+                        {msg.content}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -58,20 +58,32 @@ export function ChatListSidebar() {
               <div
                 key={chat.chatId}
                 onClick={() => setActiveChatId(chat.chatId)}
-                className={`flex cursor-pointer items-center space-x-3 rounded-lg p-2 transition-colors ${
+              
+                className={`group flex cursor-pointer items-center space-x-3 transition-all duration-200 ${
                   activeChatId === chat.chatId
-                    ? 'bg-blue-100/50 text-blue-700 shadow-sm border border-blue-200/50'
-                    : 'hover:bg-zinc-100 text-zinc-700 border border-transparent'
+                    ? 'bg-blue-50/80 shadow-sm border border-blue-200/50 rounded-2xl md:rounded-lg p-3 md:p-2 mb-2 md:mb-0.5'
+                    : 'hover:bg-zinc-100/80 text-zinc-700 border border-transparent rounded-2xl md:rounded-lg p-3 md:p-2 mb-2 md:mb-0.5 active:scale-[0.98]'
                 }`}
               >
                 <div
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md font-bold ${
-                    activeChatId === chat.chatId ? 'bg-blue-600 text-white' : 'bg-zinc-200 text-zinc-500'
+                  
+                  className={`flex shrink-0 items-center justify-center font-bold transition-colors ${
+                    activeChatId === chat.chatId 
+                      ? 'bg-blue-600 text-white h-11 w-11 md:h-8 md:w-8 rounded-full md:rounded-md shadow-sm' 
+                      : 'bg-indigo-50 text-indigo-500 group-hover:bg-indigo-100 group-hover:text-indigo-600 h-11 w-11 md:h-8 md:w-8 rounded-full md:rounded-md'
                   }`}
                 >
                   {chat.name.charAt(0)}
                 </div>
-                <div className="flex-1 truncate text-sm font-medium">{chat.name}</div>
+                <div className="flex-1 min-w-0 flex flex-col justify-center">
+                  <div className={`truncate font-medium ${activeChatId === chat.chatId ? 'text-blue-800' : 'text-zinc-700'} text-base md:text-sm`}>
+                    {chat.name}
+                  </div>
+                  {/* ✨ 仅在移动端显示的辅助文本，桌面端自动隐藏，保持紧凑 */}
+                  <div className="md:hidden truncate text-[11px] text-zinc-400 mt-0.5">
+                    {activeChatId === chat.chatId ? '当前所在会话' : '点击进入群聊'}
+                  </div>
+                </div>
               </div>
             ))}
           </>
