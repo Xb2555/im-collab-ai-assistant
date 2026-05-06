@@ -10,20 +10,8 @@ export const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_
 export const isMobileNative = Capacitor.isNativePlatform();
 
 export const getBaseUrl = () => {
-  const envBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
-
-  // 优先使用显式环境变量（线上 Vercel 必须配置）
-  if (envBaseUrl) {
-    return envBaseUrl;
-  }
-
-  // 桌面端 / 原生移动端：回退到默认后端直连地址
-  if (isTauri || isMobileNative) {
-    return 'http://81.71.143.236:18080';
-  }
-
-  // Web 开发环境：允许继续走 Vite 代理
-  return '';
+  // 比赛阶段：全平台统一直连后端，避免依赖 Vite/Vercel 代理配置
+  return 'http://81.71.143.236:18080';
 };
 
 export const apiClient = axios.create({
