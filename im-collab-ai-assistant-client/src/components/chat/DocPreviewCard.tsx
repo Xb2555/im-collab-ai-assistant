@@ -1,14 +1,23 @@
 // src/components/chat/DocPreviewCard.tsx
 import React, { useState } from 'react';
-import { 
-  FileText, ExternalLink, Loader2, Send, RefreshCw, 
-  AlertCircle, Wand2, Check, X, FileEdit 
+import {
+  FileText, ExternalLink, Loader2, RefreshCw,
+  AlertCircle, Wand2, Check, X, FileEdit
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { browserLauncher } from '@/services/os/launcher/browser';
 import { useTaskStore } from '@/store/useTaskStore';
 import { plannerApi } from '@/services/api/planner';
 import { toast } from 'sonner';
+
+type IterationPlan = {
+  semanticAction: string;
+  riskLevel?: 'LOW' | 'MEDIUM' | 'HIGH' | string;
+  generatedContent?: string;
+  anchorType?: string;
+  targetTitle?: string;
+  requiresApproval?: boolean;
+};
 
 interface DocPreviewCardProps {
   status: 'GENERATING' | 'COMPLETED' | 'ABORTED' | string;
@@ -47,7 +56,8 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
   // ✨ 新增：局部精修相关的状态
   const [isIterating, setIsIterating] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
-  const [iterationPlan, setIterationPlan] = useState<any | null>(null);
+  const [iterationPlan, setIterationPlan] = useState<IterationPlan | null>(null);
+  const [iterationAlreadyApplied, setIterationAlreadyApplied] = useState(false);
   
   const embedUrl = docUrl ? (docUrl.includes('?') ? `${docUrl}&from=embed` : `${docUrl}?from=embed`) : '';
 
@@ -95,13 +105,20 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
 
       // 只有真正合法的计划，才允许弹窗
       if (res.editPlan) {
+        const alreadyApplied = res.planningPhase === 'COMPLETED' || res.editPlan.requiresApproval === false;
+        setIterationAlreadyApplied(alreadyApplied);
         setIterationPlan(res.editPlan);
+        if (alreadyApplied) {
+          toast.success('修改已应用到飞书文档', {
+            description: res.summary || '该次改动已执行完成，无需再次点击审批。'
+          });
+        }
       } else {
         toast.warning('无法生成修改计划', { description: res.summary || '请尝试换一种描述方式' });
       }
-    } catch(e: any) {
+    } catch (e: unknown) {
       // 优雅翻译后端的 40000 报错
-      const errorMsg = e.message || String(e);
+      const errorMsg = e instanceof Error ? e.message : String(e);
       if (errorMsg.includes('未指定任何文档操作目标或位置') || errorMsg.includes('40000')) {
         toast.warning('Agent 需要更明确的坐标', { 
           description: '请指明要修改的具体标题或段落，例如：“在【2.3 水果拼盘】下方，补充预算300左右”' 
@@ -117,29 +134,34 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
   // ✨ 🟢 审批精修计划 (触发 5.2 接口)
   const handleApprove = async (action: 'APPROVE' | 'REJECT') => {
     if (!activeTaskId) return;
+
+    if (iterationAlreadyApplied) {
+      toast.info('该修改已应用，无需再次审批');
+      setIterationPlan(null);
+      setFeedback('');
+      return;
+    }
+
     setIsApproving(true);
     try {
       await plannerApi.approveDocumentIteration(activeTaskId, { action });
       if (action === 'APPROVE') {
         toast.success('文档已更新', { description: 'Agent 已成功将修改应用到飞书文档' });
-        // 可选：触发 Iframe 刷新，或者让用户自己看飞书文档的协同刷新
       } else {
         toast.info('已拒绝修改提议');
       }
-    } catch(e: any) {
-      toast.error('审批操作失败', { description: e.message || String(e) });
+    } catch (e: unknown) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      if (errorMsg.includes('未找到待审批的文档迭代任务')) {
+        toast.info('当前改动已完成或审批态已失效，无需再次审批');
+      } else {
+        toast.error('审批操作失败', { description: errorMsg });
+      }
     } finally {
       setIsApproving(false);
       setIterationPlan(null); // 关闭弹窗
       setFeedback(''); // 清空输入框
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      // 默认回车触发精修（体验更好）
-      handleIterate();
+      setIterationAlreadyApplied(false);
     }
   };
 
@@ -274,12 +296,19 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
             </div>
 
             <div className="p-3 bg-zinc-50 border-t border-zinc-100 flex justify-end gap-2 shrink-0">
-              <Button size="sm" variant="outline" onClick={() => handleApprove('REJECT')} disabled={isApproving} className="text-zinc-600 border-zinc-300">
-                <X className="h-3.5 w-3.5 mr-1" /> 拒绝
-              </Button>
-              <Button size="sm" onClick={() => handleApprove('APPROVE')} disabled={isApproving} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+              {!iterationAlreadyApplied && (
+                <Button size="sm" variant="outline" onClick={() => handleApprove('REJECT')} disabled={isApproving} className="text-zinc-600 border-zinc-300">
+                  <X className="h-3.5 w-3.5 mr-1" /> 拒绝
+                </Button>
+              )}
+              <Button
+                size="sm"
+                onClick={() => handleApprove('APPROVE')}
+                disabled={isApproving}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
                 {isApproving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Check className="h-3.5 w-3.5 mr-1" />}
-                应用到飞书文档
+                {iterationAlreadyApplied ? '已自动应用，关闭' : '应用到飞书文档'}
               </Button>
             </div>
 
