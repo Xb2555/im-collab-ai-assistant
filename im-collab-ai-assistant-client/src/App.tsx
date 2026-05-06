@@ -14,6 +14,9 @@ import Callback from '@/pages/Callback';
 import Dashboard from '@/pages/Dashboard';
 // 在现有的 import 列表末尾增加这一行
 import { Toaster } from "sonner";
+
+// 在 src/App.tsx 顶部增加导入
+import DashboardMobile from '@/pages/DashboardMobile';
 /**
  * 全局路由守卫组件
  * 如果用户未登录，强制拦截并跳转到 /login
@@ -135,14 +138,26 @@ function DeepLinkListener({ children }: { children: JSX.Element }) {
 }
 
 export default function App() {
+  // 简易判断是否为移动端尺寸
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   return (
     <BrowserRouter>
-      {/* ✨ 用监听器包裹 Routes，这样它就被使用起来了！ */}
       <DeepLinkListener>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/auth-callback" element={<Callback />} /> 
-          <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
+          <Route path="/" element={
+            <RequireAuth>
+               {isMobile ? <DashboardMobile /> : <Dashboard />}
+            </RequireAuth>
+          } />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </DeepLinkListener>

@@ -1,0 +1,332 @@
+// src/components/dashboard/ChatRoomMobile.tsx
+import { useState, useEffect, useRef } from 'react';
+import { useAuthStore } from '@/store/useAuthStore';
+import { useChatStore } from '@/store/useChatStore';
+import { useTaskStore } from '@/store/useTaskStore';
+import { imApi } from '@/services/api/im';
+import { plannerApi } from '@/services/api/planner';
+import { getBaseUrl } from '@/services/api/client';
+import { fetchEventSource } from '@microsoft/fetch-event-source';
+import { Button } from '@/components/ui/button';
+import { Loader2, Bot, CheckCircle2, Circle, X, Send, Wand2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+
+// 复用桌面端的飞书消息解析逻辑
+const parseFeishuContent = (rawContent: string | null | undefined, msgType?: string) => {
+  if (!rawContent) return '';
+  if (msgType !== 'system') {
+    try {
+      const json = JSON.parse(rawContent);
+      return json.text || rawContent;
+    } catch {
+      return rawContent;
+    }
+  }
+  return '[系统消息] 系统通知';
+};
+
+interface ChatRoomMobileProps {
+  onOpenHistory: () => void;
+}
+
+export function ChatRoomMobile({ onOpenHistory }: ChatRoomMobileProps) {
+  const { user, accessToken } = useAuthStore();
+  const { activeChatId } = useChatStore();
+  const { setActiveTaskId, setPlanPreview, isPlanning, setIsPlanning } = useTaskStore();
+
+  const [messages, setMessages] = useState<any[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  
+  // ✨ 移动端专属状态
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+  const [isAgentDrawerOpen, setIsAgentDrawerOpen] = useState(false);
+  const [agentInstruction, setAgentInstruction] = useState('');
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 1. 发送常规消息
+  const handleSendMessage = async () => {
+    if (!inputText.trim() || !activeChatId) return;
+    try {
+      setIsSending(true);
+      await imApi.sendMessage({
+        chatId: activeChatId,
+        text: inputText.trim(),
+        idempotencyKey: crypto.randomUUID(),
+      });
+      setInputText('');
+    } catch (e: any) {
+      alert('发送失败: ' + e.message);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // 2. 唤醒 Agent (从抽屉提交)
+  const handleStartAgentPlan = async () => {
+    if (!agentInstruction.trim() || !activeChatId) return;
+    try {
+      setIsPlanning(true);
+      setIsAgentDrawerOpen(false); // 提交后关闭抽屉
+      
+      const selectedTexts = messages
+        .filter((msg) => selectedMessageIds.includes(msg.eventId))
+        .map((msg) => `${msg.senderName}: ${msg.content}`);
+
+      const preview = await plannerApi.createPlan({
+        rawInstruction: agentInstruction.trim(),
+        workspaceContext: {
+          chatId: activeChatId,
+          selectionType: selectedTexts.length > 0 ? 'MESSAGE' : undefined,
+          selectedMessages: selectedTexts.length > 0 ? selectedTexts : undefined,
+        },
+      });
+
+      if (preview.transientReply || !preview.runtimeAvailable) {
+        if (preview.assistantReply) alert(`🤖 Agent 回复: ${preview.assistantReply}`);
+      } else {
+        setActiveTaskId(preview.taskId || null);
+        setPlanPreview(preview);
+      }
+      
+      // 清理状态
+      setAgentInstruction('');
+      exitSelectionMode();
+    } catch (e: any) {
+      alert('唤醒 Agent 失败: ' + e.message);
+    } finally {
+      setIsPlanning(false);
+    }
+  };
+
+  const exitSelectionMode = () => {
+    setIsSelectionMode(false);
+    setSelectedMessageIds([]);
+  };
+
+  // ✨ 长按处理逻辑
+  const handleTouchStart = (eventId: string) => {
+    if (isSelectionMode) return;
+    longPressTimerRef.current = setTimeout(() => {
+      setIsSelectionMode(true);
+      setSelectedMessageIds([eventId]);
+      // 可以在这里加个震动反馈 navigator.vibrate?.(50);
+    }, 500); // 500ms 触发长按
+  };
+
+  const handleTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+  };
+
+  const toggleMessageSelection = (eventId: string) => {
+    setSelectedMessageIds(prev => 
+      prev.includes(eventId) ? prev.filter(id => id !== eventId) : [...prev, eventId]
+    );
+  };
+
+  // 3. 聊天室历史记录与 SSE 流 (与桌面端逻辑一致)
+  useEffect(() => {
+    if (!activeChatId) return;
+    if (abortControllerRef.current) abortControllerRef.current.abort();
+    abortControllerRef.current = new AbortController();
+    const ctrl = abortControllerRef.current;
+
+    const connectSSE = async () => {
+      setMessages([]);
+      setIsLoadingHistory(true);
+      try {
+        const historyRes = await imApi.getChatHistory({
+          containerIdType: 'chat',
+          containerId: activeChatId,
+          sortType: 'ByCreateTimeDesc',
+          pageSize: 20,
+          signal: ctrl.signal,
+        });
+        if (ctrl.signal.aborted) return;
+        const formattedHistory = historyRes.items.reverse().map((item: any) => ({
+          eventId: item.messageId,
+          senderOpenId: item.senderId,
+          senderType: item.senderType,
+          senderName: item.senderName,
+          senderAvatar: item.senderAvatar,
+          content: parseFeishuContent(item.content, item.msgType),
+          createTime: item.createTime,
+        }));
+        setMessages(formattedHistory);
+      } catch (err: any) {
+        if (err.name !== 'CanceledError') console.warn('拉取历史消息失败', err);
+      } finally {
+        if (!ctrl.signal.aborted) setIsLoadingHistory(false);
+      }
+
+      if (ctrl.signal.aborted) return;
+
+      try {
+        await fetchEventSource(`${getBaseUrl()}/api/im/chats/${activeChatId}/messages/stream`, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${accessToken}`, Accept: 'text/event-stream' },
+          signal: ctrl.signal,
+          onmessage(event) {
+            if (event.event === 'message') {
+              try {
+                const msgData = JSON.parse(event.data);
+                if (msgData.state === 'connected') return;
+                setMessages((prev) => {
+                  if (prev.some((m) => m.eventId === msgData.eventId)) return prev;
+                  return [...prev, { ...msgData, content: parseFeishuContent(msgData.content, msgData.messageType) }];
+                });
+              } catch (e) {}
+            }
+          },
+        });
+      } catch (err) {}
+    };
+
+    connectSSE();
+    return () => ctrl.abort();
+  }, [activeChatId, accessToken]);
+
+  return (
+    <div className="flex flex-col h-full bg-zinc-50/50 relative">
+      {/* 消息列表区 */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {isLoadingHistory ? (
+          <div className="flex justify-center py-4"><Loader2 className="h-5 w-5 animate-spin text-zinc-400" /></div>
+        ) : messages.length === 0 ? (
+          <div className="text-center text-sm text-zinc-400 mt-10">暂无消息记录</div>
+        ) : (
+          messages.map((msg) => {
+            const isSystem = msg.content?.startsWith('[系统消息]');
+            const isBot = msg.senderType === 'app' || msg.senderOpenId?.includes('bot');
+            const isMe = !isSystem && msg.senderName === user?.name;
+            const isSelected = selectedMessageIds.includes(msg.eventId);
+
+            return (
+              <div 
+                key={msg.eventId} 
+                className="flex items-start gap-2 relative"
+                onTouchStart={() => handleTouchStart(msg.eventId)}
+                onTouchEnd={handleTouchEnd}
+                onTouchMove={handleTouchEnd} // 防止滑动时触发长按
+                onClick={() => isSelectionMode && toggleMessageSelection(msg.eventId)}
+              >
+                {/* 选择框 (仅在多选模式下显示) */}
+                {isSelectionMode && (
+                  <div className="flex items-center justify-center h-10 w-8 shrink-0">
+                    {isSelected ? <CheckCircle2 className="h-5 w-5 text-blue-600" /> : <Circle className="h-5 w-5 text-zinc-300" />}
+                  </div>
+                )}
+
+                <div className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} transition-transform ${isSelectionMode && isSelected ? 'scale-[0.98] opacity-80' : ''}`}>
+                  <div className={`flex max-w-[85%] gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
+                    <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full overflow-hidden ${isBot ? 'bg-blue-600 text-white' : 'bg-zinc-200'}`}>
+                      {isBot ? <Bot className="h-4 w-4" /> : msg.senderAvatar ? <img src={msg.senderAvatar} alt="avatar" /> : <span className="text-xs">{msg.senderName?.charAt(0)}</span>}
+                    </div>
+                    {/* ✨ 加上 min-w-0 防止被长文本撑爆 */}
+<div className={`flex flex-col min-w-0 ${isMe ? 'items-end' : 'items-start'}`}>
+  <span className="text-[10px] text-zinc-400 mb-1 px-1 shrink-0">{isBot ? 'Agent Pilot' : msg.senderName}</span>
+  {/* ✨ 加上 break-all 强制超长链接换行 */}
+  <div className={`px-3.5 py-2 text-sm shadow-sm leading-relaxed break-words break-all whitespace-pre-wrap ${isMe ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm' : 'bg-white border border-zinc-200 text-zinc-800 rounded-2xl rounded-tl-sm'}`}>
+    {msg.content}
+  </div>
+</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* 底部输入区 / 悬浮操作栏 */}
+      <div className="bg-white border-t border-zinc-200 px-3 py-2 shrink-0 pb-safe z-20 shadow-[0_-4px_15px_rgba(0,0,0,0.02)]">
+        {isSelectionMode ? (
+          <div className="flex items-center justify-between h-[44px]">
+            <Button variant="ghost" size="sm" onClick={exitSelectionMode} className="text-zinc-500">取消</Button>
+            <span className="text-sm font-medium text-zinc-800">已选择 {selectedMessageIds.length} 条</span>
+            <Button 
+              size="sm" 
+              className="bg-blue-600 text-white shadow-sm"
+              disabled={selectedMessageIds.length === 0}
+              onClick={() => setIsAgentDrawerOpen(true)}
+            >
+              <Wand2 className="h-4 w-4 mr-1" /> 交给 Agent
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-end gap-2">
+            <textarea
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              className="flex-1 max-h-24 min-h-[40px] resize-none rounded-xl bg-zinc-100 border-transparent focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 px-3 py-2 text-sm outline-none transition-colors"
+              placeholder="长按消息多选，或直接输入..."
+              rows={1}
+            />
+            {inputText.trim() ? (
+              <Button onClick={handleSendMessage} disabled={isSending} size="icon" className="h-10 w-10 shrink-0 rounded-full bg-blue-600 shadow-sm">
+                <Send className="h-4 w-4 ml-0.5 text-white" />
+              </Button>
+            ) : (
+              <Button onClick={() => setIsAgentDrawerOpen(true)} variant="outline" size="icon" className="h-10 w-10 shrink-0 rounded-full border-blue-200 text-blue-600 bg-blue-50">
+                <Bot className="h-5 w-5" />
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ✨ Agent 唤醒指令抽屉 (Drawer) */}
+      <AnimatePresence>
+        {isAgentDrawerOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setIsAgentDrawerOpen(false)}
+              className="absolute inset-0 bg-zinc-900/40 backdrop-blur-sm z-40"
+            />
+            <motion.div
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl shadow-2xl z-50 flex flex-col pb-safe"
+            >
+              <div className="p-4 border-b border-zinc-100 flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-zinc-800 flex items-center gap-2">
+                    <Bot className="h-5 w-5 text-blue-600" /> 唤醒 Agent
+                  </h3>
+                  {selectedMessageIds.length > 0 && (
+                    <p className="text-[10px] text-zinc-500 mt-1">已包含 {selectedMessageIds.length} 条选中的聊天上下文</p>
+                  )}
+                </div>
+                <Button variant="ghost" size="icon" onClick={() => setIsAgentDrawerOpen(false)} className="h-8 w-8 text-zinc-500"><X className="h-5 w-5" /></Button>
+              </div>
+              <div className="p-4 space-y-4">
+                <textarea
+                  value={agentInstruction}
+                  onChange={(e) => setAgentInstruction(e.target.value)}
+                  placeholder="请输入您希望 Agent 执行的指令，例如：'帮我把以上内容总结成一份周报文档'"
+                  className="w-full h-32 p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:border-blue-500 focus:bg-white transition-colors resize-none"
+                  autoFocus
+                />
+                <Button 
+                  className="w-full h-12 text-base font-medium bg-blue-600 hover:bg-blue-700 shadow-md"
+                  disabled={!agentInstruction.trim() || isPlanning}
+                  onClick={handleStartAgentPlan}
+                >
+                  {isPlanning ? <Loader2 className="h-5 w-5 animate-spin" /> : '发送给 Agent 办理'}
+                </Button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}
