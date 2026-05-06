@@ -171,6 +171,7 @@ public class DocumentEditIntentResolver {
             return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
         }
         intent = normalizeSectionInsertIntent(intent);
+        intent = normalizeSectionInlineInsertIntent(intent);
         intent = normalizeSectionAnchorIntent(intent);
         intent = normalizeSectionIntent(intent);
         if (intent.isClarificationNeeded()) {
@@ -431,6 +432,36 @@ public class DocumentEditIntentResolver {
         intent.setIntentType(DocumentIterationIntentType.INSERT);
         intent.setSemanticAction(normalizedAction);
         intent.setAnchorSpec(normalizedAnchor);
+        return intent;
+    }
+
+    private DocumentEditIntent normalizeSectionInlineInsertIntent(DocumentEditIntent intent) {
+        if (intent == null || intent.getIntentType() != DocumentIterationIntentType.INSERT) {
+            return intent;
+        }
+        if (intent.getSemanticAction() != DocumentSemanticActionType.INSERT_INLINE_TEXT) {
+            return intent;
+        }
+        DocumentAnchorSpec anchorSpec = intent.getAnchorSpec();
+        if (anchorSpec == null || anchorSpec.getAnchorKind() != DocumentAnchorKind.SECTION) {
+            return intent;
+        }
+        if (anchorSpec.getMatchMode() == null || anchorSpec.getMatchMode() == DocumentAnchorMatchMode.BY_QUOTED_TEXT) {
+            return intent;
+        }
+        log.info("DOC_ITER_INTENT normalize_section_inline_insert instruction='{}' fromAction={} toAction={} anchorKind={} matchMode={} headingTitle='{}' headingNumber='{}' outlinePath='{}'",
+                intent.getUserInstruction(),
+                intent.getSemanticAction(),
+                DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR,
+                anchorSpec.getAnchorKind(),
+                anchorSpec.getMatchMode(),
+                anchorSpec.getHeadingTitle(),
+                anchorSpec.getHeadingNumber(),
+                effectiveOutlinePath(anchorSpec));
+        if (!hasText(anchorSpec.getRelativePosition())) {
+            anchorSpec.setRelativePosition(detectRelativePosition(intent.getUserInstruction()));
+        }
+        intent.setSemanticAction(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR);
         return intent;
     }
 
@@ -738,7 +769,7 @@ public class DocumentEditIntentResolver {
             return false;
         }
         return switch (semanticAction) {
-            case INSERT_SECTION_BEFORE_SECTION, REWRITE_SECTION_BODY, DELETE_SECTION_BODY, DELETE_WHOLE_SECTION, MOVE_SECTION, RELAYOUT_SECTION -> true;
+            case INSERT_SECTION_BEFORE_SECTION, INSERT_INLINE_TEXT, REWRITE_SECTION_BODY, DELETE_SECTION_BODY, DELETE_WHOLE_SECTION, MOVE_SECTION, RELAYOUT_SECTION -> true;
             default -> false;
         };
     }

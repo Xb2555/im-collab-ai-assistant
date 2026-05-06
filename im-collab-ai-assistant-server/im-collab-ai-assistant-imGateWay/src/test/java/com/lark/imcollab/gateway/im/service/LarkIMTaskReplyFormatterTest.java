@@ -275,7 +275,14 @@ class LarkIMTaskReplyFormatterTest {
     void completedArtifactEditClarificationExplicitlySaysNoRestart() {
         String text = formatter.completedArtifactEditClarification("已修改 PPT 第 3 页：实施收益");
 
-        assertThat(text).contains("当前上一轮任务已完成", "按现有 PPT 修改处理", "不是重新启动执行", "已修改 PPT 第 3 页");
+        assertThat(text).contains("当前上一轮任务已完成", "按现有PPT修改处理", "不是重新启动执行", "已修改 PPT 第 3 页");
+    }
+
+    @Test
+    void completedArtifactEditAppliedUsesDocumentWordingForDocDetail() {
+        String text = formatter.completedArtifactEditApplied("已修改文档 2.2 节：补充验证结论");
+
+        assertThat(text).contains("当前上一轮任务已完成", "按现有文档修改处理", "已修改文档 2.2 节");
     }
 
     @Test

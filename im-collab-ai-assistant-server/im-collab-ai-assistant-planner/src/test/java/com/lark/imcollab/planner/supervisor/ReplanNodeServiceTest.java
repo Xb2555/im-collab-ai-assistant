@@ -359,6 +359,37 @@ class ReplanNodeServiceTest {
     }
 
     @Test
+    void runtimeCompletedDocTaskPrefersCompletedArtifactEditEvenWhenSessionPhaseIsPlanReady() {
+        PlanTaskSession session = session();
+        session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        session.setInputContext(TaskInputContext.builder().senderOpenId("ou-user").build());
+        ArtifactRecord doc = docArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+        when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
+                .taskId("doc-iter-1")
+                .artifactId("artifact-doc-1")
+                .docUrl(doc.getUrl())
+                .status(DocumentArtifactIterationStatus.COMPLETED)
+                .summary("已补充 IM 完成态文档修改验证")
+                .preview("已补充 IM 完成态文档修改验证")
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "把这份文档在 2.2 验证结论末尾补充一句：IM-DOC-ONCE-UNIQUE-CHECK-001。", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已补充 IM 完成态文档修改验证");
+        verify(documentArtifactIterationFacade).edit(any(DocumentArtifactIterationRequest.class));
+        verify(adjustmentInterpreter, never()).interpret(any(), anyString(), any());
+    }
+
+    @Test
     void completedOverallAdjustmentReusesPlanningNode() {
         PlanTaskSession session = completedSession();
         PlanTaskSession replanned = session();

@@ -264,7 +264,7 @@ class LoggingLarkInboundMessageDispatcherTest {
         assertThat(replies).singleElement()
                 .satisfies(reply -> assertThat(reply)
                         .contains("当前上一轮任务已完成")
-                        .contains("按现有 PPT 修改处理")
+                        .contains("按现有PPT修改处理")
                         .contains("已修改 PPT 第 1 页：IM指定产物修改验证2002")
                         .contains("任务状态：已完成")
                         .contains("[PPT] IM指定产物修改验证")
@@ -284,9 +284,27 @@ class LoggingLarkInboundMessageDispatcherTest {
         assertThat(sentPrivateTexts(replyTool)).singleElement()
                 .satisfies(reply -> assertThat(reply)
                         .contains("当前上一轮任务已完成")
-                        .contains("按现有 PPT 修改处理")
+                        .contains("按现有PPT修改处理")
                         .contains("不是重新启动执行")
                         .contains("已修改 PPT 第 3 页：实施收益"));
+    }
+
+    @Test
+    void completedDocAdjustmentUsesDocumentWordingInsteadOfPpt() {
+        PlanTaskSession completed = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.COMPLETED);
+        completed.getIntakeState().setAssistantReply("已修改文档 2.2 节：补充验证结论");
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(completed);
+        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshotWithArtifact());
+
+        dispatcher.dispatch(message("把这份文档在 2.2 验证结论末尾补充一句"));
+
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
+                        .contains("当前上一轮任务已完成")
+                        .contains("按现有文档修改处理")
+                        .contains("已修改文档 2.2 节：补充验证结论")
+                        .doesNotContain("按现有 PPT 修改处理"));
     }
 
     @Test

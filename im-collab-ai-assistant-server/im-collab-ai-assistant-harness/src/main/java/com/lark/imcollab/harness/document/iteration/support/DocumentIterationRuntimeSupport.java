@@ -298,15 +298,16 @@ public class DocumentIterationRuntimeSupport {
             String docUrl,
             String lastEditedBy
     ) {
+        String versionedTitle = versionedSummaryTitle(context.getTaskId(), title);
         Artifact artifact = Artifact.builder()
                 .artifactId(UUID.randomUUID().toString())
                 .taskId(context.getTaskId())
                 .stepId(context.getStepId())
                 .type(ArtifactType.SUMMARY)
-                .title(title)
+                .title(versionedTitle)
                 .content(content)
                 .documentId(docId)
-                .externalUrl(docUrl)
+                .externalUrl(null)
                 .ownerScenario(OWNER_SCENARIO)
                 .createdBySystem(true)
                 .lastEditedBy(lastEditedBy)
@@ -320,7 +321,7 @@ public class DocumentIterationRuntimeSupport {
                 .sourceStepId(context.getStepId())
                 .type(ArtifactTypeEnum.SUMMARY)
                 .title(artifact.getTitle())
-                .url(artifact.getExternalUrl())
+                .url(null)
                 .preview(artifact.getContent())
                 .status("CREATED")
                 .version(1)
@@ -335,8 +336,20 @@ public class DocumentIterationRuntimeSupport {
             task.setUpdatedAt(Instant.now());
             plannerStateStore.saveTask(task);
         });
-        publishEvent(context.getTaskId(), context.getStepId(), TaskEventType.ARTIFACT_CREATED, title, TaskEventTypeEnum.ARTIFACT_CREATED);
+        publishEvent(context.getTaskId(), context.getStepId(), TaskEventType.ARTIFACT_CREATED, versionedTitle, TaskEventTypeEnum.ARTIFACT_CREATED);
         return artifact;
+    }
+
+    private String versionedSummaryTitle(String taskId, String baseTitle) {
+        String normalized = hasText(baseTitle) ? baseTitle.trim() : "文档迭代结果";
+        long existingCount = artifactRepository.findByTaskId(taskId).stream()
+                .filter(artifact -> artifact != null && artifact.getType() == ArtifactType.SUMMARY)
+                .map(Artifact::getTitle)
+                .filter(this::hasText)
+                .map(String::trim)
+                .filter(title -> title.equals(normalized) || title.matches(java.util.regex.Pattern.quote(normalized) + " v\\d+"))
+                .count();
+        return normalized + " v" + (existingCount + 1);
     }
 
     public void touchOwnedDocument(Artifact ownedArtifact, String lastEditedBy) {

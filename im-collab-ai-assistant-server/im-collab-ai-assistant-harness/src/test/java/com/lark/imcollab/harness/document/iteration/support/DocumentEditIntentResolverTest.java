@@ -414,6 +414,34 @@ class DocumentEditIntentResolverTest {
     }
 
     @Test
+    void sentenceAppendInsideSectionNormalizesInlineInsertToSectionAfterAnchor() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "semanticAction": "INSERT_INLINE_TEXT",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_HEADING_NUMBER",
+                    "headingNumber": "2.2"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("把这份文档在 2.2 验证结论末尾补充一句：IM-DOC-ONCE-UNIQUE-CHECK-001。");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getIntentType()).isEqualTo(com.lark.imcollab.common.model.enums.DocumentIterationIntentType.INSERT);
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("2.2");
+    }
+
+    @Test
     void deleteWholeSectionInstructionNormalizesOrdinalAnchorToHeadingTitle() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""
