@@ -35,12 +35,14 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: install frontend dependencies
+        working-directory: ./im-collab-ai-assistant-client 
         run: npm install
 
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          projectPath: ./im-collab-ai-assistant-client
           tagName: v__VERSION__
           releaseName: "Agent App v__VERSION__"
           releaseBody: "自动生成的跨平台版本。"
