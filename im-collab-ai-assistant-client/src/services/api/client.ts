@@ -11,7 +11,7 @@ export const isMobileNative = Capacitor.isNativePlatform();
 
 export const getBaseUrl = () => {
   // 比赛阶段：全平台统一直连后端，避免依赖 Vite/Vercel 代理配置
-  return 'http://81.71.143.236:18080';
+  return 'https://api.yiiie.cn';
 };
 
 export const apiClient = axios.create({
