@@ -2,14 +2,18 @@ package com.lark.imcollab.planner.supervisor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
+import com.lark.imcollab.common.facade.DocumentEditIntentFacade;
+import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationIterationFacade;
 import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
@@ -62,7 +66,9 @@ public class ReplanNodeService {
     private final PlanQualityService qualityService;
     private final PlannerStateStore stateStore;
     private final TaskRuntimeService taskRuntimeService;
+    private final ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider;
     private final ObjectProvider<PresentationIterationFacade> presentationIterationFacadeProvider;
+    private final ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider;
     private final ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider;
     private final ObjectMapper objectMapper;
 
@@ -75,7 +81,9 @@ public class ReplanNodeService {
             PlanQualityService qualityService,
             PlannerStateStore stateStore,
             TaskRuntimeService taskRuntimeService,
+            ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider,
             ObjectProvider<PresentationIterationFacade> presentationIterationFacadeProvider,
+            ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider,
             ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider,
             ObjectMapper objectMapper
     ) {
@@ -87,7 +95,9 @@ public class ReplanNodeService {
         this.qualityService = qualityService;
         this.stateStore = stateStore;
         this.taskRuntimeService = taskRuntimeService;
+        this.presentationEditIntentFacadeProvider = presentationEditIntentFacadeProvider;
         this.presentationIterationFacadeProvider = presentationIterationFacadeProvider;
+        this.documentEditIntentFacadeProvider = documentEditIntentFacadeProvider;
         this.documentArtifactIterationFacadeProvider = documentArtifactIterationFacadeProvider;
         this.objectMapper = objectMapper;
     }
@@ -314,7 +324,7 @@ public class ReplanNodeService {
                 return askCompletedAdjustmentQuestion(
                         session,
                         instruction,
-                        "可以改现有 PPT。你想改哪一页、改成什么内容？比如“把第2页标题改成采购风险与建议”。"
+                        "可以改现有 PPT。你可以一次说明一个或多个页面要怎么改，比如“把第2页标题改成采购风险与建议，再把第3页正文改成里程碑、风险、预算”。"
                 );
             }
             return editExistingPpt(session, artifact, instruction, workspaceContext);
@@ -620,19 +630,28 @@ public class ReplanNodeService {
         if (!hasText(instruction)) {
             return false;
         }
-        if (containsAny(instruction, "改成", "改为", "换成")) {
-            return true;
+        PresentationEditIntentFacade facade = presentationEditIntentFacadeProvider == null
+                ? null
+                : presentationEditIntentFacadeProvider.getIfAvailable();
+        if (facade == null) {
+            return false;
         }
-        return containsAny(instruction, "补充", "新增", "添加", "加入", "删除")
-                && instruction.length() >= 12;
+        PresentationEditIntent intent = facade.resolve(instruction);
+        return intent != null && !intent.isClarificationNeeded();
     }
 
     private boolean hasConcreteDocEditInstruction(String instruction) {
         if (!hasText(instruction)) {
             return false;
         }
-        return containsAny(instruction, "补充", "新增", "添加", "加入", "插入", "改成", "改为", "修改", "删除", "润色", "重写", "替换")
-                && instruction.length() >= 8;
+        DocumentEditIntentFacade facade = documentEditIntentFacadeProvider == null
+                ? null
+                : documentEditIntentFacadeProvider.getIfAvailable();
+        if (facade == null) {
+            return false;
+        }
+        DocumentEditIntent intent = facade.resolve(instruction);
+        return intent != null && !intent.isClarificationNeeded();
     }
 
     private PlanTaskSession applyDocumentIterationResult(

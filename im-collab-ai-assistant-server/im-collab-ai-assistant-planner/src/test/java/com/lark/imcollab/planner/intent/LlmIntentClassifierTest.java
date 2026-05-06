@@ -46,6 +46,17 @@ class LlmIntentClassifierTest {
     }
 
     @Test
+    void parsesCompletedTaskListReadOnlyView() {
+        Optional<IntentRoutingResult> result = classifier.parse("""
+                {"intent":"QUERY_STATUS","confidence":0.91,"reason":"completed task browsing request","normalizedInput":"我想看看已完成任务列表","needsClarification":false,"readOnlyView":"COMPLETED_TASKS"}
+                """);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().type()).isEqualTo(TaskCommandTypeEnum.QUERY_STATUS);
+        assertThat(result.get().readOnlyView()).isEqualTo("COMPLETED_TASKS");
+    }
+
+    @Test
     void invalidJsonReturnsEmptyInsteadOfGuessing() {
         Optional<IntentRoutingResult> result = classifier.parse("QUERY_STATUS");
 

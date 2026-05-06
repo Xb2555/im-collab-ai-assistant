@@ -2,6 +2,7 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.facade.DocumentEditIntentFacade;
 import com.lark.imcollab.common.model.entity.DocumentAnchorSpec;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.DocumentRewriteSpec;
@@ -26,7 +27,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
-public class DocumentEditIntentResolver {
+public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentEditIntentResolver.class);
 
@@ -83,6 +84,7 @@ public class DocumentEditIntentResolver {
         }
     }
 
+    @Override
     public DocumentEditIntent resolve(String instruction) {
         return resolve(instruction, null);
     }

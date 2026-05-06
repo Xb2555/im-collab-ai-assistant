@@ -154,7 +154,7 @@ public class ReviewGateNodeService {
             return "当前执行链路一次只能稳定完成一个文档步骤。你可以把新增内容并进主文档，或者拆成后续单独任务。";
         }
         if (first.contains("multiple PPT steps")) {
-            return "当前执行链路一次只能稳定完成一个 PPT 步骤。你可以先收敛成一个 PPT 产物。";
+            return "当前执行链路一次还不支持在同一个任务里并行生成多个 PPT 交付物。请先收敛成一个 PPT；同一个 PPT 内的多页内容修改可以一次说明。";
         }
         return "当前计划包含暂不支持的步骤或产物。请确认是否改成文档、PPT 或摘要。";
     }

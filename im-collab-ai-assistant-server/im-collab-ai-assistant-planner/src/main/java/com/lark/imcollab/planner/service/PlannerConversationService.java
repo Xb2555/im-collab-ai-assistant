@@ -43,6 +43,8 @@ public class PlannerConversationService {
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
+    private static final String SELECTION_PURPOSE_COMPLETED_TASK_LIST = "COMPLETED_TASK_LIST";
+    private static final String SELECTION_PURPOSE_COMPLETED_TASK_ADJUSTMENT = "COMPLETED_TASK_ADJUSTMENT";
 
     public PlannerConversationService(
             TaskSessionResolver sessionResolver,
@@ -139,6 +141,17 @@ public class PlannerConversationService {
             );
             if (adjustmentResult != null) {
                 return adjustmentResult;
+            }
+        }
+        if (shouldRouteCompletedTaskList(intakeDecision, workspaceContext)) {
+            PlanTaskSession listResult = routeCompletedTaskList(
+                    graphInstruction,
+                    workspaceContext,
+                    resolution,
+                    session
+            );
+            if (listResult != null) {
+                return listResult;
             }
         }
         if (shouldShortCircuitWithoutTask(resolution, intakeDecision)) {
@@ -295,6 +308,19 @@ public class PlannerConversationService {
         session.getIntakeState().setPendingTaskSelection(null);
         sessionService.saveWithoutVersionChange(session);
         sessionResolver.bindConversation(new TaskSessionResolution(candidate.getTaskId(), true, resolution.continuationKey()));
+        if (SELECTION_PURPOSE_COMPLETED_TASK_LIST.equals(selection.getSelectionPurpose())) {
+            refreshSelectedTaskContext(
+                    candidate.getTaskId(),
+                    workspaceContext,
+                    resolution,
+                    selection.getOriginalInstruction(),
+                    TaskIntakeTypeEnum.STATUS_QUERY,
+                    "completed task selected from list",
+                    selectedCompletedTaskReply(candidate),
+                    "COMPLETED_TASKS"
+            );
+            return sessionService.get(candidate.getTaskId());
+        }
         refreshSelectedTaskContext(candidate.getTaskId(), workspaceContext, resolution, selection.getOriginalInstruction());
         PlanTaskSession result = graphRunner.run(
                 new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "completed task selected for adjustment"),
@@ -339,11 +365,58 @@ public class PlannerConversationService {
         return pendingTaskSelectionReply(session, workspaceContext, resolution, instruction, candidates);
     }
 
+    private PlanTaskSession routeCompletedTaskList(
+            String instruction,
+            WorkspaceContext workspaceContext,
+            TaskSessionResolution resolution,
+            PlanTaskSession session
+    ) {
+        List<PendingTaskCandidate> candidates = sessionResolver.resolveCompletedCandidates(workspaceContext);
+        if (candidates.isEmpty()) {
+            return transientReply(
+                    session,
+                    workspaceContext,
+                    resolution,
+                    "我还没找到这个聊天里已完成的任务。你可以先完成一个任务，或者去任务工作台查看。"
+            );
+        }
+        return pendingTaskSelectionReply(
+                session,
+                workspaceContext,
+                resolution,
+                instruction,
+                candidates,
+                SELECTION_PURPOSE_COMPLETED_TASK_LIST
+        );
+    }
+
     private void refreshSelectedTaskContext(
             String taskId,
             WorkspaceContext workspaceContext,
             TaskSessionResolution resolution,
             String instruction
+    ) {
+        refreshSelectedTaskContext(
+                taskId,
+                workspaceContext,
+                resolution,
+                instruction,
+                TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                "completed task adjustment from current IM message",
+                null,
+                null
+        );
+    }
+
+    private void refreshSelectedTaskContext(
+            String taskId,
+            WorkspaceContext workspaceContext,
+            TaskSessionResolution resolution,
+            String instruction,
+            TaskIntakeTypeEnum intakeType,
+            String routingReason,
+            String assistantReply,
+            String readOnlyView
     ) {
         if (!hasText(taskId)) {
             return;
@@ -356,14 +429,17 @@ public class PlannerConversationService {
                 selected,
                 workspaceContext,
                 new TaskIntakeDecision(
-                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        intakeType,
                         instruction,
-                        "completed task adjustment from current IM message",
-                        null,
-                        null),
+                        routingReason,
+                        assistantReply,
+                        readOnlyView),
                 new TaskSessionResolution(taskId, true, resolution == null ? null : resolution.continuationKey()),
                 instruction
         );
+        if (selected.getIntakeState() != null) {
+            selected.getIntakeState().setPendingTaskSelection(null);
+        }
         sessionService.saveWithoutVersionChange(selected);
     }
 
@@ -373,6 +449,24 @@ public class PlannerConversationService {
             TaskSessionResolution resolution,
             String instruction,
             List<PendingTaskCandidate> candidates
+    ) {
+        return pendingTaskSelectionReply(
+                session,
+                workspaceContext,
+                resolution,
+                instruction,
+                candidates,
+                SELECTION_PURPOSE_COMPLETED_TASK_ADJUSTMENT
+        );
+    }
+
+    private PlanTaskSession pendingTaskSelectionReply(
+            PlanTaskSession session,
+            WorkspaceContext workspaceContext,
+            TaskSessionResolution resolution,
+            String instruction,
+            List<PendingTaskCandidate> candidates,
+            String selectionPurpose
     ) {
         PlanTaskSession selectionSession = session;
         TaskSessionResolution selectionResolution = resolution;
@@ -384,7 +478,7 @@ public class PlannerConversationService {
                     resolution == null ? null : resolution.continuationKey()
             );
         }
-        String reply = buildCandidateReply(candidates);
+        String reply = buildCandidateReply(candidates, selectionPurpose);
         updateSessionEnvelope(
                 selectionSession,
                 workspaceContext,
@@ -395,6 +489,7 @@ public class PlannerConversationService {
         selectionSession.getIntakeState().setPendingTaskSelection(PendingTaskSelection.builder()
                 .conversationKey(sessionResolver.conversationKey(workspaceContext))
                 .originalInstruction(instruction)
+                .selectionPurpose(selectionPurpose)
                 .candidates(candidates)
                 .expiresAt(Instant.now().plus(Duration.ofMinutes(10)))
                 .build());
@@ -537,6 +632,16 @@ public class PlannerConversationService {
         if (conversationState.map(ConversationTaskState::getExecutingTaskId).filter(this::hasText).isPresent()) {
             return false;
         }
+        if (resolution != null
+                && resolution.existingSession()
+                && isCompleted(session)
+                && conversationState
+                .map(ConversationTaskState::getActiveTaskId)
+                .filter(this::hasText)
+                .map(activeTaskId -> activeTaskId.equals(session.getTaskId()))
+                .orElse(false)) {
+            return false;
+        }
         if (resolution == null || !resolution.existingSession() || isCompleted(session)) {
             return !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
         }
@@ -545,6 +650,13 @@ public class PlannerConversationService {
 
     private boolean isCompleted(PlanTaskSession session) {
         return session != null && session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED;
+    }
+
+    private boolean shouldRouteCompletedTaskList(TaskIntakeDecision intakeDecision, WorkspaceContext workspaceContext) {
+        return intakeDecision != null
+                && intakeDecision.intakeType() == TaskIntakeTypeEnum.STATUS_QUERY
+                && "COMPLETED_TASKS".equalsIgnoreCase(intakeDecision.readOnlyView())
+                && !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
     }
 
     private Integer parseCandidateIndex(String input) {
@@ -577,8 +689,10 @@ public class PlannerConversationService {
         };
     }
 
-    private String buildCandidateReply(List<PendingTaskCandidate> candidates) {
-        StringBuilder builder = new StringBuilder("我找到多个已完成任务，你想修改哪一个？");
+    private String buildCandidateReply(List<PendingTaskCandidate> candidates, String selectionPurpose) {
+        StringBuilder builder = new StringBuilder(SELECTION_PURPOSE_COMPLETED_TASK_LIST.equals(selectionPurpose)
+                ? "我找到这些已完成任务，你想先看哪一个？"
+                : "我找到多个已完成任务，你想修改哪一个？");
         for (int i = 0; i < candidates.size(); i++) {
             PendingTaskCandidate candidate = candidates.get(i);
             builder.append("\n").append(i + 1).append(". ")
@@ -593,6 +707,17 @@ public class PlannerConversationService {
             }
         }
         builder.append("\n回复编号即可。");
+        return builder.toString();
+    }
+
+    private String selectedCompletedTaskReply(PendingTaskCandidate candidate) {
+        StringBuilder builder = new StringBuilder("已切换到这个已完成任务：");
+        builder.append(firstText(candidate.getTitle(), candidate.getGoal()));
+        if (candidate.getArtifactTypes() != null && !candidate.getArtifactTypes().isEmpty()) {
+            builder.append("\n可修改产物类型：")
+                    .append(candidate.getArtifactTypes().stream().map(Enum::name).distinct().reduce((a, b) -> a + "、" + b).orElse(""));
+        }
+        builder.append("\n你可以继续说要修改哪一页、哪一段，或者先查看现有产物。");
         return builder.toString();
     }
 
