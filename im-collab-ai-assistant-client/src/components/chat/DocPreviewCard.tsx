@@ -147,7 +147,7 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
     <div className="mt-4 border border-zinc-200 rounded-xl overflow-hidden bg-white shadow-sm flex flex-col animate-in fade-in zoom-in-95 duration-300 relative">
       
       {/* 1. 顶部状态栏 */}
-      <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 border-b border-zinc-200">
+      <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 border-b border-zinc-200 shrink-0">
         <div className="flex items-center gap-2">
           <div className={`p-1.5 rounded-md ${status === 'COMPLETED' ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'}`}>
             <FileText className="h-4 w-4" />
@@ -163,8 +163,8 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
         </Button>
       </div>
 
-      {/* 2. 中间 Iframe 预览区 */}
-      <div className="relative w-full h-[300px] bg-zinc-100/50">
+      {/* 2. 中间 Iframe 预览区 ✨ 优化：使用响应式高度，并限制沙盒权限缓解卡顿 */}
+      <div className="relative w-full h-[220px] sm:h-[300px] bg-zinc-100/50 shrink-0 transform-gpu overflow-hidden" style={{ WebkitOverflowScrolling: 'touch' }}>
         {(status === 'GENERATING' || isReplanning) && !docUrl ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-400 space-y-3 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px]">
             <Loader2 className="h-6 w-6 animate-spin text-blue-400" />
@@ -172,7 +172,14 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
           </div>
         ) : (
           <>
-            <iframe src={embedUrl || 'about:blank'} className="w-full h-full border-none" title="Feishu Doc Preview" loading="lazy" />
+            <iframe 
+              src={embedUrl || 'about:blank'} 
+              className="w-full h-full border-none bg-white transform-gpu" 
+              title="Feishu Doc Preview" 
+              loading="lazy" 
+              // ✨ 性能核心：通过 sandbox 限制飞书不需要的功能，大幅降低内存消耗和卡顿
+              sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+            />
             {isReplanning && (
                <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center z-10 pointer-events-none">
                  <div className="bg-white px-4 py-2 rounded-full shadow-md border border-blue-100 flex items-center gap-2 text-blue-600 text-sm font-medium">
@@ -184,54 +191,61 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
         )}
       </div>
 
-      {/* 3. 底部操作区 */}
-      {/* ✨ 修改：放宽条件，允许取消(CANCELLED/ABORTED)和完成状态下都可以输入 Replan 反馈 */}
-{['COMPLETED', 'CANCELLED', 'ABORTED', 'FAILED'].includes(status) && canReplan && (
-        <div className="p-3 bg-white border-t border-zinc-100 relative z-20">
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              className="flex-1 text-sm bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all placeholder:text-zinc-400"
-              // ✨ 换成强引导文案
-              placeholder="请明确指出位置（如：在【2.3 水果拼盘】标题下，补充预算300元）"
+      {/* 3. 底部操作区 ✨ 优化：解决遮挡问题，增加强引导的提示框 */}
+      {['COMPLETED', 'CANCELLED', 'ABORTED', 'FAILED'].includes(status) && canReplan && (
+        <div className="p-3 bg-zinc-50 border-t border-zinc-200 shrink-0 z-20">
+          
+          {/* ✨ 强提醒 UI：显性化后端的章节约束要求 */}
+          <div className="flex items-start gap-1.5 mb-2.5 text-[11px] text-amber-600 bg-amber-50/80 p-2 rounded-md border border-amber-200/60 leading-relaxed shadow-sm">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span><strong>严格要求：</strong>请必须指明<strong className="text-amber-700 font-bold mx-0.5">明确的章节标题或序号</strong>（如：“在【2.1 背景】下方补充...”），否则 Agent 无法定位。</span>
+          </div>
+
+          <div className="flex items-end gap-2">
+            <textarea
+              className="flex-1 text-sm bg-white border border-zinc-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-zinc-400 resize-none h-[72px]"
+              placeholder="请输入明确指令..."
               value={feedback}
               onChange={(e) => setFeedback(e.target.value)}
-              onKeyDown={handleKeyDown}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  handleIterate();
+                }
+              }}
               disabled={isReplanning || isIterating}
             />
             
-            {/* ✨ 核心：新增局部精修按钮 */}
-            <Button 
-              size="sm" 
-              onClick={handleIterate} 
-              disabled={!feedback.trim() || isReplanning || isIterating || isApproving}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all"
-            >
-              {isIterating ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Wand2 className="h-3.5 w-3.5 mr-1" />}
-              局部精修
-            </Button>
-            
-            {/* 降级的重跑按钮 */}
-            <Button 
-              size="sm" 
-              variant="outline"
-              onClick={handleSubmitReplan} 
-              disabled={!feedback.trim() || isReplanning || isIterating}
-              className="text-zinc-600"
-              title="保留旧文档，完全重新生成一份新文档"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-            </Button>
+            <div className="flex flex-col gap-2 shrink-0">
+              <Button 
+                size="sm" 
+                onClick={handleIterate} 
+                disabled={!feedback.trim() || isReplanning || isIterating || isApproving}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm h-8 px-3 transition-all"
+              >
+                {isIterating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5 mr-1" />} 精准修改
+              </Button>
+              <Button 
+                size="sm" 
+                variant="outline"
+                onClick={handleSubmitReplan} 
+                disabled={!feedback.trim() || isReplanning || isIterating}
+                className="text-zinc-500 h-8 px-3 border-zinc-300 hover:bg-zinc-100 transition-all"
+                title="保留旧文档，完全重新生成一份新文档"
+              >
+                <RefreshCw className="h-3.5 w-3.5 mr-1" /> 重造新版
+              </Button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* ✨ 4. 局部精修的 Diff 浮层 (模态框) */}
+      {/* 4. 局部精修的 Diff 浮层 ✨ 优化：把 absolute 改成 fixed 全局覆盖，彻底解决被遮挡/截断问题 */}
       {iterationPlan && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/40 backdrop-blur-[2px] animate-in fade-in duration-200">
-          <div className="bg-white rounded-xl shadow-2xl border border-zinc-200 w-full max-w-[95%] max-h-[95%] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-zinc-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-xl shadow-2xl border border-zinc-200 w-full max-w-[95%] sm:max-w-md max-h-[90%] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
             
-            <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/80">
+            <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/80 shrink-0">
               <h3 className="font-semibold text-zinc-800 flex items-center gap-2">
                 <FileEdit className="h-4 w-4 text-indigo-600" /> Agent 修改提议
               </h3>
@@ -245,7 +259,7 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
             </div>
 
             <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-4 text-sm">
-              <div className="bg-indigo-50/50 border border-indigo-100 rounded-lg p-3">
+              <div className="bg-indigo-50/50 border border-indigo-100 rounded-lg p-3 shrink-0">
                 <span className="text-xs font-bold text-indigo-400 block mb-1">执行动作</span>
                 <span className="text-indigo-900 font-medium">{translateSemanticAction(iterationPlan.semanticAction)}</span>
               </div>
@@ -254,7 +268,6 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
                 <span className="text-xs font-bold text-zinc-400">预览修改内容：</span>
                 <div className="bg-[#F8F9FA] border border-zinc-200 rounded-lg p-3 text-zinc-700 whitespace-pre-wrap font-mono text-[13px] leading-relaxed relative overflow-hidden shadow-inner">
                   <div className="absolute left-0 top-0 bottom-0 w-1 bg-green-400"></div>
-                  {/* 这里不用加后备文本了，因为我们在 handleIterate 里已经拦截了空文本 */}
                   {iterationPlan.generatedContent}
                 </div>
               </div>
@@ -266,7 +279,7 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
               </Button>
               <Button size="sm" onClick={() => handleApprove('APPROVE')} disabled={isApproving} className="bg-indigo-600 hover:bg-indigo-700 text-white">
                 {isApproving ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Check className="h-3.5 w-3.5 mr-1" />}
-                同意并应用到文档
+                应用到飞书文档
               </Button>
             </div>
 

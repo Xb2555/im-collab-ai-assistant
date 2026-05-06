@@ -177,7 +177,10 @@ export default function DashboardMobile() {
 </div>
                   <div className="flex-1 overflow-hidden relative">
                     {/* ✨ 修复点：将真实的拉取方法传给 ChatRoom */}
-                    <ChatRoomMobile onOpenHistory={loadHistoryTasks} />
+                    <ChatRoomMobile 
+                      onOpenHistory={loadHistoryTasks} 
+                      onSwitchToWorkspace={() => setActiveTab('workspace')} 
+                    />
                   </div>
                 </motion.div>
               )}

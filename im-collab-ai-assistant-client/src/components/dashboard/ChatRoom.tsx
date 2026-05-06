@@ -303,23 +303,12 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
               : (isBot ? 'Agent Pilot' : (resolvedName || '未知成员'));
 
             return (
-              <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} group relative`}>
-                <div className={`absolute top-2 ${isMe ? '-left-6' : '-right-6'} opacity-0 group-hover:opacity-100 transition-opacity ${selectedMessageIds.includes(msg.eventId) ? 'opacity-100' : ''}`}>
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 cursor-pointer"
-                    checked={selectedMessageIds.includes(msg.eventId)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedMessageIds((prev) => [...prev, msg.eventId]);
-                      } else {
-                        setSelectedMessageIds((prev) => prev.filter((id) => id !== msg.eventId));
-                      }
-                    }}
-                  />
-                </div>
-                <div className={`flex max-w-[85%] gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
-                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm overflow-hidden ${isBot ? 'bg-blue-600 text-white' : 'bg-zinc-200 text-zinc-600'}`}>
+              <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} group mb-4`}>
+                {/* 统一的 flex 容器，通过 reverse 自动处理左右对称 */}
+                <div className={`flex items-start max-w-[90%] gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
+                  
+                  {/* 1. 头像区域 */}
+                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm overflow-hidden transition-all duration-200 ${isBot ? 'bg-blue-600 text-white' : 'bg-zinc-200 text-zinc-600'} ${selectedMessageIds.includes(msg.eventId) ? 'ring-2 ring-blue-500 ring-offset-2' : ''}`}>
                     {isBot ? (
                       <Bot className="h-4 w-4" />
                     ) : (msg.senderAvatar || (isMe ? user?.avatarUrl : null)) ? (
@@ -331,14 +320,39 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
                     )}
                   </div>
 
-                  <div className={`flex flex-col space-y-1 ${isMe ? 'items-end' : 'items-start'}`}>
+                  {/* 2. 名字与气泡区域 */}
+                  <div className={`flex flex-col space-y-1 min-w-0 ${isMe ? 'items-end' : 'items-start'}`}>
                     <span className="text-[11px] font-medium text-zinc-400 px-1">{displayName}</span>
-                    <div className={`flex flex-col space-y-1 min-w-0 ${isMe ? 'items-end' : 'items-start'}`}>
-                      <div className={`rounded-2xl px-3.5 py-2 text-sm shadow-sm leading-relaxed whitespace-pre-wrap break-words break-all ${isMe ? 'bg-zinc-800 text-white rounded-tr-sm' : 'bg-white border border-zinc-200 text-zinc-800 rounded-tl-sm'}`}>
-                        {msg.content}
-                      </div>
+                    <div 
+                      className={`rounded-2xl px-3.5 py-2 text-sm shadow-sm leading-relaxed whitespace-pre-wrap break-words break-all transition-all duration-200 cursor-pointer ${isMe ? 'bg-zinc-800 text-white rounded-tr-sm' : 'bg-white border border-zinc-200 text-zinc-800 rounded-tl-sm'} ${selectedMessageIds.includes(msg.eventId) ? 'ring-2 ring-blue-500 ring-offset-1 scale-[0.98] opacity-90' : 'group-hover:ring-1 group-hover:ring-blue-300'}`}
+                      onClick={() => {
+                        if (selectedMessageIds.includes(msg.eventId)) {
+                          setSelectedMessageIds(prev => prev.filter(id => id !== msg.eventId));
+                        } else {
+                          setSelectedMessageIds(prev => [...prev, msg.eventId]);
+                        }
+                      }}
+                    >
+                      {msg.content}
                     </div>
                   </div>
+
+                  {/* 3. 复选框：固定在气泡内侧 */}
+                  <div className={`mt-5 flex items-center justify-center shrink-0 transition-all duration-200 ${selectedMessageIds.includes(msg.eventId) ? 'opacity-100 scale-100' : 'opacity-0 scale-95 group-hover:opacity-100 group-hover:scale-100'}`}>
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 cursor-pointer accent-blue-600 rounded-sm"
+                      checked={selectedMessageIds.includes(msg.eventId)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedMessageIds((prev) => [...prev, msg.eventId]);
+                        } else {
+                          setSelectedMessageIds((prev) => prev.filter((id) => id !== msg.eventId));
+                        }
+                      }}
+                    />
+                  </div>
+
                 </div>
               </div>
             );
@@ -348,6 +362,23 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
 
       <div className="z-10 border-t border-zinc-200 p-4 bg-zinc-50 shrink-0">
         <div className="flex flex-col gap-2">
+          
+          {/* ✨ 新增：上下文选中状态显性化提示条 */}
+          {selectedMessageIds.length > 0 && (
+            <div className="flex items-center justify-between bg-blue-50/80 border border-blue-200 rounded-xl px-3 py-2.5 animate-in fade-in slide-in-from-bottom-2">
+              <span className="text-xs text-blue-700 flex items-center gap-1.5 font-medium">
+                <Bot className="w-3.5 h-3.5" />
+                已圈选 {selectedMessageIds.length} 条聊天记录，将作为上下文发送给 Agent
+              </span>
+              <button 
+                onClick={() => setSelectedMessageIds([])} 
+                className="text-[10px] font-medium text-blue-500 hover:text-blue-700 underline underline-offset-2 transition-colors"
+              >
+                取消选中
+              </button>
+            </div>
+          )}
+
           <textarea
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
@@ -357,8 +388,8 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
                 handleSendMessage();
               }
             }}
-            className="max-h-32 min-h-[44px] w-full resize-none rounded-xl border border-zinc-300 bg-white p-3 text-sm shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-            placeholder="输入消息或指令唤醒 Agent (按 Enter 发送)..."
+            className="max-h-32 min-h-[44px] w-full resize-none rounded-xl border border-zinc-300 bg-white p-3 text-sm shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+            placeholder="输入指令唤醒 Agent (提示：点击消息即可圈选上下文)..."
             rows={2}
             disabled={!activeChatId || isSending}
           />

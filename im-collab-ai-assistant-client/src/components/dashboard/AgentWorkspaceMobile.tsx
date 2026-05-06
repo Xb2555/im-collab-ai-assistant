@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import {
   Bot, Loader2, X, AlertCircle, RefreshCw, CheckCircle2, Play,
   CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle,
-  FileText, Presentation, ChevronRight, UserCircle
+  FileText, Presentation, ChevronRight, UserCircle, Wand2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import confetti from 'canvas-confetti';
@@ -49,7 +49,8 @@ export function AgentWorkspaceMobile() {
   const [replanFeedback, setReplanFeedback] = useState('');
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
-
+// 👇 在其下方插入这一行：
+  const [isDelivering, setIsDelivering] = useState(false);
   const runtimeTask = taskRuntime?.task;
   const runtimeActions = taskRuntime?.actions;
   const runtimeSteps = taskRuntime?.steps ?? [];
@@ -78,7 +79,8 @@ export function AgentWorkspaceMobile() {
   };
 
   const handleDeliver = async () => {
-    if (!activeTaskId || !activeChatId) return;
+    if (!activeTaskId || !activeChatId || isDelivering) return;
+    setIsDelivering(true);
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
     try {
       const docLink = taskRuntime?.artifacts.find(a => a.type === 'DOC')?.url || '';
@@ -90,7 +92,11 @@ export function AgentWorkspaceMobile() {
       });
       toast.success('已推送至群聊');
       clearTask();
-    } catch (e: any) { toast.error('发送失败'); }
+    } catch (e: any) { 
+      toast.error('发送失败'); 
+    } finally {
+      setIsDelivering(false);
+    }
   };
 
   // 渲染解析 LLM 追问
@@ -105,23 +111,42 @@ export function AgentWorkspaceMobile() {
   return (
     <div className="flex-1 overflow-y-auto bg-[#FAFAFC] relative h-full flex flex-col p-4 gap-4">
       
-      {/* 1. 空状态 / 规划中骨架 */}
-      {(!activeTaskId || isPlanning) ? (
+      {/* 1. 空状态 / 规划中骨架 - ✨ 修复点：加入 !runtimeTask 判空，阻断崩溃 */}
+      {(!activeTaskId || isPlanning || !runtimeTask) ? (
         <div className="flex flex-col items-center justify-center h-full gap-4 py-20">
           <Bot className={`h-12 w-12 ${isPlanning ? 'text-blue-500 animate-bounce' : 'text-zinc-300'}`} />
-          <p className="text-sm text-zinc-500">{isPlanning ? 'Agent 正在为您规划任务...' : '暂无活跃任务'}</p>
+          <p className="text-sm text-zinc-500">{isPlanning ? 'Agent 正在为您理解意图并生成规划...' : '暂无活跃任务'}</p>
+          {isPlanning && (
+            <div className="w-48 h-1.5 bg-blue-100 rounded-full overflow-hidden mt-2 shadow-inner">
+              <motion.div initial={{ x: '-100%' }} animate={{ x: '100%' }} transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }} className="w-1/2 h-full bg-blue-500 rounded-full" />
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex flex-col gap-4 pb-20">
           
-          {/* 2. 任务全局概览 (高度消费：title, goal, status,UpdatedAt) */}
+          {/* 2. 任务全局概览 */}
           <div className="bg-white rounded-2xl p-4 border border-zinc-200 shadow-sm relative overflow-hidden">
             <div className="flex justify-between items-start mb-3">
               <h3 className="text-base font-bold text-zinc-900 leading-tight flex-1 pr-4">{runtimeTask.title}</h3>
-              {(() => { const { label, style } = getStatusDisplay(runtimeTask.status); return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${style}`}>{label}</span>; })()}
+              {(() => { const { label, style } = getStatusDisplay(runtimeTask.status); return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${style} shrink-0`}>{label}</span>; })()}
             </div>
             <p className="text-sm text-zinc-500 leading-relaxed mb-4">{runtimeTask.goal}</p>
             
+            {/* ✨ 针对 10秒 PLANNING 后端延迟的无缝衔接动画 */}
+            {runtimeTask.status === 'PLANNING' && (
+              <div className="mt-2 mb-4 p-3 bg-indigo-50/50 rounded-xl border border-indigo-100">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] text-indigo-600 flex items-center gap-1.5 font-medium">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Agent 正在进行深度推演与路径规划...
+                  </span>
+                </div>
+               
+                <div className="w-full h-1.5 bg-indigo-100 rounded-full overflow-hidden">
+                   <motion.div initial={{ x: '-100%' }} animate={{ x: '100%' }} transition={{ duration: 2, repeat: Infinity, ease: 'linear' }} className="w-1/3 h-full bg-indigo-500 rounded-full" />
+                </div>
+              </div>
+            )}
             {/* ✨ 消费 riskFlags (风险预警) */}
             {runtimeTask.riskFlags && runtimeTask.riskFlags.length > 0 && (
               <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 mb-4">
@@ -242,11 +267,33 @@ export function AgentWorkspaceMobile() {
                         )}
 
                         {isRunning && (
-                          <div className="mt-2">
-                             <div className="w-full h-1 bg-blue-100 rounded-full overflow-hidden">
-                               <motion.div initial={{ x: '-100%' }} animate={{ x: '100%' }} transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }} className="w-1/2 h-full bg-blue-500" />
-                             </div>
-                             <p className="text-[10px] text-blue-500 mt-1">Agent 正在执行，请稍候...</p>
+                          <div className="mt-3 p-3 bg-blue-50/50 border border-blue-100 rounded-lg relative overflow-hidden">
+                            <div className="flex items-start justify-between mb-2">
+                              <span className="text-[11px] font-medium text-blue-700 flex items-center gap-1.5 leading-relaxed">
+                                <Bot className="w-4 h-4 animate-bounce text-blue-500"/> 
+                                {step.type === 'PPT_CREATE' || step.type === 'PPT' ? '正在精雕细琢每一页，预计需要一小会...' : 'Agent 正在飞速执行中，请稍候...'}
+                              </span>
+                              <span className="text-[10px] text-blue-400 font-mono shrink-0 ml-2 mt-0.5">预计 60s</span>
+                            </div>
+                            <div className="w-full h-1.5 bg-blue-200/50 rounded-full overflow-hidden shadow-inner mb-3">
+                              <motion.div 
+                                className="h-full bg-blue-500 relative" 
+                                initial={{ width: `0%` }} 
+                                animate={{ width: "90%" }} 
+                                transition={{ duration: 60, ease: "easeOut" }}
+                              >
+                                <div className="absolute top-0 left-0 w-full h-full bg-white/20 animate-[shimmer_1s_infinite]" />
+                              </motion.div>
+                            </div>
+                            <div className="flex items-end justify-between mt-2">
+                              <div className="flex-1 space-y-1.5 opacity-40 mr-4">
+                                <div className="h-1.5 bg-blue-300 rounded w-full animate-pulse"></div>
+                                <div className="h-1.5 bg-blue-300 rounded w-5/6 animate-pulse" style={{ animationDelay: '150ms' }}></div>
+                              </div>
+                              <Button variant="ghost" size="sm" disabled={isCancelling} onClick={() => handleCommand('CANCEL')} className="h-6 text-[10px] px-2 text-red-500 hover:text-red-600 hover:bg-red-100 border border-transparent hover:border-red-200 transition-colors">
+                                {isCancelling ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <StopCircle className="w-3 h-3 mr-1" />} 停止执行
+                              </Button>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -277,8 +324,9 @@ export function AgentWorkspaceMobile() {
 
           {/* 7. 最终交付按钮 */}
           {runtimeTask.status === 'COMPLETED' && (
-            <Button className="w-full h-12 bg-zinc-900 text-white rounded-2xl font-bold shadow-lg" onClick={handleDeliver}>
-              <Send className="h-5 w-5 mr-2" /> 确认并同步交付成果
+            <Button disabled={isDelivering} className="w-full h-12 bg-zinc-900 text-white rounded-2xl font-bold shadow-lg disabled:opacity-50 disabled:bg-zinc-700 transition-all" onClick={handleDeliver}>
+              {isDelivering ? <Loader2 className="h-5 w-5 mr-2 animate-spin" /> : <Send className="h-5 w-5 mr-2" />} 
+              {isDelivering ? '正在同步...' : '确认并同步交付成果'}
             </Button>
           )}
 
