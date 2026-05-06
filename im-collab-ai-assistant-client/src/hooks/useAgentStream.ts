@@ -13,6 +13,7 @@ export function useAgentStream() {
 
   const textBufferRef = useRef('');
   const abortControllerRef = useRef<AbortController | null>(null);
+  const runtimePollTimerRef = useRef<number | null>(null);
 
   const { run: flushTextBuffer } = useThrottleFn(
     () => {
@@ -46,12 +47,21 @@ export function useAgentStream() {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
+    if (runtimePollTimerRef.current) {
+      window.clearInterval(runtimePollTimerRef.current);
+      runtimePollTimerRef.current = null;
+    }
+
     abortControllerRef.current = new AbortController();
     const ctrl = abortControllerRef.current;
 
     fetchRuntimeData(activeTaskId);
 
-const connectSSE = async () => {
+    runtimePollTimerRef.current = window.setInterval(() => {
+      fetchRuntimeData(activeTaskId);
+    }, 1800);
+
+    const connectSSE = async () => {
       setIsStreaming(true);
       try {
         // ✨ 在这里拼接 getBaseUrl()
@@ -64,7 +74,7 @@ const connectSSE = async () => {
           signal: ctrl.signal,
           async onopen(response) {
             if (response.status === 401 || response.status === 403) {
-              throw new Error('UNAUTHORIZED'); 
+              throw new Error('UNAUTHORIZED');
             }
             if (!response.ok) {
               console.warn(`任务流连接异常: ${response.status}`);
@@ -74,12 +84,18 @@ const connectSSE = async () => {
             if (event.event === 'heartbeat') return;
             if (!event.data) return;
 
-            let parsed: any = null;
-            try {
-              parsed = JSON.parse(event.data);
-            } catch {
-              parsed = null;
-            }
+            type StreamEventPayload = {
+              content?: string;
+              taskId?: string;
+            };
+
+            const parsed: StreamEventPayload | null = (() => {
+              try {
+                return JSON.parse(event.data) as StreamEventPayload;
+              } catch {
+                return null;
+              }
+            })();
 
             if (event.event === 'TEXT_CHUNK') {
               if (parsed?.content) {
@@ -89,16 +105,15 @@ const connectSSE = async () => {
               return;
             }
 
-            if (parsed?.content && !parsed?.status && !parsed?.taskId) {
+            if (parsed?.content && !parsed?.taskId) {
               textBufferRef.current += parsed.content;
               flushTextBuffer();
               return;
             }
 
+            // ✅ 兜底：只要收到了业务事件（非 heartbeat），就触发一次 runtime 刷新
             const targetTaskId = parsed?.taskId || activeTaskId;
-            if (parsed?.status || parsed?.taskId || parsed?.version !== undefined) {
-              throttledRefreshRuntime(targetTaskId);
-            }
+            throttledRefreshRuntime(targetTaskId);
           },
           onclose() {
             flushTextBuffer();
@@ -106,15 +121,18 @@ const connectSSE = async () => {
           },
           onerror(err) {
             console.warn('SSE 流异常波动:', err);
-            setIsStreaming(false);
-            // 👇 核心：只有未授权才阻断，普通网络抖动千万别抛出，让库自动帮你重连！
+            // 👇 仅在未授权时真正中断；普通网络抖动交给库自动重连
             if (err.message === 'UNAUTHORIZED') {
-              throw err; 
+              setIsStreaming(false);
+              throw err;
             }
           },
         });
-      } catch (err: any) {
-        if (err.name !== 'AbortError') console.error('SSE 意外断开:', err);
+      } catch (err: unknown) {
+        if (!(err instanceof Error && err.name === 'AbortError')) {
+          console.error('SSE 意外断开:', err);
+          setIsStreaming(false);
+        }
       }
     };
 
@@ -122,6 +140,10 @@ const connectSSE = async () => {
 
     return () => {
       ctrl.abort();
+      if (runtimePollTimerRef.current) {
+        window.clearInterval(runtimePollTimerRef.current);
+        runtimePollTimerRef.current = null;
+      }
       flushTextBuffer();
       setIsStreaming(false);
     };
