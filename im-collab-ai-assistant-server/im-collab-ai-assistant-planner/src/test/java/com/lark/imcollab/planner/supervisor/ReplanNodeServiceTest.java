@@ -2,23 +2,33 @@ package com.lark.imcollab.planner.supervisor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
+import com.lark.imcollab.common.facade.DocumentEditIntentFacade;
+import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationIterationFacade;
 import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
+import com.lark.imcollab.common.model.enums.DocumentAnchorKind;
+import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
+import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
+import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.PresentationEditActionType;
+import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.DocumentArtifactApprovalPayload;
@@ -64,7 +74,9 @@ class ReplanNodeServiceTest {
     private final PlanQualityService qualityService = mock(PlanQualityService.class);
     private final PlannerStateStore stateStore = mock(PlannerStateStore.class);
     private final TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+    private final PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
     private final PresentationIterationFacade presentationIterationFacade = mock(PresentationIterationFacade.class);
+    private final DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
     private final DocumentArtifactIterationFacade documentArtifactIterationFacade = mock(DocumentArtifactIterationFacade.class);
     private final ReplanNodeService service = new ReplanNodeService(
             sessionService,
@@ -75,7 +87,9 @@ class ReplanNodeServiceTest {
             qualityService,
             stateStore,
             taskRuntimeService,
+            provider(presentationEditIntentFacade),
             provider(presentationIterationFacade),
+            provider(documentEditIntentFacade),
             provider(documentArtifactIterationFacade),
             new ObjectMapper()
     );
@@ -143,7 +157,9 @@ class ReplanNodeServiceTest {
                 qualityService,
                 stateStore,
                 taskRuntimeService,
+                provider(presentationEditIntentFacade),
                 provider(presentationIterationFacade),
+                provider(documentEditIntentFacade),
                 provider(documentArtifactIterationFacade),
                 new ObjectMapper()
         );
@@ -160,6 +176,10 @@ class ReplanNodeServiceTest {
         ArtifactRecord artifact = pptArtifact();
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(presentationEditIntentFacade.resolve("修改一下 PPT")).thenReturn(PresentationEditIntent.builder()
+                .clarificationNeeded(true)
+                .clarificationHint("请明确要改第几页和改成什么内容")
+                .build());
 
         PlanTaskSession result = service.replan("task-1", "修改一下 PPT", null);
 
@@ -182,6 +202,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -210,6 +231,7 @@ class ReplanNodeServiceTest {
         ArtifactRecord second = pptArtifact("artifact-ppt-2", "新版 PPT", Instant.parse("2026-05-04T10:00:00Z"));
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
+        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
 
         PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", null);
 
@@ -247,6 +269,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -277,6 +300,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve("把第2页标题改成新标题\n目标产物ID：artifact-ppt-1")).thenReturn(titleIntent(2, "新标题"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -295,6 +319,35 @@ class ReplanNodeServiceTest {
     }
 
     @Test
+    void completedNaturalPptTitleEditUsesResolvedIntentWithoutClarification() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve("帮我修改第一页标题为7878")).thenReturn(titleIntent(1, "7878"));
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .summary("已修改 PPT 第 1 页：7878")
+                .modifiedSlides(List.of("1"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "帮我修改第一页标题为7878", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已修改 PPT 第 1 页：7878");
+        verify(questionTool, never()).askUser(any(), any());
+        verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
+    }
+
+    @Test
     void completedConcreteDocEditUpdatesExistingArtifact() {
         PlanTaskSession session = completedSession();
         ArtifactRecord doc = docArtifact();
@@ -306,6 +359,8 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(documentEditIntentFacade.resolve("把文档补充风险提示\n目标产物ID：artifact-doc-1"))
+                .thenReturn(concreteDocIntent());
         when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
                 .taskId("doc-iter-1")
                 .artifactId("artifact-doc-1")
@@ -336,6 +391,8 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(documentEditIntentFacade.resolve("在1.2后补充风险提示\n目标产物ID：artifact-doc-1"))
+                .thenReturn(concreteDocIntent());
         when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
                 .taskId("doc-iter-1")
                 .artifactId("artifact-doc-1")
@@ -372,6 +429,8 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+        when(documentEditIntentFacade.resolve("把这份文档在 2.2 验证结论末尾补充一句：IM-DOC-ONCE-UNIQUE-CHECK-001。"))
+                .thenReturn(concreteDocIntent());
         when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
                 .taskId("doc-iter-1")
                 .artifactId("artifact-doc-1")
@@ -387,6 +446,75 @@ class ReplanNodeServiceTest {
         assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已补充 IM 完成态文档修改验证");
         verify(documentArtifactIterationFacade).edit(any(DocumentArtifactIterationRequest.class));
         verify(adjustmentInterpreter, never()).interpret(any(), anyString(), any());
+    }
+
+    @Test
+    void completedDocEditUsesStructuredIntentInsteadOfPlannerKeywordGuard() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord doc = docArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        String instruction = "在2.2后补一个测试总结，是对回归测试的总结";
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(documentEditIntentFacade.resolve(instruction)).thenReturn(concreteDocIntent());
+        when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
+                .taskId("doc-iter-1")
+                .artifactId("artifact-doc-1")
+                .docUrl(doc.getUrl())
+                .status(DocumentArtifactIterationStatus.COMPLETED)
+                .summary("已补充测试总结")
+                .preview("已补充测试总结")
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", instruction, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已补充测试总结");
+        verify(documentArtifactIterationFacade).edit(any(DocumentArtifactIterationRequest.class));
+        verify(questionTool, never()).askUser(any(), any());
+    }
+
+    @Test
+    void unclearDocEditStillAsksClarification() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord doc = docArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        String instruction = "帮我调整一下这个文档";
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(documentEditIntentFacade.resolve(instruction)).thenReturn(DocumentEditIntent.builder()
+                .userInstruction(instruction)
+                .clarificationNeeded(true)
+                .clarificationHint("请明确改哪个章节")
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", instruction, null);
+
+        assertThat(result.getIntakeState().getAssistantReply()).contains("可以改现有文档");
+        verify(documentArtifactIterationFacade, never()).edit(any(DocumentArtifactIterationRequest.class));
+    }
+
+    private DocumentEditIntent concreteDocIntent() {
+        return DocumentEditIntent.builder()
+                .intentType(DocumentIterationIntentType.INSERT)
+                .semanticAction(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR)
+                .anchorSpec(com.lark.imcollab.common.model.entity.DocumentAnchorSpec.builder()
+                        .anchorKind(DocumentAnchorKind.SECTION)
+                        .matchMode(DocumentAnchorMatchMode.BY_HEADING_NUMBER)
+                        .headingNumber("2.2")
+                        .build())
+                .clarificationNeeded(false)
+                .build();
     }
 
     @Test
@@ -519,5 +647,15 @@ class ReplanNodeServiceTest {
                 return stream();
             }
         };
+    }
+
+    private static PresentationEditIntent titleIntent(int pageIndex, String replacementText) {
+        return PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .actionType(PresentationEditActionType.REPLACE_SLIDE_TITLE)
+                .pageIndex(pageIndex)
+                .replacementText(replacementText)
+                .clarificationNeeded(false)
+                .build();
     }
 }
