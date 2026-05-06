@@ -10,6 +10,7 @@ import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
@@ -103,6 +104,10 @@ public class ReplanNodeService {
             return artifactSelectionResume;
         }
         if (hasText(extractTargetArtifactId(adjustmentInstruction))) {
+            session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+            return replanCompletedTask(session, adjustmentInstruction, workspaceContext);
+        }
+        if (isCompletedArtifactContext(taskId, session)) {
             session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
             return replanCompletedTask(session, adjustmentInstruction, workspaceContext);
         }
@@ -245,6 +250,19 @@ public class ReplanNodeService {
             case "五", "第五个" -> 5;
             default -> null;
         };
+    }
+
+    private boolean isCompletedArtifactContext(String taskId, PlanTaskSession session) {
+        if (session != null && session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED) {
+            return true;
+        }
+        if (!hasText(taskId)) {
+            return false;
+        }
+        if (session != null && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
+            return false;
+        }
+        return !editableArtifacts(taskId, false, false).isEmpty();
     }
 
     private PlanTaskSession replanCompletedTask(

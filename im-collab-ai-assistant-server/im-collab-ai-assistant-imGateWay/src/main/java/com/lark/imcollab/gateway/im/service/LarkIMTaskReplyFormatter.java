@@ -227,15 +227,35 @@ public class LarkIMTaskReplyFormatter {
     }
 
     public String completedArtifactEditApplied(String detail) {
-        StringBuilder builder = new StringBuilder("💬 当前上一轮任务已完成，我按现有 PPT 修改处理。");
-        appendDetail(builder, detail, "当前上一轮任务已完成", "按现有 PPT 修改处理");
+        String noun = completedArtifactNoun(detail);
+        String phrase = "按现有" + noun + "修改处理";
+        StringBuilder builder = new StringBuilder("💬 当前上一轮任务已完成，我").append(phrase).append("。");
+        appendDetail(builder, detail, "当前上一轮任务已完成", phrase);
         return builder.toString();
     }
 
     public String completedArtifactEditClarification(String detail) {
-        StringBuilder builder = new StringBuilder("💬 当前上一轮任务已完成，我按现有 PPT 修改处理，这次不是重新启动执行。");
-        appendDetail(builder, detail, "当前上一轮任务已完成", "按现有 PPT 修改处理", "不是重新启动执行");
+        String noun = completedArtifactNoun(detail);
+        String phrase = "按现有" + noun + "修改处理";
+        StringBuilder builder = new StringBuilder("💬 当前上一轮任务已完成，我")
+                .append(phrase)
+                .append("，这次不是重新启动执行。");
+        appendDetail(builder, detail, "当前上一轮任务已完成", phrase, "不是重新启动执行");
         return builder.toString();
+    }
+
+    private String completedArtifactNoun(String detail) {
+        if (!hasText(detail)) {
+            return "产物";
+        }
+        String normalized = detail.trim().toUpperCase(java.util.Locale.ROOT);
+        if (normalized.contains("DOC") || detail.contains("文档")) {
+            return "文档";
+        }
+        if (normalized.contains("PPT") || detail.contains("幻灯片") || detail.contains("演示稿")) {
+            return "PPT";
+        }
+        return "产物";
     }
 
     private void appendCardSummary(StringBuilder builder, List<UserPlanCard> cards) {
