@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.DocumentEditStrategy;
 import com.lark.imcollab.common.model.entity.DocumentPatchOperation;
+import com.lark.imcollab.common.model.entity.DocumentSectionAnchor;
 import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
 import com.lark.imcollab.common.model.entity.ExecutionPlan;
 import com.lark.imcollab.common.model.entity.ExpectedDocumentState;
@@ -162,6 +163,60 @@ class DefaultDocumentIterationExecutionServiceTest {
         assertThat(response.getEditPlan().getStrategyType()).isEqualTo(DocumentStrategyType.TEXT_REPLACE);
         verify(targetStateVerifier).verify(eq(plan), eq(beforeSnapshot), any());
         verify(runtimeSupport).touchOwnedDocument(any(), any());
+    }
+
+    @Test
+    void blockInsertAfterFetchesAnchorSectionDetailBeforeTargetStateVerify() {
+        Artifact artifact = ownedArtifact();
+        DocumentEditIntent intent = intent(DocumentIterationIntentType.UPDATE_CONTENT, DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR);
+        DocumentStructureSnapshot beforeSnapshot = snapshot();
+        DocumentStructureSnapshot afterSnapshot = DocumentStructureSnapshot.builder()
+                .docId("doc123")
+                .revisionId(2L)
+                .build();
+        ResolvedDocumentAnchor anchor = ResolvedDocumentAnchor.builder()
+                .anchorType(DocumentAnchorType.SECTION)
+                .sectionAnchor(DocumentSectionAnchor.builder()
+                        .headingBlockId("heading-2-2")
+                        .headingText("2.2 验证结论")
+                        .build())
+                .preview("2.2 验证结论")
+                .build();
+        DocumentEditStrategy strategy = strategy(DocumentStrategyType.BLOCK_INSERT_AFTER, DocumentExpectedStateType.EXPECT_BLOCK_INSERTED_AFTER);
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .taskId("doc-iter-1")
+                .intentType(DocumentIterationIntentType.UPDATE_CONTENT)
+                .semanticAction(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR)
+                .resolvedAnchor(anchor)
+                .structureSnapshot(beforeSnapshot)
+                .expectedState(strategy.getExpectedState())
+                .strategyType(strategy.getStrategyType())
+                .generatedContent("已通过 GUI 完成态文档修改链路实测验证。")
+                .reasoningSummary("insert after section")
+                .toolCommandType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
+                .riskLevel(DocumentRiskLevel.MEDIUM)
+                .patchOperations(List.of(DocumentPatchOperation.builder()
+                        .operationType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
+                        .blockId("body-2-2")
+                        .newContent("已通过 GUI 完成态文档修改链路实测验证。")
+                        .docFormat("markdown")
+                        .build()))
+                .build();
+
+        when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
+        when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
+        when(intentResolver.resolve(anyString(), any())).thenReturn(intent);
+        when(snapshotBuilder.build(any())).thenReturn(beforeSnapshot, afterSnapshot);
+        when(anchorResolver.resolve(any(), eq(beforeSnapshot), eq(intent))).thenReturn(anchor);
+        when(strategyPlanner.plan(eq(intent), eq(anchor))).thenReturn(strategy);
+        when(patchCompiler.compile(anyString(), eq(intent), eq(beforeSnapshot), eq(anchor), eq(strategy))).thenReturn(plan);
+        when(patchExecutor.execute(anyString(), any())).thenReturn(new DocumentPatchExecutor.PatchExecutionResult(List.of("body-2-2"), 2L, 3L));
+
+        DocumentIterationVO response = service.execute(request());
+
+        assertThat(response.getRecognizedIntent()).isEqualTo(DocumentIterationIntentType.UPDATE_CONTENT);
+        verify(snapshotBuilder).fetchSectionDetail(afterSnapshot, "heading-2-2", "https://example.feishu.cn/docx/doc123");
+        verify(targetStateVerifier).verify(eq(plan), eq(beforeSnapshot), eq(afterSnapshot));
     }
 
     @Test

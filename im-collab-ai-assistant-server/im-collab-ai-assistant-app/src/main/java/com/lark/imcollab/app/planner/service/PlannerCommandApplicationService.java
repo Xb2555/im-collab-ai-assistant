@@ -89,16 +89,26 @@ public class PlannerCommandApplicationService {
     }
 
     public PlanTaskSession replan(String taskId, String feedback) {
-        return replan(taskId, feedback, null, null);
+        return replan(taskId, feedback, null, null, null);
     }
 
     public PlanTaskSession replan(String taskId, String feedback, String artifactPolicy, String targetArtifactId) {
+        return replan(taskId, feedback, artifactPolicy, targetArtifactId, null);
+    }
+
+    public PlanTaskSession replan(
+            String taskId,
+            String feedback,
+            String artifactPolicy,
+            String targetArtifactId,
+            WorkspaceContext workspaceContext
+    ) {
         String effectiveFeedback = appendCommandHints(feedback, artifactPolicy, targetArtifactId);
         PlanTaskSession session = graphRunner.run(
                 new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "user requested plan adjustment"),
                 taskId,
                 effectiveFeedback,
-                null,
+                workspaceContext,
                 effectiveFeedback
         );
         taskBridgeService.ensureTask(session);

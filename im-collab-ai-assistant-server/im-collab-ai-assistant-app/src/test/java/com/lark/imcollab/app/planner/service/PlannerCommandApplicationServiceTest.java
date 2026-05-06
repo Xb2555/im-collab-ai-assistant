@@ -189,6 +189,38 @@ class PlannerCommandApplicationServiceTest {
     }
 
     @Test
+    void replanPassesWorkspaceContextIntoGraph() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .senderOpenId("ou-user")
+                .selectedMessages(java.util.List.of("补充材料"))
+                .build();
+        String expectedInstruction = "把文档标题改成 666\n产物策略：EDIT_EXISTING\n目标产物ID：artifact-1";
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq(expectedInstruction), eq(workspaceContext), eq(expectedInstruction)))
+                .thenReturn(session);
+
+        PlanTaskSession result = service.replan(
+                "task-1",
+                "把文档标题改成 666",
+                "EDIT_EXISTING",
+                "artifact-1",
+                workspaceContext
+        );
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(session);
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "user requested plan adjustment")),
+                eq("task-1"),
+                eq(expectedInstruction),
+                eq(workspaceContext),
+                eq(expectedInstruction)
+        );
+        verify(taskBridgeService).ensureTask(session);
+    }
+
+    @Test
     void resumeCompletedAdjustmentGoesThroughPlanAdjustmentGraph() {
         PlanTaskSession current = new PlanTaskSession();
         current.setTaskId("task-1");
