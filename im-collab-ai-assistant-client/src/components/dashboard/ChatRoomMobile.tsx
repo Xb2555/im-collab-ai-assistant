@@ -231,6 +231,13 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
           method: 'GET',
           headers: { Authorization: `Bearer ${accessToken}`, Accept: 'text/event-stream' },
           signal: ctrl.signal,
+
+          async onopen(response) {
+            if (response.status === 401 || response.status === 403) {
+              throw new Error('UNAUTHORIZED');
+            }
+          },
+
           onmessage(event) {
             if (event.event === 'message') {
               try {
@@ -244,8 +251,11 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
             }
           },
           onerror(err) {
-            console.error('Mobile IM SSE 流异常，停止重试:', err);
-            throw err;
+            if (err.message === 'UNAUTHORIZED') {
+              console.error('IM SSE 鉴权失败，停止重试');
+              throw err;
+            }
+            console.warn('IM 聊天流网络波动，自动重连中...');
           }
         });
       } catch (err) {}

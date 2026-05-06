@@ -63,7 +63,12 @@ const connectSSE = async () => {
           },
           signal: ctrl.signal,
           async onopen(response) {
-            if (!response.ok) throw new Error(`SSE 连接失败: ${response.status}`);
+            if (response.status === 401 || response.status === 403) {
+              throw new Error('UNAUTHORIZED'); 
+            }
+            if (!response.ok) {
+              console.warn(`任务流连接异常: ${response.status}`);
+            }
           },
           onmessage(event) {
             if (event.event === 'heartbeat') return;
@@ -100,9 +105,12 @@ const connectSSE = async () => {
             setIsStreaming(false);
           },
           onerror(err) {
-            console.error('SSE 流异常:', err);
+            console.warn('SSE 流异常波动:', err);
             setIsStreaming(false);
-            throw err;
+            // 👇 核心：只有未授权才阻断，普通网络抖动千万别抛出，让库自动帮你重连！
+            if (err.message === 'UNAUTHORIZED') {
+              throw err; 
+            }
           },
         });
       } catch (err: any) {

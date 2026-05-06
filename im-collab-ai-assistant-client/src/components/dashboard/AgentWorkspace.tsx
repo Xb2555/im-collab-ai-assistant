@@ -81,6 +81,13 @@ const [isDelivering, setIsDelivering] = useState(false);
         ...extraPayload
       });
       setPlanPreview(newPreview);
+      // 🚀 核心修复：操作一旦成功，绝对不要等 SSE！立刻主动拉取最新 Runtime 刷新界面！
+      try {
+        const freshRuntime = await plannerApi.getTaskRuntime(activeTaskId);
+        setTaskRuntime(freshRuntime);
+      } catch (err) {
+        console.warn('主动同步状态失败', err);
+      }
       if (action === 'REPLAN') { setIsReplanningMode(false); setReplanFeedback(''); }
       if (action === 'RETRY_FAILED') setRetryFeedback('');
       if (action === 'RESUME') setClarifyAnswer('');

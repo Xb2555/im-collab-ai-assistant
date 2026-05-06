@@ -64,22 +64,40 @@ export default function DashboardMobile() {
           method: 'GET',
           headers: { Authorization: `Bearer ${accessToken}`, Accept: 'text/event-stream' },
           signal: ctrl.signal,
+          async onopen(response) {
+            if (response.status === 401 || response.status === 403) {
+              throw new Error('UNAUTHORIZED');
+            }
+          },
+          onerror(err) {
+            if (err.message === 'UNAUTHORIZED') throw err; 
+            console.warn('全局流网络波动，等待自动重连...'); 
+          },
           onmessage(event) {
             if (event.event === 'heartbeat') return;
             try {
               const data = JSON.parse(event.data);
               const closedTasks = JSON.parse(localStorage.getItem('closed_tasks') || '[]');
-              if (data.taskId && !activeTaskId && !closedTasks.includes(data.taskId)) {
-                 setActiveTaskId(data.taskId);
+              
+              // 💡 核心修复：不要直接使用组件里的 activeTaskId 和 setActiveTaskId
+              // 而是用 .getState() 直接穿透 React 闭包，拿 Zustand 仓库里最新鲜的值！
+              const currentActiveTaskId = useTaskStore.getState().activeTaskId;
+              
+              if (data.taskId && !currentActiveTaskId && !closedTasks.includes(data.taskId)) {
+                 console.log('🔗 检测到全局新任务流，自动吸附到工作台:', data.taskId);
+                 // 💡 同样使用 getState() 来调用方法
+                 useTaskStore.getState().setActiveTaskId(data.taskId);
               }
             } catch (e) {}
           }
         });
-      } catch (e) { console.warn('全局工作台 SSE 监听断开', e); }
+      } catch (e) {
+        console.warn('全局工作台 SSE 监听断开', e);
+      }
     };
     connectGlobalSSE();
     return () => ctrl.abort();
-  }, [accessToken, activeTaskId, setActiveTaskId]);
+  }, [accessToken]);
 
   // ===== 👆 丢失的灵魂引擎代码 结束 👆 =====
 

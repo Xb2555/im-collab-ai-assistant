@@ -67,6 +67,12 @@ export function AgentWorkspaceMobile() {
         version: runtimeTask?.version ?? planPreview?.version, ...extraPayload
       });
       setPlanPreview(newPreview);
+      try {
+        const freshRuntime = await plannerApi.getTaskRuntime(activeTaskId);
+        setTaskRuntime(freshRuntime);
+      } catch (err) {
+        console.warn('主动同步状态失败', err);
+      }
       if (action === 'REPLAN') { setIsReplanningMode(false); setReplanFeedback(''); }
       if (action === 'RETRY_FAILED') setRetryFeedback('');
       if (action === 'RESUME') setClarifyAnswer('');

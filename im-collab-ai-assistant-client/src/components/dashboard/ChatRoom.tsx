@@ -217,7 +217,9 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
           },
           signal: ctrl.signal,
           async onopen(response) {
-            if (!response.ok) throw new Error(`SSE 建立失败: ${response.status}`);
+            if (response.status === 401 || response.status === 403) {
+              throw new Error('UNAUTHORIZED');
+            }
           },
           onmessage(event) {
             if (event.event === 'message') {
@@ -239,10 +241,13 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
               }
             }
           },
-// 2. 补上 onerror 方法！在抛出异常时阻断库的默认无限重试
+
           onerror(err) {
-            console.error('IM SSE 流异常，停止重试:', err);
-            throw err; // 抛出异常即可阻止 fetchEventSource 再次重试
+            if (err.message === 'UNAUTHORIZED') {
+              console.error('IM SSE 鉴权失败，停止重试');
+              throw err;
+            }
+            console.warn('IM 聊天流网络波动，自动重连中...');
           }
 
         });
