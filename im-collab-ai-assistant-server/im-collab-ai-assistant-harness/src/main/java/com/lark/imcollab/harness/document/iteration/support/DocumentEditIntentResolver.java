@@ -771,7 +771,8 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
             return false;
         }
         return switch (semanticAction) {
-            case INSERT_SECTION_BEFORE_SECTION, INSERT_INLINE_TEXT, REWRITE_SECTION_BODY, DELETE_SECTION_BODY, DELETE_WHOLE_SECTION, MOVE_SECTION, RELAYOUT_SECTION -> true;
+            case INSERT_SECTION_BEFORE_SECTION, INSERT_BLOCK_AFTER_ANCHOR, INSERT_INLINE_TEXT,
+                 REWRITE_SECTION_BODY, DELETE_SECTION_BODY, DELETE_WHOLE_SECTION, MOVE_SECTION, RELAYOUT_SECTION -> true;
             default -> false;
         };
     }
