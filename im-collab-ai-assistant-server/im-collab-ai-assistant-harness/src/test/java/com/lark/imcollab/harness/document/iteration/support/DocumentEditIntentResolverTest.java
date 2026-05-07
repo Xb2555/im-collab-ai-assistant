@@ -414,6 +414,62 @@ class DocumentEditIntentResolverTest {
     }
 
     @Test
+    void insertAfterSectionInstructionKeepsSectionAnchorForGeneratedSectionInsert() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "semanticAction": "INSERT_BLOCK_AFTER_ANCHOR",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_HEADING_NUMBER",
+                    "headingNumber": "2.3"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("2.3 专业建设与平台支撑后插入一段2.5 优势学科介绍");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("2.3");
+        assertThat(intent.getAnchorSpec().getRelativePosition()).isEqualTo("AFTER");
+    }
+
+    @Test
+    void insertBeforeSectionInstructionStillUsesBeforeSectionAction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "semanticAction": "INSERT_SECTION_BEFORE_SECTION",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_HEADING_NUMBER",
+                    "headingNumber": "2.3"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("2.3 专业建设与平台支撑前插入一段2.4 优势学科介绍");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("2.3");
+        assertThat(intent.getAnchorSpec().getRelativePosition()).isEqualTo("BEFORE");
+    }
+
+    @Test
     void sentenceAppendInsideSectionNormalizesInlineInsertToSectionAfterAnchor() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""
