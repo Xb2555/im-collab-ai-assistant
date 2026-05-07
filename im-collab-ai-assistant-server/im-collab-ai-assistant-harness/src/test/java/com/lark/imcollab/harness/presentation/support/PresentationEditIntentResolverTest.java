@@ -83,6 +83,180 @@ class PresentationEditIntentResolverTest {
     }
 
     @Test
+    void resolvesInsertSlideInstruction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "operations": [
+                    {
+                      "actionType": "INSERT_SLIDE",
+                      "insertAfterPageIndex": 2,
+                      "slideTitle": "风险应对",
+                      "slideBody": "预算、排期、依赖"
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("在第2页后插入一页，标题为风险应对，正文为预算、排期、依赖");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getActionType()).isEqualTo(PresentationEditActionType.INSERT_SLIDE);
+        assertThat(intent.getInsertAfterPageIndex()).isEqualTo(2);
+        assertThat(intent.getSlideTitle()).isEqualTo("风险应对");
+        assertThat(intent.getSlideBody()).isEqualTo("预算、排期、依赖");
+    }
+
+    @Test
+    void treatsInsertPageIndexAsInsertAfterPageIndexForNaturalAfterInstruction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "operations": [
+                    {
+                      "actionType": "INSERT_SLIDE",
+                      "pageIndex": 2,
+                      "slideTitle": "多端协作闭环",
+                      "slideBody": "IM 发起、Planner 执行、文档沉淀、PPT 交付"
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("在第2页后插入一页，标题为多端协作闭环，正文为 IM 发起、Planner 执行、文档沉淀、PPT 交付");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getOperations().get(0).getInsertAfterPageIndex()).isEqualTo(2);
+        assertThat(intent.getInsertAfterPageIndex()).isEqualTo(2);
+    }
+
+    @Test
+    void resolvesDeleteSlideInstruction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "DELETE",
+                  "operations": [
+                    {
+                      "actionType": "DELETE_SLIDE",
+                      "pageIndex": 3
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("删除第3页");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getActionType()).isEqualTo(PresentationEditActionType.DELETE_SLIDE);
+        assertThat(intent.getPageIndex()).isEqualTo(3);
+    }
+
+    @Test
+    void resolvesMoveSlideInstruction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "operations": [
+                    {
+                      "actionType": "MOVE_SLIDE",
+                      "pageIndex": 4,
+                      "insertAfterPageIndex": 2
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("把第4页移到第2页后");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getActionType()).isEqualTo(PresentationEditActionType.MOVE_SLIDE);
+        assertThat(intent.getPageIndex()).isEqualTo(4);
+        assertThat(intent.getInsertAfterPageIndex()).isEqualTo(2);
+    }
+
+    @Test
+    void resolvesMoveSlideToEndInstructionFromStructuredTarget() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "operations": [
+                    {
+                      "actionType": "MOVE_SLIDE",
+                      "pageIndex": 2,
+                      "insertAfterPageIndex": -1
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("把第2页移到最后");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getActionType()).isEqualTo(PresentationEditActionType.MOVE_SLIDE);
+        assertThat(intent.getPageIndex()).isEqualTo(2);
+        assertThat(intent.getInsertAfterPageIndex()).isEqualTo(-1);
+    }
+
+    @Test
+    void insertWithoutContentFallsBackToClarification() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "operations": [
+                    {
+                      "actionType": "INSERT_SLIDE",
+                      "insertAfterPageIndex": 2
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("插入一页");
+
+        assertThat(intent.isClarificationNeeded()).isTrue();
+    }
+
+    @Test
+    void moveWithoutTargetFallsBackToClarification() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "operations": [
+                    {
+                      "actionType": "MOVE_SLIDE",
+                      "pageIndex": 4
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("移动第4页");
+
+        assertThat(intent.isClarificationNeeded()).isTrue();
+    }
+
+    @Test
     void missingPageOrReplacementFallsBackToClarification() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""

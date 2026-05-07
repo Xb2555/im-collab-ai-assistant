@@ -21,6 +21,9 @@ public class PresentationEditIntent implements Serializable {
     private PresentationEditActionType actionType;
     private String userInstruction;
     private Integer pageIndex;
+    private Integer insertAfterPageIndex;
+    private String slideTitle;
+    private String slideBody;
     private String replacementText;
     private PresentationTargetElementType targetElementType;
     private List<PresentationEditOperation> operations;

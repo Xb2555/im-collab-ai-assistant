@@ -148,6 +148,111 @@ class LarkSlidesToolTest {
         assertThat(objectMapper.readTree(partsPayloads.get(0)).get(0).path("block_id").asText()).isEqualTo("b1");
     }
 
+    @Test
+    void createSlidePassesBeforeSlideIdWhenProvided() throws Exception {
+        List<CliCommand> commands = new ArrayList<>();
+        List<String> paramsPayloads = new ArrayList<>();
+        List<String> dataPayloads = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            paramsPayloads.add(readAtFileArg(command.arguments(), "--params"));
+            dataPayloads.add(readAtFileArg(command.arguments(), "--data"));
+            return new CliCommandResult(0, """
+                    {"data":{"slide":{"id":"new-slide"}}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
+
+        LarkSlidesReplaceResult result = tool.createSlide("slides-1", "<slide><data>新增页</data></slide>", "s2");
+
+        assertThat(result.getSlideId()).isEqualTo("new-slide");
+        assertThat(commands.get(0).arguments()).containsSequence(List.of(
+                "slides", "xml_presentation.slide", "create",
+                "--as", "user",
+                "--params"
+        ));
+        assertThat(commands.get(0).arguments()).contains("--data", "--yes");
+        JsonNode params = objectMapper.readTree(paramsPayloads.get(0));
+        JsonNode data = objectMapper.readTree(dataPayloads.get(0));
+        assertThat(params.path("xml_presentation_id").asText()).isEqualTo("slides-1");
+        assertThat(params.has("before_slide_id")).isFalse();
+        assertThat(data.path("before_slide_id").asText()).isEqualTo("s2");
+        assertThat(data.path("slide").path("content").asText()).contains("新增页");
+    }
+
+    @Test
+    void createSlideAppendsWhenBeforeSlideIdMissing() throws Exception {
+        List<String> paramsPayloads = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            paramsPayloads.add(readAtFileArg(command.arguments(), "--params"));
+            return new CliCommandResult(0, """
+                    {"data":{"slide_id":"new-slide"}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
+
+        LarkSlidesReplaceResult result = tool.createSlide("slides-1", "<slide><data>末尾</data></slide>", null);
+
+        assertThat(result.getSlideId()).isEqualTo("new-slide");
+        JsonNode params = objectMapper.readTree(paramsPayloads.get(0));
+        assertThat(params.path("xml_presentation_id").asText()).isEqualTo("slides-1");
+        assertThat(params.has("before_slide_id")).isFalse();
+    }
+
+    @Test
+    void deleteSlidePassesSlideId() throws Exception {
+        List<CliCommand> commands = new ArrayList<>();
+        List<String> paramsPayloads = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            paramsPayloads.add(readAtFileArg(command.arguments(), "--params"));
+            return new CliCommandResult(0, "{}");
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
+
+        tool.deleteSlide("slides-1", "s3");
+
+        assertThat(commands.get(0).arguments()).containsSequence(List.of(
+                "slides", "xml_presentation.slide", "delete",
+                "--as", "user",
+                "--params"
+        ));
+        assertThat(commands.get(0).arguments()).contains("--yes");
+        JsonNode params = objectMapper.readTree(paramsPayloads.get(0));
+        assertThat(params.path("xml_presentation_id").asText()).isEqualTo("slides-1");
+        assertThat(params.path("slide_id").asText()).isEqualTo("s3");
+    }
+
+    @Test
+    void fetchSlideUsesSlideGet() throws Exception {
+        List<CliCommand> commands = new ArrayList<>();
+        List<String> paramsPayloads = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            paramsPayloads.add(readAtFileArg(command.arguments(), "--params"));
+            return new CliCommandResult(0, """
+                    {"data":{"slide":{"content":"<slide id=\\"s2\\"><data/></slide>"}}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
+
+        LarkSlidesFetchResult result = tool.fetchSlide("slides-1", "s2");
+
+        assertThat(result.getXml()).contains("s2");
+        assertThat(commands.get(0).arguments()).containsSequence(List.of(
+                "slides", "xml_presentation.slide", "get",
+                "--as", "user",
+                "--params"
+        ));
+        JsonNode params = objectMapper.readTree(paramsPayloads.get(0));
+        assertThat(params.path("xml_presentation_id").asText()).isEqualTo("slides-1");
+        assertThat(params.path("slide_id").asText()).isEqualTo("s2");
+    }
+
 
     @Test
     void createPresentationTurnsCliFailureIntoReadableException() {

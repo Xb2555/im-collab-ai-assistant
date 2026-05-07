@@ -18,5 +18,8 @@ public class PresentationEditOperation implements Serializable {
     private PresentationEditActionType actionType;
     private PresentationTargetElementType targetElementType;
     private Integer pageIndex;
+    private Integer insertAfterPageIndex;
+    private String slideTitle;
+    private String slideBody;
     private String replacementText;
 }

@@ -9,16 +9,25 @@ import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesFetchResult;
+import com.lark.imcollab.skills.lark.slides.LarkSlidesReplaceResult;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesTool;
 import org.springframework.stereotype.Service;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.OutputKeys;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
 import java.io.StringReader;
+import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -56,15 +65,15 @@ public class PresentationIterationExecutionService implements PresentationIterat
         List<String> summarySegments = new ArrayList<>();
         for (PresentationEditOperation operation : operations) {
             LarkSlidesFetchResult before = larkSlidesTool.fetchPresentation(presentation);
-            SlideTarget target = resolveTarget(before.getXml(), operation);
-            Map<String, Object> part = buildPart(target, operation);
-            larkSlidesTool.replaceSlide(presentation, target.slideId(), List.of(part));
+            OperationResult operationResult = executeOperation(presentation, before.getXml(), operation);
             LarkSlidesFetchResult after = larkSlidesTool.fetchPresentation(presentation);
-            if (requiresReplacement(operation) && !containsText(after.getXml(), operation.getReplacementText())) {
-                throw new IllegalStateException("PPT update verification failed: target text not found after replace");
+            for (String verificationText : operationResult.verificationTexts()) {
+                if (hasText(verificationText) && !containsText(after.getXml(), verificationText)) {
+                    throw new IllegalStateException("PPT update verification failed: target text not found after edit");
+                }
             }
-            modifiedSlideIds.add(target.slideId());
-            summarySegments.add(buildSummarySegment(target.pageIndex(), operation));
+            modifiedSlideIds.addAll(operationResult.modifiedSlideIds());
+            summarySegments.add(operationResult.summarySegment());
         }
         return PresentationIterationVO.builder()
                 .taskId(request.getTaskId())
@@ -74,6 +83,105 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 .summary(joinSummary(summarySegments))
                 .modifiedSlides(new ArrayList<>(modifiedSlideIds))
                 .build();
+    }
+
+    private OperationResult executeOperation(String presentation, String xml, PresentationEditOperation operation) {
+        if (operation.getActionType() == PresentationEditActionType.INSERT_SLIDE) {
+            return insertSlide(presentation, xml, operation);
+        }
+        if (operation.getActionType() == PresentationEditActionType.DELETE_SLIDE) {
+            return deleteSlide(presentation, xml, operation);
+        }
+        if (operation.getActionType() == PresentationEditActionType.MOVE_SLIDE) {
+            return moveSlide(presentation, xml, operation);
+        }
+        SlideTarget target = resolveTarget(xml, operation);
+        Map<String, Object> part = buildPart(target, operation);
+        larkSlidesTool.replaceSlide(presentation, target.slideId(), List.of(part));
+        return new OperationResult(
+                List.of(target.slideId()),
+                verificationTexts(operation),
+                buildSummarySegment(target.pageIndex(), operation)
+        );
+    }
+
+    private OperationResult insertSlide(String presentation, String xml, PresentationEditOperation operation) {
+        Deck deck = parseDeck(xml);
+        InsertPosition position = resolveInsertPosition(deck, insertAfterPageIndex(operation));
+        SlideInfo template = chooseTemplateSlide(deck, position.templateIndex());
+        String templateXml = firstNonBlank(
+                larkSlidesTool.fetchSlide(presentation, template.slideId()).getXml(),
+                serializeElement(template.element())
+        );
+        String slideXml = buildClonedSlideXml(templateXml, operation);
+        LarkSlidesReplaceResult result = larkSlidesTool.createSlide(presentation, slideXml, position.beforeSlideId());
+        return new OperationResult(
+                List.of(firstNonBlank(result.getSlideId(), "inserted-after-" + position.insertAfterLabel())),
+                verificationTexts(operation),
+                buildSummarySegment(position.insertAfterPageIndex(), operation)
+        );
+    }
+
+    private Integer insertAfterPageIndex(PresentationEditOperation operation) {
+        if (operation == null) {
+            return null;
+        }
+        if (operation.getInsertAfterPageIndex() != null) {
+            return operation.getInsertAfterPageIndex();
+        }
+        return operation.getActionType() == PresentationEditActionType.INSERT_SLIDE ? operation.getPageIndex() : null;
+    }
+
+    private OperationResult deleteSlide(String presentation, String xml, PresentationEditOperation operation) {
+        Deck deck = parseDeck(xml);
+        if (deck.slides().size() <= 1) {
+            throw new IllegalArgumentException("不能删除唯一一页 PPT");
+        }
+        SlideInfo target = slideAtPage(deck, operation.getPageIndex());
+        larkSlidesTool.deleteSlide(presentation, target.slideId());
+        return new OperationResult(
+                List.of(target.slideId()),
+                List.of(),
+                buildSummarySegment(target.pageIndex(), operation)
+        );
+    }
+
+    private OperationResult moveSlide(String presentation, String xml, PresentationEditOperation operation) {
+        Deck deck = parseDeck(xml);
+        SlideInfo source = slideAtPage(deck, operation.getPageIndex());
+        if (operation.getInsertAfterPageIndex() == null) {
+            throw new IllegalArgumentException("请明确要把该页移动到第几页之后");
+        }
+        int insertAfterPageIndex = normalizeMoveInsertAfterPageIndex(deck, operation.getInsertAfterPageIndex());
+        String sourceXml = firstNonBlank(
+                larkSlidesTool.fetchSlide(presentation, source.slideId()).getXml(),
+                serializeElement(source.element())
+        );
+        String slideXml = buildClonedSlideXml(sourceXml, operation);
+        String beforeSlideId = resolveMoveBeforeSlideId(deck, insertAfterPageIndex);
+        LarkSlidesReplaceResult created = larkSlidesTool.createSlide(presentation, slideXml, beforeSlideId);
+        larkSlidesTool.deleteSlide(presentation, source.slideId());
+        PresentationEditOperation summaryOperation = PresentationEditOperation.builder()
+                .actionType(operation.getActionType())
+                .targetElementType(operation.getTargetElementType())
+                .pageIndex(operation.getPageIndex())
+                .insertAfterPageIndex(insertAfterPageIndex)
+                .slideTitle(operation.getSlideTitle())
+                .slideBody(operation.getSlideBody())
+                .replacementText(operation.getReplacementText())
+                .build();
+        return new OperationResult(
+                List.of(firstNonBlank(created.getSlideId(), source.slideId())),
+                verificationTexts(operation),
+                buildSummarySegment(source.pageIndex(), summaryOperation)
+        );
+    }
+
+    private int normalizeMoveInsertAfterPageIndex(Deck deck, int insertAfterPageIndex) {
+        if (insertAfterPageIndex < 0) {
+            return deck.slides().size();
+        }
+        return insertAfterPageIndex;
     }
 
     private SlideTarget resolveTarget(String xml, PresentationEditOperation operation) {
@@ -92,6 +200,93 @@ public class PresentationIterationExecutionService implements PresentationIterat
         requireValue(slideId, "slide id");
         Element shape = findTargetShape(slide, operation.getTargetElementType());
         return new SlideTarget(slideId, slideIndex + 1, shape == null ? null : shape.getAttribute("id"), shape);
+    }
+
+    private Deck parseDeck(String xml) {
+        Document document = parseXml(xml);
+        NodeList nodes = document.getElementsByTagName("slide");
+        if (nodes.getLength() == 0 && "slide".equalsIgnoreCase(document.getDocumentElement().getTagName())) {
+            nodes = document.getChildNodes();
+        }
+        List<SlideInfo> slides = new ArrayList<>();
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Node node = nodes.item(i);
+            if (!(node instanceof Element slide) || !"slide".equalsIgnoreCase(slide.getTagName())) {
+                continue;
+            }
+            String slideId = firstNonBlank(slide.getAttribute("id"), slide.getAttribute("slide_id"), slide.getAttribute("slideId"));
+            requireValue(slideId, "slide id");
+            slides.add(new SlideInfo(slideId, slides.size() + 1, slide));
+        }
+        if (slides.isEmpty()) {
+            throw new IllegalStateException("No slides found in presentation XML");
+        }
+        return new Deck(slides);
+    }
+
+    private SlideInfo slideAtPage(Deck deck, Integer pageIndex) {
+        if (pageIndex == null) {
+            throw new IllegalArgumentException("请明确要操作第几页");
+        }
+        if (pageIndex < 1 || pageIndex > deck.slides().size()) {
+            throw new IllegalArgumentException("PPT 中不存在第 " + pageIndex + " 页");
+        }
+        return deck.slides().get(pageIndex - 1);
+    }
+
+    private InsertPosition resolveInsertPosition(Deck deck, Integer insertAfterPageIndex) {
+        int slideCount = deck.slides().size();
+        if (insertAfterPageIndex == null || insertAfterPageIndex >= slideCount) {
+            return new InsertPosition(null, slideCount - 1, slideCount, "末尾");
+        }
+        if (insertAfterPageIndex <= 0) {
+            return new InsertPosition(deck.slides().get(0).slideId(), 0, 0, "最前");
+        }
+        return new InsertPosition(
+                deck.slides().get(insertAfterPageIndex).slideId(),
+                insertAfterPageIndex - 1,
+                insertAfterPageIndex,
+                String.valueOf(insertAfterPageIndex)
+        );
+    }
+
+    private String resolveMoveBeforeSlideId(Deck deck, int insertAfterPageIndex) {
+        if (insertAfterPageIndex <= 0) {
+            return deck.slides().get(0).slideId();
+        }
+        if (insertAfterPageIndex >= deck.slides().size()) {
+            return null;
+        }
+        return deck.slides().get(insertAfterPageIndex).slideId();
+    }
+
+    private SlideInfo chooseTemplateSlide(Deck deck, int preferredIndex) {
+        int normalizedIndex = Math.min(Math.max(preferredIndex, 0), deck.slides().size() - 1);
+        SlideInfo preferred = deck.slides().get(normalizedIndex);
+        if (isReusableBodyTemplate(preferred)) {
+            return preferred;
+        }
+        SlideInfo closest = null;
+        int closestDistance = Integer.MAX_VALUE;
+        for (SlideInfo slide : deck.slides()) {
+            if (!isReusableBodyTemplate(slide)) {
+                continue;
+            }
+            int distance = Math.abs(slide.pageIndex() - preferred.pageIndex());
+            if (distance < closestDistance) {
+                closest = slide;
+                closestDistance = distance;
+            }
+        }
+        return closest == null ? preferred : closest;
+    }
+
+    private boolean isReusableBodyTemplate(SlideInfo slide) {
+        String title = textContent(findTargetShape(slide.element(), PresentationTargetElementType.TITLE));
+        if (containsAny(title, "封面", "目录", "总结", "结语", "致谢", "谢谢", "Q&A")) {
+            return false;
+        }
+        return findBodyReplacementShape(slide.element()) != null;
     }
 
     private Element findTargetShape(Element slide, PresentationTargetElementType targetElementType) {
@@ -128,6 +323,246 @@ public class PresentationIterationExecutionService implements PresentationIterat
             return firstBodyShape;
         }
         return firstTextShape;
+    }
+
+    private Element findExactTextShape(Element slide, PresentationTargetElementType targetElementType) {
+        String expected = targetElementType == PresentationTargetElementType.BODY ? "body" : "title";
+        NodeList shapes = slide.getElementsByTagName("shape");
+        for (int i = 0; i < shapes.getLength(); i++) {
+            Element shape = (Element) shapes.item(i);
+            if (!"text".equalsIgnoreCase(shape.getAttribute("type"))) {
+                continue;
+            }
+            NodeList contents = shape.getElementsByTagName("content");
+            for (int j = 0; j < contents.getLength(); j++) {
+                Element content = (Element) contents.item(j);
+                if (expected.equalsIgnoreCase(content.getAttribute("textType"))) {
+                    return shape;
+                }
+            }
+        }
+        return null;
+    }
+
+    private Element findBodyReplacementShape(Element slide) {
+        Element exactBody = findExactTextShape(slide, PresentationTargetElementType.BODY);
+        if (exactBody != null) {
+            return exactBody;
+        }
+        Element titleShape = findTargetShape(slide, PresentationTargetElementType.TITLE);
+        NodeList shapes = slide.getElementsByTagName("shape");
+        Element emptyTextPlaceholder = null;
+        for (int i = 0; i < shapes.getLength(); i++) {
+            Element shape = (Element) shapes.item(i);
+            if (!"text".equalsIgnoreCase(shape.getAttribute("type")) || shape == titleShape || hasTitleContent(shape)) {
+                continue;
+            }
+            if (hasText(shape.getTextContent())) {
+                return shape;
+            }
+            if (emptyTextPlaceholder == null) {
+                emptyTextPlaceholder = shape;
+            }
+        }
+        return emptyTextPlaceholder;
+    }
+
+    private boolean hasTitleContent(Element shape) {
+        NodeList contents = shape.getElementsByTagName("content");
+        for (int i = 0; i < contents.getLength(); i++) {
+            Element content = (Element) contents.item(i);
+            if ("title".equalsIgnoreCase(content.getAttribute("textType"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String buildClonedSlideXml(String templateXml, PresentationEditOperation operation) {
+        Document document = parseXml(templateXml);
+        Element slide = findSlideElement(document);
+        stripServerIds(slide);
+        String title = firstNonBlank(operation.getSlideTitle(), titleFromReplacement(operation));
+        String body = firstNonBlank(operation.getSlideBody(), bodyFromReplacement(operation));
+        replaceOrInsertSlideText(slide, PresentationTargetElementType.TITLE, title);
+        replaceOrInsertSlideText(slide, PresentationTargetElementType.BODY, body);
+        removeEmptyTextShapes(slide);
+        return serializeElement(slide);
+    }
+
+    private Element findSlideElement(Document document) {
+        Element root = document.getDocumentElement();
+        if (root != null && "slide".equalsIgnoreCase(root.getTagName())) {
+            return root;
+        }
+        NodeList slides = document.getElementsByTagName("slide");
+        if (slides.getLength() == 0) {
+            throw new IllegalStateException("No slide found in slide XML");
+        }
+        return (Element) slides.item(0);
+    }
+
+    private void replaceOrInsertSlideText(Element slide, PresentationTargetElementType targetType, String text) {
+        if (!hasText(text)) {
+            return;
+        }
+        Element shape = targetType == PresentationTargetElementType.BODY
+                ? findBodyReplacementShape(slide)
+                : findTargetShape(slide, targetType);
+        if (shape == null) {
+            appendDefaultTextShape(slide, targetType, text);
+            return;
+        }
+        Element content = findContent(shape, targetType);
+        if (content == null) {
+            content = shape.getOwnerDocument().createElement("content");
+            content.setAttribute("textType", targetType == PresentationTargetElementType.BODY ? "body" : "title");
+            shape.appendChild(content);
+        }
+        replaceContentChildren(content, targetType, text);
+    }
+
+    private Element findContent(Element shape, PresentationTargetElementType targetType) {
+        String expected = targetType == PresentationTargetElementType.BODY ? "body" : "title";
+        NodeList contents = shape.getElementsByTagName("content");
+        Element first = null;
+        for (int i = 0; i < contents.getLength(); i++) {
+            Element content = (Element) contents.item(i);
+            if (first == null) {
+                first = content;
+            }
+            if (expected.equalsIgnoreCase(content.getAttribute("textType"))) {
+                return content;
+            }
+        }
+        return first;
+    }
+
+    private void replaceContentChildren(Element content, PresentationTargetElementType targetType, String text) {
+        while (content.hasChildNodes()) {
+            content.removeChild(content.getFirstChild());
+        }
+        Document document = content.getOwnerDocument();
+        List<String> items = splitBodyItems(text);
+        if (targetType == PresentationTargetElementType.BODY && items.size() > 1) {
+            Element ul = document.createElement("ul");
+            for (String item : items) {
+                Element li = document.createElement("li");
+                Element p = document.createElement("p");
+                p.appendChild(document.createTextNode(item));
+                li.appendChild(p);
+                ul.appendChild(li);
+            }
+            content.appendChild(ul);
+            return;
+        }
+        Element p = document.createElement("p");
+        p.appendChild(document.createTextNode(text));
+        content.appendChild(p);
+    }
+
+    private void appendDefaultTextShape(Element slide, PresentationTargetElementType targetType, String text) {
+        Document document = slide.getOwnerDocument();
+        Element neighbor = findTargetShape(slide, PresentationTargetElementType.TITLE);
+        Element shape = document.createElement("shape");
+        shape.setAttribute("type", "text");
+        shape.setAttribute("topLeftX", firstNonBlank(attribute(neighbor, "topLeftX"), "80"));
+        shape.setAttribute("topLeftY", targetType == PresentationTargetElementType.BODY
+                ? offset(attribute(neighbor, "topLeftY"), attribute(neighbor, "height"), 40, "260")
+                : firstNonBlank(attribute(neighbor, "topLeftY"), "80"));
+        shape.setAttribute("width", firstNonBlank(attribute(neighbor, "width"), "800"));
+        shape.setAttribute("height", targetType == PresentationTargetElementType.BODY ? "240" : "120");
+        Element content = document.createElement("content");
+        content.setAttribute("textType", targetType == PresentationTargetElementType.BODY ? "body" : "title");
+        replaceContentChildren(content, targetType, text);
+        shape.appendChild(content);
+        Element data = firstChildElement(slide, "data");
+        (data == null ? slide : data).appendChild(shape);
+    }
+
+    private Element firstChildElement(Element parent, String name) {
+        NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node node = children.item(i);
+            if (node instanceof Element element && name.equalsIgnoreCase(element.getTagName())) {
+                return element;
+            }
+        }
+        return null;
+    }
+
+    private void removeEmptyTextShapes(Element slide) {
+        NodeList shapes = slide.getElementsByTagName("shape");
+        for (int i = shapes.getLength() - 1; i >= 0; i--) {
+            Element shape = (Element) shapes.item(i);
+            if (!"text".equalsIgnoreCase(shape.getAttribute("type")) || hasText(shape.getTextContent())) {
+                continue;
+            }
+            Node parent = shape.getParentNode();
+            if (parent != null) {
+                parent.removeChild(shape);
+            }
+        }
+    }
+
+    private String offset(String y, String height, int gap, String fallback) {
+        try {
+            double value = Double.parseDouble(firstNonBlank(y, "80"));
+            double size = Double.parseDouble(firstNonBlank(height, "120"));
+            return String.valueOf((int) Math.round(value + size + gap));
+        } catch (NumberFormatException exception) {
+            return fallback;
+        }
+    }
+
+    private List<String> splitBodyItems(String text) {
+        if (!hasText(text)) {
+            return List.of();
+        }
+        String[] parts = text.split("[\\n；;、,，]+");
+        List<String> items = new ArrayList<>();
+        for (String part : parts) {
+            if (hasText(part)) {
+                items.add(part.trim());
+            }
+        }
+        return items.size() <= 1 ? List.of(text.trim()) : items;
+    }
+
+    private void stripServerIds(Node node) {
+        if (node instanceof Element element) {
+            NamedNodeMap attributes = element.getAttributes();
+            for (int i = attributes.getLength() - 1; i >= 0; i--) {
+                Node attribute = attributes.item(i);
+                String name = attribute.getNodeName();
+                String normalized = name == null ? "" : name.toLowerCase();
+                if ("id".equals(normalized)
+                        || normalized.endsWith("_id")
+                        || normalized.endsWith("-id")
+                        || normalized.endsWith("id")) {
+                    element.removeAttribute(name);
+                }
+            }
+        }
+        NodeList children = node.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            stripServerIds(children.item(i));
+        }
+    }
+
+    private String serializeElement(Element element) {
+        try {
+            TransformerFactory factory = TransformerFactory.newInstance();
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            Transformer transformer = factory.newTransformer();
+            transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes");
+            transformer.setOutputProperty(OutputKeys.INDENT, "no");
+            StringWriter writer = new StringWriter();
+            transformer.transform(new DOMSource(element), new StreamResult(writer));
+            return writer.toString();
+        } catch (Exception exception) {
+            throw new IllegalStateException("Failed to serialize slide XML", exception);
+        }
     }
 
     private Map<String, Object> buildPart(SlideTarget target, PresentationEditOperation operation) {
@@ -199,6 +634,9 @@ public class PresentationIterationExecutionService implements PresentationIterat
                     .actionType(intent.getActionType())
                     .targetElementType(intent.getTargetElementType())
                     .pageIndex(intent.getPageIndex())
+                    .insertAfterPageIndex(intent.getInsertAfterPageIndex())
+                    .slideTitle(intent.getSlideTitle())
+                    .slideBody(intent.getSlideBody())
                     .replacementText(intent.getReplacementText())
                     .build());
         }
@@ -210,7 +648,47 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 || operation.getActionType() == PresentationEditActionType.REPLACE_SLIDE_BODY;
     }
 
+    private List<String> verificationTexts(PresentationEditOperation operation) {
+        if (operation == null) {
+            return List.of();
+        }
+        List<String> texts = new ArrayList<>();
+        addVerificationText(texts, operation.getReplacementText());
+        addVerificationText(texts, operation.getSlideTitle());
+        if ((operation.getActionType() == PresentationEditActionType.INSERT_SLIDE
+                || operation.getActionType() == PresentationEditActionType.MOVE_SLIDE)
+                && hasText(operation.getSlideBody())) {
+            splitBodyItems(operation.getSlideBody()).forEach(item -> addVerificationText(texts, item));
+        } else {
+            addVerificationText(texts, operation.getSlideBody());
+        }
+        return texts;
+    }
+
+    private void addVerificationText(List<String> texts, String value) {
+        if (hasText(value) && !texts.contains(value.trim())) {
+            texts.add(value.trim());
+        }
+    }
+
     private String buildSummarySegment(int pageIndex, PresentationEditOperation operation) {
+        if (operation.getActionType() == PresentationEditActionType.INSERT_SLIDE) {
+            String title = firstNonBlank(operation.getSlideTitle(), operation.getReplacementText(), "新增内容");
+            if (pageIndex <= 0) {
+                return "已在最前新增一页：" + title;
+            }
+            return "已在第 " + pageIndex + " 页后新增一页：" + title;
+        }
+        if (operation.getActionType() == PresentationEditActionType.DELETE_SLIDE) {
+            return "已删除第 " + pageIndex + " 页";
+        }
+        if (operation.getActionType() == PresentationEditActionType.MOVE_SLIDE) {
+            Integer target = operation.getInsertAfterPageIndex();
+            if (target != null && target <= 0) {
+                return "已移动第 " + pageIndex + " 页到最前";
+            }
+            return "已移动第 " + pageIndex + " 页到第 " + target + " 页后";
+        }
         String label = operation.getTargetElementType() == PresentationTargetElementType.BODY ? "正文" : "标题";
         return "第 " + pageIndex + " 页" + label + "改为" + firstNonBlank(operation.getReplacementText(), "指定内容");
     }
@@ -220,6 +698,9 @@ public class PresentationIterationExecutionService implements PresentationIterat
             return "PPT 已更新";
         }
         if (segments.size() == 1) {
+            if (segments.get(0).startsWith("已")) {
+                return segments.get(0);
+            }
             return "已修改 PPT " + segments.get(0);
         }
         return "已修改 PPT：" + String.join("；", segments);
@@ -242,6 +723,48 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 .replace("'", "&apos;");
     }
 
+    private String titleFromReplacement(PresentationEditOperation operation) {
+        if (operation.getActionType() == PresentationEditActionType.INSERT_SLIDE
+                && hasText(operation.getReplacementText())
+                && !hasText(operation.getSlideBody())) {
+            return operation.getReplacementText();
+        }
+        return null;
+    }
+
+    private String bodyFromReplacement(PresentationEditOperation operation) {
+        if (operation.getActionType() == PresentationEditActionType.INSERT_SLIDE
+                && hasText(operation.getReplacementText())
+                && hasText(operation.getSlideTitle())) {
+            return operation.getReplacementText();
+        }
+        return null;
+    }
+
+    private String textContent(Element element) {
+        if (element == null) {
+            return null;
+        }
+        String text = element.getTextContent();
+        return hasText(text) ? text.trim() : null;
+    }
+
+    private boolean containsAny(String value, String... needles) {
+        if (!hasText(value) || needles == null) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (hasText(needle) && value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
     private void requireValue(String value, String name) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(name + " is required");
@@ -261,5 +784,17 @@ public class PresentationIterationExecutionService implements PresentationIterat
     }
 
     private record SlideTarget(String slideId, int pageIndex, String blockId, Element shape) {
+    }
+
+    private record SlideInfo(String slideId, int pageIndex, Element element) {
+    }
+
+    private record Deck(List<SlideInfo> slides) {
+    }
+
+    private record InsertPosition(String beforeSlideId, int templateIndex, int insertAfterPageIndex, String insertAfterLabel) {
+    }
+
+    private record OperationResult(List<String> modifiedSlideIds, List<String> verificationTexts, String summarySegment) {
     }
 }

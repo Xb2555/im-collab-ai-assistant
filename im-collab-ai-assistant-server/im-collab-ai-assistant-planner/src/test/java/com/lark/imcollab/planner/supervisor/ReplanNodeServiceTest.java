@@ -186,7 +186,9 @@ class ReplanNodeServiceTest {
         assertThat(result.getIntakeState().getPendingAdjustmentInstruction()).isEqualTo("修改一下 PPT");
         assertThat(result.getIntakeState().getAssistantReply())
                 .contains("可以改现有 PPT")
-                .contains("一次说明一个或多个页面");
+                .contains("插入一页")
+                .contains("删除第3页")
+                .contains("移到第2页后");
         verify(questionTool).askUser(eq(session), any());
         verify(planningNodeService, never()).plan(anyString(), anyString(), any(), any());
         verify(presentationIterationFacade, never()).edit(any());

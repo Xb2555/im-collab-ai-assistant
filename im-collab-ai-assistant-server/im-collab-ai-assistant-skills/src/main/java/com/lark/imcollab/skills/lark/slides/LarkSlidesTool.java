@@ -113,9 +113,30 @@ public class LarkSlidesTool {
         long startedAt = System.nanoTime();
         int xmlChars = slideXml == null ? 0 : slideXml.length();
         int shapeCount = countOccurrences(slideXml, "<shape");
+        try {
+            createSlide(presentationId, slideXml, null);
+            log.info("Lark slides page appended: presentationId={}, slideIndex={}, xmlChars={}, shapeCount={}, timeoutMs={}, elapsedMs={}",
+                    presentationId, slideIndex, xmlChars, shapeCount, commandTimeoutMillis(), elapsedMs(startedAt));
+        } catch (RuntimeException exception) {
+            log.warn("Lark slides page append failed: presentationId={}, slideIndex={}, xmlChars={}, shapeCount={}, timeoutMs={}, elapsedMs={}, error={}",
+                    presentationId, slideIndex, xmlChars, shapeCount, commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
+            throw new IllegalStateException("Failed to append slide " + slideIndex + ": " + exception.getMessage(), exception);
+        }
+    }
+
+    @Tool(description = "Scenario D: create one slide in an existing Lark Slides presentation.")
+    public LarkSlidesReplaceResult createSlide(String presentationId, String slideXml, String beforeSlideId) {
+        requireValue(presentationId, "presentationId");
+        requireValue(slideXml, "slideXml");
+        long startedAt = System.nanoTime();
+        Map<String, Object> dataPayload = new java.util.LinkedHashMap<>();
+        dataPayload.put("slide", Map.of("content", slideXml));
+        if (beforeSlideId != null && !beforeSlideId.isBlank()) {
+            dataPayload.put("before_slide_id", beforeSlideId.trim());
+        }
         try (
-                TempJsonFile params = writeTempJsonArg("params", Map.of("xml_presentation_id", presentationId));
-                TempJsonFile data = writeTempJsonArg("data", Map.of("slide", Map.of("content", slideXml)))
+                TempJsonFile params = writeTempJsonArg("params", Map.of("xml_presentation_id", presentationId.trim()));
+                TempJsonFile data = writeTempJsonArg("data", dataPayload)
         ) {
             List<String> args = new ArrayList<>();
             args.add("slides");
@@ -128,13 +149,31 @@ public class LarkSlidesTool {
             args.add("--data");
             args.add(data.arg());
             args.add("--yes");
-            executeJson(args);
-            log.info("Lark slides page appended: presentationId={}, slideIndex={}, xmlChars={}, shapeCount={}, timeoutMs={}, elapsedMs={}",
-                    presentationId, slideIndex, xmlChars, shapeCount, commandTimeoutMillis(), elapsedMs(startedAt));
+            JsonNode root = executeJson(args);
+            JsonNode dataNode = root.path("data").isMissingNode() ? root : root.path("data");
+            JsonNode slide = dataNode.path("slide").isMissingNode() ? dataNode : dataNode.path("slide");
+            log.info("Lark slides page created: presentationId={}, beforeSlideId={}, xmlChars={}, timeoutMs={}, elapsedMs={}",
+                    presentationId.trim(), beforeSlideId, slideXml.length(), commandTimeoutMillis(), elapsedMs(startedAt));
+            return LarkSlidesReplaceResult.builder()
+                    .presentationId(firstNonBlank(
+                            text(dataNode, "xml_presentation_id"),
+                            text(dataNode, "presentation_id"),
+                            presentationId.trim()
+                    ))
+                    .slideId(firstNonBlank(
+                            text(dataNode, "slide_id"),
+                            text(dataNode, "id"),
+                            text(slide, "slide_id"),
+                            text(slide, "id")
+                    ))
+                    .partsCount(1)
+                    .revisionId(firstNonBlank(text(dataNode, "revision_id"), text(dataNode, "revisionId")))
+                    .message(firstNonBlank(text(dataNode, "message"), text(root, "message")))
+                    .build();
         } catch (RuntimeException exception) {
-            log.warn("Lark slides page append failed: presentationId={}, slideIndex={}, xmlChars={}, shapeCount={}, timeoutMs={}, elapsedMs={}, error={}",
-                    presentationId, slideIndex, xmlChars, shapeCount, commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
-            throw new IllegalStateException("Failed to append slide " + slideIndex + ": " + exception.getMessage(), exception);
+            log.warn("Lark slides page create failed: presentationId={}, beforeSlideId={}, xmlChars={}, timeoutMs={}, elapsedMs={}, error={}",
+                    presentationId.trim(), beforeSlideId, slideXml.length(), commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
+            throw exception;
         }
     }
 
@@ -183,6 +222,77 @@ public class LarkSlidesTool {
                 ))
                 .message(firstNonBlank(text(data, "message"), text(root, "message")))
                 .build();
+    }
+
+    @Tool(description = "Scenario D: fetch one Lark Slides page XML by presentation id and slide id.")
+    public LarkSlidesFetchResult fetchSlide(String presentationId, String slideId) {
+        requireValue(presentationId, "presentationId");
+        requireValue(slideId, "slideId");
+        List<String> args = new ArrayList<>();
+        args.add("slides");
+        args.add("xml_presentation.slide");
+        args.add("get");
+        args.add("--as");
+        args.add(resolveSlidesIdentity());
+        args.add("--params");
+
+        JsonNode root;
+        long startedAt = System.nanoTime();
+        try (TempJsonFile params = writeTempJsonArg("params", Map.of(
+                "xml_presentation_id", presentationId.trim(),
+                "slide_id", slideId.trim()
+        ))) {
+            args.add(params.arg());
+            root = executeJson(args);
+            log.info("Lark slides page fetched: presentationId={}, slideId={}, timeoutMs={}, elapsedMs={}",
+                    presentationId.trim(), slideId.trim(), commandTimeoutMillis(), elapsedMs(startedAt));
+        } catch (RuntimeException exception) {
+            log.warn("Lark slides page fetch failed: presentationId={}, slideId={}, timeoutMs={}, elapsedMs={}, error={}",
+                    presentationId.trim(), slideId.trim(), commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
+            throw exception;
+        }
+        JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
+        JsonNode slide = data.path("slide").isMissingNode() ? data : data.path("slide");
+        return LarkSlidesFetchResult.builder()
+                .success(root.path("success").asBoolean(data.path("success").asBoolean(true)))
+                .presentationId(firstNonBlank(text(data, "xml_presentation_id"), text(data, "presentation_id"), presentationId.trim()))
+                .xml(firstNonBlank(
+                        text(data, "xml"),
+                        text(data, "content"),
+                        text(slide, "xml"),
+                        text(slide, "content"),
+                        data.toString()
+                ))
+                .message(firstNonBlank(text(data, "message"), text(root, "message")))
+                .build();
+    }
+
+    @Tool(description = "Scenario D: delete one Lark Slides page by presentation id and slide id.")
+    public void deleteSlide(String presentationId, String slideId) {
+        requireValue(presentationId, "presentationId");
+        requireValue(slideId, "slideId");
+        List<String> args = new ArrayList<>();
+        args.add("slides");
+        args.add("xml_presentation.slide");
+        args.add("delete");
+        args.add("--as");
+        args.add(resolveSlidesIdentity());
+        args.add("--params");
+        long startedAt = System.nanoTime();
+        try (TempJsonFile params = writeTempJsonArg("params", Map.of(
+                "xml_presentation_id", presentationId.trim(),
+                "slide_id", slideId.trim()
+        ))) {
+            args.add(params.arg());
+            args.add("--yes");
+            executeJson(args);
+            log.info("Lark slides page deleted: presentationId={}, slideId={}, timeoutMs={}, elapsedMs={}",
+                    presentationId.trim(), slideId.trim(), commandTimeoutMillis(), elapsedMs(startedAt));
+        } catch (RuntimeException exception) {
+            log.warn("Lark slides page delete failed: presentationId={}, slideId={}, timeoutMs={}, elapsedMs={}, error={}",
+                    presentationId.trim(), slideId.trim(), commandTimeoutMillis(), elapsedMs(startedAt), exception.getMessage());
+            throw exception;
+        }
     }
 
     @Tool(description = "Scenario D: replace or insert blocks on an existing Lark Slides page.")
