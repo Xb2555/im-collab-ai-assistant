@@ -2,6 +2,7 @@ package com.lark.imcollab.app.planner.facade;
 
 import com.lark.imcollab.common.facade.HarnessFacade;
 import com.lark.imcollab.common.facade.TaskUserNotificationFacade;
+import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -219,6 +221,55 @@ class DefaultImTaskCommandFacadeTest {
     }
 
     @Test
+    void busyHarnessDoesNotFailTaskAndRetriesSameAttemptLater() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(sessionService.get("task-1")).thenReturn(session);
+        when(harnessFacade.startExecution("task-1"))
+                .thenThrow(new IllegalStateException("Task is already executing"))
+                .thenReturn(Task.builder().taskId("task-1").build());
+
+        facade.confirmExecution("task-1");
+        executor.runAll();
+
+        assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        verify(notificationFacade, never()).notifyExecutionFailed(any(), any(), anyString());
+        verify(reviewService, never()).reviewAndNotify("task-1");
+
+        timeoutScheduler.runLatestScheduledTask();
+        executor.runAll();
+
+        verify(harnessFacade, times(2)).startExecution("task-1");
+        verify(reviewService).reviewAndNotify("task-1");
+    }
+
+    @Test
+    void retryExecutionUsesFreshAttemptAndClearsPreviousArtifacts() {
+        PlanTaskSession failed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.FAILED)
+                .activeExecutionAttemptId("attempt-old")
+                .build();
+        PlanTaskSession retrying = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .activeExecutionAttemptId("attempt-old")
+                .build();
+        when(sessionService.get("task-1")).thenReturn(failed);
+        when(plannerRetryService.isRetryable("task-1", failed)).thenReturn(true);
+        when(plannerRetryService.prepareRetry("task-1", "重试")).thenReturn(retrying);
+
+        facade.retryExecution("task-1", "重试");
+
+        assertThat(retrying.getActiveExecutionAttemptId()).isNotBlank();
+        assertThat(retrying.getActiveExecutionAttemptId()).isNotEqualTo("attempt-old");
+        verify(sessionService).save(retrying);
+        verify(taskArtifactResetService).clearGeneratedArtifactsBeforeExecution("task-1");
+    }
+
+    @Test
     void cancelExecutionInterruptsQueuedHarnessAndAbortsDomainTask() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
@@ -393,6 +444,12 @@ class DefaultImTaskCommandFacadeTest {
             List<Runnable> snapshot = new ArrayList<>(tasks);
             tasks.clear();
             snapshot.forEach(Runnable::run);
+        }
+
+        void runLatestScheduledTask() {
+            assertThat(tasks).isNotEmpty();
+            Runnable task = tasks.remove(tasks.size() - 1);
+            task.run();
         }
 
         @Override public void shutdown() { }

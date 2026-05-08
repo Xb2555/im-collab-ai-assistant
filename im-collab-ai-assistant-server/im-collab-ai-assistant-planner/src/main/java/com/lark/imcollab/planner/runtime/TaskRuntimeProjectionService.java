@@ -62,6 +62,8 @@ public class TaskRuntimeProjectionService {
                 .riskFlags(existing == null || existing.getRiskFlags() == null ? List.of() : existing.getRiskFlags())
                 .needUserAction(needsUserAction(session.getPlanningPhase()))
                 .version(session.getVersion())
+                .planVersion(session.getPlanVersion())
+                .activeExecutionAttemptId(session.getActiveExecutionAttemptId())
                 .createdAt(existing == null ? now : existing.getCreatedAt())
                 .updatedAt(now)
                 .build();
@@ -92,6 +94,8 @@ public class TaskRuntimeProjectionService {
                 .riskFlags(graph.getRisks() == null ? List.of() : graph.getRisks())
                 .needUserAction(needsUserAction(session.getPlanningPhase()))
                 .version(session.getVersion())
+                .planVersion(session.getPlanVersion())
+                .activeExecutionAttemptId(session.getActiveExecutionAttemptId())
                 .createdAt(existing == null ? now : existing.getCreatedAt())
                 .updatedAt(now)
                 .build();
@@ -222,7 +226,7 @@ public class TaskRuntimeProjectionService {
         }
         Map<String, Boolean> hasFinalByDisplayKey = new LinkedHashMap<>();
         for (ArtifactRecord artifact : artifacts) {
-            if (artifact == null) {
+            if (artifact == null || "ORPHANED".equalsIgnoreCase(artifact.getVisibility())) {
                 continue;
             }
             String key = artifactDisplayKey(artifact);
@@ -230,6 +234,7 @@ public class TaskRuntimeProjectionService {
         }
         return artifacts.stream()
                 .filter(artifact -> artifact != null)
+                .filter(artifact -> !"ORPHANED".equalsIgnoreCase(artifact.getVisibility()))
                 .filter(artifact -> {
                     Boolean hasFinal = hasFinalByDisplayKey.get(artifactDisplayKey(artifact));
                     return !Boolean.TRUE.equals(hasFinal) || hasText(artifact.getUrl());
@@ -309,12 +314,15 @@ public class TaskRuntimeProjectionService {
     }
 
     private void appendRuntimeEvent(String taskId, int version, TaskEventTypeEnum eventType, Object payload) {
+        PlanTaskSession session = stateStore.findSession(taskId).orElse(null);
         stateStore.appendRuntimeEvent(TaskEventRecord.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
                 .type(eventType)
                 .payloadJson(toJson(payload))
                 .version(version)
+                .planVersion(session == null ? 0 : session.getPlanVersion())
+                .executionAttemptId(session == null ? null : session.getActiveExecutionAttemptId())
                 .createdAt(Instant.now())
                 .build());
     }
@@ -400,6 +408,12 @@ public class TaskRuntimeProjectionService {
         }
         if (phase == PlanningPhaseEnum.EXECUTING) {
             return TaskStatusEnum.EXECUTING;
+        }
+        if (phase == PlanningPhaseEnum.INTERRUPTING) {
+            return TaskStatusEnum.INTERRUPTING;
+        }
+        if (phase == PlanningPhaseEnum.REPLANNING) {
+            return TaskStatusEnum.REPLANNING;
         }
         if (phase == PlanningPhaseEnum.COMPLETED) {
             return TaskStatusEnum.COMPLETED;

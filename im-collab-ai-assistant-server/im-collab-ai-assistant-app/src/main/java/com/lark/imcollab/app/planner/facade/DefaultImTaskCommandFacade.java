@@ -9,6 +9,8 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.service.TaskCancellationRegistry;
+import com.lark.imcollab.common.service.ExecutionAttemptContext;
+import com.lark.imcollab.harness.support.ExecutionBusyException;
 import com.lark.imcollab.planner.config.PlannerExecutionProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
@@ -29,13 +31,15 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
+import java.util.UUID;
 
 @Service
 public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultImTaskCommandFacade.class);
-    private static final long EXECUTION_DRAIN_TIMEOUT_MILLIS = 3_000L;
+    private static final long EXECUTION_DRAIN_TIMEOUT_MILLIS = 240_000L;
     private static final long EXECUTION_DRAIN_POLL_MILLIS = 25L;
+    private static final long BUSY_RETRY_DELAY_SECONDS = 5L;
 
     private final PlannerSessionService sessionService;
     private final TaskBridgeService taskBridgeService;
@@ -92,12 +96,14 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         cancellationRegistry.clear(taskId);
         taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
         taskBridgeService.ensureTask(session);
+        String executionAttemptId = UUID.randomUUID().toString();
+        session.setActiveExecutionAttemptId(executionAttemptId);
         session.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
         session.setTransitionReason("User confirmed execution from IM");
         sessionService.save(session);
         sessionService.publishEvent(taskId, "EXECUTING");
         taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.EXECUTING, TaskEventTypeEnum.PLAN_APPROVED);
-        submitExecution(taskId);
+        submitExecution(taskId, executionAttemptId);
         return session;
     }
 
@@ -114,13 +120,16 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         cancellationRegistry.clear(taskId);
         taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
         PlanTaskSession retrying = plannerRetryService.prepareRetry(taskId, feedback);
+        String executionAttemptId = UUID.randomUUID().toString();
+        retrying.setActiveExecutionAttemptId(executionAttemptId);
+        sessionService.save(retrying);
         taskBridgeService.ensureTask(retrying);
-        submitExecution(taskId);
+        submitExecution(taskId, executionAttemptId);
         return retrying;
     }
 
     @Override
-    public void cancelExecution(String taskId) {
+    public void interruptExecution(String taskId) {
         cancellationRegistry.markCancelled(taskId);
         ActiveExecution execution = activeExecutions.get(taskId);
         if (execution != null) {
@@ -129,8 +138,14 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             if (!execution.hasStarted()) {
                 activeExecutions.remove(taskId, execution);
             }
-            log.info("Cancelled active execution: taskId={}", taskId);
+            log.info("Interrupted active execution for replan: taskId={}, attempt={}",
+                    taskId, execution.executionAttemptId());
         }
+    }
+
+    @Override
+    public void cancelExecution(String taskId) {
+        interruptExecution(taskId);
         submitAbort(taskId);
     }
 
@@ -139,7 +154,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         return taskRuntimeService.getSnapshot(taskId);
     }
 
-    private void submitExecution(String taskId) {
+    private void submitExecution(String taskId, String executionAttemptId) {
         if (activeExecutions.containsKey(taskId)) {
             log.info("Execution already in flight, skipping duplicate submit: taskId={}", taskId);
             return;
@@ -148,7 +163,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             AtomicBoolean started = new AtomicBoolean(false);
             FutureTask<Void> future = new FutureTask<>(() -> {
                 started.set(true);
-                startHarness(taskId);
+                startHarness(taskId, executionAttemptId);
                 return null;
             });
             ScheduledFuture<?> timeoutFuture = executionTimeoutScheduler.schedule(
@@ -156,7 +171,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
                     Math.max(1, executionProperties.getTimeoutSeconds()),
                     TimeUnit.SECONDS
             );
-            ActiveExecution execution = new ActiveExecution(future, timeoutFuture, started);
+            ActiveExecution execution = new ActiveExecution(future, timeoutFuture, started, executionAttemptId);
             ActiveExecution previous = activeExecutions.putIfAbsent(taskId, execution);
             if (previous != null) {
                 timeoutFuture.cancel(false);
@@ -184,19 +199,27 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         }
     }
 
-    private void startHarness(String taskId) {
+    private void startHarness(String taskId, String executionAttemptId) {
         try {
             if (cancellationRegistry.isCancelled(taskId)) {
                 log.info("Skip harness start because task is already cancelled: taskId={}", taskId);
                 return;
             }
-            harnessFacade.startExecution(taskId);
+            try (ExecutionAttemptContext.Scope ignored = ExecutionAttemptContext.open(taskId, executionAttemptId)) {
+                harnessFacade.startExecution(taskId);
+            }
             if (!cancellationRegistry.isCancelled(taskId) && activeExecutions.containsKey(taskId)) {
                 reviewService.reviewAndNotify(taskId);
             } else {
                 log.warn("Skip execution review because task already timed out or finalized: taskId={}", taskId);
             }
         } catch (RuntimeException exception) {
+            if (isExecutionBusy(exception) && shouldRetryBusyExecution(taskId, executionAttemptId)) {
+                log.info("Harness execution is still busy, will retry same attempt: taskId={}, attempt={}",
+                        taskId, executionAttemptId);
+                scheduleBusyRetry(taskId, executionAttemptId);
+                return;
+            }
             if (cancellationRegistry.isCancelled(taskId)) {
                 log.info("Skip failure projection because task was cancelled: taskId={}", taskId);
                 return;
@@ -211,6 +234,50 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         clearActiveExecution(taskId);
         log.warn("{}: taskId={}, error={}", message, taskId, exception.getMessage(), exception);
         markFailedState(taskId, message + ": " + exception.getMessage());
+    }
+
+    private boolean shouldRetryBusyExecution(String taskId, String executionAttemptId) {
+        if (cancellationRegistry.isCancelled(taskId)) {
+            return false;
+        }
+        try {
+            PlanTaskSession session = sessionService.get(taskId);
+            return session != null
+                    && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING
+                    && executionAttemptId != null
+                    && executionAttemptId.equals(session.getActiveExecutionAttemptId());
+        } catch (RuntimeException exception) {
+            log.warn("Failed to verify busy execution retry state: taskId={}, attempt={}",
+                    taskId, executionAttemptId, exception);
+            return false;
+        }
+    }
+
+    private void scheduleBusyRetry(String taskId, String executionAttemptId) {
+        clearActiveExecution(taskId);
+        try {
+            executionTimeoutScheduler.schedule(
+                    () -> submitExecution(taskId, executionAttemptId),
+                    BUSY_RETRY_DELAY_SECONDS,
+                    TimeUnit.SECONDS
+            );
+        } catch (RuntimeException scheduleException) {
+            markExecutionFailed(taskId, "Failed to schedule busy execution retry", scheduleException);
+        }
+    }
+
+    private boolean isExecutionBusy(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ExecutionBusyException) {
+                return true;
+            }
+            if (current.getMessage() != null && current.getMessage().contains("Task is already executing")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void handleExecutionTimeout(String taskId) {
@@ -296,7 +363,12 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
                 && snapshot.getTask().getStatus() == TaskStatusEnum.FAILED;
     }
 
-    private record ActiveExecution(Future<?> future, ScheduledFuture<?> timeoutFuture, AtomicBoolean started) {
+    private record ActiveExecution(
+            Future<?> future,
+            ScheduledFuture<?> timeoutFuture,
+            AtomicBoolean started,
+            String executionAttemptId
+    ) {
 
         private boolean hasStarted() {
             return started.get();

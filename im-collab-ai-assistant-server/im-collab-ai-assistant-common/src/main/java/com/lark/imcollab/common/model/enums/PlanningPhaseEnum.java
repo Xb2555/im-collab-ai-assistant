@@ -9,6 +9,8 @@ public enum PlanningPhaseEnum {
     INTENT_READY,
     PLAN_READY,
     EXECUTING,
+    INTERRUPTING,
+    REPLANNING,
     COMPLETED,
     FAILED,
     ABORTED

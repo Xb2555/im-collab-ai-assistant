@@ -6,11 +6,9 @@ import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.intent.IntentRoutingResult;
 import com.lark.imcollab.planner.intent.IntentRouterService;
 import com.lark.imcollab.planner.intent.UnknownIntentReplyService;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-@Slf4j
 @Service
 public class TaskIntakeService {
 
@@ -34,27 +32,19 @@ public class TaskIntakeService {
     ) {
         String effectiveInput = firstText(userFeedback, rawInstruction);
         effectiveInput = stripLeadingMentionPlaceholders(effectiveInput);
-        log.info("TASK_INTAKE decide_start taskId={} existingSession={} phase={} rawInstruction='{}' userFeedback='{}' effectiveInput='{}'",
-                session == null ? null : session.getTaskId(),
-                existingSession,
-                session == null ? null : session.getPlanningPhase(),
-                rawInstruction,
-                userFeedback,
-                effectiveInput);
         IntentRoutingResult result = intentRouterService.classify(session, effectiveInput, existingSession);
         TaskIntakeTypeEnum intakeType = map(result.type());
         String assistantReply = intakeType == TaskIntakeTypeEnum.UNKNOWN
                 ? unknownIntentReplyService.reply(session, effectiveInput, result.reason())
                 : null;
-        log.info("TASK_INTAKE decide_result taskId={} intakeType={} routedType={} reason='{}' normalizedInput='{}' readOnlyView={} assistantReply='{}'",
-                session == null ? null : session.getTaskId(),
+        return new TaskIntakeDecision(
                 intakeType,
-                result.type(),
-                result.reason(),
                 result.normalizedInput(),
+                result.reason(),
+                assistantReply,
                 result.readOnlyView(),
-                assistantReply);
-        return new TaskIntakeDecision(intakeType, result.normalizedInput(), result.reason(), assistantReply, result.readOnlyView());
+                result.adjustmentTarget()
+        );
     }
 
     public TaskIntakeService(IntentRouterService intentRouterService) {

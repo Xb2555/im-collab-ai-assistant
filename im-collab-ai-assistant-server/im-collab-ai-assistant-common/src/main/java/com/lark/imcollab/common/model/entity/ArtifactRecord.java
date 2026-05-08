@@ -23,6 +23,10 @@ public class ArtifactRecord implements Serializable {
     private String url;
     private String preview;
     private String status;
+    private String visibility;
+    private String cleanupStatus;
+    private int planVersion;
+    private String executionAttemptId;
     private int version;
     private Instant createdAt;
     private Instant updatedAt;

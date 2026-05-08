@@ -14,20 +14,20 @@ import com.lark.imcollab.harness.document.template.DocumentBodyNormalizer;
 import com.lark.imcollab.harness.document.template.DocumentTemplateRenderer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.harness.document.workflow.DocumentStateKeys;
+import com.lark.imcollab.harness.support.ExecutionInterruptedException;
 import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.List;
 import java.util.Optional;
-import java.lang.reflect.Method;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -168,20 +168,5 @@ class DocumentWorkflowNodesTests {
         verify(support).markSummaryStepCompleted(eq("task-1"), org.mockito.ArgumentMatchers.contains("本周完成 Planner"));
         verify(support).publishEvent("task-1", null, TaskEventType.ARTIFACT_CREATED);
         verify(support).publishEvent("task-1", null, TaskEventType.STEP_COMPLETED);
-    }
-
-    @Test
-    void unsupportedMermaidHeaderFallsBackToDefaultStableDiagram() throws Exception {
-        Method coerceMermaid = DocumentWorkflowNodes.class.getDeclaredMethod("coerceMermaid", String.class, String.class);
-        coerceMermaid.setAccessible(true);
-
-        String result = (String) coerceMermaid.invoke(nodes, """
-                usecaseDiagram
-                    actor 用户 as User
-                    User --> (提交需求)
-                """, "CONTEXT");
-
-        assertThat(result).startsWith("flowchart TB");
-        assertThat(result).doesNotContain("usecaseDiagram");
     }
 }

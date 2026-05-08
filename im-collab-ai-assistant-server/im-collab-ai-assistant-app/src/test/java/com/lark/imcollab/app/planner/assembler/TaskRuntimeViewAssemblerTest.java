@@ -3,6 +3,8 @@ package com.lark.imcollab.app.planner.assembler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.TaskDetailVO;
 import org.junit.jupiter.api.Test;
@@ -52,5 +54,25 @@ class TaskRuntimeViewAssemblerTest {
         assertThat(detail.actions().canReplan()).isTrue();
         assertThat(detail.actions().canCancel()).isFalse();
         assertThat(detail.actions().canConfirm()).isFalse();
+    }
+
+    @Test
+    void executingTaskCanInterruptReplanButCannotPlainReplan() {
+        TaskDetailVO detail = assembler.toTaskDetail(TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder()
+                        .taskId("task-1")
+                        .status(TaskStatusEnum.EXECUTING)
+                        .build())
+                .steps(java.util.List.of(TaskStepRecord.builder()
+                        .taskId("task-1")
+                        .stepId("step-1")
+                        .status(StepStatusEnum.RUNNING)
+                        .build()))
+                .build());
+
+        assertThat(detail.actions().canInterrupt()).isTrue();
+        assertThat(detail.actions().canInterruptReplan()).isTrue();
+        assertThat(detail.actions().canReplan()).isFalse();
+        assertThat(detail.actions().canCancel()).isTrue();
     }
 }

@@ -27,12 +27,19 @@ public class PlanTaskSession implements Serializable {
     @Schema(description = "融合澄清后的完整目标")
     private String clarifiedInstruction;
 
-    @Schema(description = "规划阶段（ASK_USER/PLAN_READY/EXECUTING/COMPLETED/FAILED/ABORTED）")
+    @Schema(description = "规划阶段（ASK_USER/PLAN_READY/EXECUTING/INTERRUPTING/REPLANNING/COMPLETED/FAILED/ABORTED）")
     private PlanningPhaseEnum planningPhase;
 
     @Schema(description = "规划版本号")
     @Builder.Default
     private int version = 0;
+
+    @Schema(description = "同一任务下的计划版本，用于执行中重规划隔离")
+    @Builder.Default
+    private int planVersion = 0;
+
+    @Schema(description = "当前有效执行代次 ID")
+    private String activeExecutionAttemptId;
 
     @Schema(description = "内部状态修订号，用于后端乐观锁；不作为前端可见版本")
     @Builder.Default

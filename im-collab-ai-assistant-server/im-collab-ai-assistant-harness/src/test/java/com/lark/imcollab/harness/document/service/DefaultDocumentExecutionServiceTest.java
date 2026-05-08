@@ -7,6 +7,7 @@ import com.alibaba.cloud.ai.graph.checkpoint.Checkpoint;
 import com.alibaba.cloud.ai.graph.state.StateSnapshot;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.common.service.ExecutionAttemptContext;
 import com.lark.imcollab.harness.document.support.DocumentExecutionGuard;
 import com.lark.imcollab.harness.document.support.DocumentExecutionSupport;
 import com.lark.imcollab.harness.document.workflow.DocumentStateKeys;
@@ -66,13 +67,16 @@ class DefaultDocumentExecutionServiceTest {
                 .clarifiedInstruction("生成客户访谈纪要\n补充说明：请用备用方案重试，先给简版")
                 .build()));
 
-        service.execute("task-1");
+        try (ExecutionAttemptContext.Scope ignored = ExecutionAttemptContext.open("task-1", "attempt-new")) {
+            service.execute("task-1");
+        }
 
         ArgumentCaptor<OverAllState> stateCaptor = ArgumentCaptor.forClass(OverAllState.class);
         org.mockito.Mockito.verify(documentWorkflow).invoke(stateCaptor.capture(), any(RunnableConfig.class));
         Map<String, Object> state = stateCaptor.getValue().data();
         assertThat(state.get(DocumentStateKeys.CLARIFIED_INSTRUCTION))
                 .isEqualTo("生成客户访谈纪要\n补充说明：请用备用方案重试，先给简版");
+        assertThat(state.get(DocumentStateKeys.EXECUTION_ATTEMPT_ID)).isEqualTo("attempt-new");
         assertThat(state)
                 .doesNotContainKeys(
                         DocumentStateKeys.OUTLINE,

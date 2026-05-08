@@ -164,6 +164,39 @@ class PlanQualityServiceTest {
         assertThat(session.isAborted()).isFalse();
     }
 
+    @Test
+    void mergedPlanAdjustmentRebuildsTaskBriefFromCurrentCardsInsteadOfKeepingOldBrief() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .rawInstruction("生成 OLD_PLAN_IM_INTERRUPT_20260508 旧计划测试文档")
+                .intentSnapshot(IntentSnapshot.builder()
+                        .userGoal("生成飞书文档")
+                        .build())
+                .planBlueprint(PlanBlueprint.builder()
+                        .taskBrief("生成一份飞书文档，标题包含 OLD_PLAN_IM_INTERRUPT_20260508")
+                        .planCards(List.of(
+                                card("card-001", "生成旧计划测试文档", PlanCardTypeEnum.DOC)
+                        ))
+                        .build())
+                .build();
+
+        service.applyMergedPlanAdjustment(
+                session,
+                PlanBlueprint.builder()
+                        .taskBrief("生成一份飞书文档，标题包含 OLD_PLAN_IM_INTERRUPT_20260508")
+                        .planCards(List.of(
+                                card("card-001", "生成飞书文档（标题含78787，6 个小节，每节约 150 字）", PlanCardTypeEnum.DOC)
+                        ))
+                        .build(),
+                "Plan adjusted"
+        );
+
+        assertThat(session.getPlanBlueprint().getTaskBrief())
+                .isEqualTo("生成飞书文档（标题含78787，6 个小节，每节约 150 字）");
+        assertThat(session.getExecutionContract().getTaskBrief())
+                .isEqualTo("生成飞书文档（标题含78787，6 个小节，每节约 150 字）");
+    }
+
     private static UserPlanCard card(String cardId, String title, PlanCardTypeEnum type) {
         return UserPlanCard.builder()
                 .cardId(cardId)
