@@ -147,7 +147,7 @@ class LarkDocToolTest {
     }
 
     @Test
-    void createDocWithUnsupportedMermaidFallsBackToStableFlowchart() {
+    void createDocWithUnsupportedMermaidKeepsOriginalMarkdownBlock() {
         List<CliCommand> commands = new ArrayList<>();
         CliCommandExecutor executor = command -> {
             commands.add(command);
@@ -179,15 +179,10 @@ class LarkDocToolTest {
                         """);
             }
             if (args.contains("+update")) {
+                assertThat(command.stdin()).contains("usecaseDiagram");
+                assertThat(command.stdin()).doesNotContain("<whiteboard type=\"blank\"></whiteboard>");
                 return new CliCommandResult(0, """
                         {"success":true,"data":{"doc_id":"doc-created","mode":"overwrite","revision_id":2,"board_tokens":["wb-1"]}}
-                        """);
-            }
-            if (args.contains("+whiteboard-update")) {
-                assertThat(command.stdin()).startsWith("flowchart TB");
-                assertThat(command.stdin()).doesNotContain("usecaseDiagram");
-                return new CliCommandResult(0, """
-                        {"success":true,"data":{"message":"whiteboard updated"}}
                         """);
             }
             return new CliCommandResult(1, "unexpected cli command");
@@ -211,7 +206,7 @@ class LarkDocToolTest {
                 ```
                 """);
 
-        assertThat(commands).hasSize(4);
+        assertThat(commands).hasSize(2);
     }
 
     @Test

@@ -511,6 +511,7 @@ public class DocumentWorkflowNodes {
                 3. 节点命名必须贴合当前文档主题，不要输出泛泛的 A/B/C 或 Node1/Node2。
                 4. 只允许使用以下 Mermaid 顶层图类型：flowchart、graph、sequenceDiagram、stateDiagram-v2、erDiagram。
                 5. 严禁输出 usecaseDiagram、journey、gantt、classDiagram、pie、mindmap、timeline 或其他未列出的图类型。
+                6. Mermaid 不支持 usecaseDiagram；如果你想表达角色、系统、用例之间关系，必须改写成 flowchart，禁止输出任何 usecaseDiagram 代码。
                 """.formatted(
                 requiredHeader,
                 diagramPlan,
