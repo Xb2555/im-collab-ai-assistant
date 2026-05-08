@@ -140,9 +140,11 @@ public class PlanQualityService {
 
     public PlanTaskSession applyPlanReady(PlanTaskSession session, PlanBlueprint blueprint) {
         PlanBlueprint normalized = normalizePlanBlueprint(blueprint, session.getTaskId(), session.getIntentSnapshot());
+        normalized.setTaskBrief(resolveTaskBrief(normalized, session.getIntentSnapshot(), session.getRawInstruction()));
         session.setPlanBlueprint(normalized);
         var contract = executionContractFactory.build(session);
         normalized = executionContractFactory.applyArtifactGate(normalized, contract);
+        normalized.setTaskBrief(resolveTaskBrief(normalized, session.getIntentSnapshot(), session.getRawInstruction()));
         session.setPlanBlueprint(normalized);
         contract = executionContractFactory.build(session);
         session.setClarifiedInstruction(contract.getClarifiedInstruction());
@@ -180,12 +182,22 @@ public class PlanQualityService {
             String reason
     ) {
         PlanBlueprint normalized = normalizePlanBlueprint(mergedBlueprint, session.getTaskId(), session.getIntentSnapshot());
+        normalized.setTaskBrief(resolveTaskBrief(normalized, session.getIntentSnapshot(), session.getRawInstruction()));
         session.setPlanBlueprint(normalized);
         var contract = executionContractFactory.build(session);
         normalized = executionContractFactory.applyArtifactGate(normalized, contract);
         normalized = normalizePlanBlueprint(normalized, session.getTaskId(), session.getIntentSnapshot());
+        normalized.setTaskBrief(resolveTaskBrief(normalized, session.getIntentSnapshot(), session.getRawInstruction()));
         session.setPlanBlueprint(normalized);
         contract = executionContractFactory.build(session);
+        log.info("PLAN_ADJUSTMENT materialized: taskId={}, reason='{}', blueprintTaskBrief='{}', blueprintConstraints={}, intentConstraints={}, contractConstraints={}, contractClarified='{}'",
+                session.getTaskId(),
+                hasText(reason) ? reason : "Plan adjusted",
+                abbreviate(normalized.getTaskBrief()),
+                normalized.getConstraints(),
+                session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getConstraints(),
+                contract == null ? null : contract.getConstraints(),
+                abbreviate(contract == null ? null : contract.getClarifiedInstruction()));
         session.setClarifiedInstruction(contract.getClarifiedInstruction());
         session.setPlanBlueprintSummary(buildBlueprintSummary(normalized));
         session.setPlanCards(normalized.getPlanCards() == null ? List.of() : normalized.getPlanCards());
@@ -251,11 +263,34 @@ public class PlanQualityService {
         if (candidate.getSourceScope() == null && intentSnapshot != null) {
             candidate.setSourceScope(intentSnapshot.getSourceScope());
         }
-        if ((candidate.getTaskBrief() == null || candidate.getTaskBrief().isBlank()) && intentSnapshot != null) {
-            candidate.setTaskBrief(intentSnapshot.getUserGoal());
-        }
         candidate.setPlanCards(cards);
         return candidate;
+    }
+
+    private String resolveTaskBrief(PlanBlueprint blueprint, IntentSnapshot intentSnapshot, String rawInstruction) {
+        List<UserPlanCard> cards = blueprint == null || blueprint.getPlanCards() == null
+                ? List.of()
+                : blueprint.getPlanCards().stream()
+                .filter(card -> card != null && !"SUPERSEDED".equalsIgnoreCase(card.getStatus()))
+                .toList();
+        if (!cards.isEmpty()) {
+            String joinedTitles = cards.stream()
+                    .map(UserPlanCard::getTitle)
+                    .filter(this::hasText)
+                    .distinct()
+                    .reduce((left, right) -> left + "；" + right)
+                    .orElse("");
+            if (hasText(joinedTitles)) {
+                return joinedTitles;
+            }
+        }
+        if (blueprint != null && hasText(blueprint.getTaskBrief())) {
+            return blueprint.getTaskBrief().trim();
+        }
+        if (intentSnapshot != null && hasText(intentSnapshot.getUserGoal())) {
+            return intentSnapshot.getUserGoal().trim();
+        }
+        return hasText(rawInstruction) ? rawInstruction.trim() : "";
     }
 
     private List<UserPlanCard> normalizePlanCards(List<UserPlanCard> cards, String taskId) {
@@ -470,5 +505,16 @@ public class PlanQualityService {
 
     private boolean nonEmpty(List<?> values) {
         return values != null && !values.isEmpty();
+    }
+
+    private String abbreviate(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 180) {
+            return normalized;
+        }
+        return normalized.substring(0, 180) + "...";
     }
 }

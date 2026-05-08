@@ -9,6 +9,8 @@ import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.ExecutionContract;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
@@ -123,8 +125,61 @@ class ReplanNodeServiceTest {
         assertThat(result.getPlanCards())
                 .extracting(UserPlanCard::getTitle)
                 .containsExactly("生成技术方案文档（含Mermaid架构图）", "基于技术方案文档生成汇报PPT初稿", "生成群内项目进展摘要");
-        assertThat(result.getClarifiedInstruction()).contains("最后输出一段可以直接发到群里的项目进展摘要");
         verify(questionTool, never()).askUser(any(), any());
+    }
+
+    @Test
+    void replanClearsLegacyExecutionSemanticsBeforeApplyingPatch() {
+        PlanTaskSession session = session();
+        session.setClarifiedInstruction("旧澄清\n执行约束：标题必须包含 OLD_PLAN_IM_INTERRUPT_20260508");
+        session.setClarificationAnswers(List.of("旧回答"));
+        session.setExecutionContract(ExecutionContract.builder()
+                .taskBrief("旧执行合同")
+                .constraints(List.of("标题必须包含 OLD_PLAN_IM_INTERRUPT_20260508"))
+                .build());
+        session.setIntentSnapshot(IntentSnapshot.builder()
+                .constraints(List.of("标题必须包含 OLD_PLAN_IM_INTERRUPT_20260508"))
+                .build());
+        session.setPlanBlueprint(PlanBlueprint.builder()
+                .taskBrief("旧计划")
+                .constraints(List.of("标题必须包含 OLD_PLAN_IM_INTERRUPT_20260508"))
+                .successCriteria(List.of("旧成功标准"))
+                .risks(List.of("旧风险"))
+                .planCards(List.of(
+                        card("card-001", "旧文档步骤", PlanCardTypeEnum.DOC, List.of())
+                ))
+                .build());
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(adjustmentInterpreter.interpret(session, "把标题改成 78787", null))
+                .thenReturn(PlanPatchIntent.builder()
+                        .operation(PlanPatchOperation.UPDATE_STEP)
+                        .targetCardIds(List.of("card-001"))
+                        .newCardDrafts(List.of(PlanPatchCardDraft.builder()
+                                .title("生成飞书文档（标题含 78787）")
+                                .description("标题必须包含 78787")
+                                .type(PlanCardTypeEnum.DOC)
+                                .build()))
+                        .confidence(1.0d)
+                        .reason("update title")
+                        .build());
+        doAnswer(invocation -> {
+            PlanTaskSession target = invocation.getArgument(0);
+            PlanBlueprint merged = invocation.getArgument(1);
+            target.setPlanBlueprint(merged);
+            target.setPlanCards(merged.getPlanCards());
+            target.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+            return target;
+        }).when(qualityService).applyMergedPlanAdjustment(any(), any(), anyString());
+
+        service.replan("task-1", "把标题改成 78787", null);
+
+        assertThat(session.getClarifiedInstruction()).isNull();
+        assertThat(session.getExecutionContract()).isNull();
+        assertThat(session.getClarificationAnswers()).isEmpty();
+        assertThat(session.getIntentSnapshot().getConstraints()).isEmpty();
+        assertThat(session.getPlanBlueprint().getConstraints()).isEmpty();
+        assertThat(session.getPlanBlueprint().getSuccessCriteria()).isEmpty();
+        assertThat(session.getPlanBlueprint().getRisks()).isEmpty();
     }
 
     @Test

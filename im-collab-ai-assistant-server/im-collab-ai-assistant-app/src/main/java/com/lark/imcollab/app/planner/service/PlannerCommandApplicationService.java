@@ -3,6 +3,8 @@ package com.lark.imcollab.app.planner.service;
 import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.dto.DocumentIterationApprovalRequest;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
+import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
@@ -18,12 +20,16 @@ import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
 public class PlannerCommandApplicationService {
+
+    private static final Logger log = LoggerFactory.getLogger(PlannerCommandApplicationService.class);
 
     private final PlannerSupervisorGraphRunner graphRunner;
     private final TaskBridgeService taskBridgeService;
@@ -139,6 +145,7 @@ public class PlannerCommandApplicationService {
         taskCommandFacade.interruptExecution(taskId);
 
         PlanTaskSession replanning = sessionService.get(taskId);
+        resetExecutionSemanticsForFullReplan(replanning);
         replanning.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
         replanning.setActiveExecutionAttemptId(null);
         replanning.setTransitionReason("Replanning after execution interrupt");
@@ -157,6 +164,24 @@ public class PlannerCommandApplicationService {
                 workspaceContext,
                 feedback
         );
+        log.info("INTERRUPT_REPLAN graph result: taskId={}, phase={}, planVersion={}, blueprintConstraints={}, intentConstraints={}, clarified='{}', contractConstraints={}, contractClarified='{}', taskBrief='{}'",
+                taskId,
+                updated == null ? null : updated.getPlanningPhase(),
+                updated == null ? null : updated.getPlanVersion(),
+                updated == null || updated.getPlanBlueprint() == null ? null : updated.getPlanBlueprint().getConstraints(),
+                updated == null || updated.getIntentSnapshot() == null ? null : updated.getIntentSnapshot().getConstraints(),
+                abbreviate(updated == null ? null : updated.getClarifiedInstruction()),
+                updated == null || updated.getExecutionContract() == null ? null : updated.getExecutionContract().getConstraints(),
+                abbreviate(updated == null || updated.getExecutionContract() == null ? null : updated.getExecutionContract().getClarifiedInstruction()),
+                abbreviate(updated == null || updated.getPlanBlueprint() == null ? null : updated.getPlanBlueprint().getTaskBrief()));
+        log.info("INTERRUPT_REPLAN session ready: taskId={}, phase={}, planVersion={}, taskBrief='{}', firstCard='{}', firstCardDesc='{}', clarified='{}'",
+                taskId,
+                updated == null ? null : updated.getPlanningPhase(),
+                updated == null ? null : updated.getPlanVersion(),
+                abbreviate(updated == null || updated.getPlanBlueprint() == null ? null : updated.getPlanBlueprint().getTaskBrief()),
+                abbreviate(firstCardTitle(updated)),
+                abbreviate(firstCardDescription(updated)),
+                abbreviate(updated == null ? null : updated.getClarifiedInstruction()));
         taskBridgeService.ensureTask(updated);
         if (autoExecute && updated != null && updated.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
             return confirmExecution(taskId, updated);
@@ -306,5 +331,55 @@ public class PlannerCommandApplicationService {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private void resetExecutionSemanticsForFullReplan(PlanTaskSession session) {
+        if (session == null) {
+            return;
+        }
+        session.setClarifiedInstruction(null);
+        session.setExecutionContract(null);
+        session.setClarificationAnswers(java.util.List.of());
+        PlanBlueprint blueprint = session.getPlanBlueprint();
+        if (blueprint != null) {
+            blueprint.setConstraints(java.util.List.of());
+            blueprint.setSuccessCriteria(java.util.List.of());
+            blueprint.setRisks(java.util.List.of());
+        }
+        IntentSnapshot intentSnapshot = session.getIntentSnapshot();
+        if (intentSnapshot != null) {
+            intentSnapshot.setConstraints(java.util.List.of());
+        }
+    }
+
+    private String firstCardTitle(PlanTaskSession session) {
+        if (session == null || session.getPlanBlueprint() == null
+                || session.getPlanBlueprint().getPlanCards() == null
+                || session.getPlanBlueprint().getPlanCards().isEmpty()
+                || session.getPlanBlueprint().getPlanCards().get(0) == null) {
+            return null;
+        }
+        return session.getPlanBlueprint().getPlanCards().get(0).getTitle();
+    }
+
+    private String firstCardDescription(PlanTaskSession session) {
+        if (session == null || session.getPlanBlueprint() == null
+                || session.getPlanBlueprint().getPlanCards() == null
+                || session.getPlanBlueprint().getPlanCards().isEmpty()
+                || session.getPlanBlueprint().getPlanCards().get(0) == null) {
+            return null;
+        }
+        return session.getPlanBlueprint().getPlanCards().get(0).getDescription();
+    }
+
+    private String abbreviate(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 160) {
+            return normalized;
+        }
+        return normalized.substring(0, 160) + "...";
     }
 }
