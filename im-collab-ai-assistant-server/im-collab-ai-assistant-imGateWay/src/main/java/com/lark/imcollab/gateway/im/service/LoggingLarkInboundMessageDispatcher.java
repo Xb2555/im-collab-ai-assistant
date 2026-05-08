@@ -125,6 +125,11 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
     }
 
     private void dispatchAndReply(LarkInboundMessage message) {
+        log.info("SCENARIO_A inbound_dispatch_start messageId={} chatId={} senderOpenId={} content='{}'",
+                message == null ? null : message.messageId(),
+                message == null ? null : message.chatId(),
+                message == null ? null : message.senderOpenId(),
+                message == null ? null : message.content());
         PlanTaskSession session;
         try {
             session = plannerPlanFacade.plan(
@@ -138,6 +143,13 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                     message.messageId(), message.chatId(), exception);
             session = failedSession(message, humanizeFailure(exception));
         }
+        log.info("SCENARIO_A inbound_dispatch_result messageId={} chatId={} taskId={} phase={} intakeType={} assistantReply='{}'",
+                message == null ? null : message.messageId(),
+                message == null ? null : message.chatId(),
+                session == null ? null : session.getTaskId(),
+                session == null ? null : session.getPlanningPhase(),
+                session == null || session.getIntakeState() == null ? null : session.getIntakeState().getIntakeType(),
+                session == null || session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply());
         replyBySessionState(message, session);
         log.info("Scenario A inbound Lark message bridged to planner: messageId={}, chatId={}, taskId={}, phase={}",
                 message.messageId(), message.chatId(), session == null ? null : session.getTaskId(),

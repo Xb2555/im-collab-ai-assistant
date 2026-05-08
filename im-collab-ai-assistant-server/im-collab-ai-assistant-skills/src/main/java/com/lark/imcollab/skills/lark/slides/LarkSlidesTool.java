@@ -334,13 +334,42 @@ public class LarkSlidesTool {
     }
 
     private JsonNode executeJson(List<String> args) {
+        log.info(
+                "Lark slides CLI request start: command={}, timeoutMs={}, workingDir='{}'",
+                summarizeArgs(args),
+                commandTimeoutMillis(),
+                cliWorkingDirectory()
+        );
+        long startedAt = System.nanoTime();
         CliCommandResult result = larkCliClient.execute(args, null, commandTimeoutMillis());
         if (!result.isSuccess()) {
+            log.warn(
+                    "Lark slides CLI request failed: command={}, exitCode={}, elapsedMs={}, outputPreview={}",
+                    summarizeArgs(args),
+                    result.exitCode(),
+                    elapsedMs(startedAt),
+                    previewOutput(result.output())
+            );
             throw new IllegalStateException(readableCliError(result.output()));
         }
         try {
-            return larkCliClient.readJsonOutput(result.output());
+            JsonNode parsed = larkCliClient.readJsonOutput(result.output());
+            log.info(
+                    "Lark slides CLI request finished: command={}, exitCode={}, elapsedMs={}, outputPreview={}",
+                    summarizeArgs(args),
+                    result.exitCode(),
+                    elapsedMs(startedAt),
+                    previewOutput(result.output())
+            );
+            return parsed;
         } catch (Exception exception) {
+            log.warn(
+                    "Lark slides CLI response parse failed: command={}, elapsedMs={}, outputPreview={}, error={}",
+                    summarizeArgs(args),
+                    elapsedMs(startedAt),
+                    previewOutput(result.output()),
+                    exception.getMessage()
+            );
             throw new IllegalStateException("Failed to parse lark slides response", exception);
         }
     }
@@ -431,6 +460,40 @@ public class LarkSlidesTool {
         } catch (Exception ignored) {
             return output;
         }
+    }
+
+    private List<String> summarizeArgs(List<String> args) {
+        if (args == null || args.isEmpty()) {
+            return List.of();
+        }
+        List<String> summary = new ArrayList<>(args.size());
+        for (String arg : args) {
+            if (arg == null) {
+                summary.add(null);
+                continue;
+            }
+            if (arg.startsWith("@")) {
+                summary.add(arg);
+                continue;
+            }
+            if (arg.length() > 120) {
+                summary.add(arg.substring(0, 117) + "...");
+                continue;
+            }
+            summary.add(arg);
+        }
+        return summary;
+    }
+
+    private String previewOutput(String output) {
+        if (output == null || output.isBlank()) {
+            return "";
+        }
+        String compact = output.replaceAll("\\s+", " ").trim();
+        if (compact.length() <= 240) {
+            return compact;
+        }
+        return compact.substring(0, 237) + "...";
     }
 
     private String text(JsonNode node, String field) {
