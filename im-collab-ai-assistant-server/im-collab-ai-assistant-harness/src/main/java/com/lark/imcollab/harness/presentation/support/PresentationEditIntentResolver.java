@@ -34,7 +34,10 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                     .intentType(parseIntentType(root.path("intentType").asText(null)))
                     .actionType(parseActionType(root.path("actionType").asText(null)))
                     .userInstruction(instruction)
-                    .pageIndex(root.path("pageIndex").isInt() ? root.path("pageIndex").asInt() : null)
+                    .pageIndex(optionalInt(root.path("pageIndex")))
+                    .insertAfterPageIndex(optionalInt(root.path("insertAfterPageIndex")))
+                    .slideTitle(text(root, "slideTitle"))
+                    .slideBody(text(root, "slideBody"))
                     .replacementText(text(root, "replacementText"))
                     .targetElementType(parseTargetElementType(root.path("targetElementType").asText(null)))
                     .operations(parseOperations(root.path("operations")))
@@ -71,7 +74,25 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
             return clarification(intent.getUserInstruction());
         }
         for (PresentationEditOperation operation : operations) {
-            if (operation.getActionType() == null || operation.getPageIndex() == null) {
+            if (operation.getActionType() == null) {
+                return clarification(intent.getUserInstruction());
+            }
+            if (operation.getActionType() == PresentationEditActionType.INSERT_SLIDE
+                    && operation.getInsertAfterPageIndex() == null
+                    && operation.getPageIndex() != null) {
+                operation.setInsertAfterPageIndex(operation.getPageIndex());
+            }
+            if (requiresPageIndex(operation.getActionType()) && operation.getPageIndex() == null) {
+                return clarification(intent.getUserInstruction());
+            }
+            if (operation.getActionType() == PresentationEditActionType.MOVE_SLIDE
+                    && operation.getInsertAfterPageIndex() == null) {
+                return clarification(intent.getUserInstruction());
+            }
+            if (operation.getActionType() == PresentationEditActionType.INSERT_SLIDE
+                    && !hasText(operation.getSlideTitle())
+                    && !hasText(operation.getSlideBody())
+                    && !hasText(operation.getReplacementText())) {
                 return clarification(intent.getUserInstruction());
             }
             if (requiresReplacement(operation.getActionType()) && !hasText(operation.getReplacementText())) {
@@ -88,6 +109,9 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         PresentationEditOperation first = operations.get(0);
         intent.setActionType(first.getActionType());
         intent.setPageIndex(first.getPageIndex());
+        intent.setInsertAfterPageIndex(first.getInsertAfterPageIndex());
+        intent.setSlideTitle(first.getSlideTitle());
+        intent.setSlideBody(first.getSlideBody());
         intent.setReplacementText(first.getReplacementText());
         if (intent.getTargetElementType() == null) {
             intent.setTargetElementType(first.getTargetElementType());
@@ -118,15 +142,21 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 schema:
                 {
                   "intentType": "UPDATE_CONTENT|INSERT|DELETE|EXPLAIN",
-                  "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|INSERT_SLIDE|DELETE_SLIDE",
+                  "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
                   "targetElementType": "TITLE|BODY",
                   "pageIndex": 1,
+                  "insertAfterPageIndex": 1,
+                  "slideTitle": "新增页标题",
+                  "slideBody": "新增页正文或要点",
                   "replacementText": "新的标题或内容",
                   "operations": [
                     {
-                      "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|INSERT_SLIDE|DELETE_SLIDE",
+                      "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
                       "targetElementType": "TITLE|BODY",
                       "pageIndex": 1,
+                      "insertAfterPageIndex": 1,
+                      "slideTitle": "新增页标题",
+                      "slideBody": "新增页正文或要点",
                       "replacementText": "新的标题或内容"
                     }
                   ],
@@ -136,10 +166,13 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
 
                 规则:
                 1. 优先输出 operations，支持一条指令包含多个页面修改操作。
-                2. 只有在每个操作都能明确识别页码、目标元素和新内容时，clarificationNeeded=false。
+                2. 替换标题或正文时，只有在每个操作都能明确识别页码、目标元素和新内容时，clarificationNeeded=false。
                 3. “把第一页标题改成7878”“第一页标题为7878”“修改第3页标题为实施收益”都应解析为 REPLACE_SLIDE_TITLE。
                 4. 如果用户要求修改正文、要点、内容，targetElementType 应为 BODY。
-                5. 无法确认页码、目标元素或新内容时，clarificationNeeded=true。
+                5. “在第2页后插入一页，标题为风险应对，正文为预算、排期、依赖”应解析为 INSERT_SLIDE，insertAfterPageIndex=2，slideTitle/slideBody 填入新增内容；插到最前 insertAfterPageIndex=0；插到末尾 insertAfterPageIndex 可为 null。
+                6. “删除第3页”应解析为 DELETE_SLIDE，pageIndex=3。
+                7. “把第4页移到第2页后”应解析为 MOVE_SLIDE，pageIndex=4，insertAfterPageIndex=2；移到最前 insertAfterPageIndex=0；移到最后/末尾 insertAfterPageIndex=-1。
+                8. 新增页缺少标题和正文，或移动页缺少源页/目标位置，或无法确认替换页码、目标元素、新内容时，clarificationNeeded=true。
 
                 用户指令：%s
                 """.formatted(instruction == null ? "" : instruction.trim());
@@ -204,7 +237,10 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
             PresentationEditOperation operation = PresentationEditOperation.builder()
                     .actionType(parseActionType(node.path("actionType").asText(null)))
                     .targetElementType(parseTargetElementType(node.path("targetElementType").asText(null)))
-                    .pageIndex(node.path("pageIndex").isInt() ? node.path("pageIndex").asInt() : null)
+                    .pageIndex(optionalInt(node.path("pageIndex")))
+                    .insertAfterPageIndex(optionalInt(node.path("insertAfterPageIndex")))
+                    .slideTitle(text(node, "slideTitle"))
+                    .slideBody(text(node, "slideBody"))
                     .replacementText(text(node, "replacementText"))
                     .build();
             operations.add(operation);
@@ -224,6 +260,9 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 .actionType(intent.getActionType())
                 .targetElementType(intent.getTargetElementType())
                 .pageIndex(intent.getPageIndex())
+                .insertAfterPageIndex(intent.getInsertAfterPageIndex())
+                .slideTitle(intent.getSlideTitle())
+                .slideBody(intent.getSlideBody())
                 .replacementText(intent.getReplacementText())
                 .build();
         return new ArrayList<>(List.of(operation));
@@ -232,6 +271,30 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
     private boolean requiresReplacement(PresentationEditActionType actionType) {
         return actionType == PresentationEditActionType.REPLACE_SLIDE_TITLE
                 || actionType == PresentationEditActionType.REPLACE_SLIDE_BODY;
+    }
+
+    private boolean requiresPageIndex(PresentationEditActionType actionType) {
+        return actionType == PresentationEditActionType.REPLACE_SLIDE_TITLE
+                || actionType == PresentationEditActionType.REPLACE_SLIDE_BODY
+                || actionType == PresentationEditActionType.DELETE_SLIDE
+                || actionType == PresentationEditActionType.MOVE_SLIDE;
+    }
+
+    private Integer optionalInt(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        if (node.isInt()) {
+            return node.asInt();
+        }
+        if (node.isTextual() && hasText(node.asText())) {
+            try {
+                return Integer.parseInt(node.asText().trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private String text(JsonNode root, String field) {

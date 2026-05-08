@@ -324,7 +324,7 @@ public class ReplanNodeService {
                 return askCompletedAdjustmentQuestion(
                         session,
                         instruction,
-                        "可以改现有 PPT。你可以一次说明一个或多个页面要怎么改，比如“把第2页标题改成采购风险与建议，再把第3页正文改成里程碑、风险、预算”。"
+                        "可以改现有 PPT。你可以一次说明一个或多个页面要怎么改，比如“把第2页标题改成采购风险与建议”“在第2页后插入一页，标题为风险应对，正文为里程碑、风险、预算”“删除第3页”“把第4页移到第2页后”。"
                 );
             }
             return editExistingPpt(session, artifact, instruction, workspaceContext);
