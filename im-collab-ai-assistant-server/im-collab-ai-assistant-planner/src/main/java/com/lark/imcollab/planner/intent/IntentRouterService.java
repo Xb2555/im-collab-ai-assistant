@@ -3,12 +3,14 @@ package com.lark.imcollab.planner.intent;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskCommand;
 import com.lark.imcollab.planner.config.PlannerProperties;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
 import java.util.UUID;
 
+@Slf4j
 @Service
 public class IntentRouterService {
 
@@ -58,6 +60,16 @@ public class IntentRouterService {
         String normalized = rawInput == null ? "" : rawInput.trim();
         Optional<IntentRoutingResult> hardRule = hardRuleClassifier.classify(session, normalized, existingSession);
         if (hardRule.isPresent()) {
+            log.info("INTENT_ROUTER classify_result source=hard_rule taskId={} existingSession={} phase={} input='{}' type={} confidence={} reason='{}' normalizedInput='{}' readOnlyView={}",
+                    session == null ? null : session.getTaskId(),
+                    existingSession,
+                    session == null ? null : session.getPlanningPhase(),
+                    normalized,
+                    hardRule.get().type(),
+                    hardRule.get().confidence(),
+                    hardRule.get().reason(),
+                    hardRule.get().normalizedInput(),
+                    hardRule.get().readOnlyView());
             return hardRule.get();
         }
         Optional<IntentRoutingResult> model = llmIntentClassifier == null
@@ -65,23 +77,55 @@ public class IntentRouterService {
                 : llmIntentClassifier.classify(session, normalized, existingSession)
                 .map(result -> decisionGuard.guard(session, normalized, existingSession, result));
         if (model.isPresent()) {
+            log.info("INTENT_ROUTER classify_result source=llm taskId={} existingSession={} phase={} input='{}' type={} confidence={} reason='{}' normalizedInput='{}' readOnlyView={}",
+                    session == null ? null : session.getTaskId(),
+                    existingSession,
+                    session == null ? null : session.getPlanningPhase(),
+                    normalized,
+                    model.get().type(),
+                    model.get().confidence(),
+                    model.get().reason(),
+                    model.get().normalizedInput(),
+                    model.get().readOnlyView());
             return model.get();
         }
         if (plannerProperties.getIntent().isFallbackToLocalRules()) {
-            return hardRuleClassifier.fallback(session, normalized, existingSession)
+            IntentRoutingResult fallback = hardRuleClassifier.fallback(session, normalized, existingSession)
                     .orElseGet(() -> model.orElse(new IntentRoutingResult(
                             com.lark.imcollab.common.model.enums.TaskCommandTypeEnum.UNKNOWN,
                             0.0d,
                             "no intent classification",
                             normalized,
                             true)));
+            log.info("INTENT_ROUTER classify_result source=fallback taskId={} existingSession={} phase={} input='{}' type={} confidence={} reason='{}' normalizedInput='{}' readOnlyView={}",
+                    session == null ? null : session.getTaskId(),
+                    existingSession,
+                    session == null ? null : session.getPlanningPhase(),
+                    normalized,
+                    fallback.type(),
+                    fallback.confidence(),
+                    fallback.reason(),
+                    fallback.normalizedInput(),
+                    fallback.readOnlyView());
+            return fallback;
         }
-        return model.orElse(new IntentRoutingResult(
+        IntentRoutingResult unknown = model.orElse(new IntentRoutingResult(
                 com.lark.imcollab.common.model.enums.TaskCommandTypeEnum.UNKNOWN,
                 0.0d,
                 "no intent classification",
                 normalized,
                 true));
+        log.info("INTENT_ROUTER classify_result source=default_unknown taskId={} existingSession={} phase={} input='{}' type={} confidence={} reason='{}' normalizedInput='{}' readOnlyView={}",
+                session == null ? null : session.getTaskId(),
+                existingSession,
+                session == null ? null : session.getPlanningPhase(),
+                normalized,
+                unknown.type(),
+                unknown.confidence(),
+                unknown.reason(),
+                unknown.normalizedInput(),
+                unknown.readOnlyView());
+        return unknown;
     }
 
     private String firstText(String first, String second) {

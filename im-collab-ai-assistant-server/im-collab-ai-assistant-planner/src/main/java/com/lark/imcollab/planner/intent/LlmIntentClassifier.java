@@ -10,6 +10,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +22,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+@Slf4j
 @Service
 public class LlmIntentClassifier {
 
@@ -43,42 +45,80 @@ public class LlmIntentClassifier {
     }
 
     public Optional<IntentRoutingResult> classify(PlanTaskSession session, String rawInput, boolean existingSession) {
-        if (intentAgent == null || !plannerProperties.getIntent().isModelEnabled()) {
+        if (intentAgent == null) {
+            log.warn("LLM_INTENT classify_skip reason=intent_agent_null taskId={} existingSession={} phase={} input='{}'",
+                    session == null ? null : session.getTaskId(),
+                    existingSession,
+                    session == null ? null : session.getPlanningPhase(),
+                    rawInput);
+            return Optional.empty();
+        }
+        if (!plannerProperties.getIntent().isModelEnabled()) {
+            log.warn("LLM_INTENT classify_skip reason=model_disabled taskId={} existingSession={} phase={} timeoutSeconds={} input='{}'",
+                    session == null ? null : session.getTaskId(),
+                    existingSession,
+                    session == null ? null : session.getPlanningPhase(),
+                    timeoutSeconds(),
+                    rawInput);
             return Optional.empty();
         }
         String prompt = buildPrompt(session, rawInput, existingSession);
         RunnableConfig config = RunnableConfig.builder()
                 .threadId((session == null ? "unknown" : session.getTaskId()) + "-intent")
                 .build();
+        log.info("LLM_INTENT classify_start taskId={} existingSession={} phase={} timeoutSeconds={} promptPreview='{}' input='{}'",
+                session == null ? null : session.getTaskId(),
+                existingSession,
+                session == null ? null : session.getPlanningPhase(),
+                timeoutSeconds(),
+                abbreviate(prompt),
+                rawInput);
         try {
             return CompletableFuture
                     .supplyAsync(() -> {
                         try {
-                            return intentAgent.call(prompt, config).getText();
+                            String responseText = intentAgent.call(prompt, config).getText();
+                            log.info("LLM_INTENT classify_raw_response taskId={} rawResponse='{}'",
+                                    session == null ? null : session.getTaskId(),
+                                    abbreviate(responseText));
+                            return responseText;
                         } catch (Exception exception) {
                             throw new IllegalStateException(exception);
                         }
                     }, executorService)
                     .orTimeout(timeoutSeconds(), TimeUnit.SECONDS)
-                    .thenApply(this::parse)
+                    .thenApply(text -> parse(text, session == null ? null : session.getTaskId()))
                     .get(timeoutSeconds() + 1L, TimeUnit.SECONDS);
-        } catch (Exception ignored) {
+        } catch (Exception exception) {
+            log.warn("LLM_INTENT classify_failed taskId={} existingSession={} phase={} errorType={} message='{}'",
+                    session == null ? null : session.getTaskId(),
+                    existingSession,
+                    session == null ? null : session.getPlanningPhase(),
+                    exception.getClass().getSimpleName(),
+                    exception.getMessage(),
+                    exception);
             return Optional.empty();
         }
     }
 
     Optional<IntentRoutingResult> parse(String text) {
+        return parse(text, null);
+    }
+
+    Optional<IntentRoutingResult> parse(String text, String taskId) {
         if (text == null || text.isBlank()) {
+            log.warn("LLM_INTENT parse_empty taskId={}", taskId);
             return Optional.empty();
         }
         try {
-            JsonNode root = objectMapper.readTree(extractJson(text));
+            String extractedJson = extractJson(text);
+            JsonNode root = objectMapper.readTree(extractedJson);
             TaskCommandTypeEnum type = TaskCommandTypeEnum.valueOf(root.path("intent").asText("UNKNOWN"));
             String normalizedInput = root.path("normalizedInput").asText("");
             if (normalizedInput.isBlank()) {
                 normalizedInput = root.path("normalized_input").asText("");
             }
-            return Optional.of(new IntentRoutingResult(
+            IntentRoutingResult result = new IntentRoutingResult(
                     type,
                     root.path("confidence").asDouble(0.0d),
                     root.path("reason").asText("llm intent classification"),
@@ -91,8 +131,22 @@ public class LlmIntentClassifier {
                             root.path("queryView").asText(null),
                             root.path("query_view").asText(null)
                     ))
-            ));
-        } catch (Exception ignored) {
+            );
+            log.info("LLM_INTENT parse_success taskId={} type={} confidence={} normalizedInput='{}' readOnlyView={} needsClarification={}",
+                    taskId,
+                    result.type(),
+                    result.confidence(),
+                    result.normalizedInput(),
+                    result.readOnlyView(),
+                    result.needsClarification());
+            return Optional.of(result);
+        } catch (Exception exception) {
+            log.warn("LLM_INTENT parse_failed taskId={} errorType={} message='{}' raw='{}'",
+                    taskId,
+                    exception.getClass().getSimpleName(),
+                    exception.getMessage(),
+                    abbreviate(text),
+                    exception);
             return Optional.empty();
         }
     }
@@ -200,5 +254,16 @@ public class LlmIntentClassifier {
 
     private long timeoutSeconds() {
         return Math.max(1, plannerProperties.getIntent().getTimeoutSeconds());
+    }
+
+    private String abbreviate(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replace('\n', ' ').replace('\r', ' ').trim();
+        if (normalized.length() <= 600) {
+            return normalized;
+        }
+        return normalized.substring(0, 600) + "...";
     }
 }

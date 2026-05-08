@@ -13,8 +13,6 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,13 +48,32 @@ public class LarkCliClient {
         try {
             List<String> fullArgs = new ArrayList<>(properties.getArgs());
             fullArgs.addAll(args);
-            return cliCommandExecutor.execute(new CliCommand(
+            ResolvedCliCommand resolvedCommand = resolveCommand(properties.getExecutable(), fullArgs);
+            log.info(
+                    "Lark CLI execute start: requestedExecutable='{}', resolvedExecutable='{}', args={}, timeoutMs={}, workingDir='{}', stdinBytes={}",
                     properties.getExecutable(),
-                    fullArgs,
+                    resolvedCommand.executable(),
+                    summarizeArgs(resolvedCommand.args()),
+                    timeoutMillis,
+                    normalizeWorkingDirectory(properties.getWorkingDirectory()),
+                    stdin == null ? 0 : stdin.getBytes().length
+            );
+            long startedAt = System.nanoTime();
+            CliCommandResult result = cliCommandExecutor.execute(new CliCommand(
+                    resolvedCommand.executable(),
+                    resolvedCommand.args(),
                     normalizeWorkingDirectory(properties.getWorkingDirectory()),
                     stdin,
                     timeoutMillis
             ));
+            log.info(
+                    "Lark CLI execute finished: resolvedExecutable='{}', exitCode={}, elapsedMs={}, outputBytes={}",
+                    resolvedCommand.executable(),
+                    result.exitCode(),
+                    (System.nanoTime() - startedAt) / 1_000_000L,
+                    result.output() == null ? 0 : result.output().length()
+            );
+            return result;
         } catch (IOException exception) {
             throw new UncheckedIOException(exception);
         } catch (InterruptedException exception) {
@@ -105,59 +122,8 @@ public class LarkCliClient {
         return workingDirectory.trim();
     }
 
-    private CliExecutable resolveExecutable(boolean requiresStdin) {
-        String executable = properties.getExecutable();
-        List<String> args = properties.getArgs();
-        if (args == null || args.isEmpty() || !isWindows()) {
-            return new CliExecutable(executable, args == null ? List.of() : args);
-        }
-        if (!isPowerShell(executable) || args.size() < 3) {
-            return new CliExecutable(executable, args);
-        }
-        int fileIndex = findPowerShellFileArg(args);
-        if (fileIndex < 0 || fileIndex >= args.size() - 1) {
-            return new CliExecutable(executable, args);
-        }
-        String ps1Path = args.get(fileIndex + 1);
-        if (ps1Path == null || !ps1Path.toLowerCase(Locale.ROOT).endsWith(".ps1")) {
-            return new CliExecutable(executable, args);
-        }
-        if (requiresStdin) {
-            return new CliExecutable(ps1Path, List.of());
-        }
-        String cmdPath = ps1Path.substring(0, ps1Path.length() - 4) + ".cmd";
-        if (Files.exists(Path.of(cmdPath))) {
-            return new CliExecutable(cmdPath, List.of());
-        }
-        return new CliExecutable(ps1Path, List.of());
-    }
-
-    private int findPowerShellFileArg(List<String> args) {
-        for (int index = 0; index < args.size(); index++) {
-            String arg = args.get(index);
-            if ("-File".equalsIgnoreCase(arg)) {
-                return index;
-            }
-        }
-        return -1;
-    }
-
-    private boolean isPowerShell(String executable) {
-        if (executable == null) {
-            return false;
-        }
-        String normalized = executable.toLowerCase(Locale.ROOT);
-        return normalized.endsWith("powershell")
-                || normalized.endsWith("powershell.exe")
-                || normalized.endsWith("pwsh")
-                || normalized.endsWith("pwsh.exe");
-    }
-
     private boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
-    }
-
-    private record CliExecutable(String executable, List<String> prefixArgs) {
     }
 
     public JsonNode readJsonOutput(String output) throws IOException {
@@ -262,6 +228,29 @@ public class LarkCliClient {
         String fileName = ps1.getFileName() == null ? ps1Path : ps1.getFileName().toString();
         String cmdName = fileName.substring(0, fileName.length() - 4) + ".cmd";
         return ps1.resolveSibling(cmdName);
+    }
+
+    private List<String> summarizeArgs(List<String> args) {
+        if (args == null || args.isEmpty()) {
+            return List.of();
+        }
+        List<String> summary = new ArrayList<>(args.size());
+        for (String arg : args) {
+            if (arg == null) {
+                summary.add(null);
+                continue;
+            }
+            if (arg.startsWith("@")) {
+                summary.add(arg);
+                continue;
+            }
+            if (arg.length() > 160) {
+                summary.add(arg.substring(0, 157) + "...");
+                continue;
+            }
+            summary.add(arg);
+        }
+        return summary;
     }
 
     private record ResolvedCliCommand(String executable, List<String> args) {
