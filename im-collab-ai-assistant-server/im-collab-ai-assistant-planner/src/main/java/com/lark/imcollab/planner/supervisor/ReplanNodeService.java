@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
@@ -138,10 +139,7 @@ public class ReplanNodeService {
         if (patchIntent.getOperation() == PlanPatchOperation.REGENERATE_ALL) {
             return planningNodeService.plan(taskId, adjustmentInstruction, workspaceContext, adjustmentInstruction);
         }
-        session.setClarifiedInstruction(appendSupplement(
-                firstNonBlank(session.getClarifiedInstruction(), session.getRawInstruction()),
-                adjustmentInstruction
-        ));
+        resetExecutionSemanticsForPlanAdjustment(session);
         String beforeSignature = visiblePlanSignature(session.getPlanBlueprint());
         int beforeCardCount = activeCardCount(session.getPlanBlueprint());
         log.info("Planner replan patch selected task={} operation={} confidence={} targetCards={} newDrafts={} reason={}",
@@ -152,6 +150,7 @@ public class ReplanNodeService {
                 patchIntent.getNewCardDrafts() == null ? 0 : patchIntent.getNewCardDrafts().size(),
                 patchIntent.getReason());
         PlanBlueprint merged = patchTool.merge(session.getPlanBlueprint(), patchIntent, taskId);
+        stripPlanLevelExecutionFields(merged);
         int afterCardCount = activeCardCount(merged);
         log.info("Planner replan merge result task={} operation={} beforeCards={} afterCards={}",
                 taskId,
@@ -787,6 +786,29 @@ public class ReplanNodeService {
             }
         }
         return count;
+    }
+
+    private void resetExecutionSemanticsForPlanAdjustment(PlanTaskSession session) {
+        if (session == null) {
+            return;
+        }
+        session.setClarifiedInstruction(null);
+        session.setExecutionContract(null);
+        session.setClarificationAnswers(List.of());
+        stripPlanLevelExecutionFields(session.getPlanBlueprint());
+        IntentSnapshot intentSnapshot = session.getIntentSnapshot();
+        if (intentSnapshot != null) {
+            intentSnapshot.setConstraints(List.of());
+        }
+    }
+
+    private void stripPlanLevelExecutionFields(PlanBlueprint blueprint) {
+        if (blueprint == null) {
+            return;
+        }
+        blueprint.setConstraints(List.of());
+        blueprint.setSuccessCriteria(List.of());
+        blueprint.setRisks(List.of());
     }
 
     private String appendSupplement(String base, String supplement) {

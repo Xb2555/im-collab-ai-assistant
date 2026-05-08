@@ -6,6 +6,7 @@ public enum TaskStatusEnum {
     PLANNING,
     WAITING_APPROVAL,
     EXECUTING,
+    INTERRUPTING,
     REPLANNING,
     REVIEWING,
     PUBLISHING,

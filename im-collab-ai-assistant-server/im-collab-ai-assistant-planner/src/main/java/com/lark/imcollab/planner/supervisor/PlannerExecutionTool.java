@@ -56,6 +56,31 @@ public class PlannerExecutionTool {
         }
     }
 
+    @Tool(description = "Scenario B/E: interrupt current execution for same-task replanning without aborting the task.")
+    public PlannerToolResult interruptExecution(String taskId, String reason) {
+        ImTaskCommandFacade commandFacade = commandFacadeProvider.getIfAvailable();
+        if (commandFacade == null) {
+            return PlannerToolResult.failure(taskId, null, "执行桥接尚未就绪，无法从 Planner 直接中断任务。");
+        }
+        try {
+            commandFacade.interruptExecution(taskId);
+            TaskRuntimeSnapshot snapshot = commandFacade.getRuntimeSnapshot(taskId);
+            return PlannerToolResult.success(
+                    taskId,
+                    resolvePhase(snapshot),
+                    reason == null || reason.isBlank() ? "execution interrupted" : reason.trim(),
+                    snapshot
+            );
+        } catch (RuntimeException exception) {
+            return PlannerToolResult.failure(
+                    taskId,
+                    null,
+                    "执行中断失败：" + exception.getMessage()
+            );
+        }
+    }
+
+
     private PlanningPhaseEnum resolvePhase(TaskRuntimeSnapshot snapshot) {
         if (snapshot == null || snapshot.getTask() == null || snapshot.getTask().getCurrentStage() == null) {
             return PlanningPhaseEnum.EXECUTING;

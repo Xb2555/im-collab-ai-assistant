@@ -64,9 +64,10 @@ public class LarkIMTaskReplyFormatter {
     public String executionStarted(TaskRuntimeSnapshot snapshot) {
         String nextStep = nextStepName(snapshot);
         if (hasText(nextStep)) {
-            return "🚀 好，我开始推进了。先处理：" + nextStep + "。后面有进展我会继续同步。";
+            return "🚀 好，我开始推进了。先处理：" + nextStep
+                    + "。您可以在任务执行途中打断任务，并调整计划。后面有进展我会继续同步。";
         }
-        return "🚀 好，我开始推进了。接下来会按计划往下做，并持续同步进度。";
+        return "🚀 好，我开始推进了。接下来会按计划往下做。您可以在任务执行途中打断任务，并调整计划，我也会持续同步进度。";
     }
 
     public String retryStarted(TaskRuntimeSnapshot snapshot) {
@@ -218,12 +219,6 @@ public class LarkIMTaskReplyFormatter {
         }
         String trimmed = reply.trim();
         return startsWithIcon(trimmed) ? trimmed : "💬 " + trimmed;
-    }
-
-    public String executionReplannedAndRestarted(String detail) {
-        StringBuilder builder = new StringBuilder("💬 已中断当前执行，并按新计划重新开始执行。");
-        appendDetail(builder, detail, "已中断当前执行", "并按新计划", "重新开始执行");
-        return builder.toString();
     }
 
     public String completedArtifactEditApplied(String detail) {

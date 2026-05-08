@@ -14,6 +14,7 @@ import com.lark.imcollab.harness.document.template.DocumentBodyNormalizer;
 import com.lark.imcollab.harness.document.template.DocumentTemplateRenderer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.harness.document.workflow.DocumentStateKeys;
+import com.lark.imcollab.harness.support.ExecutionInterruptedException;
 import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -166,5 +168,53 @@ class DocumentWorkflowNodesTests {
         verify(support).markSummaryStepCompleted(eq("task-1"), org.mockito.ArgumentMatchers.contains("本周完成 Planner"));
         verify(support).publishEvent("task-1", null, TaskEventType.ARTIFACT_CREATED);
         verify(support).publishEvent("task-1", null, TaskEventType.STEP_COMPLETED);
+    }
+
+    @Test
+    void interruptedExecutionDoesNotCreateLarkDoc() {
+        DocumentExecutionSupport support = mock(DocumentExecutionSupport.class);
+        LarkDocTool larkDocTool = mock(LarkDocTool.class);
+        doThrow(new ExecutionInterruptedException("stale attempt"))
+                .when(support).ensureExecutionCanContinue("task-1");
+        DocumentWorkflowNodes interruptedNodes = new DocumentWorkflowNodes(
+                support,
+                bodyNormalizer,
+                renderer,
+                null,
+                null,
+                null,
+                null,
+                null,
+                larkDocTool,
+                new ObjectMapper()
+        );
+        DocumentPlan plan = DocumentPlan.builder()
+                .planId("task-1:plan")
+                .taskId("task-1")
+                .title("旧计划测试文档")
+                .orderedSections(List.of(DocumentPlanSection.builder()
+                        .sectionId("section-1")
+                        .index(1)
+                        .heading("背景")
+                        .build()))
+                .build();
+        ComposedDocumentDraft draft = ComposedDocumentDraft.builder()
+                .orderedSections(List.of(DocumentSectionDraft.builder()
+                        .sectionId("section-1")
+                        .heading("背景")
+                        .body("Exception: Thread interrupted while sleeping")
+                        .build()))
+                .composedMarkdown("## 背景\nException: Thread interrupted while sleeping")
+                .build();
+
+        assertThatThrownBy(() -> interruptedNodes.writeDocAndSync(new OverAllState(Map.of(
+                DocumentStateKeys.TASK_ID, "task-1",
+                DocumentStateKeys.DOCUMENT_PLAN, plan,
+                DocumentStateKeys.COMPOSED_DRAFT, draft,
+                DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.builder().summary("摘要已生成").build()
+        )), RunnableConfig.builder().threadId("task-1").build()).join())
+                .isInstanceOf(ExecutionInterruptedException.class);
+
+        verify(larkDocTool, never()).createDoc(anyString(), anyString());
     }
 }

@@ -1,10 +1,15 @@
 package com.lark.imcollab.app.planner.service;
 
 import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
+import com.lark.imcollab.common.model.entity.ExecutionContract;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
+import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
+import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
@@ -28,7 +33,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -186,6 +193,105 @@ class PlannerCommandApplicationServiceTest {
                 eq(expectedInstruction)
         );
         verify(taskBridgeService).ensureTask(completed);
+    }
+
+    @Test
+    void interruptReplanSupersedesExecutionWithoutMarkingTaskAborted() {
+        PlanTaskSession executing = new PlanTaskSession();
+        executing.setTaskId("task-1");
+        executing.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        executing.setActiveExecutionAttemptId("attempt-old");
+        executing.setVersion(3);
+        executing.setClarifiedInstruction("旧澄清");
+        executing.setClarificationAnswers(java.util.List.of("旧回答"));
+        executing.setExecutionContract(ExecutionContract.builder().taskBrief("旧合同").build());
+        executing.setPlanBlueprint(PlanBlueprint.builder()
+                .taskBrief("旧计划")
+                .constraints(java.util.List.of("标题必须包含 OLD_PLAN"))
+                .successCriteria(java.util.List.of("旧成功标准"))
+                .risks(java.util.List.of("旧风险"))
+                .planCards(java.util.List.of(UserPlanCard.builder()
+                        .cardId("card-001")
+                        .title("旧卡片")
+                        .type(PlanCardTypeEnum.DOC)
+                        .build()))
+                .build());
+        executing.setIntentSnapshot(IntentSnapshot.builder()
+                .constraints(java.util.List.of("旧意图约束"))
+                .build());
+        PlanTaskSession replanning = new PlanTaskSession();
+        replanning.setTaskId("task-1");
+        replanning.setPlanningPhase(PlanningPhaseEnum.INTERRUPTING);
+        replanning.setActiveExecutionAttemptId("attempt-old");
+        replanning.setVersion(4);
+        replanning.setClarifiedInstruction("旧澄清");
+        replanning.setClarificationAnswers(java.util.List.of("旧回答"));
+        replanning.setExecutionContract(ExecutionContract.builder().taskBrief("旧合同").build());
+        replanning.setPlanBlueprint(PlanBlueprint.builder()
+                .taskBrief("旧计划")
+                .constraints(java.util.List.of("标题必须包含 OLD_PLAN"))
+                .successCriteria(java.util.List.of("旧成功标准"))
+                .risks(java.util.List.of("旧风险"))
+                .planCards(java.util.List.of(UserPlanCard.builder()
+                        .cardId("card-001")
+                        .title("旧卡片")
+                        .type(PlanCardTypeEnum.DOC)
+                        .build()))
+                .build());
+        replanning.setIntentSnapshot(IntentSnapshot.builder()
+                .constraints(java.util.List.of("旧意图约束"))
+                .build());
+        PlanTaskSession ready = new PlanTaskSession();
+        ready.setTaskId("task-1");
+        ready.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        ready.setVersion(5);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().senderOpenId("ou-user").build();
+
+        when(sessionService.get("task-1")).thenReturn(executing, replanning);
+        when(graphRunner.run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "interrupt execution and replan")),
+                eq("task-1"),
+                eq("增加一页风险分析"),
+                eq(workspaceContext),
+                eq("增加一页风险分析")))
+                .thenReturn(ready);
+
+        PlanTaskSession result = service.interruptReplan("task-1", "增加一页风险分析", workspaceContext, false);
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(ready);
+        verify(taskRuntimeService).appendUserIntervention("task-1", "增加一页风险分析");
+        verify(taskRuntimeService).projectPhaseTransition(
+                "task-1",
+                PlanningPhaseEnum.INTERRUPTING,
+                TaskEventTypeEnum.EXECUTION_INTERRUPTING
+        );
+        verify(taskRuntimeService).projectPhaseTransition(
+                "task-1",
+                PlanningPhaseEnum.REPLANNING,
+                TaskEventTypeEnum.PLAN_ADJUSTED
+        );
+        verify(taskCommandFacade).interruptExecution("task-1");
+        verify(taskCommandFacade, never()).cancelExecution("task-1");
+        verify(sessionService, never()).markAborted(any(), any());
+        verify(sessionService, times(2)).save(any(PlanTaskSession.class));
+        verify(sessionService).save(argThat(session ->
+                session.getPlanningPhase() == PlanningPhaseEnum.REPLANNING
+                        && session.getClarifiedInstruction() == null
+                        && session.getExecutionContract() == null
+                        && session.getClarificationAnswers() != null
+                        && session.getClarificationAnswers().isEmpty()
+                        && session.getPlanBlueprint() != null
+                        && session.getPlanBlueprint().getConstraints() != null
+                        && session.getPlanBlueprint().getConstraints().isEmpty()
+                        && session.getPlanBlueprint().getSuccessCriteria() != null
+                        && session.getPlanBlueprint().getSuccessCriteria().isEmpty()
+                        && session.getPlanBlueprint().getRisks() != null
+                        && session.getPlanBlueprint().getRisks().isEmpty()
+                        && session.getIntentSnapshot() != null
+                        && session.getIntentSnapshot().getConstraints() != null
+                        && session.getIntentSnapshot().getConstraints().isEmpty()
+        ));
+        verify(taskBridgeService).ensureTask(ready);
     }
 
     @Test

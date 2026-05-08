@@ -3,6 +3,7 @@ package com.lark.imcollab.harness.document.workflow;
 public final class DocumentStateKeys {
 
     public static final String TASK_ID = "taskId";
+    public static final String EXECUTION_ATTEMPT_ID = "executionAttemptId";
     public static final String RAW_INSTRUCTION = "rawInstruction";
     public static final String CLARIFIED_INSTRUCTION = "clarifiedInstruction";
     public static final String EXECUTION_CONSTRAINTS = "executionConstraints";

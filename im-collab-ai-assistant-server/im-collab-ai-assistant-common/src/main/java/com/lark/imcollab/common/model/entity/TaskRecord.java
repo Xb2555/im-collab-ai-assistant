@@ -31,6 +31,8 @@ public class TaskRecord implements Serializable {
     private List<String> riskFlags;
     private boolean needUserAction;
     private int version;
+    private int planVersion;
+    private String activeExecutionAttemptId;
     private Instant createdAt;
     private Instant updatedAt;
 }

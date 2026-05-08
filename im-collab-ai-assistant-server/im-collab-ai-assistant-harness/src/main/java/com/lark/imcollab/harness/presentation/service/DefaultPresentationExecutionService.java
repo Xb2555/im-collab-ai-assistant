@@ -8,9 +8,11 @@ import com.lark.imcollab.common.domain.Approval;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskEventType;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.common.service.ExecutionAttemptContext;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionGuard;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionSupport;
 import com.lark.imcollab.harness.presentation.workflow.PresentationStateKeys;
+import com.lark.imcollab.harness.support.ExecutionInterruptedException;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -54,6 +56,7 @@ public class DefaultPresentationExecutionService implements PresentationExecutio
         Map<String, Object> state = new HashMap<>();
         snapshot.ifPresent(s -> state.putAll(s.state().data()));
         state.put(PresentationStateKeys.TASK_ID, taskId);
+        state.put(PresentationStateKeys.EXECUTION_ATTEMPT_ID, blankToDefault(ExecutionAttemptContext.currentExecutionAttemptId(), ""));
         state.put(PresentationStateKeys.USER_FEEDBACK, userFeedback == null ? "" : userFeedback);
         maybeTask.ifPresent(task -> {
             if (task.getRawInstruction() != null && !task.getRawInstruction().isBlank()) {
@@ -83,10 +86,19 @@ public class DefaultPresentationExecutionService implements PresentationExecutio
                 .orElse(taskId + ":presentation");
     }
 
+    private String blankToDefault(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
+    }
+
     private void runSafely(String taskId, String userFeedback, String stepId) {
         try {
             runWorkflow(taskId, userFeedback);
+        } catch (ExecutionInterruptedException exception) {
+            Thread.interrupted();
         } catch (Exception exception) {
+            if (!executionSupport.isCurrentExecution(taskId)) {
+                return;
+            }
             executionSupport.publishEvent(taskId, stepId, TaskEventType.TASK_FAILED, exception.getMessage());
             throw exception;
         }

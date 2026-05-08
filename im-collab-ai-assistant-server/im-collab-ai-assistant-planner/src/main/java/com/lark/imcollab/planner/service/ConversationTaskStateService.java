@@ -63,6 +63,11 @@ public class ConversationTaskStateService {
             state.setActiveTaskId(session.getTaskId());
             state.setLastCompletedTaskId(session.getTaskId());
             state.setExecutingTaskId(null);
+        } else if (phase == PlanningPhaseEnum.INTERRUPTING || phase == PlanningPhaseEnum.REPLANNING) {
+            state.setActiveTaskId(session.getTaskId());
+            if (session.getTaskId().equals(state.getExecutingTaskId())) {
+                state.setExecutingTaskId(null);
+            }
         } else if (phase == PlanningPhaseEnum.FAILED || phase == PlanningPhaseEnum.ABORTED) {
             state.setActiveTaskId(session.getTaskId());
             if (session.getTaskId().equals(state.getExecutingTaskId())) {

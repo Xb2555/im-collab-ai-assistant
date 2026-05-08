@@ -9,6 +9,7 @@ import com.lark.imcollab.common.domain.Artifact;
 import com.lark.imcollab.common.domain.ArtifactType;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskEventType;
+import com.lark.imcollab.common.service.ExecutionAttemptContext;
 import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
@@ -99,6 +100,7 @@ public class PresentationWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of());
         }
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         String prompt = """
                 请生成 PPT 叙事主线。
                 任务要求：%s
@@ -123,6 +125,7 @@ public class PresentationWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of());
         }
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         PresentationStoryline storyline = requireValue(state, PresentationStateKeys.STORYLINE, PresentationStoryline.class);
         String prompt = """
                 请基于叙事主线生成 PPT 页面大纲。
@@ -146,6 +149,7 @@ public class PresentationWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of());
         }
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
         List<PresentationSlideXml> slideXmlList = new ArrayList<>();
         for (PresentationSlidePlan slide : safeSlides(outline)) {
@@ -197,6 +201,7 @@ public class PresentationWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of());
         }
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
         List<PresentationSlideXml> slideXmlList = readSlideXmlList(state);
         String prompt = """
@@ -220,10 +225,17 @@ public class PresentationWorkflowNodes {
     }
 
     public CompletableFuture<Map<String, Object>> writeSlidesAndSync(OverAllState state, RunnableConfig config) {
+        String taskId = state.value(PresentationStateKeys.TASK_ID, "");
+        try (ExecutionAttemptContext.Scope ignored = bindExecutionAttempt(state, taskId)) {
+            return doWriteSlidesAndSync(state, taskId);
+        }
+    }
+
+    private CompletableFuture<Map<String, Object>> doWriteSlidesAndSync(OverAllState state, String taskId) {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_WRITE, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
-        String taskId = state.value(PresentationStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         String title = blankToDefault(state.value(PresentationStateKeys.PRESENTATION_TITLE, ""), "汇报 PPT");
         List<String> xmlPages = readSlideXmlList(state).stream()
                 .map(PresentationSlideXml::getXml)
@@ -232,7 +244,9 @@ public class PresentationWorkflowNodes {
         if (xmlPages.isEmpty()) {
             throw new IllegalStateException("No valid slide XML pages to create");
         }
+        support.ensureExecutionCanContinue(taskId);
         LarkSlidesCreateResult result = larkSlidesTool.createPresentation(title, xmlPages);
+        support.ensureExecutionCanContinue(taskId);
         String stepId = support.findPptStep(taskId).map(com.lark.imcollab.common.model.entity.TaskStepRecord::getStepId).orElse(null);
         support.saveArtifact(taskId, stepId, title, state.value(PresentationStateKeys.UPSTREAM_ARTIFACT_SUMMARY, ""), result.getPresentationId(), result.getPresentationUrl());
         support.publishEvent(taskId, stepId, TaskEventType.ARTIFACT_CREATED, support.writeJson(result));
@@ -244,8 +258,15 @@ public class PresentationWorkflowNodes {
         ));
     }
 
+    private ExecutionAttemptContext.Scope bindExecutionAttempt(OverAllState state, String taskId) {
+        String attemptId = state.value(PresentationStateKeys.EXECUTION_ATTEMPT_ID, "");
+        return ExecutionAttemptContext.open(taskId, attemptId);
+    }
+
     private PresentationStoryline invokeStoryline(String prompt, String taskId) {
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         AssistantMessage response = callAgent(storylineAgent, prompt, taskId + ":presentation:storyline");
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         try {
             return objectMapper.readValue(response.getText(), PresentationStoryline.class);
         } catch (Exception exception) {
@@ -263,7 +284,9 @@ public class PresentationWorkflowNodes {
     }
 
     private PresentationOutline invokeOutline(String prompt, PresentationStoryline storyline, String taskId) {
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         AssistantMessage response = callAgent(outlineAgent, prompt, taskId + ":presentation:outline");
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         try {
             return objectMapper.readValue(response.getText(), PresentationOutline.class);
         } catch (Exception exception) {
@@ -272,7 +295,9 @@ public class PresentationWorkflowNodes {
     }
 
     private PresentationSlideXml invokeSlideXml(String prompt, PresentationSlidePlan slide, String taskId) {
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         AssistantMessage response = callAgent(slideXmlAgent, prompt, taskId + ":presentation:slide:" + slide.getIndex());
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         try {
             PresentationSlideXml generated = objectMapper.readValue(response.getText(), PresentationSlideXml.class);
             generated.setXml(extractSlideXml(generated.getXml()));
@@ -306,7 +331,9 @@ public class PresentationWorkflowNodes {
     }
 
     private PresentationReviewResult invokeReview(String prompt, String taskId) {
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         AssistantMessage response = callAgent(reviewAgent, prompt, taskId + ":presentation:review");
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         try {
             PresentationReviewResult result = objectMapper.readValue(response.getText(), PresentationReviewResult.class);
             if (result.getSummary() == null || result.getSummary().isBlank()) {
@@ -324,11 +351,47 @@ public class PresentationWorkflowNodes {
     }
 
     protected AssistantMessage callAgent(ReactAgent agent, String prompt, String threadId) {
+        support.ensureExecutionCanContinue(rootTaskId(threadId));
         try {
-            return agent.call(prompt, RunnableConfig.builder().threadId(threadId).build());
+            AssistantMessage response = agent.call(prompt, RunnableConfig.builder().threadId(threadId).build());
+            if (looksInterrupted(response == null ? null : response.getText())) {
+                Thread.currentThread().interrupt();
+            }
+            support.ensureExecutionCanContinue(rootTaskId(threadId));
+            return response;
         } catch (Exception e) {
+            if (isInterruptedFailure(e)) {
+                Thread.currentThread().interrupt();
+                support.ensureExecutionCanContinue(rootTaskId(threadId));
+            }
             throw new IllegalStateException("Agent call failed for thread: " + threadId, e);
         }
+    }
+
+    private String rootTaskId(String threadId) {
+        if (threadId == null || threadId.isBlank()) {
+            return "";
+        }
+        int separator = threadId.indexOf(':');
+        return separator < 0 ? threadId : threadId.substring(0, separator);
+    }
+
+    private boolean looksInterrupted(String text) {
+        return text != null && text.toLowerCase().contains("thread interrupted");
+    }
+
+    private boolean isInterruptedFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof InterruptedException) {
+                return true;
+            }
+            if (looksInterrupted(current.getMessage())) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void normalizeStoryline(PresentationStoryline storyline, OverAllState state) {

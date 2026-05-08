@@ -22,6 +22,8 @@ public class TaskEventRecord implements Serializable {
     private TaskEventTypeEnum type;
     private String payloadJson;
     private int version;
+    private int planVersion;
+    private String executionAttemptId;
     @Builder.Default
     private Instant createdAt = Instant.now();
 }

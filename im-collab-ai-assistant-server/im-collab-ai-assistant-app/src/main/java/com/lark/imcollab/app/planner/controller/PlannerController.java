@@ -19,6 +19,7 @@ import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.BusinessCode;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.PlanCardVO;
 import com.lark.imcollab.common.model.vo.DocumentIterationVO;
@@ -63,7 +64,7 @@ public class PlannerController {
 
     private static final Logger log = LoggerFactory.getLogger(PlannerController.class);
 
-    private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "RESUME", "CANCEL", "RETRY_FAILED");
+    private static final Set<String> SUPPORTED_COMMANDS = Set.of("CONFIRM_EXECUTE", "REPLAN", "INTERRUPT_REPLAN", "RESUME", "CANCEL", "RETRY_FAILED");
     private static final List<TaskStatusEnum> GUI_RECOVERABLE_TASK_STATUSES = List.of(
             TaskStatusEnum.RECEIVED,
             TaskStatusEnum.CLARIFYING,
@@ -382,6 +383,9 @@ public class PlannerController {
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
             case "REPLAN" -> {
+                if (session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
+                    yield error(BusinessCode.OPERATION_ERROR, "Executing task must use INTERRUPT_REPLAN");
+                }
                 PlanCommandRequest ownedRequest = withCurrentUser(request, user.get());
                 PlanTaskSession updated = plannerCommandApplicationService.replan(
                         taskId,
@@ -394,6 +398,21 @@ public class PlannerController {
                     log.error("Planner REPLAN returned a different task id: requested={}, returned={}",
                             taskId, updated == null ? null : updated.getTaskId());
                     yield error(BusinessCode.OPERATION_ERROR, "Replan returned inconsistent task id");
+                }
+                yield ResultUtils.success(toPlanPreview(updated, taskId));
+            }
+            case "INTERRUPT_REPLAN" -> {
+                PlanCommandRequest ownedRequest = withCurrentUser(request, user.get());
+                PlanTaskSession updated = plannerCommandApplicationService.interruptReplan(
+                        taskId,
+                        ownedRequest.getFeedback(),
+                        ownedRequest.getWorkspaceContext(),
+                        ownedRequest.isAutoExecute()
+                );
+                if (!sameTaskId(taskId, updated)) {
+                    log.error("Planner INTERRUPT_REPLAN returned a different task id: requested={}, returned={}",
+                            taskId, updated == null ? null : updated.getTaskId());
+                    yield error(BusinessCode.OPERATION_ERROR, "Interrupt replan returned inconsistent task id");
                 }
                 yield ResultUtils.success(toPlanPreview(updated, taskId));
             }
