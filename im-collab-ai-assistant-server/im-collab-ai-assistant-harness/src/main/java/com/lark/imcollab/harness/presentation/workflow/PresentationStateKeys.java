@@ -3,6 +3,7 @@ package com.lark.imcollab.harness.presentation.workflow;
 public final class PresentationStateKeys {
 
     public static final String TASK_ID = "taskId";
+    public static final String EXECUTION_ATTEMPT_ID = "executionAttemptId";
     public static final String CARD_ID = "cardId";
     public static final String USER_FEEDBACK = "userFeedback";
     public static final String RAW_INSTRUCTION = "rawInstruction";

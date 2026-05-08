@@ -357,6 +357,11 @@ class PlannerConversationCancelTests {
                 .taskId("task-1")
                 .planningPhase(PlanningPhaseEnum.PLAN_READY)
                 .build();
+        PlanTaskSession replanning = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.INTERRUPTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .build();
         PlanTaskSession restarted = PlanTaskSession.builder()
                 .taskId("task-1")
                 .planningPhase(PlanningPhaseEnum.EXECUTING)
@@ -364,11 +369,11 @@ class PlannerConversationCancelTests {
                 .build();
 
         when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
-        when(sessionService.get("task-1")).thenReturn(executing, restarted);
+        when(sessionService.get("task-1")).thenReturn(executing, replanning, restarted);
         when(intakeService.decide(executing, "把第三页改一下并继续跑", null, true))
                 .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, "把第三页改一下并继续跑"));
-        when(executionTool.cancelExecution("task-1", "interrupt execution for plan adjustment"))
-                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.EXECUTING, "execution cancelled", null));
+        when(executionTool.interruptExecution("task-1", "interrupt execution for plan adjustment"))
+                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.INTERRUPTING, "execution interrupted", null));
         when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("把第三页改一下并继续跑"), eq(workspaceContext), eq("把第三页改一下并继续跑")))
                 .thenReturn(replanned);
         when(executionTool.confirmExecution("task-1"))
@@ -379,12 +384,16 @@ class PlannerConversationCancelTests {
         assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
         assertThat(result.getIntakeState().getAssistantReply()).contains("已中断当前执行", "重新开始执行");
         verify(taskRuntimeService).appendUserIntervention("task-1", "把第三页改一下并继续跑");
-        verify(executionTool).cancelExecution("task-1", "interrupt execution for plan adjustment");
-        verify(sessionService).markAborted("task-1", "User interrupted execution for IM plan adjustment: 把第三页改一下并继续跑");
+        verify(executionTool).interruptExecution("task-1", "interrupt execution for plan adjustment");
         verify(taskRuntimeService).projectPhaseTransition(
                 "task-1",
-                PlanningPhaseEnum.ABORTED,
-                com.lark.imcollab.common.model.enums.TaskEventTypeEnum.TASK_CANCELLED
+                PlanningPhaseEnum.INTERRUPTING,
+                com.lark.imcollab.common.model.enums.TaskEventTypeEnum.EXECUTION_INTERRUPTING
+        );
+        verify(taskRuntimeService).projectPhaseTransition(
+                "task-1",
+                PlanningPhaseEnum.REPLANNING,
+                com.lark.imcollab.common.model.enums.TaskEventTypeEnum.PLAN_ADJUSTED
         );
         verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("把第三页改一下并继续跑"), eq(workspaceContext), eq("把第三页改一下并继续跑"));
         verify(executionTool).confirmExecution("task-1");
@@ -423,7 +432,7 @@ class PlannerConversationCancelTests {
         when(sessionService.get("task-1")).thenReturn(executing);
         when(intakeService.decide(executing, "把第三页改一下并继续跑", null, true))
                 .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, "把第三页改一下并继续跑"));
-        when(executionTool.cancelExecution("task-1", "interrupt execution for plan adjustment"))
+        when(executionTool.interruptExecution("task-1", "interrupt execution for plan adjustment"))
                 .thenReturn(PlannerToolResult.failure("task-1", null, "执行中断失败：harness busy"));
 
         PlanTaskSession result = service.handlePlanRequest("把第三页改一下并继续跑", workspaceContext, null, null);

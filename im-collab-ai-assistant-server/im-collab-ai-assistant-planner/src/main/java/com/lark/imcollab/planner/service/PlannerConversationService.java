@@ -558,9 +558,21 @@ public class PlannerConversationService {
         if (taskRuntimeService != null) {
             taskRuntimeService.appendUserIntervention(session.getTaskId(), graphInstruction);
         }
+        session.setPlanningPhase(PlanningPhaseEnum.INTERRUPTING);
+        session.setTransitionReason("Interrupt current execution for IM plan adjustment");
+        sessionService.saveWithoutVersionChange(session);
+        sessionService.publishEvent(session.getTaskId(), "INTERRUPTING");
+        if (taskRuntimeService != null) {
+            taskRuntimeService.projectPhaseTransition(
+                    session.getTaskId(),
+                    PlanningPhaseEnum.INTERRUPTING,
+                    com.lark.imcollab.common.model.enums.TaskEventTypeEnum.EXECUTION_INTERRUPTING
+            );
+        }
+
         PlannerToolResult cancelResult = executionTool == null
                 ? PlannerToolResult.failure(session.getTaskId(), null, "执行桥接尚未就绪，无法中断当前任务。")
-                : executionTool.cancelExecution(session.getTaskId(), "interrupt execution for plan adjustment");
+                : executionTool.interruptExecution(session.getTaskId(), "interrupt execution for plan adjustment");
         if (cancelResult == null || !cancelResult.success()) {
             return updateExecutingAdjustmentReply(
                     session,
@@ -570,12 +582,17 @@ public class PlannerConversationService {
             );
         }
 
-        sessionService.markAborted(session.getTaskId(), "User interrupted execution for IM plan adjustment: " + graphInstruction);
+        session = sessionService.get(session.getTaskId());
+        session.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
+        session.setActiveExecutionAttemptId(null);
+        session.setTransitionReason("Replanning after IM execution interrupt: " + graphInstruction);
+        sessionService.saveWithoutVersionChange(session);
+        sessionService.publishEvent(session.getTaskId(), "REPLANNING");
         if (taskRuntimeService != null) {
             taskRuntimeService.projectPhaseTransition(
                     session.getTaskId(),
-                    PlanningPhaseEnum.ABORTED,
-                    com.lark.imcollab.common.model.enums.TaskEventTypeEnum.TASK_CANCELLED
+                    PlanningPhaseEnum.REPLANNING,
+                    com.lark.imcollab.common.model.enums.TaskEventTypeEnum.PLAN_ADJUSTED
             );
         }
 
@@ -857,7 +874,7 @@ public class PlannerConversationService {
         intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         intakeState.setAssistantReply(reply);
         session.setIntakeState(intakeState);
-        if (session.getPlanningPhase() == null && fallbackPhase != null) {
+        if (fallbackPhase != null) {
             session.setPlanningPhase(fallbackPhase);
         }
         sessionService.saveWithoutVersionChange(session);

@@ -183,4 +183,5 @@ class PlannerExecutionReviewServiceTest {
         verify(sessionService).publishEvent("task-1", "ASK_USER");
         verify(notificationFacade).notifyExecutionReviewed(session, snapshot, evaluationCaptor.getValue());
     }
+
 }

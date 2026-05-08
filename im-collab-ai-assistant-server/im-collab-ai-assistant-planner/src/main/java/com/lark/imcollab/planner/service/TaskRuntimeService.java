@@ -130,6 +130,8 @@ public class TaskRuntimeService {
                 .riskFlags(graph.getRisks() == null ? List.of() : graph.getRisks())
                 .needUserAction(session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER)
                 .version(session.getVersion())
+                .planVersion(session.getPlanVersion())
+                .activeExecutionAttemptId(session.getActiveExecutionAttemptId())
                 .createdAt(existing == null ? now : existing.getCreatedAt())
                 .updatedAt(now)
                 .build();
@@ -168,7 +170,10 @@ public class TaskRuntimeService {
         if (artifacts == null || artifacts.isEmpty()) {
             return List.of();
         }
-        return artifacts.stream().map(ArtifactRecord::getArtifactId).toList();
+        return artifacts.stream()
+                .filter(artifact -> artifact != null && !"ORPHANED".equalsIgnoreCase(artifact.getVisibility()))
+                .map(ArtifactRecord::getArtifactId)
+                .toList();
     }
 
     private TaskStatusEnum mapTaskStatus(PlanningPhaseEnum phase) {
@@ -180,6 +185,12 @@ public class TaskRuntimeService {
         }
         if (phase == PlanningPhaseEnum.EXECUTING) {
             return TaskStatusEnum.EXECUTING;
+        }
+        if (phase == PlanningPhaseEnum.INTERRUPTING) {
+            return TaskStatusEnum.INTERRUPTING;
+        }
+        if (phase == PlanningPhaseEnum.REPLANNING) {
+            return TaskStatusEnum.REPLANNING;
         }
         if (phase == PlanningPhaseEnum.COMPLETED) {
             return TaskStatusEnum.COMPLETED;
@@ -194,12 +205,15 @@ public class TaskRuntimeService {
     }
 
     private void appendRuntimeEvent(String taskId, int version, TaskEventTypeEnum eventType, Object payload) {
+        PlanTaskSession session = stateStore.findSession(taskId).orElse(null);
         stateStore.appendRuntimeEvent(TaskEventRecord.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
                 .type(eventType)
                 .payloadJson(toJson(payload))
                 .version(version)
+                .planVersion(session == null ? 0 : session.getPlanVersion())
+                .executionAttemptId(session == null ? null : session.getActiveExecutionAttemptId())
                 .createdAt(Instant.now())
                 .build());
     }
@@ -209,6 +223,10 @@ public class TaskRuntimeService {
             task.setStatus(mapTaskStatus(phase));
             task.setCurrentStage(phase.name());
             task.setVersion(version);
+            stateStore.findSession(taskId).ifPresent(session -> {
+                task.setPlanVersion(session.getPlanVersion());
+                task.setActiveExecutionAttemptId(session.getActiveExecutionAttemptId());
+            });
             task.setUpdatedAt(Instant.now());
             stateStore.saveTask(task);
         });
@@ -286,6 +304,12 @@ public class TaskRuntimeService {
         }
         if (phase == PlanningPhaseEnum.EXECUTING) {
             return TaskEventTypeEnum.PLAN_APPROVED;
+        }
+        if (phase == PlanningPhaseEnum.INTERRUPTING) {
+            return TaskEventTypeEnum.EXECUTION_INTERRUPTING;
+        }
+        if (phase == PlanningPhaseEnum.REPLANNING) {
+            return TaskEventTypeEnum.PLAN_ADJUSTED;
         }
         if (phase == PlanningPhaseEnum.COMPLETED) {
             return TaskEventTypeEnum.TASK_COMPLETED;

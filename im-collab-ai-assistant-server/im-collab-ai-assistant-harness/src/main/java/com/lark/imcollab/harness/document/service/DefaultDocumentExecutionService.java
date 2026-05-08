@@ -8,9 +8,11 @@ import com.lark.imcollab.common.domain.Approval;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskEventType;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.common.service.ExecutionAttemptContext;
 import com.lark.imcollab.harness.document.support.DocumentExecutionGuard;
 import com.lark.imcollab.harness.document.support.DocumentExecutionSupport;
 import com.lark.imcollab.harness.document.workflow.DocumentStateKeys;
+import com.lark.imcollab.harness.support.ExecutionInterruptedException;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -73,11 +75,13 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
     }
 
     private void runWorkflow(String taskId, String userFeedback) {
-        RunnableConfig config = RunnableConfig.builder().threadId(taskId).build();
+        String executionAttemptId = blankToDefault(ExecutionAttemptContext.currentExecutionAttemptId(), "");
+        RunnableConfig config = RunnableConfig.builder().threadId(documentThreadId(taskId, executionAttemptId)).build();
         Optional<StateSnapshot> snapshot = documentWorkflow.stateOf(config);
         Map<String, Object> state = new HashMap<>();
         snapshot.ifPresent(s -> state.putAll(s.state().data()));
         state.put(DocumentStateKeys.TASK_ID, taskId);
+        state.put(DocumentStateKeys.EXECUTION_ATTEMPT_ID, executionAttemptId);
         state.put(DocumentStateKeys.USER_FEEDBACK, userFeedback == null ? "" : userFeedback);
         taskRepository.findById(taskId).ifPresent(task -> {
             if (shouldRegenerateFromCurrentContext(snapshot.isPresent(), state, task, userFeedback)) {
@@ -98,6 +102,13 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
             }
         });
         documentWorkflow.invoke(new OverAllState(state), config);
+    }
+
+    private String documentThreadId(String taskId, String executionAttemptId) {
+        if (hasText(executionAttemptId)) {
+            return taskId + ":document:" + executionAttemptId;
+        }
+        return taskId;
     }
 
     private boolean shouldRegenerateFromCurrentContext(
@@ -142,6 +153,10 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
         return value == null ? null : String.valueOf(value);
     }
 
+    private String blankToDefault(String value, String fallback) {
+        return hasText(value) ? value.trim() : fallback;
+    }
+
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
@@ -149,7 +164,12 @@ public class DefaultDocumentExecutionService implements DocumentExecutionService
     private void runSafely(String taskId, String userFeedback, String stepId) {
         try {
             runWorkflow(taskId, userFeedback);
+        } catch (ExecutionInterruptedException exception) {
+            Thread.interrupted();
         } catch (Exception exception) {
+            if (!executionSupport.isCurrentExecution(taskId)) {
+                return;
+            }
             executionSupport.publishEvent(taskId, stepId, TaskEventType.TASK_FAILED, exception.getMessage());
             throw exception;
         }

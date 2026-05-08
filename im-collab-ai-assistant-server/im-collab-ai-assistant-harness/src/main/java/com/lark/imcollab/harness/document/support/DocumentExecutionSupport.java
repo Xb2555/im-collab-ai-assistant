@@ -15,7 +15,11 @@ import com.lark.imcollab.common.port.ArtifactRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
 import com.lark.imcollab.common.service.TaskCancellationRegistry;
+import com.lark.imcollab.harness.support.ExecutionAttemptGuard;
+import com.lark.imcollab.harness.support.ExecutionInterruptedException;
+import com.lark.imcollab.harness.support.StaleArtifactCleanupService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -41,7 +45,10 @@ public class DocumentExecutionSupport {
     private final PlannerStateStore plannerStateStore;
     private final ObjectMapper objectMapper;
     private final TaskCancellationRegistry cancellationRegistry;
+    private final ExecutionAttemptGuard attemptGuard;
+    private final StaleArtifactCleanupService staleArtifactCleanupService;
 
+    @Autowired
     public DocumentExecutionSupport(
             TaskRepository taskRepository,
             TaskEventRepository eventRepository,
@@ -49,12 +56,27 @@ public class DocumentExecutionSupport {
             PlannerStateStore plannerStateStore,
             ObjectMapper objectMapper,
             TaskCancellationRegistry cancellationRegistry) {
+        this(taskRepository, eventRepository, artifactRepository, plannerStateStore, objectMapper, cancellationRegistry,
+                new ExecutionAttemptGuard(plannerStateStore), null);
+    }
+
+    public DocumentExecutionSupport(
+            TaskRepository taskRepository,
+            TaskEventRepository eventRepository,
+            ArtifactRepository artifactRepository,
+            PlannerStateStore plannerStateStore,
+            ObjectMapper objectMapper,
+            TaskCancellationRegistry cancellationRegistry,
+            ExecutionAttemptGuard attemptGuard,
+            StaleArtifactCleanupService staleArtifactCleanupService) {
         this.taskRepository = taskRepository;
         this.eventRepository = eventRepository;
         this.artifactRepository = artifactRepository;
         this.plannerStateStore = plannerStateStore;
         this.objectMapper = objectMapper;
         this.cancellationRegistry = cancellationRegistry;
+        this.attemptGuard = attemptGuard;
+        this.staleArtifactCleanupService = staleArtifactCleanupService;
     }
 
     public Task loadTask(String taskId) {
@@ -75,9 +97,6 @@ public class DocumentExecutionSupport {
             String documentId,
             String url
     ) {
-        if (cancellationRegistry.isCancelled(taskId)) {
-            return;
-        }
         Artifact artifact = Artifact.builder()
                 .artifactId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -91,8 +110,22 @@ public class DocumentExecutionSupport {
                 .createdBySystem(true)
                 .createdAt(Instant.now())
                 .build();
+        if (cancellationRegistry.isCancelled(taskId)) {
+            cleanupStaleArtifact(artifact, taskId);
+            return;
+        }
+        if (!attemptGuard.canCommit(taskId)) {
+            cleanupStaleArtifact(artifact, taskId);
+            return;
+        }
         artifactRepository.save(artifact);
         syncPlannerArtifact(artifact);
+    }
+
+    private void cleanupStaleArtifact(Artifact artifact, String taskId) {
+        if (staleArtifactCleanupService != null) {
+            staleArtifactCleanupService.cleanup(artifact, attemptGuard.currentAttemptId(), attemptGuard.currentPlanVersion(taskId));
+        }
     }
 
     public void publishEvent(String taskId, String stepId, TaskEventType type) {
@@ -101,6 +134,9 @@ public class DocumentExecutionSupport {
 
     public void publishEvent(String taskId, String stepId, TaskEventType type, String payload) {
         if (cancellationRegistry.isCancelled(taskId) && type != TaskEventType.TASK_ABORTED) {
+            return;
+        }
+        if (type != TaskEventType.TASK_ABORTED && !attemptGuard.canCommit(taskId)) {
             return;
         }
         TaskEvent event = TaskEvent.builder()
@@ -119,6 +155,9 @@ public class DocumentExecutionSupport {
         if (cancellationRegistry.isCancelled(taskId)) {
             return;
         }
+        if (!attemptGuard.canCommit(taskId)) {
+            return;
+        }
         TaskEvent event = TaskEvent.builder()
                 .eventId(UUID.randomUUID().toString())
                 .taskId(taskId)
@@ -132,10 +171,28 @@ public class DocumentExecutionSupport {
     }
 
     public <T> T execute(Supplier<T> executor) {
-        if (Thread.currentThread().isInterrupted()) {
-            throw new IllegalStateException("Task execution interrupted");
-        }
+        ensureExecutionCanContinue(null);
         return executor.get();
+    }
+
+    public void ensureExecutionCanContinue(String taskId) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new ExecutionInterruptedException("Task execution interrupted");
+        }
+        if (taskId != null && !taskId.isBlank() && cancellationRegistry.isCancelled(taskId)) {
+            throw new ExecutionInterruptedException("Task execution cancelled");
+        }
+        if (taskId != null && !taskId.isBlank() && !attemptGuard.canCommit(taskId)) {
+            throw new ExecutionInterruptedException("Task execution attempt is stale");
+        }
+    }
+
+    public boolean isCurrentExecution(String taskId) {
+        return taskId != null
+                && !taskId.isBlank()
+                && !Thread.currentThread().isInterrupted()
+                && !cancellationRegistry.isCancelled(taskId)
+                && attemptGuard.canCommit(taskId);
     }
 
     public String subtaskId(String taskId, String suffix) {
@@ -168,6 +225,10 @@ public class DocumentExecutionSupport {
                 .url(blankToNull(artifact.getExternalUrl()))
                 .preview(blankToNull(artifact.getContent()))
                 .status("CREATED")
+                .visibility("COMMITTED")
+                .cleanupStatus(null)
+                .planVersion(attemptGuard.currentPlanVersion(artifact.getTaskId()))
+                .executionAttemptId(attemptGuard.currentAttemptId())
                 .version(1)
                 .createdAt(artifact.getCreatedAt())
                 .updatedAt(artifact.getCreatedAt())
@@ -204,6 +265,8 @@ public class DocumentExecutionSupport {
                 .type(mapEventType(event.getType()))
                 .payloadJson(toPayloadJson(event.getPayload()))
                 .version(1)
+                .planVersion(attemptGuard.currentPlanVersion(event.getTaskId()))
+                .executionAttemptId(attemptGuard.currentAttemptId())
                 .createdAt(event.getOccurredAt())
                 .build());
 
@@ -341,6 +404,9 @@ public class DocumentExecutionSupport {
     }
 
     public void markTaskCompletedIfAllExecutableStepsDone(String taskId) {
+        if (!canMutateRuntime(taskId)) {
+            return;
+        }
         List<TaskStepRecord> executableSteps = plannerStateStore.findStepsByTaskId(taskId).stream()
                 .filter(Objects::nonNull)
                 .filter(this::isExecutableStep)
@@ -362,6 +428,9 @@ public class DocumentExecutionSupport {
     }
 
     private void markTaskFailed(String taskId, String stepId, String reason) {
+        if (!canMutateRuntime(taskId)) {
+            return;
+        }
         markStepFailed(taskId, stepId, reason);
         plannerStateStore.findTask(taskId).ifPresent(task -> {
             task.setStatus(TaskStatusEnum.FAILED);
@@ -402,6 +471,9 @@ public class DocumentExecutionSupport {
     }
 
     private void markTaskCancelled(String taskId, String reason) {
+        if (attemptGuard.currentAttemptId() != null && !attemptGuard.canCommit(taskId)) {
+            return;
+        }
         updatePrimaryDocStep(taskId, step -> {
             step.setStatus(StepStatusEnum.SKIPPED);
             step.setOutputSummary(blankToNull(reason));
@@ -501,6 +573,9 @@ public class DocumentExecutionSupport {
     }
 
     public void markSummaryStepRunning(String taskId) {
+        if (!canMutateRuntime(taskId)) {
+            return;
+        }
         findSummaryStep(taskId).ifPresent(step -> {
             if (step.getStartedAt() == null) {
                 step.setStartedAt(Instant.now());
@@ -521,6 +596,9 @@ public class DocumentExecutionSupport {
     }
 
     public void markSummaryStepCompleted(String taskId, String summary) {
+        if (!canMutateRuntime(taskId)) {
+            return;
+        }
         findSummaryStep(taskId).ifPresent(step -> {
             if (step.getStartedAt() == null) {
                 step.setStartedAt(Instant.now());
@@ -536,6 +614,9 @@ public class DocumentExecutionSupport {
     }
 
     public void markSummaryStepFailed(String taskId, String reason) {
+        if (!canMutateRuntime(taskId)) {
+            return;
+        }
         findSummaryStep(taskId).ifPresent(step -> {
             step.setStatus(StepStatusEnum.FAILED);
             step.setProgress(Math.min(step.getProgress(), 90));
@@ -597,6 +678,10 @@ public class DocumentExecutionSupport {
     private boolean isTerminalNonSuccess(TaskStepRecord step) {
         return step.getStatus() == StepStatusEnum.SKIPPED
                 || step.getStatus() == StepStatusEnum.SUPERSEDED;
+    }
+
+    private boolean canMutateRuntime(String taskId) {
+        return attemptGuard.canCommit(taskId);
     }
 
     private boolean allExecutableStepsFinished(List<TaskStepRecord> steps) {

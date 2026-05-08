@@ -101,18 +101,20 @@ public class TaskRuntimeViewAssembler {
 
     private TaskActionVO resolveActions(TaskRecord task, List<TaskStepRecord> steps) {
         TaskStatusEnum status = task == null ? null : task.getStatus();
-        boolean canCancel = status != TaskStatusEnum.COMPLETED && status != TaskStatusEnum.CANCELLED;
-        boolean canReplan = status == TaskStatusEnum.EXECUTING
-                || status == TaskStatusEnum.FAILED
+        boolean canCancel = status != TaskStatusEnum.COMPLETED
+                && status != TaskStatusEnum.CANCELLED
+                && status != TaskStatusEnum.REPLANNING;
+        boolean canReplan = status == TaskStatusEnum.FAILED
                 || status == TaskStatusEnum.WAITING_APPROVAL
                 || status == TaskStatusEnum.COMPLETED
                 || status == TaskStatusEnum.CANCELLED;
         boolean canResume = task != null && task.isNeedUserAction();
         boolean canInterrupt = status == TaskStatusEnum.EXECUTING
                 && defaultList(steps).stream().anyMatch(step -> step.getStatus() == StepStatusEnum.RUNNING);
+        boolean canInterruptReplan = canInterrupt;
         boolean canConfirm = status == TaskStatusEnum.WAITING_APPROVAL;
         boolean canRetry = status == TaskStatusEnum.FAILED;
-        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry);
+        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry, canInterruptReplan);
     }
 
     private String resolveEventMessage(TaskEventRecord event) {
@@ -127,6 +129,8 @@ public class TaskRuntimeViewAssembler {
             case INTENT_READY -> "任务意图已确认";
             case PLAN_READY -> "任务计划已生成";
             case PLAN_ADJUSTED -> "任务计划已调整";
+            case EXECUTION_INTERRUPTING -> "正在中断当前执行";
+            case STALE_ARTIFACT_DELETED -> "已清理迟到旧产物";
             case PLAN_APPROVAL_REQUIRED -> "等待用户确认计划";
             case PLAN_APPROVED -> "用户已确认开始执行";
             case STEP_READY -> "步骤已就绪";

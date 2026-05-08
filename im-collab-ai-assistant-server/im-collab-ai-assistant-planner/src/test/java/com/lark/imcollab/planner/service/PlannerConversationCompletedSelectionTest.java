@@ -620,7 +620,7 @@ class PlannerConversationCompletedSelectionTest {
         assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         assertThat(result.getIntakeState().getAssistantReply()).contains("当前执行还没成功中断").contains("无法中断当前任务");
         assertThat(executing.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
-        verify(sessionService, org.mockito.Mockito.times(2)).saveWithoutVersionChange(executing);
+        verify(sessionService, org.mockito.Mockito.times(3)).saveWithoutVersionChange(executing);
         verify(resolver, never()).resolveCompletedCandidates(context);
         verify(intakeService).decide(executing, "把刚才那个 PPT 第二页标题改一下", null, true);
         verify(graphRunner, never()).run(any(), any(), any(), any(), any());

@@ -115,6 +115,55 @@ public class PlannerCommandApplicationService {
         return session;
     }
 
+    public PlanTaskSession interruptReplan(
+            String taskId,
+            String feedback,
+            WorkspaceContext workspaceContext,
+            boolean autoExecute
+    ) {
+        PlanTaskSession current = sessionService.get(taskId);
+        if (current.getPlanningPhase() != PlanningPhaseEnum.EXECUTING) {
+            return replan(taskId, feedback, null, null, workspaceContext);
+        }
+        taskRuntimeService.appendUserIntervention(taskId, feedback);
+        current.setPlanningPhase(PlanningPhaseEnum.INTERRUPTING);
+        current.setTransitionReason("Interrupt current execution for plan adjustment");
+        sessionService.save(current);
+        sessionService.publishEvent(taskId, "INTERRUPTING");
+        taskRuntimeService.projectPhaseTransition(
+                taskId,
+                PlanningPhaseEnum.INTERRUPTING,
+                TaskEventTypeEnum.EXECUTION_INTERRUPTING
+        );
+
+        taskCommandFacade.interruptExecution(taskId);
+
+        PlanTaskSession replanning = sessionService.get(taskId);
+        replanning.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
+        replanning.setActiveExecutionAttemptId(null);
+        replanning.setTransitionReason("Replanning after execution interrupt");
+        sessionService.save(replanning);
+        sessionService.publishEvent(taskId, "REPLANNING");
+        taskRuntimeService.projectPhaseTransition(
+                taskId,
+                PlanningPhaseEnum.REPLANNING,
+                TaskEventTypeEnum.PLAN_ADJUSTED
+        );
+
+        PlanTaskSession updated = graphRunner.run(
+                new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "interrupt execution and replan"),
+                taskId,
+                feedback,
+                workspaceContext,
+                feedback
+        );
+        taskBridgeService.ensureTask(updated);
+        if (autoExecute && updated != null && updated.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
+            return confirmExecution(taskId, updated);
+        }
+        return updated;
+    }
+
     private String appendCommandHints(String feedback, String artifactPolicy, String targetArtifactId) {
         StringBuilder builder = new StringBuilder(feedback == null ? "" : feedback.trim());
         if (artifactPolicy != null && !artifactPolicy.isBlank()) {

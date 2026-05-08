@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -186,6 +187,54 @@ class PlannerCommandApplicationServiceTest {
                 eq(expectedInstruction)
         );
         verify(taskBridgeService).ensureTask(completed);
+    }
+
+    @Test
+    void interruptReplanSupersedesExecutionWithoutMarkingTaskAborted() {
+        PlanTaskSession executing = new PlanTaskSession();
+        executing.setTaskId("task-1");
+        executing.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        executing.setActiveExecutionAttemptId("attempt-old");
+        executing.setVersion(3);
+        PlanTaskSession replanning = new PlanTaskSession();
+        replanning.setTaskId("task-1");
+        replanning.setPlanningPhase(PlanningPhaseEnum.INTERRUPTING);
+        replanning.setActiveExecutionAttemptId("attempt-old");
+        replanning.setVersion(4);
+        PlanTaskSession ready = new PlanTaskSession();
+        ready.setTaskId("task-1");
+        ready.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        ready.setVersion(5);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().senderOpenId("ou-user").build();
+
+        when(sessionService.get("task-1")).thenReturn(executing, replanning);
+        when(graphRunner.run(
+                eq(new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "interrupt execution and replan")),
+                eq("task-1"),
+                eq("增加一页风险分析"),
+                eq(workspaceContext),
+                eq("增加一页风险分析")))
+                .thenReturn(ready);
+
+        PlanTaskSession result = service.interruptReplan("task-1", "增加一页风险分析", workspaceContext, false);
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(ready);
+        verify(taskRuntimeService).appendUserIntervention("task-1", "增加一页风险分析");
+        verify(taskRuntimeService).projectPhaseTransition(
+                "task-1",
+                PlanningPhaseEnum.INTERRUPTING,
+                TaskEventTypeEnum.EXECUTION_INTERRUPTING
+        );
+        verify(taskRuntimeService).projectPhaseTransition(
+                "task-1",
+                PlanningPhaseEnum.REPLANNING,
+                TaskEventTypeEnum.PLAN_ADJUSTED
+        );
+        verify(taskCommandFacade).interruptExecution("task-1");
+        verify(taskCommandFacade, never()).cancelExecution("task-1");
+        verify(sessionService, never()).markAborted(any(), any());
+        verify(sessionService, times(2)).save(any(PlanTaskSession.class));
+        verify(taskBridgeService).ensureTask(ready);
     }
 
     @Test

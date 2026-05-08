@@ -153,6 +153,8 @@ public class PlanQualityService {
         session.setExecutionContract(contract);
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
         session.setAborted(false);
+        session.setActiveExecutionAttemptId(null);
+        session.setPlanVersion(session.getPlanVersion() + 1);
         session.setTransitionReason("Plan generated");
         return session;
     }
@@ -192,6 +194,8 @@ public class PlanQualityService {
         session.setExecutionContract(contract);
         session.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
         session.setAborted(false);
+        session.setActiveExecutionAttemptId(null);
+        session.setPlanVersion(session.getPlanVersion() + 1);
         session.setTransitionReason(hasText(reason) ? reason : "Plan adjusted");
         return session;
     }

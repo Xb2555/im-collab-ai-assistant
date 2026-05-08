@@ -250,6 +250,72 @@ class PlannerControllerCommandTest {
     }
 
     @Test
+    void replanDuringExecutingRequiresInterruptReplanCommand() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        session.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        session.setVersion(1);
+        when(repository.findSession("task-1")).thenReturn(Optional.of(session));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.EXECUTING)));
+
+        PlanCommandRequest request = new PlanCommandRequest();
+        request.setAction("REPLAN");
+        request.setVersion(1);
+        request.setFeedback("加一页风险分析");
+
+        BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
+
+        assertThat(response.getCode()).isEqualTo(50001);
+        assertThat(response.getMessage()).contains("INTERRUPT_REPLAN");
+        verify(plannerCommandApplicationService, never()).replan(anyString(), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void interruptReplanCommandKeepsOriginalTaskIdAndPassesAutoExecute() {
+        PlanTaskSession executing = new PlanTaskSession();
+        executing.setTaskId("task-1");
+        executing.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        executing.setVersion(1);
+        PlanTaskSession ready = new PlanTaskSession();
+        ready.setTaskId("task-1");
+        ready.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        ready.setVersion(2);
+
+        when(repository.findSession("task-1")).thenReturn(Optional.of(executing));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.EXECUTING)));
+        when(plannerCommandApplicationService.interruptReplan(
+                eq("task-1"),
+                eq("加一页风险分析"),
+                argThat(context -> context != null
+                        && "ou-user".equals(context.getSenderOpenId())
+                        && "GUI".equals(context.getInputSource())),
+                eq(true)
+        )).thenReturn(ready);
+        when(plannerViewAssembler.toPlanPreview(ready)).thenReturn(new PlanPreviewVO(
+                "task-1", 2, "EXECUTING", "title", "summary",
+                java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+        ));
+
+        PlanCommandRequest request = new PlanCommandRequest();
+        request.setAction("INTERRUPT_REPLAN");
+        request.setVersion(1);
+        request.setFeedback("加一页风险分析");
+        request.setAutoExecute(true);
+
+        BaseResponse<PlanPreviewVO> response = controller.command("task-1", request, AUTHORIZATION);
+
+        assertThat(response.getCode()).isZero();
+        verify(plannerCommandApplicationService).interruptReplan(
+                eq("task-1"),
+                eq("加一页风险分析"),
+                argThat(context -> context != null
+                        && "ou-user".equals(context.getSenderOpenId())
+                        && "GUI".equals(context.getInputSource())),
+                eq(true)
+        );
+    }
+
+    @Test
     void resumeCommandPassesFeedbackThroughPlannerResumePath() {
         PlanTaskSession asking = new PlanTaskSession();
         asking.setTaskId("task-1");

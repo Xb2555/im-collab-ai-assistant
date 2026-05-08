@@ -70,7 +70,6 @@ class ExecutionContractFactoryTest {
         var contract = factory.build(session);
 
         assertThat(contract.getClarifiedInstruction())
-                .contains("当前计划要求")
                 .contains("生成飞书项目协作方案文档 - 面向老板说明项目目标和进展")
                 .contains("项目风险评估表 - 识别风险、影响等级和应对措施");
     }

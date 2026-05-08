@@ -20,8 +20,11 @@ import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.port.ArtifactRepository;
 import com.lark.imcollab.common.port.TaskEventRepository;
 import com.lark.imcollab.common.port.TaskRepository;
+import com.lark.imcollab.common.service.ExecutionAttemptContext;
 import com.lark.imcollab.common.service.TaskCancellationRegistry;
 import com.lark.imcollab.harness.document.support.DocumentExecutionSupport;
+import com.lark.imcollab.harness.support.ExecutionAttemptGuard;
+import com.lark.imcollab.harness.support.StaleArtifactCleanupService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +36,10 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 class MixedExecutionRuntimeTest {
 
@@ -201,6 +208,68 @@ class MixedExecutionRuntimeTest {
                 .containsExactly("https://example.feishu.cn/docx/doc-1");
     }
 
+    @Test
+    void staleAttemptArtifactIsNotCommittedAndTriggersCleanup() {
+        InMemoryRuntime runtime = mixedRuntime();
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        session.setPlanVersion(2);
+        session.setActiveExecutionAttemptId("attempt-new");
+        runtime.sessions.put("task-1", session);
+        StaleArtifactCleanupService cleanupService = mock(StaleArtifactCleanupService.class);
+        PresentationExecutionSupport presentationSupport = new PresentationExecutionSupport(
+                runtime.taskRepository,
+                runtime.eventRepository,
+                runtime.artifactRepository,
+                runtime.stateStore,
+                new ObjectMapper(),
+                cancellationRegistry,
+                new ExecutionAttemptGuard(runtime.stateStore),
+                cleanupService);
+
+        try (ExecutionAttemptContext.Scope ignored = ExecutionAttemptContext.open("task-1", "attempt-old")) {
+            presentationSupport.saveArtifact("task-1", "ppt-step", "旧计划 PPT", "stale", "slides-old",
+                    "https://example.feishu.cn/slides/slides-old");
+            presentationSupport.publishEvent("task-1", "ppt-step", TaskEventType.STEP_COMPLETED, "old done");
+        }
+
+        assertThat(runtime.artifacts).isEmpty();
+        assertThat(runtime.artifactRecords).isEmpty();
+        assertThat(runtime.runtimeEvents).isEmpty();
+        verify(cleanupService).cleanup(any(Artifact.class), eq("attempt-old"), eq(2));
+    }
+
+    @Test
+    void staleDocumentAttemptIsRejectedWhenInterruptReplanClearsActiveAttempt() {
+        InMemoryRuntime runtime = mixedRuntime();
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        session.setPlanVersion(2);
+        session.setActiveExecutionAttemptId(null);
+        runtime.sessions.put("task-1", session);
+        StaleArtifactCleanupService cleanupService = mock(StaleArtifactCleanupService.class);
+        DocumentExecutionSupport documentSupport = new DocumentExecutionSupport(
+                runtime.taskRepository,
+                runtime.eventRepository,
+                runtime.artifactRepository,
+                runtime.stateStore,
+                new ObjectMapper(),
+                cancellationRegistry,
+                new ExecutionAttemptGuard(runtime.stateStore),
+                cleanupService);
+
+        try (ExecutionAttemptContext.Scope ignored = ExecutionAttemptContext.open("task-1", "attempt-old")) {
+            documentSupport.saveArtifact("task-1", "doc-step", ArtifactType.DOC_LINK, "旧计划文档", null, "doc-old",
+                    "https://example.feishu.cn/docx/doc-old");
+            documentSupport.publishEvent("task-1", "doc-step", TaskEventType.STEP_COMPLETED, "old done");
+        }
+
+        assertThat(runtime.artifacts).isEmpty();
+        assertThat(runtime.artifactRecords).isEmpty();
+        assertThat(runtime.runtimeEvents).isEmpty();
+        verify(cleanupService).cleanup(any(Artifact.class), eq("attempt-old"), eq(2));
+    }
+
     private InMemoryRuntime mixedRuntime() {
         InMemoryRuntime runtime = new InMemoryRuntime();
         runtime.tasks.put("task-1", Task.builder().taskId("task-1").status(TaskStatus.EXECUTING).build());
@@ -232,6 +301,7 @@ class MixedExecutionRuntimeTest {
     private static class InMemoryRuntime {
 
         private final Map<String, Task> tasks = new HashMap<>();
+        private final Map<String, PlanTaskSession> sessions = new HashMap<>();
         private final Map<String, TaskRecord> taskRecords = new HashMap<>();
         private final Map<String, TaskStepRecord> steps = new HashMap<>();
         private final Map<String, ArtifactRecord> artifactRecords = new HashMap<>();
@@ -321,7 +391,7 @@ class MixedExecutionRuntimeTest {
 
         @Override
         public Optional<PlanTaskSession> findSession(String taskId) {
-            return Optional.empty();
+            return Optional.ofNullable(runtime.sessions.get(taskId));
         }
 
         @Override
