@@ -53,8 +53,19 @@ public class PlannerExecutionReviewService {
 
     public void reviewAndNotify(String taskId) {
         PlanTaskSession session = sessionService.get(taskId);
+        if (!isReviewableExecutingSession(session)) {
+            log.info("Skip execution review because session already left executing: taskId={}, phase={}",
+                    taskId, session == null ? null : session.getPlanningPhase());
+            return;
+        }
         TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(taskId);
         if (isWaitingForHumanApproval(snapshot)) {
+            session = sessionService.get(taskId);
+            if (!isReviewableExecutingSession(session)) {
+                log.info("Skip human-review projection because session already changed: taskId={}, phase={}",
+                        taskId, session == null ? null : session.getPlanningPhase());
+                return;
+            }
             String reason = latestApprovalReason(taskId);
             TaskResultEvaluation evaluation = humanReviewEvaluation(taskId, reason);
             stateStore.saveEvaluation(evaluation);
@@ -63,6 +74,12 @@ public class PlannerExecutionReviewService {
             return;
         }
         if (hasUnfinishedSteps(snapshot)) {
+            session = sessionService.get(taskId);
+            if (!isReviewableExecutingSession(session)) {
+                log.info("Skip unfinished-step failure projection because session already changed: taskId={}, phase={}",
+                        taskId, session == null ? null : session.getPlanningPhase());
+                return;
+            }
             String reason = unfinishedStepReason(snapshot);
             markRuntimeFailed(snapshot, session, reason);
             updateSessionPhase(session, snapshot, null, reason);
@@ -242,6 +259,10 @@ public class PlannerExecutionReviewService {
             return "执行链路尚未完成全部计划步骤。";
         }
         return "当前执行链路只完成了部分步骤，剩余未完成：" + String.join("、", remaining);
+    }
+
+    private boolean isReviewableExecutingSession(PlanTaskSession session) {
+        return session != null && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING;
     }
 
     private void markRuntimeFailed(TaskRuntimeSnapshot snapshot, PlanTaskSession session, String reason) {

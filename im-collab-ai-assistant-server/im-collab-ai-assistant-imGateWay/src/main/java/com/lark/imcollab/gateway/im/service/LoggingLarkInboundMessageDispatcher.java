@@ -174,19 +174,18 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         }
         if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
                 && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING
-                && session.getIntakeState() != null
-                && session.getIntakeState().getAdjustmentTarget() == AdjustmentTargetEnum.UNKNOWN
                 && hasAssistantReply(session)) {
             replyText(message, session,
                     withStatus(replyFormatter.assistantReply(session.getIntakeState().getAssistantReply()), snapshot(session)),
-                    "plan adjustment clarification during execution");
+                    session.getIntakeState() != null
+                            && session.getIntakeState().getAdjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                            ? "completed artifact edit blocked during execution"
+                            : "plan adjustment reply during execution");
             return;
         }
         if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
                 && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
-            String confirmation = replyFormatter.executionReplannedAndRestarted(
-                    session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply());
-            replyText(message, session, withStatus(confirmation, snapshot(session)), "plan adjustment resumed execution");
+            replyText(message, session, replyFormatter.status(snapshot(session)), "plan adjustment status during execution");
             return;
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.FAILED) {

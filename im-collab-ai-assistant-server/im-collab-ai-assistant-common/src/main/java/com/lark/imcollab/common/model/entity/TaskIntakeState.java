@@ -1,6 +1,7 @@
 package com.lark.imcollab.common.model.entity;
 
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
+import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
@@ -40,6 +41,9 @@ public class TaskIntakeState implements Serializable {
 
     @Schema(description = "调整目标语义，例如 RUNNING_PLAN / READY_PLAN / COMPLETED_ARTIFACT / UNKNOWN")
     private AdjustmentTargetEnum adjustmentTarget;
+
+    @Schema(description = "当前 ASK_USER 等待的交互类型")
+    private PendingInteractionTypeEnum pendingInteractionType;
 
     @Schema(description = "IM 多任务选择挂起态")
     private PendingTaskSelection pendingTaskSelection;

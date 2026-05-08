@@ -221,12 +221,6 @@ public class LarkIMTaskReplyFormatter {
         return startsWithIcon(trimmed) ? trimmed : "💬 " + trimmed;
     }
 
-    public String executionReplannedAndRestarted(String detail) {
-        StringBuilder builder = new StringBuilder("💬 已中断当前执行，并按新计划重新开始执行。");
-        appendDetail(builder, detail, "已中断当前执行", "并按新计划", "重新开始执行");
-        return builder.toString();
-    }
-
     public String completedArtifactEditApplied(String detail) {
         String noun = completedArtifactNoun(detail);
         String phrase = "按现有" + noun + "修改处理";

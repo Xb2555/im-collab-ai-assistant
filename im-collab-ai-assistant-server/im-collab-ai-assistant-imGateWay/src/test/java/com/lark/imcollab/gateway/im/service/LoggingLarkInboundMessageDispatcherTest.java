@@ -176,37 +176,34 @@ class LoggingLarkInboundMessageDispatcherTest {
     }
 
     @Test
-    void executingPlanAdjustmentRepliesRestartedExecutionAndStatus() {
-        PlanTaskSession executing = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.EXECUTING);
-        executing.getIntakeState().setAssistantReply("已中断当前执行，并按新计划重新开始执行。");
+    void planAdjustmentPlanReadyRepliesUpdatedPlanInsteadOfRestartedExecution() {
+        PlanTaskSession executing = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.PLAN_READY);
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(executing);
-        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshot(TaskStatusEnum.EXECUTING));
 
         dispatcher.dispatch(message("把第三页改一下并继续跑"));
 
         assertThat(sentPrivateTexts(replyTool)).singleElement()
                 .satisfies(reply -> assertThat(reply)
-                        .contains("已中断当前执行，并按新计划重新开始执行")
-                        .contains("任务状态：正在执行")
-                        .contains("步骤进度：0/2"));
+                        .contains("计划已更新", "你确认没问题我就继续推进")
+                        .doesNotContain("重新开始执行", "任务状态：正在执行"));
     }
 
     @Test
-    void executingPlanAdjustmentWithUnknownTargetRepliesClarificationInsteadOfRestart() {
+    void executingCompletedArtifactAdjustmentRepliesBlockedMessageInsteadOfRestart() {
         PlanTaskSession executing = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.EXECUTING);
-        executing.getIntakeState().setAdjustmentTarget(AdjustmentTargetEnum.UNKNOWN);
-        executing.getIntakeState().setAssistantReply("你是要中断当前执行并重规划，还是修改已经生成的文档或 PPT？");
+        executing.getIntakeState().setAdjustmentTarget(AdjustmentTargetEnum.COMPLETED_ARTIFACT);
+        executing.getIntakeState().setAssistantReply("当前有任务正在执行，暂不支持边执行边修改已有产物。你可以先中断当前任务并重规划，或者等当前任务完成后再修改已有产物。");
         when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(executing);
         when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshot(TaskStatusEnum.EXECUTING));
 
-        dispatcher.dispatch(message("标题改成 78787"));
+        dispatcher.dispatch(message("把刚生成的 PPT 第二页标题改一下"));
 
         assertThat(sentPrivateTexts(replyTool)).singleElement()
                 .satisfies(reply -> assertThat(reply)
-                        .contains("你是要中断当前执行并重规划")
-                        .doesNotContain("已中断当前执行，并按新计划重新开始执行")
+                        .contains("暂不支持边执行边修改已有产物")
+                        .doesNotContain("重新开始执行")
                         .contains("任务状态：正在执行"));
     }
 

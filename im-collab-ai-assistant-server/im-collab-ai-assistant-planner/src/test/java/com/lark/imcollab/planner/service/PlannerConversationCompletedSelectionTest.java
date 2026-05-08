@@ -718,7 +718,7 @@ class PlannerConversationCompletedSelectionTest {
     }
 
     @Test
-    void executingSessionWithCompletedArtifactTargetRoutesToCompletedArtifactAdjustment() {
+    void executingSessionWithCompletedArtifactTargetIsRejectedDuringExecution() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
@@ -735,10 +735,6 @@ class PlannerConversationCompletedSelectionTest {
                 .taskId("running-task")
                 .planningPhase(PlanningPhaseEnum.EXECUTING)
                 .build();
-        PlanTaskSession completed = PlanTaskSession.builder()
-                .taskId("task-1")
-                .planningPhase(PlanningPhaseEnum.COMPLETED)
-                .build();
         when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("running-task", true, "LARK_GROUP_CHAT:chat-1:thread-1"));
         when(sessionService.get("running-task")).thenReturn(executing);
         when(intakeService.decide(executing, "把刚生成的 PPT 第二页标题改一下", null, true))
@@ -750,9 +746,6 @@ class PlannerConversationCompletedSelectionTest {
                         null,
                         AdjustmentTargetEnum.COMPLETED_ARTIFACT
                 ));
-        when(resolver.resolveCompletedCandidates(context)).thenReturn(List.of(candidate("task-1", "采购评审 PPT")));
-        when(graphRunner.run(any(), eq("task-1"), eq("把刚生成的 PPT 第二页标题改一下"), eq(context), isNull()))
-                .thenReturn(completed);
         PlannerConversationService service = new PlannerConversationService(
                 resolver,
                 intakeService,
@@ -764,9 +757,13 @@ class PlannerConversationCompletedSelectionTest {
 
         PlanTaskSession result = service.handlePlanRequest("把刚生成的 PPT 第二页标题改一下", context, null, null);
 
-        assertThat(result).isSameAs(completed);
-        verify(graphRunner).run(any(), eq("task-1"), eq("把刚生成的 PPT 第二页标题改一下"), eq(context), isNull());
-        verify(taskBridgeService).ensureTask(completed);
+        assertThat(result).isSameAs(executing);
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("暂不支持边执行边修改已有产物");
+        assertThat(result.getIntakeState().getAdjustmentTarget()).isEqualTo(AdjustmentTargetEnum.COMPLETED_ARTIFACT);
+        verify(resolver, never()).resolveCompletedCandidates(context);
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+        verify(taskBridgeService, never()).ensureTask(any());
     }
 
     private PendingTaskCandidate candidate(String taskId, String title) {

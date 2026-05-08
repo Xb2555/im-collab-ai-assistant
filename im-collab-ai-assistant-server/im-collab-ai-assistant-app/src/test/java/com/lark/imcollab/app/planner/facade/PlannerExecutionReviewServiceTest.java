@@ -133,6 +133,51 @@ class PlannerExecutionReviewServiceTest {
     }
 
     @Test
+    void skipsUnfinishedStepFailureProjectionWhenSessionAlreadyLeftExecuting() {
+        PlanTaskSession executing = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .version(4)
+                .build();
+        PlanTaskSession replanning = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.REPLANNING)
+                .version(4)
+                .build();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .version(4)
+                .build();
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(task)
+                .steps(List.of(
+                        TaskStepRecord.builder()
+                                .stepId("card-001")
+                                .name("生成技术方案文档")
+                                .status(StepStatusEnum.COMPLETED)
+                                .build(),
+                        TaskStepRecord.builder()
+                                .stepId("card-002")
+                                .name("生成项目进展摘要")
+                                .status(StepStatusEnum.READY)
+                                .build()
+                ))
+                .build();
+        when(sessionService.get("task-1")).thenReturn(executing, replanning);
+        when(taskRuntimeService.getSnapshot("task-1")).thenReturn(snapshot);
+
+        service.reviewAndNotify("task-1");
+
+        verify(stateStore, never()).saveTask(org.mockito.ArgumentMatchers.any());
+        verify(stateStore, never()).appendRuntimeEvent(org.mockito.ArgumentMatchers.any());
+        verify(sessionService, never()).save(org.mockito.ArgumentMatchers.any());
+        verify(sessionService, never()).publishEvent(org.mockito.ArgumentMatchers.eq("task-1"), org.mockito.ArgumentMatchers.any());
+        verify(taskRuntimeService, never()).syncTaskState(org.mockito.ArgumentMatchers.eq("task-1"), org.mockito.ArgumentMatchers.any());
+        verify(notificationFacade, never()).notifyExecutionReviewed(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void keepsRuntimeWaitingApprovalWhenHarnessRequestsHumanReview() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")

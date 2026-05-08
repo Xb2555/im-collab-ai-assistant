@@ -3,18 +3,23 @@ package com.lark.imcollab.planner.service;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
+import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.planner.supervisor.PlannerExecutionTool;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import com.lark.imcollab.planner.supervisor.PlannerToolResult;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -327,7 +332,7 @@ class PlannerConversationCancelTests {
     }
 
     @Test
-    void executingPlanAdjustmentInterruptsReplansAndRestartsExecutionForImConversation() {
+    void executingPlanAdjustmentInterruptsAndReturnsPlanReadyForImConversation() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
@@ -363,27 +368,19 @@ class PlannerConversationCancelTests {
                 .planningPhase(PlanningPhaseEnum.INTERRUPTING)
                 .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
                 .build();
-        PlanTaskSession restarted = PlanTaskSession.builder()
-                .taskId("task-1")
-                .planningPhase(PlanningPhaseEnum.EXECUTING)
-                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
-                .build();
-
         when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
-        when(sessionService.get("task-1")).thenReturn(executing, replanning, restarted);
+        when(sessionService.get("task-1")).thenReturn(executing, replanning);
         when(intakeService.decide(executing, "把第三页改一下并继续跑", null, true))
                 .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, "把第三页改一下并继续跑"));
         when(executionTool.interruptExecution("task-1", "interrupt execution for plan adjustment"))
                 .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.INTERRUPTING, "execution interrupted", null));
         when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("把第三页改一下并继续跑"), eq(workspaceContext), eq("把第三页改一下并继续跑")))
                 .thenReturn(replanned);
-        when(executionTool.confirmExecution("task-1"))
-                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.EXECUTING, "execution started", null));
 
         PlanTaskSession result = service.handlePlanRequest("把第三页改一下并继续跑", workspaceContext, null, null);
 
-        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
-        assertThat(result.getIntakeState().getAssistantReply()).contains("已中断当前执行", "重新开始执行");
+        assertThat(result).isSameAs(replanned);
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.PLAN_READY);
         verify(taskRuntimeService).appendUserIntervention("task-1", "把第三页改一下并继续跑");
         verify(executionTool).interruptExecution("task-1", "interrupt execution for plan adjustment");
         verify(taskRuntimeService).projectPhaseTransition(
@@ -397,7 +394,81 @@ class PlannerConversationCancelTests {
                 com.lark.imcollab.common.model.enums.TaskEventTypeEnum.PLAN_ADJUSTED
         );
         verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("把第三页改一下并继续跑"), eq(workspaceContext), eq("把第三页改一下并继续跑"));
-        verify(executionTool).confirmExecution("task-1");
+        verify(executionTool, never()).confirmExecution(any());
+    }
+
+    @Test
+    void executingPlanAdjustmentRetriesAfterSessionStateConflictDuringInterruptFlow() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerExecutionTool executionTool = mock(PlannerExecutionTool.class);
+        TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                executionTool,
+                taskRuntimeService
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_GROUP")
+                .build();
+        PlanTaskSession executing = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build();
+        PlanTaskSession refreshed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build();
+        PlanTaskSession replanning = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .build();
+        PlanTaskSession replanned = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
+        when(sessionService.get("task-1")).thenReturn(executing, refreshed, replanning);
+        when(intakeService.decide(executing, "帮我补一节关于 ggbond 的内容", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "帮我补一节关于 ggbond 的内容",
+                        "adjust current running plan",
+                        null,
+                        null,
+                        AdjustmentTargetEnum.RUNNING_PLAN
+                ));
+        AtomicInteger saveAttempts = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (saveAttempts.getAndIncrement() == 0) {
+                throw new VersionConflictException("Session state conflict: taskId=task-1, expectedStateRevision=1, actualStateRevision=2");
+            }
+            return invocation.getArgument(0);
+        }).when(sessionService).saveWithoutVersionChange(any(PlanTaskSession.class));
+        when(executionTool.interruptExecution("task-1", "interrupt execution for plan adjustment"))
+                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.INTERRUPTING, "execution interrupted", null));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq("帮我补一节关于 ggbond 的内容"), eq(workspaceContext), eq("帮我补一节关于 ggbond 的内容")))
+                .thenReturn(replanned);
+
+        PlanTaskSession result = service.handlePlanRequest("帮我补一节关于 ggbond 的内容", workspaceContext, null, null);
+
+        assertThat(result).isSameAs(replanned);
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.PLAN_READY);
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"),
+                eq("帮我补一节关于 ggbond 的内容"), eq(workspaceContext), eq("帮我补一节关于 ggbond 的内容"));
+        verify(executionTool, never()).confirmExecution(any());
     }
 
     @Test
@@ -446,7 +517,7 @@ class PlannerConversationCancelTests {
     }
 
     @Test
-    void ambiguousExecutingPlanAdjustmentAsksForClarificationInsteadOfInterrupting() {
+    void ambiguousExecutingPlanAdjustmentInterruptsAndReplansCurrentTask() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
@@ -485,21 +556,200 @@ class PlannerConversationCancelTests {
                         null,
                         AdjustmentTargetEnum.UNKNOWN
                 ));
-        when(resolver.resolveCompletedCandidates(workspaceContext))
-                .thenReturn(java.util.List.of(com.lark.imcollab.common.model.entity.PendingTaskCandidate.builder()
-                        .taskId("task-done")
-                        .title("旧版测试文档")
-                        .build()));
+        PlanTaskSession replanning = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.INTERRUPTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .build();
+        PlanTaskSession replanned = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(sessionService.get("task-1")).thenReturn(executing, replanning);
+        when(executionTool.interruptExecution("task-1", "interrupt execution for plan adjustment"))
+                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.INTERRUPTING, "execution interrupted", null));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("标题改成 78787"), eq(workspaceContext), eq("标题改成 78787")))
+                .thenReturn(replanned);
 
         PlanTaskSession result = service.handlePlanRequest("标题改成 78787", workspaceContext, null, null);
 
-        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
-        assertThat(result.getIntakeState().getAssistantReply())
-                .contains("你是要中断当前执行并重规划")
-                .contains("还是修改已经生成的文档或 PPT");
-        assertThat(result.getIntakeState().getAdjustmentTarget()).isEqualTo(AdjustmentTargetEnum.UNKNOWN);
-        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
-        verify(executionTool, never()).interruptExecution(any(), any());
+        assertThat(result).isSameAs(replanned);
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.PLAN_READY);
+        verify(graphRunner).run(any(), eq("task-1"), eq("标题改成 78787"), eq(workspaceContext), eq("标题改成 78787"));
+        verify(executionTool).interruptExecution("task-1", "interrupt execution for plan adjustment");
         verify(executionTool, never()).confirmExecution(any());
+    }
+
+    @Test
+    void interruptOnlyAdjustmentThatReturnsAskUserMarksExecutingPlanAdjustmentPendingType() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerExecutionTool executionTool = mock(PlannerExecutionTool.class);
+        TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                executionTool,
+                taskRuntimeService
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_GROUP")
+                .build();
+        PlanTaskSession executing = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build();
+        PlanTaskSession replanning = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.INTERRUPTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .build();
+        PlanTaskSession askUser = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .assistantReply("请问您希望如何调整计划？")
+                        .build())
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
+        when(sessionService.get("task-1")).thenReturn(executing, replanning);
+        when(intakeService.decide(executing, "中断一下", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "中断一下",
+                        "interrupt current execution",
+                        null,
+                        null,
+                        AdjustmentTargetEnum.RUNNING_PLAN
+                ));
+        when(executionTool.interruptExecution("task-1", "interrupt execution for plan adjustment"))
+                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.INTERRUPTING, "execution interrupted", null));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("中断一下"), eq(workspaceContext), eq("中断一下")))
+                .thenReturn(askUser);
+
+        PlanTaskSession result = service.handlePlanRequest("中断一下", workspaceContext, null, null);
+
+        assertThat(result).isSameAs(askUser);
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
+        assertThat(result.getIntakeState().getPendingInteractionType()).isEqualTo(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
+        verify(executionTool).interruptExecution("task-1", "interrupt execution for plan adjustment");
+        verify(executionTool, never()).confirmExecution(any());
+    }
+
+    @Test
+    void askUserExecutingPlanAdjustmentTreatsConcreteEditAsClarificationReplyInsteadOfCompletedTaskSelection() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_GROUP")
+                .build();
+        PlanTaskSession askUser = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .pendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT)
+                        .assistantReply("请问您希望如何调整计划？")
+                        .build())
+                .build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
+        when(sessionService.get("task-1")).thenReturn(askUser);
+        when(intakeService.decide(askUser, "帮我把标题改成9191", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "帮我把标题改成9191",
+                        "completed artifact edit",
+                        null,
+                        null,
+                        AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                ));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("帮我把标题改成9191"), eq(workspaceContext), eq(null)))
+                .thenReturn(ready);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("帮我把标题改成9191", workspaceContext, null, null);
+
+        assertThat(result).isSameAs(ready);
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("帮我把标题改成9191"), eq(workspaceContext), eq(null));
+        verify(taskBridgeService).ensureTask(ready);
+        verify(resolver, never()).resolveCompletedCandidates(workspaceContext);
+    }
+
+    @Test
+    void askUserExecutingPlanAdjustmentDoesNotRouteNumericReplyToCompletedTaskSelection() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_GROUP")
+                .build();
+        PlanTaskSession askUser = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .pendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT)
+                        .assistantReply("请问您希望如何调整计划？")
+                        .build())
+                .build();
+        PlanTaskSession stillAskUser = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
+        when(sessionService.get("task-1")).thenReturn(askUser);
+        when(intakeService.decide(askUser, "1", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "1",
+                        "completed artifact edit selection candidate",
+                        null,
+                        null,
+                        AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                ));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("1"), eq(workspaceContext), eq(null)))
+                .thenReturn(stillAskUser);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("1", workspaceContext, null, null);
+
+        assertThat(result).isSameAs(stillAskUser);
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("1"), eq(workspaceContext), eq(null));
+        verify(resolver, never()).resolveCompletedCandidates(workspaceContext);
     }
 }
