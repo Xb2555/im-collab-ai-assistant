@@ -52,6 +52,14 @@ public class DocumentWorkflowNodes {
             "零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
             "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"
     };
+    private static final Set<String> SUPPORTED_MERMAID_HEADERS = Set.of(
+            "flowchart",
+            "graph",
+            "sequencediagram",
+            "statediagram",
+            "statediagram-v2",
+            "erdiagram"
+    );
     private static final Pattern BODY_HEADING_PATTERN = Pattern.compile("(?m)^#+\\s*");
     private static final Pattern BODY_WHITESPACE_PATTERN = Pattern.compile("\\s+");
 
@@ -501,6 +509,8 @@ public class DocumentWorkflowNodes {
                 1. 如果图类型是 flowchart，请优先使用 TB 方向。
                 2. 如果图类型是 sequenceDiagram，请显式声明 participant，并用箭头表达调用方向。
                 3. 节点命名必须贴合当前文档主题，不要输出泛泛的 A/B/C 或 Node1/Node2。
+                4. 只允许使用以下 Mermaid 顶层图类型：flowchart、graph、sequenceDiagram、stateDiagram-v2、erDiagram。
+                5. 严禁输出 usecaseDiagram、journey、gantt、classDiagram、pie、mindmap、timeline 或其他未列出的图类型。
                 """.formatted(
                 requiredHeader,
                 diagramPlan,
@@ -513,11 +523,8 @@ public class DocumentWorkflowNodes {
     }
 
     private String coerceMermaid(String text, String diagramPlan) {
-        String sanitized = extractMermaid(text);
-        if (sanitized.isBlank()) {
-            sanitized = defaultMermaid(diagramPlan);
-        }
-        if (!isMermaidValid(sanitized, diagramPlan)) {
+        String sanitized = normalizeSupportedMermaid(extractMermaid(text));
+        if (sanitized.isBlank() || !isMermaidValid(sanitized, diagramPlan)) {
             return defaultMermaid(diagramPlan);
         }
         return sanitized;
@@ -565,17 +572,12 @@ public class DocumentWorkflowNodes {
     }
 
     private boolean looksLikeMermaid(String text) {
-        String lower = text.toLowerCase();
-        return lower.startsWith("flowchart")
-                || lower.startsWith("graph")
-                || lower.startsWith("sequencediagram")
-                || lower.startsWith("statediagram")
-                || lower.startsWith("statediagram-v2")
-                || lower.startsWith("erdiagram");
+        String lower = defaultString(text).trim().toLowerCase();
+        return SUPPORTED_MERMAID_HEADERS.stream().anyMatch(lower::startsWith);
     }
 
     private boolean isMermaidValid(String mermaid, String diagramPlan) {
-        String lower = mermaid.toLowerCase();
+        String lower = normalizeSupportedMermaid(mermaid).toLowerCase();
         if (lower.isBlank()) {
             return false;
         }
@@ -586,6 +588,20 @@ public class DocumentWorkflowNodes {
             case "CONTEXT" -> lower.startsWith("flowchart") || lower.startsWith("graph");
             default -> lower.startsWith("flowchart") || lower.startsWith("graph") || lower.startsWith("sequencediagram");
         };
+    }
+
+    private String normalizeSupportedMermaid(String mermaid) {
+        String normalized = defaultString(mermaid).trim();
+        if (normalized.isBlank()) {
+            return "";
+        }
+        String firstLine = normalized.lines()
+                .map(String::strip)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("")
+                .toLowerCase();
+        return SUPPORTED_MERMAID_HEADERS.stream().anyMatch(firstLine::startsWith) ? normalized : "";
     }
 
     private String defaultMermaid(String diagramPlan) {

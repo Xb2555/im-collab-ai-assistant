@@ -147,6 +147,74 @@ class LarkDocToolTest {
     }
 
     @Test
+    void createDocWithUnsupportedMermaidFallsBackToStableFlowchart() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            List<String> args = command.arguments();
+            if (args.contains("+update") && args.contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +update [flags]
+
+                        Flags:
+                              --as string
+                              --doc string
+                              --mode string
+                              --markdown string
+                        """);
+            }
+            if (args.contains("+whiteboard-update") && args.contains("--help")) {
+                return new CliCommandResult(0, """
+                        Usage:
+                          lark-cli docs +whiteboard-update [flags]
+
+                        Flags:
+                              --as string
+                              --whiteboard-token string
+                              --input_format string
+                              --source string
+                              --overwrite
+                              --yes
+                        """);
+            }
+            if (args.contains("+update")) {
+                return new CliCommandResult(0, """
+                        {"success":true,"data":{"doc_id":"doc-created","mode":"overwrite","revision_id":2,"board_tokens":["wb-1"]}}
+                        """);
+            }
+            if (args.contains("+whiteboard-update")) {
+                assertThat(command.stdin()).startsWith("flowchart TB");
+                assertThat(command.stdin()).doesNotContain("usecaseDiagram");
+                return new CliCommandResult(0, """
+                        {"success":true,"data":{"message":"whiteboard updated"}}
+                        """);
+            }
+            return new CliCommandResult(1, "unexpected cli command");
+        };
+        RecordingDocOpenApiClient openApiClient = new RecordingDocOpenApiClient(objectMapper);
+        LarkDocTool tool = new LarkDocTool(
+                new LarkCliClient(executor, new LarkCliProperties(), objectMapper),
+                new LarkCliProperties(),
+                openApiClient,
+                new LarkDocProperties(),
+                objectMapper
+        );
+
+        tool.createDoc("架构设计", """
+                ## 系统用例图
+
+                ```mermaid
+                usecaseDiagram
+                    actor 用户 as User
+                    User --> (发起任务)
+                ```
+                """);
+
+        assertThat(commands).hasSize(4);
+    }
+
+    @Test
     void createDocSplitsLongMarkdownIntoMultipleDocBlocks() {
         List<CliCommand> cliCommands = new ArrayList<>();
         RecordingDocOpenApiClient openApiClient = new RecordingDocOpenApiClient(objectMapper);
