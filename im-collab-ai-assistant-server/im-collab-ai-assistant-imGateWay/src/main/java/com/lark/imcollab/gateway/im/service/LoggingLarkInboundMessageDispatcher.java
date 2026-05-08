@@ -3,6 +3,7 @@ package com.lark.imcollab.gateway.im.service;
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -169,6 +170,16 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                     : replyFormatter.completedArtifactEditApplied(detail);
             replyText(message, session, confirmation + "\n\n" + replyFormatter.status(snapshot(session)),
                     "plan adjustment completed");
+            return;
+        }
+        if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING
+                && session.getIntakeState() != null
+                && session.getIntakeState().getAdjustmentTarget() == AdjustmentTargetEnum.UNKNOWN
+                && hasAssistantReply(session)) {
+            replyText(message, session,
+                    withStatus(replyFormatter.assistantReply(session.getIntakeState().getAssistantReply()), snapshot(session)),
+                    "plan adjustment clarification during execution");
             return;
         }
         if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT

@@ -2,6 +2,7 @@ package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
@@ -442,5 +443,63 @@ class PlannerConversationCancelTests {
         verify(graphRunner, never()).run(any(), any(), any(), any(), any());
         verify(executionTool, never()).confirmExecution(any());
         verify(sessionService, never()).markAborted(any(), any());
+    }
+
+    @Test
+    void ambiguousExecutingPlanAdjustmentAsksForClarificationInsteadOfInterrupting() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerExecutionTool executionTool = mock(PlannerExecutionTool.class);
+        TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                executionTool,
+                taskRuntimeService
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_GROUP")
+                .build();
+        PlanTaskSession executing = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
+        when(sessionService.get("task-1")).thenReturn(executing);
+        when(intakeService.decide(executing, "标题改成 78787", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "标题改成 78787",
+                        "ambiguous target",
+                        null,
+                        null,
+                        AdjustmentTargetEnum.UNKNOWN
+                ));
+        when(resolver.resolveCompletedCandidates(workspaceContext))
+                .thenReturn(java.util.List.of(com.lark.imcollab.common.model.entity.PendingTaskCandidate.builder()
+                        .taskId("task-done")
+                        .title("旧版测试文档")
+                        .build()));
+
+        PlanTaskSession result = service.handlePlanRequest("标题改成 78787", workspaceContext, null, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        assertThat(result.getIntakeState().getAssistantReply())
+                .contains("你是要中断当前执行并重规划")
+                .contains("还是修改已经生成的文档或 PPT");
+        assertThat(result.getIntakeState().getAdjustmentTarget()).isEqualTo(AdjustmentTargetEnum.UNKNOWN);
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+        verify(executionTool, never()).interruptExecution(any(), any());
+        verify(executionTool, never()).confirmExecution(any());
     }
 }

@@ -1,5 +1,6 @@
 package com.lark.imcollab.common.model.entity;
 
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
@@ -36,6 +37,9 @@ public class TaskIntakeState implements Serializable {
 
     @Schema(description = "只读查询视图，由 LLM 在固定枚举意图内细分，例如 PLAN/STATUS/ARTIFACTS")
     private String readOnlyView;
+
+    @Schema(description = "调整目标语义，例如 RUNNING_PLAN / READY_PLAN / COMPLETED_ARTIFACT / UNKNOWN")
+    private AdjustmentTargetEnum adjustmentTarget;
 
     @Schema(description = "IM 多任务选择挂起态")
     private PendingTaskSelection pendingTaskSelection;

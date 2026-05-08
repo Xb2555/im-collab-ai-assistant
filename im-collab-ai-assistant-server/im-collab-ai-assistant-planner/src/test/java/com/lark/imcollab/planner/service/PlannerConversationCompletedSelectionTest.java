@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -714,6 +715,58 @@ class PlannerConversationCompletedSelectionTest {
         assertThat(completed.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         verify(sessionService).saveWithoutVersionChange(completed);
         verify(graphRunner).run(any(), eq("task-1"), eq("把刚才那个 PPT 第二页标题改一下"), eq(context), isNull());
+    }
+
+    @Test
+    void executingSessionWithCompletedArtifactTargetRoutesToCompletedArtifactAdjustment() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_GROUP_CHAT")
+                .chatId("chat-1")
+                .threadId("thread-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession executing = PlanTaskSession.builder()
+                .taskId("running-task")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("running-task", true, "LARK_GROUP_CHAT:chat-1:thread-1"));
+        when(sessionService.get("running-task")).thenReturn(executing);
+        when(intakeService.decide(executing, "把刚生成的 PPT 第二页标题改一下", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "把刚生成的 PPT 第二页标题改一下",
+                        "completed artifact edit",
+                        null,
+                        null,
+                        AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                ));
+        when(resolver.resolveCompletedCandidates(context)).thenReturn(List.of(candidate("task-1", "采购评审 PPT")));
+        when(graphRunner.run(any(), eq("task-1"), eq("把刚生成的 PPT 第二页标题改一下"), eq(context), isNull()))
+                .thenReturn(completed);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("把刚生成的 PPT 第二页标题改一下", context, null, null);
+
+        assertThat(result).isSameAs(completed);
+        verify(graphRunner).run(any(), eq("task-1"), eq("把刚生成的 PPT 第二页标题改一下"), eq(context), isNull());
+        verify(taskBridgeService).ensureTask(completed);
     }
 
     private PendingTaskCandidate candidate(String taskId, String title) {

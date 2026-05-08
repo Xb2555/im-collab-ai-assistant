@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
@@ -131,6 +132,9 @@ public class PlannerConversationService {
         }
         if (shouldAutoInterruptExecutingTaskForReplan(taskId, resolution, session, intakeDecision, workspaceContext)) {
             return autoInterruptExecutingTaskForReplan(session, resolution, workspaceContext, intakeDecision, graphInstruction);
+        }
+        if (shouldClarifyExecutingAdjustmentTarget(taskId, resolution, session, intakeDecision, workspaceContext)) {
+            return clarifyExecutingAdjustmentTarget(session);
         }
         if (shouldRouteCompletedAdjustment(taskId, resolution, session, intakeDecision, workspaceContext)) {
             PlanTaskSession adjustmentResult = routeCompletedAdjustmentTaskSelection(
@@ -536,7 +540,41 @@ public class PlannerConversationService {
                 || !isImConversation(workspaceContext)) {
             return false;
         }
-        return intakeDecision != null && intakeDecision.intakeType() == TaskIntakeTypeEnum.PLAN_ADJUSTMENT;
+        if (intakeDecision == null || intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
+            return false;
+        }
+        AdjustmentTargetEnum adjustmentTarget = intakeDecision.adjustmentTarget();
+        return adjustmentTarget == null || adjustmentTarget == AdjustmentTargetEnum.RUNNING_PLAN;
+    }
+
+    private boolean shouldClarifyExecutingAdjustmentTarget(
+            String explicitTaskId,
+            TaskSessionResolution resolution,
+            PlanTaskSession session,
+            TaskIntakeDecision intakeDecision,
+            WorkspaceContext workspaceContext
+    ) {
+        if (hasText(explicitTaskId)
+                || resolution == null
+                || !resolution.existingSession()
+                || session == null
+                || session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING
+                || !isImConversation(workspaceContext)
+                || intakeDecision == null
+                || intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                || intakeDecision.adjustmentTarget() != AdjustmentTargetEnum.UNKNOWN) {
+            return false;
+        }
+        return !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
+    }
+
+    private PlanTaskSession clarifyExecutingAdjustmentTarget(PlanTaskSession session) {
+        return updateExecutingAdjustmentReply(
+                session,
+                "你是要中断当前执行并重规划，还是修改已经生成的文档或 PPT？",
+                PlanningPhaseEnum.EXECUTING,
+                AdjustmentTargetEnum.UNKNOWN
+        );
     }
 
     private PlanTaskSession autoInterruptExecutingTaskForReplan(
@@ -644,6 +682,20 @@ public class PlannerConversationService {
         }
         if (hasText(explicitTaskId) || isForcedNewTask(intakeDecision)) {
             return false;
+        }
+        if (intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
+            if (resolution != null && resolution.existingSession() && isCompleted(session)) {
+                Optional<ConversationTaskState> conversationState = sessionResolver.conversationState(workspaceContext);
+                boolean currentCompletedTaskIsActive = conversationState
+                        .map(ConversationTaskState::getActiveTaskId)
+                        .filter(this::hasText)
+                        .map(activeTaskId -> activeTaskId.equals(session.getTaskId()))
+                        .orElse(false);
+                if (currentCompletedTaskIsActive) {
+                    return false;
+                }
+            }
+            return !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
         }
         Optional<ConversationTaskState> conversationState = sessionResolver.conversationState(workspaceContext);
         if (conversationState.map(ConversationTaskState::getExecutingTaskId).filter(this::hasText).isPresent()) {
@@ -842,6 +894,7 @@ public class PlannerConversationService {
                 .routingReason(intakeDecision.routingReason())
                 .assistantReply(intakeDecision.assistantReply())
                 .readOnlyView(intakeDecision.readOnlyView())
+                .adjustmentTarget(intakeDecision.adjustmentTarget())
                 .lastInputAt(workspaceContext == null ? null : workspaceContext.getTimeRange())
                 .build());
         if (session.getScenarioPath() == null || session.getScenarioPath().isEmpty()) {
@@ -865,6 +918,15 @@ public class PlannerConversationService {
             String reply,
             PlanningPhaseEnum fallbackPhase
     ) {
+        return updateExecutingAdjustmentReply(session, reply, fallbackPhase, null);
+    }
+
+    private PlanTaskSession updateExecutingAdjustmentReply(
+            PlanTaskSession session,
+            String reply,
+            PlanningPhaseEnum fallbackPhase,
+            AdjustmentTargetEnum adjustmentTarget
+    ) {
         if (session == null) {
             return null;
         }
@@ -873,6 +935,9 @@ public class PlannerConversationService {
                 : session.getIntakeState();
         intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         intakeState.setAssistantReply(reply);
+        if (adjustmentTarget != null) {
+            intakeState.setAdjustmentTarget(adjustmentTarget);
+        }
         session.setIntakeState(intakeState);
         if (fallbackPhase != null) {
             session.setPlanningPhase(fallbackPhase);

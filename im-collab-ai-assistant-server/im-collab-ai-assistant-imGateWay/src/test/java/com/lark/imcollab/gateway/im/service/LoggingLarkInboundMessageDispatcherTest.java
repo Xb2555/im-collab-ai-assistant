@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.InputSourceEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
@@ -189,6 +190,24 @@ class LoggingLarkInboundMessageDispatcherTest {
                         .contains("已中断当前执行，并按新计划重新开始执行")
                         .contains("任务状态：正在执行")
                         .contains("步骤进度：0/2"));
+    }
+
+    @Test
+    void executingPlanAdjustmentWithUnknownTargetRepliesClarificationInsteadOfRestart() {
+        PlanTaskSession executing = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.EXECUTING);
+        executing.getIntakeState().setAdjustmentTarget(AdjustmentTargetEnum.UNKNOWN);
+        executing.getIntakeState().setAssistantReply("你是要中断当前执行并重规划，还是修改已经生成的文档或 PPT？");
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(executing);
+        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshot(TaskStatusEnum.EXECUTING));
+
+        dispatcher.dispatch(message("标题改成 78787"));
+
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
+                        .contains("你是要中断当前执行并重规划")
+                        .doesNotContain("已中断当前执行，并按新计划重新开始执行")
+                        .contains("任务状态：正在执行"));
     }
 
     @Test

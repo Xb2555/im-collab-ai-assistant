@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -90,6 +91,11 @@ public class LlmIntentClassifier {
                             root.path("read_only_view").asText(null),
                             root.path("queryView").asText(null),
                             root.path("query_view").asText(null)
+                    )),
+                    normalizeAdjustmentTarget(firstNonBlank(
+                            root.path("adjustmentTarget").asText(null),
+                            root.path("adjustment_target").asText(null),
+                            root.path("target").asText(null)
                     ))
             ));
         } catch (Exception ignored) {
@@ -102,11 +108,15 @@ public class LlmIntentClassifier {
         builder.append("You classify one user message into a fixed task command intent.\n");
         builder.append("Return JSON only. Do not plan steps, do not execute actions, do not answer the user.\n");
         builder.append("Allowed intents: START_TASK, ANSWER_CLARIFICATION, ADJUST_PLAN, QUERY_STATUS, CONFIRM_ACTION, CANCEL_TASK, UNKNOWN.\n");
-        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false,\"readOnlyView\":\"PLAN|STATUS|ARTIFACTS|COMPLETED_TASKS|\"}\n");
+        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false,\"readOnlyView\":\"PLAN|STATUS|ARTIFACTS|COMPLETED_TASKS|\",\"adjustmentTarget\":\"RUNNING_PLAN|READY_PLAN|COMPLETED_ARTIFACT|UNKNOWN|\"}\n");
         builder.append("Decision hints:\n");
         builder.append("- QUERY_STATUS means the user asks progress, status, task overview, current plan summary, full plan, existing artifacts, completed-task list, or what is being done.\n");
         builder.append("- For QUERY_STATUS, set readOnlyView=PLAN when the user wants the stored plan/steps; STATUS when they want progress/current status; ARTIFACTS when they want outputs/links/artifacts; COMPLETED_TASKS when they want to browse finished tasks before choosing one for artifact edits.\n");
-        builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, or regenerate plan steps.\n");
+        builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, regenerate, or otherwise change existing work.\n");
+        builder.append("- For ADJUST_PLAN, also set adjustmentTarget. Use RUNNING_PLAN when the user wants to interrupt current execution and change the plan. Use READY_PLAN when they are changing a prepared but not yet executing plan. Use COMPLETED_ARTIFACT when they want to modify an already generated document/PPT/artifact. Use UNKNOWN when the message is clearly an adjustment but you cannot safely tell whether they mean replan or artifact edit.\n");
+        builder.append("- Requests like 修改刚生成的文档 / 把 PPT 第 2 页改一下 / 把刚出的文档标题改一下 are usually COMPLETED_ARTIFACT.\n");
+        builder.append("- Requests like 中断当前执行 / 按新计划继续 / 不要按刚才那个方案做了 are usually RUNNING_PLAN when there is an executing task.\n");
+        builder.append("- If the message is short and ambiguous, such as 改一下标题 / 换成 78787, prefer adjustmentTarget=UNKNOWN instead of guessing.\n");
         builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 开始计划 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
         builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
         builder.append("- In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material. Meta questions, identity/capability questions, greetings, or a standalone new task request are not clarification answers.\n");
@@ -182,6 +192,20 @@ public class LlmIntentClassifier {
         String normalized = value.trim().toUpperCase(Locale.ROOT);
         return switch (normalized) {
             case "PLAN", "STATUS", "ARTIFACTS", "COMPLETED_TASKS" -> normalized;
+            default -> null;
+        };
+    }
+
+    private AdjustmentTargetEnum normalizeAdjustmentTarget(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "RUNNING_PLAN" -> AdjustmentTargetEnum.RUNNING_PLAN;
+            case "READY_PLAN" -> AdjustmentTargetEnum.READY_PLAN;
+            case "COMPLETED_ARTIFACT" -> AdjustmentTargetEnum.COMPLETED_ARTIFACT;
+            case "UNKNOWN" -> AdjustmentTargetEnum.UNKNOWN;
             default -> null;
         };
     }

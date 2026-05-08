@@ -294,6 +294,7 @@ class LarkIMTaskReplyFormatterTest {
         String text = formatter.executionStarted(snapshot);
 
         assertThat(text).contains("好，我开始推进了", "先处理：生成技术方案文档", "继续同步");
+        assertThat(text).contains("您可以在任务执行途中打断任务，并调整计划");
     }
 
     @Test

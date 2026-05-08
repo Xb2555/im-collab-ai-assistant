@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.intent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
@@ -70,5 +71,16 @@ class LlmIntentClassifierTest {
                 """);
 
         assertThat(result).isEmpty();
+    }
+
+    @Test
+    void parsesAdjustmentTarget() {
+        Optional<IntentRoutingResult> result = classifier.parse("""
+                {"intent":"ADJUST_PLAN","confidence":0.94,"reason":"edit generated ppt","normalizedInput":"把刚生成的PPT第二页标题改一下","needsClarification":false,"adjustmentTarget":"COMPLETED_ARTIFACT"}
+                """);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().type()).isEqualTo(TaskCommandTypeEnum.ADJUST_PLAN);
+        assertThat(result.get().adjustmentTarget()).isEqualTo(AdjustmentTargetEnum.COMPLETED_ARTIFACT);
     }
 }

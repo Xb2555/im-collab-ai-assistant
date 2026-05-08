@@ -86,11 +86,19 @@ public class IntentDecisionGuard {
             String normalizedInput,
             boolean needsClarification
     ) {
-        return new IntentRoutingResult(type, source.confidence(), reason, normalizedInput, needsClarification, source.readOnlyView());
+        return new IntentRoutingResult(
+                type,
+                source.confidence(),
+                reason,
+                normalizedInput,
+                needsClarification,
+                source.readOnlyView(),
+                source.adjustmentTarget()
+        );
     }
 
     private IntentRoutingResult unknown(String normalizedInput, String reason) {
-        return new IntentRoutingResult(TaskCommandTypeEnum.UNKNOWN, 0.0d, reason, normalizedInput, true);
+        return new IntentRoutingResult(TaskCommandTypeEnum.UNKNOWN, 0.0d, reason, normalizedInput, true, null, null);
     }
 
     private String firstText(String first, String second) {
