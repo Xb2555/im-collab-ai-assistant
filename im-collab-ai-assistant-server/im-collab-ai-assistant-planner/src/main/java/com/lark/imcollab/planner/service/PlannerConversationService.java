@@ -20,6 +20,8 @@ import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import com.lark.imcollab.planner.supervisor.PlannerToolResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +37,8 @@ import java.util.regex.Pattern;
 
 @Service
 public class PlannerConversationService {
+
+    private static final Logger log = LoggerFactory.getLogger(PlannerConversationService.class);
 
     private final TaskSessionResolver sessionResolver;
     private final TaskIntakeService intakeService;
@@ -701,7 +705,7 @@ public class PlannerConversationService {
     private PlanTaskSession rejectExecutingCompletedArtifactAdjustment(PlanTaskSession session) {
         return updateExecutingAdjustmentReply(
                 session,
-                "当前有任务正在执行，暂不支持边执行边修改已有产物。你可以先中断当前任务并重规划，或者等当前任务完成后再修改已有产物。",
+                "当前有任务正在执行，请等当前任务完成后再修改已有产物。",
                 PlanningPhaseEnum.EXECUTING,
                 AdjustmentTargetEnum.COMPLETED_ARTIFACT
         );
