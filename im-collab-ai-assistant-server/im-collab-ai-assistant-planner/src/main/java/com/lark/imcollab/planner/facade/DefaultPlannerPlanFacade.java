@@ -3,6 +3,9 @@ package com.lark.imcollab.planner.facade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
+import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.intent.IntentRoutingResult;
 import com.lark.imcollab.planner.intent.LlmIntentClassifier;
@@ -45,7 +48,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (result.isEmpty()) {
             return "";
         }
-        return immediateReceipt(result.get().type());
+        return immediateReceipt(result.get().type(), result.get().adjustmentTarget(), session, workspaceContext);
     }
 
     @Override
@@ -58,13 +61,33 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         return plannerConversationService.handlePlanRequest(rawInstruction, workspaceContext, taskId, userFeedback);
     }
 
-    private String immediateReceipt(TaskCommandTypeEnum type) {
+    private String immediateReceipt(TaskCommandTypeEnum type, AdjustmentTargetEnum adjustmentTarget, PlanTaskSession session, WorkspaceContext workspaceContext) {
         if (type == null) {
             return "";
         }
         return switch (type) {
             case START_TASK -> "🧭 需求我接住了，我先理一下重点，稍后给你一个可执行的计划。";
-            case ADJUST_PLAN -> "🔄 这条调整我收到了，我先顺着当前任务梳理一下，再把更新结果回给你。";
+            case ADJUST_PLAN -> {
+                if (session != null && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
+                    // 明确要中断重规划，不受澄清标记影响
+                    if (adjustmentTarget == AdjustmentTargetEnum.RUNNING_PLAN) {
+                        yield "🔄 这条调整我收到了，我会先中断当前执行，再根据你的新要求重新规划，请稍候。";
+                    }
+                    // 用户在回应我们的澄清问题
+                    if (session.getIntakeState() != null
+                            && session.getIntakeState().getPendingInteractionType()
+                                    == PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT) {
+                        yield "🧩 你的补充我接上了，我会带着这条信息继续往下处理。";
+                    }
+                    // 有可编辑产物时会先澄清，不会直接中断
+                    if (taskSessionResolver.hasEditableArtifacts(session.getTaskId())
+                            || taskSessionResolver.conversationHasEditableArtifacts(workspaceContext)) {
+                        yield "🔄 这条调整我收到了，稍等我先确认一下你的意图。";
+                    }
+                    yield "🔄 这条调整我收到了，我会先中断当前执行，再根据你的新要求重新规划，请稍候。";
+                }
+                yield "🔄 这条调整我收到了，我先顺着当前任务梳理一下，再把更新结果回给你。";
+            }
             case ANSWER_CLARIFICATION -> "🧩 你的补充我接上了，我会带着这条信息继续往下处理。";
             default -> "";
         };
