@@ -142,7 +142,16 @@ public class PlannerCommandApplicationService {
                 TaskEventTypeEnum.EXECUTION_INTERRUPTING
         );
 
-        taskCommandFacade.interruptExecution(taskId);
+        try {
+            taskCommandFacade.interruptExecution(taskId);
+        } catch (Exception e) {
+            log.warn("GUI interruptReplan failed to cancel execution taskId={} reason={}", taskId, e.getMessage(), e);
+            PlanTaskSession recovered = sessionService.get(taskId);
+            recovered.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+            recovered.setTransitionReason("Interrupt failed, remaining in EXECUTING");
+            sessionService.save(recovered);
+            throw new RetryNotAllowedException("当前执行中断失败，请稍后再试，或在任务工作台手动中断。");
+        }
 
         PlanTaskSession replanning = sessionService.get(taskId);
         resetExecutionSemanticsForFullReplan(replanning);
