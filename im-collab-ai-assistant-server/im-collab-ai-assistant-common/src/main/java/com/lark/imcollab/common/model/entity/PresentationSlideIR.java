@@ -17,6 +17,11 @@ public class PresentationSlideIR implements Serializable {
     private String slideId;
     private Integer pageIndex;
     private String slideRole;
+    private String pageType;
+    private String pageSubType;
+    private String sectionId;
+    private String sectionTitle;
+    private Integer sectionOrder;
     private String title;
     private String message;
     private String visualIntent;

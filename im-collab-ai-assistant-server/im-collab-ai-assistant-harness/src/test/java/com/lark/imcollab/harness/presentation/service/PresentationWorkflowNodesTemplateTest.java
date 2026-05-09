@@ -208,10 +208,13 @@ class PresentationWorkflowNodesTemplateTest {
                         .keyMessages(List.of("背景", "方案", "风险", "下一步"))
                         .build());
 
-        assertThat(outline.getSlides()).hasSize(5);
+        assertThat(outline.getSlides()).hasSize(6);
         assertThat(outline.getSlides().get(0).getTemplateVariant()).isEqualTo("hero-band");
-        assertThat(outline.getSlides().get(1).getTemplateVariant()).isNotEqualTo(outline.getSlides().get(2).getTemplateVariant());
-        assertThat(outline.getSlides().get(4).getTemplateVariant()).isEqualTo("next-step-board");
+        assertThat(outline.getSlides().get(1).getPageType()).isEqualTo("TOC");
+        assertThat(outline.getSlides().get(2).getPageType()).isEqualTo("TRANSITION");
+        assertThat(outline.getSlides().get(3).getPageType()).isEqualTo("CONTENT");
+        assertThat(outline.getSlides().get(5).getPageType()).isEqualTo("THANKS");
+        assertThat(outline.getSlides().get(5).getTemplateVariant()).isEqualTo("next-step-board");
     }
 
     @Test
