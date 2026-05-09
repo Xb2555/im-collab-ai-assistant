@@ -672,7 +672,7 @@ public class PlannerConversationService {
     private PlanTaskSession clarifyExecutingAdjustmentTarget(PlanTaskSession session, String originalInstruction) {
         PlanTaskSession result = updateExecutingAdjustmentReply(
                 session,
-                "你是要中断当前执行并重规划，还是修改已经生成的文档或 PPT？",
+                "当前有任务正在执行，暂时无法同时修改其他已完成的文档或 PPT。如果你是想调整当前执行计划，我可以先中断并重新规划，需要吗？",
                 PlanningPhaseEnum.EXECUTING,
                 AdjustmentTargetEnum.UNKNOWN
         );
