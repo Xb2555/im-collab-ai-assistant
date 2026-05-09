@@ -47,42 +47,21 @@ public class LlmIntentClassifier {
 
     public Optional<IntentRoutingResult> classify(PlanTaskSession session, String rawInput, boolean existingSession) {
         if (intentAgent == null) {
-            log.warn("LLM_INTENT classify_skip reason=intent_agent_null taskId={} existingSession={} phase={} input='{}'",
-                    session == null ? null : session.getTaskId(),
-                    existingSession,
-                    session == null ? null : session.getPlanningPhase(),
-                    rawInput);
             return Optional.empty();
         }
         if (!plannerProperties.getIntent().isModelEnabled()) {
-            log.warn("LLM_INTENT classify_skip reason=model_disabled taskId={} existingSession={} phase={} timeoutSeconds={} input='{}'",
-                    session == null ? null : session.getTaskId(),
-                    existingSession,
-                    session == null ? null : session.getPlanningPhase(),
-                    timeoutSeconds(),
-                    rawInput);
             return Optional.empty();
         }
         String prompt = buildPrompt(session, rawInput, existingSession);
         RunnableConfig config = RunnableConfig.builder()
                 .threadId((session == null ? "unknown" : session.getTaskId()) + "-intent")
                 .build();
-        log.info("LLM_INTENT classify_start taskId={} existingSession={} phase={} timeoutSeconds={} promptPreview='{}' input='{}'",
-                session == null ? null : session.getTaskId(),
-                existingSession,
-                session == null ? null : session.getPlanningPhase(),
-                timeoutSeconds(),
-                abbreviate(prompt),
-                rawInput);
+
         try {
             return CompletableFuture
                     .supplyAsync(() -> {
                         try {
-                            String responseText = intentAgent.call(prompt, config).getText();
-                            log.info("LLM_INTENT classify_raw_response taskId={} rawResponse='{}'",
-                                    session == null ? null : session.getTaskId(),
-                                    abbreviate(responseText));
-                            return responseText;
+                            return intentAgent.call(prompt, config).getText();
                         } catch (Exception exception) {
                             throw new IllegalStateException(exception);
                         }
@@ -91,13 +70,6 @@ public class LlmIntentClassifier {
                     .thenApply(text -> parse(text, session == null ? null : session.getTaskId()))
                     .get(timeoutSeconds() + 1L, TimeUnit.SECONDS);
         } catch (Exception exception) {
-            log.warn("LLM_INTENT classify_failed taskId={} existingSession={} phase={} errorType={} message='{}'",
-                    session == null ? null : session.getTaskId(),
-                    existingSession,
-                    session == null ? null : session.getPlanningPhase(),
-                    exception.getClass().getSimpleName(),
-                    exception.getMessage(),
-                    exception);
             return Optional.empty();
         }
     }
@@ -108,7 +80,6 @@ public class LlmIntentClassifier {
 
     Optional<IntentRoutingResult> parse(String text, String taskId) {
         if (text == null || text.isBlank()) {
-            log.warn("LLM_INTENT parse_empty taskId={}", taskId);
             return Optional.empty();
         }
         try {
@@ -138,21 +109,8 @@ public class LlmIntentClassifier {
                             root.path("target").asText(null)
                     ))
             );
-            log.info("LLM_INTENT parse_success taskId={} type={} confidence={} normalizedInput='{}' readOnlyView={} needsClarification={}",
-                    taskId,
-                    result.type(),
-                    result.confidence(),
-                    result.normalizedInput(),
-                    result.readOnlyView(),
-                    result.needsClarification());
             return Optional.of(result);
         } catch (Exception exception) {
-            log.warn("LLM_INTENT parse_failed taskId={} errorType={} message='{}' raw='{}'",
-                    taskId,
-                    exception.getClass().getSimpleName(),
-                    exception.getMessage(),
-                    abbreviate(text),
-                    exception);
             return Optional.empty();
         }
     }

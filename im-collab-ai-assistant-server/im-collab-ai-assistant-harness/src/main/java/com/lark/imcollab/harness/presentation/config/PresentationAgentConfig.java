@@ -1,6 +1,8 @@
 package com.lark.imcollab.harness.presentation.config;
 
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.lark.imcollab.harness.presentation.model.PresentationImagePlan;
+import com.lark.imcollab.harness.presentation.model.PresentationImageResources;
 import com.lark.imcollab.harness.presentation.model.PresentationOutline;
 import com.lark.imcollab.harness.presentation.model.PresentationReviewResult;
 import com.lark.imcollab.harness.presentation.model.PresentationSlideXmlBatch;
@@ -76,6 +78,125 @@ public class PresentationAgentConfig {
                 .build();
     }
 
+    @Bean(name = "presentationImagePlannerAgent")
+    public ReactAgent presentationImagePlannerAgent(ChatModel chatModel) {
+        return ReactAgent.builder()
+                .name("presentation-image-planner-agent")
+                .description("Scenario D: plan safe free-commercial image resources for slides")
+                .systemPrompt("""
+                        你负责为 PPT 每一页规划图片、插画和图表资源。
+                        只返回 JSON，不要解释。
+
+                        目标：
+                        - 内容图片用于佐证和丰富页面
+                        - 插画用于装饰和概念表达
+                        - 图表用于流程、关系、指标表达
+
+                        素材许可约束：
+                        - 只使用免费可商用优先来源
+                        - 内容图优先来源：unsplash.com, pexels.com, pixabay.com
+                        - 插画优先来源：undraw.co, storyset.com, manypixels.co, svgrepo.com
+                        - 图表不走图片搜索，输出 mermaidCode
+
+                        规划规则：
+                        1. 每页 0-2 个图片任务
+                        2. visualEmphasis=balance 时优先内容图
+                        3. visualEmphasis=action 时优先插画
+                        4. visualEmphasis=data 时优先 diagramTasks
+                        5. query 用英文优先，必要时可包含中文补充
+                        6. purpose 必须说明图片放在哪、解决什么表达问题
+
+                        输出 schema:
+                        {
+                          "pagePlans": [
+                            {
+                              "slideId": "slide-1",
+                              "contentImageTasks": [
+                                {
+                                  "query": "retail store interior modern china",
+                                  "purpose": "用于右侧主视觉，展示门店场景",
+                                  "preferredSourceType": "CONTENT_IMAGE",
+                                  "preferredDomains": ["pexels.com","unsplash.com"]
+                                }
+                              ],
+                              "illustrationTasks": [
+                                {
+                                  "query": "workflow collaboration illustration",
+                                  "purpose": "用于左下角辅助说明协作流程",
+                                  "preferredSourceType": "ILLUSTRATION",
+                                  "preferredDomains": ["undraw.co","storyset.com"]
+                                }
+                              ],
+                              "diagramTasks": [
+                                {
+                                  "mermaidCode": "flowchart LR\\nA-->B",
+                                  "purpose": "用于表达流程"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """)
+                .outputType(PresentationImagePlan.class)
+                .model(chatModel)
+                .build();
+    }
+
+    @Bean(name = "presentationImageFetcherAgent")
+    public ReactAgent presentationImageFetcherAgent(ChatModel chatModel) {
+        return ReactAgent.builder()
+                .name("presentation-image-fetcher-agent")
+                .description("Scenario D: fetch candidate free-commercial image resource urls")
+                .systemPrompt("""
+                        你负责根据图片规划返回可用的素材候选 URL。
+                        只返回 JSON，不要解释。
+
+                        约束：
+                        - 只允许这些站点：unsplash.com, pexels.com, pixabay.com, undraw.co, storyset.com, manypixels.co, svgrepo.com
+                        - 必须返回 https URL
+                        - 不要返回搜索首页 URL，返回素材详情页或可下载直链
+                        - 图片必须区分 contentImages / illustrations / diagrams
+                        - diagrams 若无现成图片，whiteboardDsl 可为空，sourceUrl 可为空
+
+                        输出 schema:
+                        {
+                          "resources": [
+                            {
+                              "slideId": "slide-1",
+                              "contentImages": [
+                                {
+                                  "sourceUrl": "https://images.unsplash.com/...",
+                                  "sourceSite": "unsplash.com",
+                                  "assetType": "image",
+                                  "purpose": "用于右侧主视觉"
+                                }
+                              ],
+                              "illustrations": [
+                                {
+                                  "sourceUrl": "https://undraw.co/illustration.svg",
+                                  "sourceSite": "undraw.co",
+                                  "assetType": "illustration",
+                                  "purpose": "用于左下角点缀"
+                                }
+                              ],
+                              "diagrams": [
+                                {
+                                  "sourceUrl": null,
+                                  "sourceSite": "mermaid",
+                                  "assetType": "diagram",
+                                  "purpose": "用于流程表达",
+                                  "whiteboardDsl": ""
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                        """)
+                .outputType(PresentationImageResources.class)
+                .model(chatModel)
+                .build();
+    }
+
     @Bean(name = "presentationSlideXmlAgent")
     public ReactAgent presentationSlideXmlAgent(ChatModel chatModel) {
         return ReactAgent.builder()
@@ -90,7 +211,7 @@ public class PresentationAgentConfig {
                         XML 规则：
                         1. 画布为 960x540，所有坐标必须在画布内。
                         2. slide 直接子元素只能使用 style、data、note。
-                        3. 首版只使用 shape(type=text/rect)、line、content、p、ul、li，不使用图片、表格、chart、动画；可用 rect 模拟卡片、分栏、指标块、时间线节点。
+                        3. 支持 shape(type=text/rect)、line、content、p、ul、li、img；不使用动画；图片必须使用 file_token。
                         4. 必须包含一个标题 text shape 和至少一个正文/要点 shape。
                         5. 不要输出 Markdown 代码块，不要返回 presentation 根元素。
                         6. 文本要短，适合投屏阅读。

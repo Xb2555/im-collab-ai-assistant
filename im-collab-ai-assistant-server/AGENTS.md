@@ -43,6 +43,9 @@
 - 规划、执行、同步、交付分层，不写“大而全”服务类。
 - 优先保留可组合能力，不要把主流程写死成单一顺序。
 - GUI 相关代码只负责展示状态、确认节点和细粒度调整，不替代 Agent 决策。
+- PPT 首次生成链路中，图片素材优先下载到仓库工作目录内，再在 Slides XML 中使用 `@./relative/path` 让 `slides +create --slides` 自动上传；不要先把系统临时目录文件传给 `+media-upload`。
+- PPT 迭代链路中，已有演示文稿的图片替换或增量插图，统一走 `+media-upload` 获取 `file_token`，再写入 `<img src="boxcn...">`。
+- 图片搜索节点只允许返回可直接下载的原始图片 URL，不允许返回素材详情页、搜索页、跳转页或需要二次解析的页面 URL。
 
 ## 测试与验证要求
 测试基于 `spring-boot-starter-test` 和 JUnit 5。测试类使用 `*Tests` 后缀，放在对应模块 `src/test/java` 下。新增能力至少覆盖以下一种验证：

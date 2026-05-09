@@ -24,19 +24,14 @@ class LarkSlidesToolTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
-    void createPresentationCreatesEmptyDeckThenAppendsSlidesWithFileArgs() throws Exception {
+    void createPresentationUsesCreateShortcutWithSlidesFile() throws Exception {
         List<CliCommand> commands = new ArrayList<>();
-        List<String> paramsPayloads = new ArrayList<>();
-        List<String> dataPayloads = new ArrayList<>();
+        List<String> slidesPayloads = new ArrayList<>();
         CliCommandExecutor executor = command -> {
             commands.add(command);
             List<String> args = command.arguments();
-            if (args.contains("xml_presentation.slide")) {
-                paramsPayloads.add(readAtFileArg(args, "--params"));
-                dataPayloads.add(readAtFileArg(args, "--data"));
-                return new CliCommandResult(0, """
-                        {"data":{"slide":{"id":"slide-1"}}}
-                        """);
+            if (args.contains("--slides")) {
+                slidesPayloads.add(args.get(args.indexOf("--slides") + 1));
             }
             return new CliCommandResult(0, """
                     {"data":{"xml_presentation_id":"slides-1","url":"https://example.feishu.cn/slides/slides-1","title":"方案汇报"}}
@@ -58,21 +53,13 @@ class LarkSlidesToolTest {
                 "--as", "user",
                 "--title", "方案汇报"
         ));
-        assertThat(args).doesNotContain("--slides");
-        assertThat(commands).hasSize(3);
-        assertThat(commands.get(1).arguments()).containsSequence(List.of(
-                "slides", "xml_presentation.slide", "create",
-                "--as", "user",
-                "--params"
-        ));
-        assertThat(commands.get(1).arguments()).contains("--data", "--yes");
-        assertThat(commands.get(1).arguments().get(commands.get(1).arguments().indexOf("--params") + 1)).startsWith("@");
-        assertThat(commands.get(1).arguments().get(commands.get(1).arguments().indexOf("--data") + 1)).startsWith("@");
-        assertThat(paramsPayloads).hasSize(2);
-        assertThat(dataPayloads).hasSize(2);
-        assertThat(objectMapper.readTree(paramsPayloads.get(0)).path("xml_presentation_id").asText()).isEqualTo("slides-1");
-        assertThat(objectMapper.readTree(dataPayloads.get(0)).path("slide").path("content").asText()).contains("标题一");
-        assertThat(objectMapper.readTree(dataPayloads.get(1)).path("slide").path("content").asText()).contains("标题二");
+        assertThat(args).contains("--slides");
+        assertThat(commands).hasSize(1);
+        assertThat(slidesPayloads).hasSize(1);
+        JsonNode slidesNode = objectMapper.readTree(slidesPayloads.get(0));
+        assertThat(slidesNode).hasSize(2);
+        assertThat(slidesNode.get(0).asText()).contains("标题一");
+        assertThat(slidesNode.get(1).asText()).contains("标题二");
     }
 
     @Test

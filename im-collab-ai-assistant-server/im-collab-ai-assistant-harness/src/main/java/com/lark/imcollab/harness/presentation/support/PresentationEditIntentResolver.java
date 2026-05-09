@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.entity.PresentationEditOperation;
+import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
 import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
@@ -40,6 +41,13 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                     .slideBody(text(root, "slideBody"))
                     .replacementText(text(root, "replacementText"))
                     .targetElementType(parseTargetElementType(root.path("targetElementType").asText(null)))
+                    .anchorMode(parseAnchorMode(root.path("anchorMode").asText(null)))
+                    .quotedText(text(root, "quotedText"))
+                    .elementRole(text(root, "elementRole"))
+                    .expectedMatchCount(optionalInt(root.path("expectedMatchCount")))
+                    .contentInstruction(text(root, "contentInstruction"))
+                    .targetElementId(text(root, "targetElementId"))
+                    .targetBlockId(text(root, "targetBlockId"))
                     .operations(parseOperations(root.path("operations")))
                     .clarificationNeeded(root.path("clarificationNeeded").asBoolean(false))
                     .clarificationHint(text(root, "clarificationHint"))
@@ -142,19 +150,33 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 schema:
                 {
                   "intentType": "UPDATE_CONTENT|INSERT|DELETE|EXPLAIN",
-                  "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
-                  "targetElementType": "TITLE|BODY",
+                  "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|REWRITE_ELEMENT|EXPAND_ELEMENT|SHORTEN_ELEMENT|REPLACE_ELEMENT|REPLACE_IMAGE|REPLACE_CHART|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
+                  "targetElementType": "TITLE|BODY|IMAGE|CHART|TABLE|CAPTION|SHAPE",
+                  "anchorMode": "BY_PAGE_INDEX|BY_QUOTED_TEXT|BY_ELEMENT_ROLE|BY_BLOCK_ID",
                   "pageIndex": 1,
                   "insertAfterPageIndex": 1,
+                  "quotedText": "原文引用",
+                  "elementRole": "right-image|hero-image|caption|chart",
+                  "expectedMatchCount": 1,
+                  "contentInstruction": "写详细一些",
+                  "targetElementId": "element-1",
+                  "targetBlockId": "block-1",
                   "slideTitle": "新增页标题",
                   "slideBody": "新增页正文或要点",
                   "replacementText": "新的标题或内容",
                   "operations": [
                     {
-                      "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
-                      "targetElementType": "TITLE|BODY",
+                      "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|REWRITE_ELEMENT|EXPAND_ELEMENT|SHORTEN_ELEMENT|REPLACE_ELEMENT|REPLACE_IMAGE|REPLACE_CHART|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
+                      "targetElementType": "TITLE|BODY|IMAGE|CHART|TABLE|CAPTION|SHAPE",
+                      "anchorMode": "BY_PAGE_INDEX|BY_QUOTED_TEXT|BY_ELEMENT_ROLE|BY_BLOCK_ID",
                       "pageIndex": 1,
                       "insertAfterPageIndex": 1,
+                      "quotedText": "原文引用",
+                      "elementRole": "right-image|hero-image|caption|chart",
+                      "expectedMatchCount": 1,
+                      "contentInstruction": "写详细一些",
+                      "targetElementId": "element-1",
+                      "targetBlockId": "block-1",
                       "slideTitle": "新增页标题",
                       "slideBody": "新增页正文或要点",
                       "replacementText": "新的标题或内容"
@@ -169,10 +191,14 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 2. 替换标题或正文时，只有在每个操作都能明确识别页码、目标元素和新内容时，clarificationNeeded=false。
                 3. “把第一页标题改成7878”“第一页标题为7878”“修改第3页标题为实施收益”都应解析为 REPLACE_SLIDE_TITLE。
                 4. 如果用户要求修改正文、要点、内容，targetElementType 应为 BODY。
+                5. 如果用户说“第一页这段 xxx 写详细一些”，优先使用 targetElementType=BODY、anchorMode=BY_QUOTED_TEXT、quotedText=xxx、actionType=EXPAND_ELEMENT。
+                6. 如果用户说“第2页右侧图片换成门店实景图”，使用 targetElementType=IMAGE、anchorMode=BY_ELEMENT_ROLE、elementRole=right-image、actionType=REPLACE_IMAGE。
+                7. 如果用户说“第3页流程图改成采购->评审->执行”，使用 targetElementType=CHART、actionType=REPLACE_CHART。
                 5. “在第2页后插入一页，标题为风险应对，正文为预算、排期、依赖”应解析为 INSERT_SLIDE，insertAfterPageIndex=2，slideTitle/slideBody 填入新增内容；插到最前 insertAfterPageIndex=0；插到末尾 insertAfterPageIndex 可为 null。
                 6. “删除第3页”应解析为 DELETE_SLIDE，pageIndex=3。
                 7. “把第4页移到第2页后”应解析为 MOVE_SLIDE，pageIndex=4，insertAfterPageIndex=2；移到最前 insertAfterPageIndex=0；移到最后/末尾 insertAfterPageIndex=-1。
-                8. 新增页缺少标题和正文，或移动页缺少源页/目标位置，或无法确认替换页码、目标元素、新内容时，clarificationNeeded=true。
+                8. 无法唯一定位时必须 clarificationNeeded=true，禁止默认猜标题。
+                9. 新增页缺少标题和正文，或移动页缺少源页/目标位置，或无法确认替换页码、目标元素、新内容时，clarificationNeeded=true。
 
                 用户指令：%s
                 """.formatted(instruction == null ? "" : instruction.trim());
@@ -228,6 +254,17 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         }
     }
 
+    private PresentationAnchorMode parseAnchorMode(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return PresentationAnchorMode.valueOf(value.trim());
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
     private List<PresentationEditOperation> parseOperations(JsonNode root) {
         List<PresentationEditOperation> operations = new ArrayList<>();
         if (root == null || !root.isArray()) {
@@ -242,6 +279,13 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                     .slideTitle(text(node, "slideTitle"))
                     .slideBody(text(node, "slideBody"))
                     .replacementText(text(node, "replacementText"))
+                    .anchorMode(parseAnchorMode(node.path("anchorMode").asText(null)))
+                    .quotedText(text(node, "quotedText"))
+                    .elementRole(text(node, "elementRole"))
+                    .expectedMatchCount(optionalInt(node.path("expectedMatchCount")))
+                    .contentInstruction(text(node, "contentInstruction"))
+                    .targetElementId(text(node, "targetElementId"))
+                    .targetBlockId(text(node, "targetBlockId"))
                     .build();
             operations.add(operation);
         }
@@ -264,13 +308,26 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 .slideTitle(intent.getSlideTitle())
                 .slideBody(intent.getSlideBody())
                 .replacementText(intent.getReplacementText())
+                .anchorMode(intent.getAnchorMode())
+                .quotedText(intent.getQuotedText())
+                .elementRole(intent.getElementRole())
+                .expectedMatchCount(intent.getExpectedMatchCount())
+                .contentInstruction(intent.getContentInstruction())
+                .targetElementId(intent.getTargetElementId())
+                .targetBlockId(intent.getTargetBlockId())
                 .build();
         return new ArrayList<>(List.of(operation));
     }
 
     private boolean requiresReplacement(PresentationEditActionType actionType) {
         return actionType == PresentationEditActionType.REPLACE_SLIDE_TITLE
-                || actionType == PresentationEditActionType.REPLACE_SLIDE_BODY;
+                || actionType == PresentationEditActionType.REPLACE_SLIDE_BODY
+                || actionType == PresentationEditActionType.REWRITE_ELEMENT
+                || actionType == PresentationEditActionType.EXPAND_ELEMENT
+                || actionType == PresentationEditActionType.SHORTEN_ELEMENT
+                || actionType == PresentationEditActionType.REPLACE_ELEMENT
+                || actionType == PresentationEditActionType.REPLACE_IMAGE
+                || actionType == PresentationEditActionType.REPLACE_CHART;
     }
 
     private boolean requiresPageIndex(PresentationEditActionType actionType) {

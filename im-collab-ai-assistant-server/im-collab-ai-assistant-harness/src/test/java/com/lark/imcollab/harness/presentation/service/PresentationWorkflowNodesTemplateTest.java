@@ -1,14 +1,21 @@
 package com.lark.imcollab.harness.presentation.service;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.harness.presentation.model.PresentationAssetPlan;
+import com.lark.imcollab.harness.presentation.model.PresentationAssetResources;
+import com.lark.imcollab.harness.presentation.model.PresentationOutline;
+import com.lark.imcollab.harness.presentation.model.PresentationSlideXml;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.harness.presentation.model.PresentationGenerationOptions;
 import com.lark.imcollab.harness.presentation.model.PresentationSlidePlan;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -19,8 +26,10 @@ import static org.mockito.Mockito.when;
 
 class PresentationWorkflowNodesTemplateTest {
 
+    private static final ReactAgent AGENT = mock(ReactAgent.class);
+
     private final PresentationWorkflowNodes nodes = new PresentationWorkflowNodes(
-            null, null, null, null, null, null, new ObjectMapper());
+            null, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
 
     @Test
     void deepTechTimelineUsesGradientAndTimelineShapes() {
@@ -88,7 +97,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成一份5页浅色商务风中文PPT，详细版，不要演讲备注，面向产品和工程团队做方案评审")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, null, null, null, null, null, new ObjectMapper());
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-1",
@@ -113,7 +122,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成一份2页简约专业风中文PPT，第一页说明测试目标，第二页说明生成链路和风险，无演讲备注。")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, null, null, null, null, null, new ObjectMapper());
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-2",
@@ -135,7 +144,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成8页深色科技风中文PPT，面向比赛评委和管理层，详细版，无演讲备注。")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, null, null, null, null, null, new ObjectMapper());
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-3",
@@ -185,7 +194,7 @@ class PresentationWorkflowNodesTemplateTest {
     @Test
     void fallbackOutlineRotatesTemplateVariants() throws Exception {
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                mock(PresentationExecutionSupport.class), null, null, null, null, null, new ObjectMapper());
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
 
         var method = PresentationWorkflowNodes.class.getDeclaredMethod("fallbackOutline", com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
         method.setAccessible(true);
@@ -203,5 +212,89 @@ class PresentationWorkflowNodesTemplateTest {
         assertThat(outline.getSlides().get(0).getTemplateVariant()).isEqualTo("hero-band");
         assertThat(outline.getSlides().get(1).getTemplateVariant()).isNotEqualTo(outline.getSlides().get(2).getTemplateVariant());
         assertThat(outline.getSlides().get(4).getTemplateVariant()).isEqualTo("next-step-board");
+    }
+
+    @Test
+    void validateSlideXmlPreservesImgBlock() {
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+        String xml = """
+                <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                  <data>
+                    <shape type="text" topLeftX="60" topLeftY="40" width="500" height="50">
+                      <content><p><span fontSize="28">页面标题</span></p></content>
+                    </shape>
+                    <img src="boxcnRealImageToken" topLeftX="540" topLeftY="120" width="320" height="180"/>
+                  </data>
+                </slide>
+                """;
+        OverAllState state = new OverAllState(Map.of(
+                "slideOutline", PresentationOutline.builder().slides(List.of(PresentationSlidePlan.builder()
+                        .slideId("slide-1")
+                        .index(1)
+                        .title("页面标题")
+                        .layout("two-column")
+                        .templateVariant("dual-cards")
+                        .keyPoints(List.of("要点"))
+                        .build())).build(),
+                "slideXmlList", List.of(PresentationSlideXml.builder()
+                        .slideId("slide-1")
+                        .index(1)
+                        .title("页面标题")
+                        .xml(xml)
+                        .build())
+        ));
+
+        Map<String, Object> result = localNodes.validateSlideXml(state, null).join();
+        @SuppressWarnings("unchecked")
+        List<PresentationSlideXml> validated = (List<PresentationSlideXml>) result.get("slideXmlList");
+        assertThat(validated).hasSize(1);
+        assertThat(validated.get(0).getXml()).contains("<img src=\"boxcnRealImageToken\"");
+    }
+
+    @Nested
+    class AssetResolution {
+
+        @Test
+        void safeImageUrlRejectsUndrawApiEndpoint() throws Exception {
+            Method method = PresentationWorkflowNodes.class.getDeclaredMethod("isSafeImageUrl", String.class);
+            method.setAccessible(true);
+
+            boolean safe = (boolean) method.invoke(nodes,
+                    "https://undraw.co/api/illustrations/choose?query=travel+planning");
+
+            assertThat(safe).isFalse();
+        }
+
+        @Test
+        void resolveSlideAssetsFallsBackToNoImageWhenSearchUnavailable() {
+            PresentationAssetPlan assetPlan = PresentationAssetPlan.builder()
+                    .slides(List.of(PresentationAssetPlan.SlideAssetPlan.builder()
+                            .slideId("slide-1")
+                            .contentImageTasks(List.of(PresentationAssetPlan.AssetTask.builder()
+                                    .query("modern retail store")
+                                    .purpose("主视觉")
+                                    .preferredSourceType("CONTENT_IMAGE")
+                                    .build()))
+                            .illustrationTasks(List.of(PresentationAssetPlan.AssetTask.builder()
+                                    .query("workflow collaboration illustration")
+                                    .purpose("辅助插画")
+                                    .preferredSourceType("ILLUSTRATION")
+                                    .build()))
+                            .build()))
+                    .build();
+
+            OverAllState state = new OverAllState(Map.of(
+                    "taskId", "task-asset-1",
+                    "assetPlan", assetPlan
+            ));
+
+            Map<String, Object> result = nodes.resolveSlideAssets(state, null).join();
+            PresentationAssetResources resources = (PresentationAssetResources) result.get("assetResources");
+
+            assertThat(resources.getSlides()).hasSize(1);
+            assertThat(resources.getSlides().get(0).getImages()).isEmpty();
+            assertThat(resources.getSlides().get(0).getIllustrations()).isEmpty();
+        }
     }
 }
