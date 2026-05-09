@@ -80,6 +80,24 @@ public class TaskSessionResolver {
                 .toList();
     }
 
+    public boolean hasEditableArtifacts(String taskId) {
+        if (!hasText(taskId)) {
+            return false;
+        }
+        return stateStore.findArtifactsByTaskId(taskId).stream()
+                .anyMatch(artifact -> artifact != null
+                        && hasText(artifact.getUrl())
+                        && (artifact.getType() == ArtifactTypeEnum.PPT
+                                || artifact.getType() == ArtifactTypeEnum.DOC));
+    }
+
+    public boolean conversationHasEditableArtifacts(WorkspaceContext workspaceContext) {
+        return resolveCompletedCandidates(workspaceContext).stream()
+                .anyMatch(candidate -> candidate.getArtifactTypes() != null
+                        && candidate.getArtifactTypes().stream()
+                                .anyMatch(type -> type == ArtifactTypeEnum.PPT || type == ArtifactTypeEnum.DOC));
+    }
+
     public String conversationKey(WorkspaceContext workspaceContext) {
         return buildConversationKey(workspaceContext);
     }

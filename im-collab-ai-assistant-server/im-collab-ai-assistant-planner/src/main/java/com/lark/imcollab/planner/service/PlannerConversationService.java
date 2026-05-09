@@ -148,14 +148,41 @@ public class PlannerConversationService {
         if (graphInstruction.isBlank()) {
             graphInstruction = intakeDecision.effectiveInput();
         }
+        // 用户在回应我们的澄清问题时，对"修改已有产物"的表述不能依赖 LLM 分类，用硬规则强制纠正
+        intakeDecision = refineClarificationResponseTarget(session, intakeDecision, graphInstruction);
+        // 在中断逻辑修改 intakeState 之前取出原始指令，updateSessionEnvelope 会重建 intakeState
+        String pendingAdjustmentInstruction = session.getIntakeState() != null
+                ? session.getIntakeState().getPendingAdjustmentInstruction()
+                : null;
         if (shouldAutoInterruptExecutingTaskForReplan(taskId, resolution, session, intakeDecision, workspaceContext)) {
-            return autoInterruptExecutingTaskForReplan(session, resolution, workspaceContext, intakeDecision, graphInstruction);
+            return autoInterruptExecutingTaskForReplan(session, resolution, workspaceContext, intakeDecision, graphInstruction, pendingAdjustmentInstruction);
         }
         if (shouldRejectExecutingCompletedArtifactAdjustment(taskId, resolution, session, intakeDecision, workspaceContext)) {
-            return rejectExecutingCompletedArtifactAdjustment(session);
+            memoryService.appendUserTurn(session, graphInstruction, intakeDecision.intakeType(),
+                    workspaceContext == null ? null : workspaceContext.getInputSource());
+            PlanTaskSession rejected = rejectExecutingCompletedArtifactAdjustment(session);
+            if (rejected != null && rejected.getIntakeState() != null
+                    && hasText(rejected.getIntakeState().getAssistantReply())) {
+                memoryService.appendAssistantTurn(rejected, rejected.getIntakeState().getAssistantReply());
+            }
+            // 拒绝后清除澄清标记，后续消息不再视为澄清回应
+            if (rejected != null && rejected.getIntakeState() != null
+                    && rejected.getIntakeState().getPendingInteractionType()
+                            == PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT) {
+                rejected.getIntakeState().setPendingInteractionType(null);
+                sessionService.saveWithoutVersionChange(rejected);
+            }
+            return rejected;
         }
         if (shouldClarifyExecutingAdjustmentTarget(taskId, resolution, session, intakeDecision, workspaceContext)) {
-            return clarifyExecutingAdjustmentTarget(session);
+            memoryService.appendUserTurn(session, graphInstruction, intakeDecision.intakeType(),
+                    workspaceContext == null ? null : workspaceContext.getInputSource());
+            PlanTaskSession clarified = clarifyExecutingAdjustmentTarget(session, graphInstruction);
+            if (clarified != null && clarified.getIntakeState() != null
+                    && hasText(clarified.getIntakeState().getAssistantReply())) {
+                memoryService.appendAssistantTurn(clarified, clarified.getIntakeState().getAssistantReply());
+            }
+            return clarified;
         }
         if (shouldRouteCompletedAdjustment(taskId, resolution, session, intakeDecision, workspaceContext)) {
             PlanTaskSession adjustmentResult = routeCompletedAdjustmentTaskSelection(
@@ -575,9 +602,14 @@ public class PlannerConversationService {
             return false;
         }
         AdjustmentTargetEnum adjustmentTarget = intakeDecision.adjustmentTarget();
-        return adjustmentTarget == null
-                || adjustmentTarget == AdjustmentTargetEnum.RUNNING_PLAN
-                || adjustmentTarget == AdjustmentTargetEnum.UNKNOWN;
+        if (adjustmentTarget == null || adjustmentTarget == AdjustmentTargetEnum.RUNNING_PLAN) {
+            return true;
+        }
+        if (adjustmentTarget == AdjustmentTargetEnum.UNKNOWN) {
+            return !shouldClarifyExecutingAdjustmentTarget(
+                    explicitTaskId, resolution, session, intakeDecision, workspaceContext);
+        }
+        return false;
     }
 
     private boolean shouldRejectExecutingCompletedArtifactAdjustment(
@@ -597,7 +629,12 @@ public class PlannerConversationService {
                 || intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
             return false;
         }
-        return intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT;
+        if (intakeDecision.adjustmentTarget() != AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
+            return false;
+        }
+        // 意图可能模糊，优先询问澄清；有澄清标记时（已问过）才直接拒绝
+        return !shouldClarifyExecutingAdjustmentTarget(
+                explicitTaskId, resolution, session, intakeDecision, workspaceContext);
     }
 
     private boolean shouldClarifyExecutingAdjustmentTarget(
@@ -607,15 +644,79 @@ public class PlannerConversationService {
             TaskIntakeDecision intakeDecision,
             WorkspaceContext workspaceContext
     ) {
-        return false;
+        if (hasText(explicitTaskId)
+                || resolution == null
+                || !resolution.existingSession()
+                || session == null
+                || session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING
+                || !isImConversation(workspaceContext)
+                || intakeDecision == null
+                || intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
+            return false;
+        }
+        AdjustmentTargetEnum target = intakeDecision.adjustmentTarget();
+        if (target != AdjustmentTargetEnum.UNKNOWN && target != AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
+            return false;
+        }
+        // 已经问过一次，下次不再重复，让 shouldAutoInterrupt / shouldReject 直接处理
+        if (session.getIntakeState() != null
+                && session.getIntakeState().getPendingInteractionType()
+                        == PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT) {
+            return false;
+        }
+        // 当前任务有产物，或对话内近期已完成任务有产物，才值得问；否则中断是唯一选项
+        return sessionResolver.hasEditableArtifacts(session.getTaskId())
+                || sessionResolver.conversationHasEditableArtifacts(workspaceContext);
     }
 
-    private PlanTaskSession clarifyExecutingAdjustmentTarget(PlanTaskSession session) {
-        return updateExecutingAdjustmentReply(
+    private PlanTaskSession clarifyExecutingAdjustmentTarget(PlanTaskSession session, String originalInstruction) {
+        PlanTaskSession result = updateExecutingAdjustmentReply(
                 session,
                 "你是要中断当前执行并重规划，还是修改已经生成的文档或 PPT？",
                 PlanningPhaseEnum.EXECUTING,
                 AdjustmentTargetEnum.UNKNOWN
+        );
+        // 标记已问过，防止下条消息仍 UNKNOWN 时再次询问
+        markPendingInteractionType(result, PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
+        // 锁住原始指令，用户确认中断时作为 replan 目标，避免上下文丢失
+        if (result != null && result.getIntakeState() != null && hasText(originalInstruction)) {
+            result.getIntakeState().setPendingAdjustmentInstruction(originalInstruction);
+            sessionService.saveWithoutVersionChange(result);
+        }
+        return result;
+    }
+
+    private TaskIntakeDecision refineClarificationResponseTarget(
+            PlanTaskSession session,
+            TaskIntakeDecision intakeDecision,
+            String input
+    ) {
+        if (session == null
+                || session.getIntakeState() == null
+                || session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING
+                || session.getIntakeState().getPendingInteractionType()
+                        != PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT
+                || intakeDecision == null
+                || intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                || intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                || !hasText(input)) {
+            return intakeDecision;
+        }
+        String lower = input.toLowerCase(Locale.ROOT);
+        boolean mentionsArtifact = lower.contains("文档") || lower.contains("ppt")
+                || lower.contains("产物") || lower.contains("doc");
+        boolean mentionsExisting = lower.contains("已有") || lower.contains("已生成")
+                || lower.contains("现有") || lower.contains("之前") || lower.contains("刚生成");
+        if (!(mentionsArtifact && mentionsExisting)) {
+            return intakeDecision;
+        }
+        return new TaskIntakeDecision(
+                intakeDecision.intakeType(),
+                intakeDecision.effectiveInput(),
+                intakeDecision.routingReason(),
+                intakeDecision.assistantReply(),
+                intakeDecision.readOnlyView(),
+                AdjustmentTargetEnum.COMPLETED_ARTIFACT
         );
     }
 
@@ -624,7 +725,8 @@ public class PlannerConversationService {
             TaskSessionResolution resolution,
             WorkspaceContext workspaceContext,
             TaskIntakeDecision intakeDecision,
-            String graphInstruction
+            String graphInstruction,
+            String pendingAdjustmentInstruction
     ) {
         session = saveWithoutVersionChangeRetrying(session, current -> {
             updateSessionEnvelope(current, workspaceContext, intakeDecision, resolution, graphInstruction);
@@ -656,19 +758,25 @@ public class PlannerConversationService {
                 ? PlannerToolResult.failure(session.getTaskId(), null, "执行桥接尚未就绪，无法中断当前任务。")
                 : executionTool.interruptExecution(session.getTaskId(), "interrupt execution for plan adjustment");
         if (cancelResult == null || !cancelResult.success()) {
+            log.warn("Planner autoInterrupt failed to cancel execution task={} reason={}",
+                    session.getTaskId(), cancelResult == null ? null : cancelResult.message());
             return updateExecutingAdjustmentReply(
                     session,
-                    "当前执行还没成功中断，先不进入重规划。"
-                            + firstText(cancelResult == null ? null : cancelResult.message(), "请稍后再试一次。"),
+                    "当前执行还没成功中断，先不进入重规划。请稍后再试，或在任务工作台手动中断。",
                     PlanningPhaseEnum.EXECUTING
             );
         }
 
         session = sessionService.get(session.getTaskId());
+        // 优先用调用前取出的原始指令（updateSessionEnvelope 已清除 intakeState 中的该字段）
+        String replanInstruction = hasText(pendingAdjustmentInstruction) ? pendingAdjustmentInstruction : graphInstruction;
         session = saveWithoutVersionChangeRetrying(session, current -> {
             current.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
             current.setActiveExecutionAttemptId(null);
-            current.setTransitionReason("Replanning after IM execution interrupt: " + graphInstruction);
+            if (current.getIntakeState() != null) {
+                current.getIntakeState().setPendingAdjustmentInstruction(null);
+            }
+            current.setTransitionReason("Replanning after IM execution interrupt: " + replanInstruction);
         });
         sessionService.publishEvent(session.getTaskId(), "REPLANNING");
         if (taskRuntimeService != null) {
@@ -682,9 +790,9 @@ public class PlannerConversationService {
         PlanTaskSession replanned = graphRunner.run(
                 new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "interrupt running task and replan from IM"),
                 session.getTaskId(),
-                graphInstruction,
+                replanInstruction,
                 workspaceContext,
-                graphInstruction
+                replanInstruction
         );
         taskBridgeService.ensureTask(replanned);
         if (replanned == null) {
