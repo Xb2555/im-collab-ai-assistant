@@ -227,7 +227,7 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
       if (ctrl.signal.aborted) return;
 
       try {
-        await fetchEventSource(`${getBaseUrl()}/api/im/chats/${activeChatId}/messages/stream`, {
+        await fetchEventSource(`${getBaseUrl()}/im/chats/${activeChatId}/messages/stream`, {
           method: 'GET',
           headers: { Authorization: `Bearer ${accessToken}`, Accept: 'text/event-stream' },
           signal: ctrl.signal,

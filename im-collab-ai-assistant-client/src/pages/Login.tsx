@@ -95,7 +95,7 @@ export default function Login() {
   };
 
   const handleWebDirectLogin = () => {
-    window.location.href = '/api/auth/lark/login';
+    window.location.href = 'https://api.yiiie.cn/api/auth/lark/login';
   };
 
   return (

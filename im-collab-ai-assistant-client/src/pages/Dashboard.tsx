@@ -70,7 +70,7 @@ export default function Dashboard() {
     const ctrl = new AbortController();
     const connectGlobalSSE = async () => {
       try {
-        await fetchEventSource(`${getBaseUrl()}/api/planner/tasks/events/stream?activeOnly=true`, {
+        await fetchEventSource(`${getBaseUrl()}/planner/tasks/events/stream?activeOnly=true`, {
           method: 'GET',
           headers: { Authorization: `Bearer ${accessToken}`, Accept: 'text/event-stream' },
           signal: ctrl.signal,

@@ -14,7 +14,7 @@ export const authApi = {
    * Web 端直跳后端登录入口（后端 302 到飞书授权页）
    */
   getLoginUrlRedirectPath: (): string => {
-    return '/api/auth/lark/login';
+    return 'https://api.yiiie.cn/api/auth/lark/login';
   },
 
   /**
@@ -28,7 +28,7 @@ const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNA
     const clientType = isTauri ? 'desktop' : 'web'; 
     
     // 发送请求，这次一定会带上 ?client=desktop
-    const response = await apiClient.get<LarkLoginUrlResponse>(`/api/auth/login-url?client=${clientType}`);
+    const response = await apiClient.get<LarkLoginUrlResponse>(`/auth/login-url?client=${clientType}`);
     
     if (response.data.code !== 0) {
       throw new Error(response.data.message || '获取登录授权链接失败');
@@ -41,7 +41,7 @@ const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNA
    * 完成登录 (Code 换 Token) 
    */
   callback: async (data: AuthCallbackRequest): Promise<AuthCallbackResponse> => {
-    const response = await apiClient.post<ApiResponse<AuthCallbackResponse>>('/api/auth/callback', data);
+    const response = await apiClient.post<ApiResponse<AuthCallbackResponse>>('/auth/callback', data);
     if (response.data.code !== 0) {
       throw new Error(response.data.message || '登录授权失败');
     }
@@ -52,7 +52,7 @@ const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNA
    * 获取当前登录用户
    */
   getMe: async (): Promise<User> => {
-    const response = await apiClient.get<ApiResponse<User>>('/api/auth/me');
+    const response = await apiClient.get<ApiResponse<User>>('/auth/me');
     if (response.data.code !== 0) {
       throw new Error(response.data.message || '获取用户信息失败');
     }
@@ -63,7 +63,7 @@ const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNA
    * 退出登录 
    */
   logout: async (): Promise<boolean> => {
-    const response = await apiClient.post<ApiResponse<boolean>>('/api/auth/logout');
+    const response = await apiClient.post<ApiResponse<boolean>>('/auth/logout');
     return response.data.code === 0;
   }
 };

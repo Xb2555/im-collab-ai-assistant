@@ -209,7 +209,7 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
       if (ctrl.signal.aborted) return;
 
       try {
-        await fetchEventSource(`${getBaseUrl()}/api/im/chats/${activeChatId}/messages/stream`, {
+        await fetchEventSource(`${getBaseUrl()}/im/chats/${activeChatId}/messages/stream`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${accessToken}`,

@@ -21,7 +21,7 @@ export const plannerApi = {
   // 1. 发起任务规划 (抛入自然语言指令)
   // ✨ 修复：加上 /api 前缀
   createPlan: async (data: PlanRequest): Promise<PlanPreviewVO> => {
-    const response = await apiClient.post<ApiResponse<PlanPreviewVO>>('/api/planner/tasks/plan', data);
+    const response = await apiClient.post<ApiResponse<PlanPreviewVO>>('/planner/tasks/plan', data);
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
   },
@@ -29,7 +29,7 @@ export const plannerApi = {
   // 2. 获取任务状态快照
   // ✨ 修复：加上 /api 前缀
   getTask: async (taskId: string): Promise<PlanPreviewVO> => {
-    const response = await apiClient.get<ApiResponse<PlanPreviewVO>>(`/api/planner/tasks/${taskId}`);
+    const response = await apiClient.get<ApiResponse<PlanPreviewVO>>(`/planner/tasks/${taskId}`);
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
   },
@@ -37,7 +37,7 @@ export const plannerApi = {
   // 3. 提交干预指令 (确认/重规划/取消) - 会触发乐观锁拦截
   // ✨ 修复：加上 /api 前缀
 executeCommand: async (taskId: string, data: PlanCommandRequest): Promise<PlanPreviewVO> => {
-    const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(`/api/planner/tasks/${taskId}/commands`, data);
+    const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(`/planner/tasks/${taskId}/commands`, data);
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
   },
@@ -48,7 +48,7 @@ executeCommand: async (taskId: string, data: PlanCommandRequest): Promise<PlanPr
    */
   iterateDocument: async (data: DocumentIterationRequest): Promise<DocumentIterationResponse> => {
     const response = await apiClient.post<ApiResponse<DocumentIterationResponse>>(
-      '/api/planner/tasks/document-iteration', 
+      '/planner/tasks/document-iteration', 
       data
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
@@ -58,7 +58,7 @@ executeCommand: async (taskId: string, data: PlanCommandRequest): Promise<PlanPr
   // 4. 中断任务
   //  修复：加上 /api 前缀
   interruptTask: async (taskId: string): Promise<PlanPreviewVO> => {
-    const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(`/api/planner/tasks/${taskId}/interrupt`);
+    const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(`/planner/tasks/${taskId}/interrupt`);
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
   },
@@ -66,7 +66,7 @@ executeCommand: async (taskId: string, data: PlanCommandRequest): Promise<PlanPr
   // 5. 恢复任务 (提供追问补充信息)
   //  修复：加上 /api 前缀
   resumeTask: async (taskId: string, data: ResumeRequest): Promise<PlanPreviewVO> => {
-    const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(`/api/planner/tasks/${taskId}/resume`, data);
+    const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(`/planner/tasks/${taskId}/resume`, data);
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
   },
@@ -77,7 +77,7 @@ executeCommand: async (taskId: string, data: PlanCommandRequest): Promise<PlanPr
   getTaskRuntime: async (taskId: string, maxRetries = 3): Promise<any> => {
     for (let i = 0; i < maxRetries; i++) {
       try {
-        const response = await apiClient.get(`/api/planner/tasks/${taskId}/runtime`, {
+        const response = await apiClient.get(`/planner/tasks/${taskId}/runtime`, {
           params: { _t: Date.now() } // 打破浏览器缓存
         });
 
@@ -111,7 +111,7 @@ executeCommand: async (taskId: string, data: PlanCommandRequest): Promise<PlanPr
    * 后端等价于查询: PLANNING, CLARIFYING, WAITING_APPROVAL, EXECUTING
    */
 getActiveTasks: async (limit = 20, cursor = '0'): Promise<TaskListResponse> => {
-    const response = await apiClient.get('/api/planner/tasks/active', {
+    const response = await apiClient.get('/planner/tasks/active', {
       params: { limit, cursor }
     });
     if (response.data.code !== 0) throw new Error(response.data.message);
@@ -122,7 +122,7 @@ getActiveTasks: async (limit = 20, cursor = '0'): Promise<TaskListResponse> => {
    * [新增] 获取我的历史任务列表 (用于侧边栏展示)
    */
   getTasks: async (status?: string, limit = 20, cursor = '0'): Promise<TaskListResponse> => {
-    const response = await apiClient.get('/api/planner/tasks', {
+    const response = await apiClient.get('/planner/tasks', {
       params: { status, limit, cursor } // 若 status 不传，Axios 会自动忽略
     });
     if (response.data.code !== 0) throw new Error(response.data.message);
@@ -135,7 +135,7 @@ getActiveTasks: async (limit = 20, cursor = '0'): Promise<TaskListResponse> => {
    */
   approveDocumentIteration: async (taskId: string, data: DocumentIterationApprovalRequest): Promise<DocumentIterationResponse> => {
     const response = await apiClient.post<ApiResponse<DocumentIterationResponse>>(
-      `/api/planner/tasks/${taskId}/document-iteration/approval`,
+      `/planner/tasks/${taskId}/document-iteration/approval`,
       data
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
