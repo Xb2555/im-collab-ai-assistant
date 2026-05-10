@@ -274,10 +274,22 @@ public class ReplanNodeService {
         if (session != null && session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED) {
             return true;
         }
-        if (!hasText(taskId)) {
+        if (hasText(taskId)) {
+            Optional<TaskRecord> taskRecord = stateStore.findTask(taskId);
+            if (taskRecord.isPresent()) {
+                if (taskRecord.get().getStatus() == TaskStatusEnum.COMPLETED) {
+                    return !editableArtifacts(taskId, false, false).isEmpty();
+                }
+                return false;
+            }
+        }
+        if (session != null && (session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING
+                || session.getPlanningPhase() == PlanningPhaseEnum.INTERRUPTING
+                || session.getPlanningPhase() == PlanningPhaseEnum.REPLANNING
+                || session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY)) {
             return false;
         }
-        if (session != null && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
+        if (!hasText(taskId)) {
             return false;
         }
         return !editableArtifacts(taskId, false, false).isEmpty();

@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
 import com.lark.imcollab.common.model.dto.DocumentIterationApprovalRequest;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
+import com.lark.imcollab.common.model.dto.RecommendationExecuteRequest;
 import com.lark.imcollab.common.model.dto.ResumeRequest;
 import com.lark.imcollab.common.model.dto.SubmitResultRequest;
 import com.lark.imcollab.common.model.entity.BaseResponse;
@@ -353,6 +354,40 @@ public class PlannerController {
         return ResultUtils.success(documentIterationExecutionService.decide(taskId, request, user.get().openId()));
     }
 
+    @PostMapping("/{taskId}/recommendations/{recommendationId}/execute")
+    @Operation(summary = "5.3. 执行下一步推荐", description = "对已完成任务上的结构化下一步推荐执行 follow-up 规划")
+    public BaseResponse<PlanPreviewVO> executeRecommendation(
+            @PathVariable String taskId,
+            @PathVariable String recommendationId,
+            @RequestBody RecommendationExecuteRequest request,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization
+    ) {
+        Optional<LarkFrontendUserResponse> user = currentUser(authorization);
+        if (user.isEmpty()) {
+            return error(BusinessCode.NOT_LOGIN_ERROR, "Not logged in");
+        }
+        if (!canAccessTask(taskId, user.get().openId())) {
+            return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
+        }
+        Optional<PlanTaskSession> maybeSession = repository.findSession(taskId);
+        if (maybeSession.isEmpty()) {
+            return error(BusinessCode.NOT_FOUND_ERROR, "Task not found: " + taskId);
+        }
+        PlanTaskSession session = maybeSession.get();
+        sessionService.checkVersion(session, request == null ? 0 : request.getVersion());
+        RecommendationExecuteRequest ownedRequest = withCurrentUser(request, user.get());
+        try {
+            PlanTaskSession updated = plannerCommandApplicationService.executeRecommendation(
+                    taskId,
+                    recommendationId,
+                    ownedRequest.getWorkspaceContext()
+            );
+            return ResultUtils.success(toPlanPreview(updated, updated == null ? taskId : updated.getTaskId()));
+        } catch (IllegalArgumentException exception) {
+            return error(BusinessCode.OPERATION_ERROR, exception.getMessage());
+        }
+    }
+
     @PostMapping("/{taskId}/commands")
     @Operation(summary = "6. 执行任务指令（确认执行/重新规划/取消规划/失败重试）", description = "用户确认执行、重规划、取消任务或重试失败任务")
     public BaseResponse<PlanPreviewVO> command(
@@ -536,6 +571,18 @@ public class PlannerController {
 
     private PlanCommandRequest withCurrentUser(PlanCommandRequest request, LarkFrontendUserResponse user) {
         PlanCommandRequest owned = request == null ? new PlanCommandRequest() : request;
+        WorkspaceContext context = owned.getWorkspaceContext();
+        if (context == null) {
+            context = new WorkspaceContext();
+            owned.setWorkspaceContext(context);
+        }
+        context.setSenderOpenId(user.openId());
+        context.setInputSource(InputSourceEnum.GUI.name());
+        return owned;
+    }
+
+    private RecommendationExecuteRequest withCurrentUser(RecommendationExecuteRequest request, LarkFrontendUserResponse user) {
+        RecommendationExecuteRequest owned = request == null ? new RecommendationExecuteRequest() : request;
         WorkspaceContext context = owned.getWorkspaceContext();
         if (context == null) {
             context = new WorkspaceContext();

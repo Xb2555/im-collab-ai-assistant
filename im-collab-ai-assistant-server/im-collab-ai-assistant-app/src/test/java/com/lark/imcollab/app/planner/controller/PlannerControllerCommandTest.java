@@ -6,6 +6,7 @@ import com.lark.imcollab.app.planner.assembler.TaskRuntimeViewAssembler;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.dto.PlanCommandRequest;
 import com.lark.imcollab.common.model.dto.PlanRequest;
+import com.lark.imcollab.common.model.dto.RecommendationExecuteRequest;
 import com.lark.imcollab.common.model.entity.BaseResponse;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
@@ -139,6 +140,76 @@ class PlannerControllerCommandTest {
 
         verify(plannerCommandApplicationService).confirmExecution("task-1", session);
         verify(plannerViewAssembler).toPlanPreview(executing);
+    }
+
+    @Test
+    void executeRecommendationRoutesByRecommendationId() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        session.setVersion(3);
+        PlanTaskSession updated = new PlanTaskSession();
+        updated.setTaskId("task-1");
+        updated.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+
+        when(repository.findSession("task-1")).thenReturn(Optional.of(session));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.COMPLETED)));
+        when(plannerCommandApplicationService.executeRecommendation(
+                eq("task-1"),
+                eq("GENERATE_PPT_FROM_DOC"),
+                argThat(context -> context != null
+                        && "ou-user".equals(context.getSenderOpenId())
+                        && "GUI".equals(context.getInputSource()))
+        )).thenReturn(updated);
+        when(taskRuntimeService.ensureRuntimeProjection("task-1")).thenReturn(null);
+        when(plannerViewAssembler.toPlanPreview(updated)).thenReturn(new PlanPreviewVO(
+                "task-1", 4, "PLAN_READY", "title", "summary", java.util.List.of(), java.util.List.of(), java.util.List.of(), null
+        ));
+
+        RecommendationExecuteRequest request = new RecommendationExecuteRequest();
+        request.setVersion(3);
+
+        BaseResponse<PlanPreviewVO> response = controller.executeRecommendation(
+                "task-1",
+                "GENERATE_PPT_FROM_DOC",
+                request,
+                AUTHORIZATION
+        );
+
+        assertThat(response.getCode()).isZero();
+        verify(plannerCommandApplicationService).executeRecommendation(
+                eq("task-1"),
+                eq("GENERATE_PPT_FROM_DOC"),
+                argThat(context -> context != null
+                        && "ou-user".equals(context.getSenderOpenId())
+                        && "GUI".equals(context.getInputSource()))
+        );
+    }
+
+    @Test
+    void executeRecommendationReturnsOperationErrorWhenRecommendationExpired() {
+        PlanTaskSession session = new PlanTaskSession();
+        session.setTaskId("task-1");
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        session.setVersion(3);
+
+        when(repository.findSession("task-1")).thenReturn(Optional.of(session));
+        when(repository.findTask("task-1")).thenReturn(Optional.of(ownedTask("task-1", TaskStatusEnum.COMPLETED)));
+        when(plannerCommandApplicationService.executeRecommendation(anyString(), anyString(), any()))
+                .thenThrow(new IllegalArgumentException("Recommendation not found or not executable: GENERATE_PPT_FROM_DOC"));
+
+        RecommendationExecuteRequest request = new RecommendationExecuteRequest();
+        request.setVersion(3);
+
+        BaseResponse<PlanPreviewVO> response = controller.executeRecommendation(
+                "task-1",
+                "GENERATE_PPT_FROM_DOC",
+                request,
+                AUTHORIZATION
+        );
+
+        assertThat(response.getCode()).isEqualTo(50001);
+        assertThat(response.getMessage()).contains("Recommendation not found or not executable");
     }
 
     @Test
