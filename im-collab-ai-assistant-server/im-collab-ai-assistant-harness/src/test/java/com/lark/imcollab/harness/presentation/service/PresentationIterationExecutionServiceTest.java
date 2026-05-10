@@ -4,6 +4,7 @@ import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.entity.PresentationEditOperation;
+import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
 import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
@@ -499,5 +500,45 @@ class PresentationIterationExecutionServiceTest {
         inOrder.verify(slidesTool).deleteSlide("slides-1", "s2");
         assertThat(result.getModifiedSlides()).containsExactly("moved");
         assertThat(result.getSummary()).isEqualTo("已移动第 2 页到第 4 页后");
+    }
+
+    @Test
+    void replacesImageByElementRoleAnchor() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(slidesTool.fetchPresentation("slides-1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="t1" type="text"><content textType="title"><p>封面</p></content></shape><img id="img-1" src="boxcnOld" topLeftX="560" topLeftY="90" width="320" height="180" alt="旧图"/></data></slide></presentation>
+                                """)
+                        .build())
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("<presentation><slide id=\"s1\"><data><img id=\"img-1\" src=\"boxcn-replaced-image\" topLeftX=\"560\" topLeftY=\"90\" width=\"320\" height=\"180\" alt=\"门店实景图\"/></data></slide></presentation>")
+                        .build());
+        when(intentFacade.resolve("把第1页右侧图片换成门店实景图")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.REPLACE_IMAGE)
+                        .targetElementType(PresentationTargetElementType.IMAGE)
+                        .anchorMode(PresentationAnchorMode.BY_ELEMENT_ROLE)
+                        .pageIndex(1)
+                        .elementRole("right-image")
+                        .replacementText("门店实景图")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+
+        var result = service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("把第1页右侧图片换成门店实景图")
+                .build());
+
+        verify(slidesTool).replaceSlide(eq("slides-1"), eq("s1"), anyList());
+        assertThat(result.getModifiedSlides()).containsExactly("s1");
     }
 }

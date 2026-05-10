@@ -17,6 +17,9 @@ spring:
           temperature: ${DEEPSEEK_TEMPERATURE:0.2}
           max-tokens: ${DEEPSEEK_MAX_TOKENS:4096}
 
+pexels:
+  api-key: ${PEXELS_API_KEY:}
+
 imcollab:
   store:
     redis:

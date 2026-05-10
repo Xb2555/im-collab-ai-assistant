@@ -65,7 +65,7 @@ export function useAgentStream() {
       setIsStreaming(true);
       try {
         // ✨ 在这里拼接 getBaseUrl()
-        await fetchEventSource(`${getBaseUrl()}/api/planner/tasks/${activeTaskId}/events/stream`, {
+        await fetchEventSource(`${getBaseUrl()}/planner/tasks/${activeTaskId}/events/stream`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${token}`,
