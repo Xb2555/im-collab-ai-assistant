@@ -91,6 +91,7 @@ public class PresentationWorkflowNodes {
     private static final List<String> TOC_VARIANTS = List.of("toc-list");
     private static final List<String> TRANSITION_VARIANTS = List.of("section-break");
     private static final List<String> THANKS_VARIANTS = List.of("closing-thanks");
+    private static final String DEFAULT_REPORT_DATE = "2026年05月10日";
     private static final String PEXELS_SEARCH_API = "https://api.pexels.com/v1/search?per_page=6&page=1&query=";
     private static final Set<String> SAFE_IMAGE_DOMAINS = Set.of(
             "unsplash.com", "images.unsplash.com",
@@ -749,11 +750,19 @@ public class PresentationWorkflowNodes {
     private List<PresentationSlidePlan> buildStructuredFallbackSlides(PresentationStoryline storyline, List<String> keyMessages) {
         int requested = Math.max(6, Math.min(MAX_SLIDES, storyline.getPageCount() <= 0 ? 8 : storyline.getPageCount()));
         List<PresentationSlidePlan> slides = new ArrayList<>();
+        String coverSubtitle = firstNonBlank(
+                keyMessages.isEmpty() ? null : keyMessages.get(0),
+                storyline.getGoal(),
+                storyline.getNarrativeArc(),
+                "围绕主题进行结构化汇报");
         slides.add(PresentationSlidePlan.builder()
                 .slideId("slide-1")
                 .index(1)
                 .title(storyline.getTitle())
-                .keyPoints(keyMessages.stream().limit(3).toList())
+                .keyPoints(List.of(
+                        compactSlidePoint(coverSubtitle, 28),
+                        "汇报人：张三",
+                        "汇报时间：" + DEFAULT_REPORT_DATE))
                 .layout("cover")
                 .pageType("COVER")
                 .pageSubType("COVER.HERO")
@@ -773,34 +782,37 @@ public class PresentationWorkflowNodes {
                 .visualEmphasis("balance")
                 .speakerNotes("说明本次汇报的章节结构。")
                 .build());
-        int contentSlots = Math.max(1, requested - 4);
-        for (int i = 0; i < contentSlots; i++) {
+        int remainingSlides = Math.max(1, requested - slides.size() - 1);
+        int transitionBudget = Math.max(0, remainingSlides / 3);
+        int contentBudget = remainingSlides;
+        for (int i = 0; i < keyMessages.size() && contentBudget > 0; i++) {
             int sectionOrder = i + 1;
             String sectionId = "section-" + sectionOrder;
-            String sectionTitle = keyMessages.get(Math.min(i, keyMessages.size() - 1));
-            slides.add(PresentationSlidePlan.builder()
-                    .slideId("slide-" + (slides.size() + 1))
-                    .index(slides.size() + 1)
-                    .title(sectionTitle)
-                    .keyPoints(List.of("本章节聚焦一个中心观点"))
-                    .layout("section")
-                    .pageType("TRANSITION")
-                    .pageSubType("TRANSITION.SECTION_BREAK")
-                    .sectionId(sectionId)
-                    .sectionTitle(sectionTitle)
-                    .sectionOrder(sectionOrder)
-                    .templateVariant("rail-notes")
-                    .visualEmphasis("title")
-                    .speakerNotes("做章节过渡。")
-                    .build());
-            if (slides.size() >= requested - 1) {
-                break;
+            String sectionTitle = compactSlidePoint(keyMessages.get(Math.min(i, keyMessages.size() - 1)), 14);
+            if (transitionBudget > 0 && contentBudget >= 2) {
+                slides.add(PresentationSlidePlan.builder()
+                        .slideId("slide-" + (slides.size() + 1))
+                        .index(slides.size() + 1)
+                        .title(sectionTitle)
+                        .keyPoints(List.of("围绕本章节重点展开分析"))
+                        .layout("section")
+                        .pageType("TRANSITION")
+                        .pageSubType("TRANSITION.SECTION_BREAK")
+                        .sectionId(sectionId)
+                        .sectionTitle(sectionTitle)
+                        .sectionOrder(sectionOrder)
+                        .templateVariant("rail-notes")
+                        .visualEmphasis("title")
+                        .speakerNotes("做章节过渡。")
+                        .build());
+                transitionBudget--;
+                contentBudget--;
             }
             slides.add(PresentationSlidePlan.builder()
                     .slideId("slide-" + (slides.size() + 1))
                     .index(slides.size() + 1)
                     .title(sectionTitle)
-                    .keyPoints(keyMessages)
+                    .keyPoints(normalizeKeyPointsForDensity(keyMessages, List.of(sectionTitle), "standard"))
                     .layout(sectionOrder % 4 == 1 ? "two-column"
                             : sectionOrder % 4 == 2 ? "timeline"
                             : sectionOrder % 4 == 3 ? "comparison" : "metric-cards")
@@ -819,15 +831,13 @@ public class PresentationWorkflowNodes {
                     .visualEmphasis(sectionOrder % 4 == 2 || sectionOrder % 4 == 0 ? "data" : "balance")
                     .speakerNotes("围绕章节重点展开。")
                     .build());
-            if (slides.size() >= requested - 1) {
-                break;
-            }
+            contentBudget--;
         }
         slides.add(PresentationSlidePlan.builder()
                 .slideId("slide-" + (slides.size() + 1))
                 .index(slides.size() + 1)
                 .title("感谢聆听")
-                .keyPoints(List.of("欢迎交流", "感谢聆听"))
+                .keyPoints(List.of("期待交流指正"))
                 .layout("summary")
                 .pageType("THANKS")
                 .pageSubType("THANKS.CLOSING")
@@ -1301,11 +1311,13 @@ public class PresentationWorkflowNodes {
                 </slide>
                 """.formatted(profile.background(), profile.cardFill(), profile.cardBorder(),
                 titleContent(title, profile.text(), 40),
-                plainContent("Welcome to discuss and iterate further", profile.muted(), 16, false, "center"),
+                plainContent("期待交流指正", profile.muted(), 16, false, "center"),
                 note).trim();
     }
 
     private String buildCoverSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, String note) {
+        String subtitle = coverSubtitle(points);
+        String footer = coverFooter(points);
         return switch (templateVariant) {
             case "center-stack" -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
@@ -1314,14 +1326,14 @@ public class PresentationWorkflowNodes {
                         <shape type="rect" topLeftX="132" topLeftY="86" width="696" height="356"><fill><fillColor color="%s"/></fill><border color="%s" width="2"/></shape>
                         <shape type="rect" topLeftX="132" topLeftY="86" width="696" height="14"><fill><fillColor color="%s"/></fill></shape>
                         <shape type="text" topLeftX="188" topLeftY="146" width="584" height="112">%s</shape>
-                        <shape type="text" topLeftX="210" topLeftY="286" width="540" height="126"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
-                        <shape type="text" topLeftX="188" topLeftY="456" width="584" height="26">%s</shape>
+                        <shape type="text" topLeftX="210" topLeftY="286" width="540" height="58">%s</shape>
+                        <shape type="text" topLeftX="188" topLeftY="392" width="584" height="52">%s</shape>
                       </data>%s
                     </slide>
                     """.formatted(profile.background(), profile.cardFill(), profile.cardBorder(), profile.accent(),
                     titleContent(title, profile.text(), "title".equals(emphasis) ? 40 : 36),
-                    bulletList(points, profile.text(), 19),
-                    plainContent(profile.name(), profile.muted(), 14, false, "center"), note).trim();
+                    plainContent(subtitle, profile.muted(), 22, false, "center"),
+                    plainContent(footer, profile.muted(), 16, false, "center"), note).trim();
             case "asymmetric-title" -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
                       <style><fill><fillColor color="%s"/></fill></style>
@@ -1329,14 +1341,14 @@ public class PresentationWorkflowNodes {
                         <shape type="rect" topLeftX="0" topLeftY="0" width="220" height="540"><fill><fillColor color="%s"/></fill></shape>
                         <shape type="rect" topLeftX="48" topLeftY="100" width="90" height="8"><fill><fillColor color="%s"/></fill></shape>
                         <shape type="text" topLeftX="248" topLeftY="106" width="620" height="150">%s</shape>
-                        <shape type="text" topLeftX="250" topLeftY="286" width="560" height="146"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
-                        <shape type="text" topLeftX="250" topLeftY="466" width="500" height="26">%s</shape>
+                        <shape type="text" topLeftX="250" topLeftY="286" width="560" height="64">%s</shape>
+                        <shape type="text" topLeftX="250" topLeftY="426" width="500" height="54">%s</shape>
                       </data>%s
                     </slide>
                     """.formatted(profile.background(), profile.cardFill(), profile.accent(),
                     titleContent(title, profile.text(), "title".equals(emphasis) ? 44 : 40),
-                    bulletList(points, profile.text(), 20),
-                    plainContent(profile.name(), profile.muted(), 14, false, "left"), note).trim();
+                    plainContent(subtitle, profile.muted(), 22, false, "left"),
+                    plainContent(footer, profile.muted(), 16, false, "left"), note).trim();
             default -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
                       <style><fill><fillColor color="%s"/></fill></style>
@@ -1345,14 +1357,14 @@ public class PresentationWorkflowNodes {
                         <shape type="rect" topLeftX="88" topLeftY="82" width="748" height="320"><fill><fillColor color="rgba(255,255,255,0.94)"/></fill><border color="rgba(255,255,255,0.98)" width="1"/></shape>
                         <shape type="rect" topLeftX="88" topLeftY="82" width="748" height="12"><fill><fillColor color="%s"/></fill></shape>
                         <shape type="text" topLeftX="132" topLeftY="130" width="662" height="122">%s</shape>
-                        <shape type="text" topLeftX="136" topLeftY="272" width="620" height="106"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
-                        <shape type="text" topLeftX="134" topLeftY="422" width="620" height="28">%s</shape>
+                        <shape type="text" topLeftX="136" topLeftY="272" width="620" height="58">%s</shape>
+                        <shape type="text" topLeftX="134" topLeftY="382" width="620" height="54">%s</shape>
                       </data>%s
                     </slide>
                     """.formatted(profile.background(), profile.accent(),
                     titleContent(title, "rgb(15,23,42)", "title".equals(emphasis) ? 42 : 40),
-                    bulletList(points, "rgb(30,41,59)", 20),
-                    plainContent(profile.name(), "rgb(71,85,105)", 14, false, "left"), note).trim();
+                    plainContent(subtitle, "rgb(71,85,105)", 22, false, "left"),
+                    plainContent(footer, "rgb(71,85,105)", 16, false, "left"), note).trim();
         };
     }
 
@@ -1374,7 +1386,7 @@ public class PresentationWorkflowNodes {
                     headlineContent(title, profile.text(), "title".equals(emphasis) ? 34 : 31),
                     bulletList(points, profile.text(), 20),
                     profile.cardFill(), profile.cardBorder(),
-                    plainContent("关键提示\n聚焦本页一个中心观点", profile.muted(), 16, false, "left"),
+                    plainContent("", profile.muted(), 16, false, "left"),
                     pageNumber(index, total, profile), note).trim();
             case "split-band" -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
@@ -1430,7 +1442,7 @@ public class PresentationWorkflowNodes {
                     headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
                     profile.cardFill(), profile.cardBorder(), profile.cardFill(), profile.cardBorder(),
                     bulletList(points, profile.text(), 19),
-                    plainContent("场景配图", profile.muted(), 12, false, "center"),
+                    plainContent("", profile.muted(), 12, false, "center"),
                     pageNumber(index, total, profile), note).trim();
             default -> """
                     <slide xmlns="http://www.larkoffice.com/sml/2.0">
@@ -1449,7 +1461,7 @@ public class PresentationWorkflowNodes {
                     headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
                     profile.cardFill(), profile.cardBorder(), profile.cardFill(), profile.cardBorder(),
                     bulletList(points, profile.text(), 19),
-                    plainContent("场景配图", profile.muted(), 12, false, "center"),
+                    plainContent("", profile.muted(), 12, false, "center"),
                     pageNumber(index, total, profile), note).trim();
         };
     }
@@ -1617,6 +1629,18 @@ public class PresentationWorkflowNodes {
                 .toList();
     }
 
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (hasText(value)) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
     private String summarizeAgendaPoint(String value) {
         if (!hasText(value)) {
             return "";
@@ -1647,12 +1671,40 @@ public class PresentationWorkflowNodes {
                 .formatted(color, fontSize, escapeXml(text));
     }
 
+    private String coverSubtitle(List<String> points) {
+        if (points == null || points.isEmpty()) {
+            return "围绕主题进行结构化汇报";
+        }
+        return compactSlidePoint(firstNonBlank(points.get(0), "围绕主题进行结构化汇报"), 30);
+    }
+
+    private String coverFooter(List<String> points) {
+        if (points == null || points.size() < 2) {
+            return "汇报人：张三    汇报时间：" + DEFAULT_REPORT_DATE;
+        }
+        String presenter = firstMatching(points, value -> value.startsWith("汇报人"));
+        String reportDate = firstMatching(points, value -> value.startsWith("汇报时间"));
+        return firstNonBlank(presenter, "汇报人：张三") + "    " + firstNonBlank(reportDate, "汇报时间：" + DEFAULT_REPORT_DATE);
+    }
+
     private String plainContent(String text, String color, int fontSize, boolean bold, String align) {
         String content = "<span color=\"%s\" fontSize=\"%d\">%s</span>".formatted(color, fontSize, escapeXml(text));
         if (bold) {
             content = "<strong>" + content + "</strong>";
         }
         return "<content><p textAlign=\"%s\">%s</p></content>".formatted(align, content);
+    }
+
+    private String firstMatching(List<String> values, java.util.function.Predicate<String> predicate) {
+        if (values == null || predicate == null) {
+            return null;
+        }
+        return values.stream()
+                .filter(this::hasText)
+                .map(String::trim)
+                .filter(predicate)
+                .findFirst()
+                .orElse(null);
     }
 
     private List<String> firstHalf(List<String> points) {
@@ -2241,7 +2293,38 @@ public class PresentationWorkflowNodes {
                         .diagrams(resolveDiagramResourceItems(slide.getDiagramTasks()))
                         .build())
                 .toList();
-        return PresentationImageResources.builder().resources(pages).build();
+        return PresentationImageResources.builder().resources(reuseCoverImageForThanksPage(pages)).build();
+    }
+
+    private List<PresentationImageResources.PageImageResource> reuseCoverImageForThanksPage(
+            List<PresentationImageResources.PageImageResource> pages) {
+        if (pages == null || pages.isEmpty()) {
+            return List.of();
+        }
+        PresentationImageResources.PageImageResource cover = pages.stream()
+                .filter(Objects::nonNull)
+                .filter(page -> "slide-1".equals(page.getSlideId()))
+                .findFirst()
+                .orElse(null);
+        if (cover == null || cover.getContentImages() == null || cover.getContentImages().isEmpty()) {
+            return pages;
+        }
+        return pages.stream()
+                .map(page -> {
+                    if (page == null || !("slide-" + pages.size()).equals(page.getSlideId())) {
+                        return page;
+                    }
+                    if (page.getContentImages() != null && !page.getContentImages().isEmpty()) {
+                        return page;
+                    }
+                    return PresentationImageResources.PageImageResource.builder()
+                            .slideId(page.getSlideId())
+                            .contentImages(cover.getContentImages())
+                            .illustrations(page.getIllustrations())
+                            .diagrams(page.getDiagrams())
+                            .build();
+                })
+                .toList();
     }
 
     private List<PresentationImageResources.ResourceItem> resolveTaskResources(
