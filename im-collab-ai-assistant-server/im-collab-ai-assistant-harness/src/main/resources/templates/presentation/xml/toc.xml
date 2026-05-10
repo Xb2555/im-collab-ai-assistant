@@ -1,9 +1,11 @@
 <slide xmlns="http://www.larkoffice.com/sml/2.0">
   <style><fill><fillColor color="{{BACKGROUND}}"/></fill></style>
   <data>
+    {{BACKGROUND_IMAGE}}
     <shape type="rect" topLeftX="0" topLeftY="0" width="960" height="18"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
-    <shape type="text" topLeftX="64" topLeftY="52" width="820" height="72">{{TITLE}}</shape>
-    <shape type="rect" topLeftX="72" topLeftY="150" width="816" height="278"><fill><fillColor color="{{CARD_FILL}}"/></fill><border color="{{CARD_BORDER}}" width="1"/></shape>
-    <shape type="text" topLeftX="108" topLeftY="190" width="744" height="212"><content textType="body" lineSpacing="multiple:1.45"><ol>{{TOC_LIST}}</ol></content></shape>
+    <shape type="rect" topLeftX="48" topLeftY="86" width="436" height="344"><fill><fillColor color="rgba(255,255,255,0.93)"/></fill><border color="{{CARD_BORDER}}" width="1"/></shape>
+    <shape type="rect" topLeftX="48" topLeftY="86" width="436" height="12"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
+    <shape type="text" topLeftX="86" topLeftY="126" width="344" height="72">{{TITLE}}</shape>
+    <shape type="text" topLeftX="92" topLeftY="204" width="324" height="188"><content textType="body" lineSpacing="multiple:1.45"><ol>{{TOC_LIST}}</ol></content></shape>
   </data>{{NOTE}}
 </slide>

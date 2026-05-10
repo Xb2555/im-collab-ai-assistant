@@ -1,12 +1,19 @@
 <slide xmlns="http://www.larkoffice.com/sml/2.0">
   <style><fill><fillColor color="{{BACKGROUND}}"/></fill></style>
   <data>
-    {{SIDE_IMAGE}}
-    <shape type="rect" topLeftX="72" topLeftY="74" width="430" height="392"><fill><fillColor color="rgba(255,255,255,0.93)"/></fill><border color="{{CARD_BORDER}}" width="1"/></shape>
-    <shape type="rect" topLeftX="72" topLeftY="74" width="430" height="12"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
-    <shape type="text" topLeftX="126" topLeftY="184" width="300" height="88">{{TITLE}}</shape>
-    <shape type="text" topLeftX="126" topLeftY="298" width="280" height="34">{{SUBTITLE}}</shape>
-    <shape type="text" topLeftX="126" topLeftY="348" width="280" height="24">{{PRESENTER_VALUE}}</shape>
-    <shape type="text" topLeftX="126" topLeftY="380" width="280" height="24">{{DATE_VALUE}}</shape>
+    {{BACKGROUND_IMAGE}}
+    <shape type="rect" topLeftX="0" topLeftY="0" width="960" height="540"><fill><fillColor color="rgba(15,23,42,0.28)"/></fill></shape>
+    <shape type="rect" topLeftX="88" topLeftY="82" width="748" height="320"><fill><fillColor color="rgba(255,255,255,0.94)"/></fill><border color="rgba(255,255,255,0.98)" width="1"/></shape>
+    <shape type="rect" topLeftX="88" topLeftY="82" width="748" height="12"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
+    <shape type="text" topLeftX="132" topLeftY="130" width="662" height="122">{{TITLE}}</shape>
+    <shape type="text" topLeftX="136" topLeftY="272" width="620" height="58">{{SUBTITLE}}</shape>
+    <shape type="rect" topLeftX="136" topLeftY="346" width="126" height="38"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
+    <shape type="rect" topLeftX="262" topLeftY="346" width="162" height="38"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
+    <shape type="text" topLeftX="146" topLeftY="354" width="104" height="20">{{PRESENTER_LABEL}}</shape>
+    <shape type="text" topLeftX="274" topLeftY="354" width="138" height="20">{{PRESENTER_VALUE}}</shape>
+    <shape type="rect" topLeftX="446" topLeftY="346" width="126" height="38"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
+    <shape type="rect" topLeftX="572" topLeftY="346" width="188" height="38"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
+    <shape type="text" topLeftX="456" topLeftY="354" width="104" height="20">{{DATE_LABEL}}</shape>
+    <shape type="text" topLeftX="584" topLeftY="354" width="164" height="20">{{DATE_VALUE}}</shape>
   </data>{{NOTE}}
 </slide>

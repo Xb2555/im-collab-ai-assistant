@@ -82,7 +82,7 @@ public class PresentationWorkflowNodes {
 
     private static final Logger log = LoggerFactory.getLogger(PresentationWorkflowNodes.class);
 
-    private static final int MAX_SLIDES = 12;
+    private static final int MAX_SLIDES = 20;
     private static final Pattern SLIDE_XML_PATTERN = Pattern.compile("(?s)<slide\\b.*?</slide>");
     private static final Pattern PAGE_COUNT_PATTERN = Pattern.compile("(\\d{1,2})\\s*(页|p|P|slides?|Slides?)");
     private static final String PRESENTATION_TEMPLATE_ROOT = "templates/presentation/xml/";
@@ -531,7 +531,7 @@ public class PresentationWorkflowNodes {
                     .goal("清晰汇报任务进展与关键结论")
                     .narrativeArc("背景与目标 -> 核心内容 -> 方案与风险 -> 下一步")
                     .style("简约专业")
-                    .pageCount(8)
+                    .pageCount(10)
                     .sourceSummary(response.getText())
                     .keyMessages(List.of(truncate(response.getText(), 80)))
                     .build();
@@ -662,7 +662,11 @@ public class PresentationWorkflowNodes {
         }
         storyline.setStyle(effectiveThemeFamily(options, storyline.getStyle()));
         int requestedPageCount = options.getPageCount();
-        int pageCount = requestedPageCount > 0 ? requestedPageCount : storyline.getPageCount() <= 0 ? 8 : storyline.getPageCount();
+        int pageCount = requestedPageCount > 0
+                ? requestedPageCount
+                : storyline.getPageCount() <= 0
+                ? defaultAutoPageCount(storyline)
+                : storyline.getPageCount();
         storyline.setPageCount(Math.max(1, Math.min(MAX_SLIDES, pageCount)));
         if (storyline.getKeyMessages() == null || storyline.getKeyMessages().isEmpty()) {
             storyline.setKeyMessages(List.of(truncate(blankToDefault(storyline.getSourceSummary(), storyline.getGoal()), 80)));
@@ -756,7 +760,8 @@ public class PresentationWorkflowNodes {
     }
 
     private List<PresentationSlidePlan> buildStructuredFallbackSlides(PresentationStoryline storyline, List<String> keyMessages) {
-        int requested = Math.max(6, Math.min(MAX_SLIDES, storyline.getPageCount() <= 0 ? 8 : storyline.getPageCount()));
+        int requested = Math.max(6, Math.min(MAX_SLIDES,
+                storyline.getPageCount() <= 0 ? defaultAutoPageCount(storyline) : storyline.getPageCount()));
         List<PresentationSlidePlan> slides = new ArrayList<>();
         PresentationCoverMeta coverMeta = resolveCoverMeta(storyline);
         String coverSubtitle = firstNonBlank(
@@ -1077,6 +1082,14 @@ public class PresentationWorkflowNodes {
         return true;
     }
 
+    private int defaultAutoPageCount(PresentationStoryline storyline) {
+        int sections = storyline == null || storyline.getKeyMessages() == null || storyline.getKeyMessages().isEmpty()
+                ? 3
+                : Math.min(6, storyline.getKeyMessages().size());
+        int total = 1 + 1 + sections + sections + 1;
+        return Math.min(MAX_SLIDES, Math.max(8, total));
+    }
+
     private List<String> normalizeKeyPoints(List<String> source, List<String> fallback) {
         List<String> values = source == null || source.isEmpty() ? fallback : source;
         return values == null || values.isEmpty()
@@ -1284,9 +1297,7 @@ public class PresentationWorkflowNodes {
         placeholders.put("{{METRIC_BLOCK}}", resolveMetricBlock(points, profile, templateVariant, emphasis));
         placeholders.put("{{SUMMARY_BLOCK}}", resolveSummaryBlock(points, profile, templateVariant, emphasis));
         placeholders.put("{{TIMELINE_AXIS}}", resolveTimelineAxis(profile, templateVariant));
-        placeholders.put("{{TIMELINE_ITEMS}}", "stacked-steps".equals(templateVariant)
-                ? stackedTimelineItems(points, profile, "action".equals(emphasis))
-                : timelineItems(points, profile));
+        placeholders.put("{{TIMELINE_ITEMS}}", "{{TIMELINE_ITEMS}}");
         placeholders.put("{{SIDE_IMAGE}}", "{{SIDE_IMAGE}}");
         String template = loadSlideTemplate(pageType, layout, templateVariant);
         return applyTemplate(template, placeholders);
@@ -1421,8 +1432,7 @@ public class PresentationWorkflowNodes {
     private String twoColumnRightBlock(StyleProfile profile) {
         return """
                 <shape type="rect" topLeftX="468" topLeftY="160" width="396" height="252"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                <shape type="text" topLeftX="536" topLeftY="424" width="278" height="22">%s</shape>
-                """.formatted(profile.cardFill(), profile.cardBorder(), plainContent("", profile.muted(), 12, false, "center")).trim();
+                """.formatted(profile.cardFill(), profile.cardBorder()).trim();
     }
 
     private String resolveMetricBlock(List<String> points, StyleProfile profile, String templateVariant, String emphasis) {
@@ -1471,11 +1481,22 @@ public class PresentationWorkflowNodes {
     private List<String> normalizeTocPoints(List<String> points) {
         List<String> safePoints = points == null || points.isEmpty() ? List.of("项目背景", "核心方案", "风险与计划") : points;
         return safePoints.stream()
+                .map(this::stripAgendaNumberPrefix)
                 .map(this::summarizeAgendaPoint)
                 .filter(this::hasText)
                 .distinct()
                 .limit(5)
                 .toList();
+    }
+
+    private String stripAgendaNumberPrefix(String value) {
+        if (!hasText(value)) {
+            return "";
+        }
+        String normalized = value.trim();
+        normalized = normalized.replaceFirst("^\\d+(?:\\.\\d+)*[\\.、\\s]+", "");
+        normalized = normalized.replaceFirst("^第\\s*\\d+\\s*(?:章|节|部分|项)[：:\\s]*", "");
+        return normalized.trim();
     }
 
     private List<PresentationSlidePlan> repairOutlineStructure(
@@ -1514,8 +1535,25 @@ public class PresentationWorkflowNodes {
                         .build());
             }
         }
+        if (repaired.stream().noneMatch(slide -> "TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")))) {
+            List<PresentationSlidePlan> fallback = buildStructuredFallbackSlides(storyline, normalizeKeyPoints(storyline.getKeyMessages(), List.of(storyline.getGoal())));
+            PresentationSlidePlan transition = fallback.stream()
+                    .filter(slide -> "TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")))
+                    .findFirst()
+                    .orElse(null);
+            if (transition != null && repaired.size() < targetCount) {
+                repaired.add(Math.min(2, repaired.size()), transition);
+            }
+        }
         if (repaired.size() > targetCount && targetCount > 0) {
-            repaired = new ArrayList<>(repaired.subList(0, targetCount));
+            while (repaired.size() > targetCount) {
+                int removableIndex = findRemovableSlideIndex(repaired);
+                if (removableIndex < 0) {
+                    repaired = new ArrayList<>(repaired.subList(0, targetCount));
+                    break;
+                }
+                repaired.remove(removableIndex);
+            }
         }
         if (!repaired.isEmpty()) {
             repaired.get(0).setKeyPoints(List.of(
@@ -1558,9 +1596,25 @@ public class PresentationWorkflowNodes {
             return hasText(lead) ? List.of(compactSlidePoint(lead, 30)) : List.of();
         }
         if ("THANKS".equalsIgnoreCase(pageType)) {
-            return List.of("期待交流指正");
+            return List.of(
+                    "Thank you for listening",
+                    "汇报人：" + coverMeta.presenter(),
+                    "汇报时间：" + coverMeta.reportDate());
         }
         return normalizeKeyPoints(slide.getKeyPoints(), storyline.getKeyMessages());
+    }
+
+    private int findRemovableSlideIndex(List<PresentationSlidePlan> slides) {
+        for (int i = slides.size() - 2; i >= 1; i--) {
+            String pageType = blankToDefault(slides.get(i).getPageType(), "");
+            if (!"TRANSITION".equalsIgnoreCase(pageType)
+                    && !"TOC".equalsIgnoreCase(pageType)
+                    && !"COVER".equalsIgnoreCase(pageType)
+                    && !"THANKS".equalsIgnoreCase(pageType)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private String normalizeSlideTitle(String title, int index, int total) {
@@ -1742,10 +1796,8 @@ public class PresentationWorkflowNodes {
             builder.append("""
                     <ellipse topLeftX="%d" topLeftY="262" width="36" height="36"><fill><fillColor color="%s"/></fill><border color="%s" width="2"/></ellipse>
                     <shape type="text" topLeftX="%d" topLeftY="192" width="142" height="48">%s</shape>
-                    <shape type="rect" topLeftX="%d" topLeftY="328" width="110" height="82"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
                     """.formatted(x, profile.accent(), profile.cardBorder(), x - 52,
-                    plainContent(compactSlidePoint(safePoints.get(i), 12), profile.text(), 16, false, "center"),
-                    x - 38, profile.cardFill(), profile.cardBorder()));
+                    plainContent(compactSlidePoint(safePoints.get(i), 12), profile.text(), 16, false, "center")));
         }
         return builder.toString().trim();
     }
@@ -1804,6 +1856,34 @@ public class PresentationWorkflowNodes {
                     plainContent(String.valueOf(i + 1), profile.background(), 16, true, "center"),
                     y - 4, profile.cardFill(), profile.cardBorder(), y + 10,
                     plainContent(safePoints.get(i), profile.text(), emphasizeAction && i == count - 1 ? 20 : 18, emphasizeAction && i == count - 1, "left")));
+        }
+        return builder.toString().trim();
+    }
+
+    private String stackedTimelineItems(
+            List<String> points,
+            StyleProfile profile,
+            boolean emphasizeAction,
+            String imageSrc,
+            String altText) {
+        List<String> safePoints = points == null || points.isEmpty() ? List.of("明确目标", "梳理方案", "推进落地") : points;
+        int count = Math.min(4, safePoints.size());
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            int y = 116 + i * 96;
+            builder.append("""
+                    <shape type="rect" topLeftX="92" topLeftY="%d" width="48" height="48"><fill><fillColor color="%s"/></fill></shape>
+                    <shape type="text" topLeftX="98" topLeftY="%d" width="36" height="34">%s</shape>
+                    <shape type="rect" topLeftX="174" topLeftY="%d" width="472" height="64"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    <shape type="text" topLeftX="204" topLeftY="%d" width="408" height="36">%s</shape>
+                    <img src="%s" topLeftX="684" topLeftY="%d" width="132" height="78" alpha="1" alt="%s">
+                      <border color="rgba(0,0,0,0.08)" width="1"/>
+                    </img>
+                    """.formatted(y, profile.accent(), y + 4,
+                    plainContent(String.valueOf(i + 1), profile.background(), 16, true, "center"),
+                    y - 6, profile.cardFill(), profile.cardBorder(), y + 12,
+                    plainContent(safePoints.get(i), profile.text(), emphasizeAction && i == count - 1 ? 20 : 18, emphasizeAction && i == count - 1, "left"),
+                    imageSrc, y - 2, altText));
         }
         return builder.toString().trim();
     }
@@ -2679,7 +2759,50 @@ public class PresentationWorkflowNodes {
         if ("THANKS".equalsIgnoreCase(blankToDefault(slide.getPageType(), ""))) {
             return resolveFirstImage("slide-1", resources);
         }
+        if ("TIMELINE".equalsIgnoreCase(blankToDefault(slide.getPageType(), ""))) {
+            java.util.Optional<PresentationAssetResources.AssetResource> sectionFallback = resolveSectionNeighborImage(slide, resources);
+            if (sectionFallback.isPresent()) {
+                return sectionFallback;
+            }
+            return resolveFirstImage("slide-1", resources);
+        }
         return java.util.Optional.empty();
+    }
+
+    private java.util.Optional<PresentationAssetResources.AssetResource> resolveSectionNeighborImage(
+            PresentationSlidePlan slide,
+            PresentationAssetResources resources) {
+        if (slide == null || resources == null || resources.getSlides() == null || !hasText(slide.getSectionId())) {
+            return java.util.Optional.empty();
+        }
+        String numericPart = slide.getSlideId() == null ? "" : slide.getSlideId().replace("slide-", "");
+        int currentIndex;
+        try {
+            currentIndex = Integer.parseInt(blankToDefault(numericPart, "0"));
+        } catch (NumberFormatException exception) {
+            currentIndex = 0;
+        }
+        final int anchorIndex = currentIndex;
+        return resources.getSlides().stream()
+                .filter(Objects::nonNull)
+                .filter(item -> !Objects.equals(item.getSlideId(), slide.getSlideId()))
+                .sorted(Comparator.comparingInt(item -> Math.abs(extractSlideIndex(item.getSlideId()) - anchorIndex)))
+                .filter(item -> item.getImages() != null && !item.getImages().isEmpty())
+                .map(item -> item.getImages().get(0))
+                .filter(Objects::nonNull)
+                .filter(asset -> hasText(asset.getFileToken()))
+                .findFirst();
+    }
+
+    private int extractSlideIndex(String slideId) {
+        if (!hasText(slideId)) {
+            return Integer.MAX_VALUE;
+        }
+        try {
+            return Integer.parseInt(slideId.replace("slide-", ""));
+        } catch (NumberFormatException exception) {
+            return Integer.MAX_VALUE;
+        }
     }
 
     private java.util.Optional<PresentationAssetResources.AssetResource> resolveUnifiedContentBackground(
@@ -2733,24 +2856,41 @@ public class PresentationWorkflowNodes {
                 .filter(element -> "background-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
                 .findFirst()
                 .orElse(null);
-        String compiledXml = injectSlideImages(baseXml, plan, layout, image, backgroundImage);
+        String compiledXml = injectSlideImages(baseXml, plan, layout, image, backgroundImage, options);
         if (!containsImage(slideIr)) {
             return clearUnresolvedImageSlots(compiledXml);
         }
         return clearUnresolvedImageSlots(compiledXml);
     }
 
-    private String injectSlideImages(String baseXml, PresentationSlidePlan plan, String layout, PresentationElementIR image, PresentationElementIR backgroundElement) {
+    private String injectSlideImages(
+            String baseXml,
+            PresentationSlidePlan plan,
+            String layout,
+            PresentationElementIR image,
+            PresentationElementIR backgroundElement,
+            PresentationGenerationOptions options) {
         String backgroundImage = "";
         String rightImage = twoColumnRightBlock(styleProfile("minimal-professional"));
         String sideImage = "";
         String contentImage = "";
-        String timelineItemsXml = null;
+        StyleProfile profile = styleProfile(effectiveThemeFamily(options));
+        String timelineItemsXml = "stacked-steps".equals(blankToDefault(plan.getTemplateVariant(), ""))
+                ? stackedTimelineItems(extractBodyPointsFromPlan(plan), profile, "action".equalsIgnoreCase(blankToDefault(plan.getVisualEmphasis(), "")))
+                : timelineItems(extractBodyPointsFromPlan(plan), profile);
         String backgroundSrc = resolveRenderableImageSrc(backgroundElement);
         if (hasText(backgroundSrc)) {
             backgroundImage = """
                     <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
                     """.formatted(backgroundSrc, "统一正文背景图");
+        }
+        if ("TOC".equalsIgnoreCase(blankToDefault(plan.getPageType(), "")) && !hasText(backgroundImage) && image != null) {
+            String tocBackgroundSrc = resolveRenderableImageSrc(image);
+            if (hasText(tocBackgroundSrc)) {
+                backgroundImage = """
+                        <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
+                        """.formatted(tocBackgroundSrc, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "目录背景图")));
+            }
         }
         if (image != null && image.getAssetRef() != null) {
             String src = resolveRenderableImageSrc(image);
@@ -2760,22 +2900,25 @@ public class PresentationWorkflowNodes {
                             <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
                             """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "背景图")));
                 } else if ("THANKS".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
-                    sideImage = """
-                            <img src="%s" topLeftX="522" topLeftY="74" width="366" height="392" alpha="1" alt="%s">
-                              <border color="rgba(255,255,255,0.55)" width="1"/>
-                            </img>
-                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "结束页配图")));
+                    backgroundImage = """
+                            <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
+                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "结束页背景图")));
                 } else if ("two-column".equals(layout) || "comparison".equals(layout)) {
                     rightImage = """
                             <img src="%s" topLeftX="468" topLeftY="160" width="396" height="252" alpha="1" alt="%s">
                               <border color="rgba(0,0,0,0.08)" width="1"/>
                             </img>
-                            <shape type="text" topLeftX="536" topLeftY="424" width="278" height="22">%s</shape>
-                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "配图")),
-                            plainContent(blankToDefault(image.getAssetRef().getAltText(), ""), styleProfile("minimal-professional").muted(), 12, false, "center"));
+                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "配图")));
                 } else if ("timeline".equals(layout)) {
-                    timelineItemsXml = timelineItems(extractBodyPointsFromPlan(plan), styleProfile(effectiveThemeFamily(null)), src,
-                            escapeXml(blankToDefault(image.getAssetRef().getAltText(), "节点配图")));
+                    String timelineAltText = escapeXml(blankToDefault(image.getAssetRef().getAltText(), "节点配图"));
+                    timelineItemsXml = "stacked-steps".equals(blankToDefault(plan.getTemplateVariant(), ""))
+                            ? stackedTimelineItems(
+                            extractBodyPointsFromPlan(plan),
+                            profile,
+                            "action".equalsIgnoreCase(blankToDefault(plan.getVisualEmphasis(), "")),
+                            src,
+                            timelineAltText)
+                            : timelineItems(extractBodyPointsFromPlan(plan), profile, src, timelineAltText);
                 } else if ("section".equals(layout)) {
                     contentImage = """
                             <img src="%s" topLeftX="640" topLeftY="168" width="228" height="204" alpha="1" alt="%s">
@@ -2795,10 +2938,8 @@ public class PresentationWorkflowNodes {
                 .replace("{{BACKGROUND_IMAGE}}", backgroundImage)
                 .replace("{{RIGHT_IMAGE}}", rightImage)
                 .replace("{{SIDE_IMAGE}}", sideImage)
-                .replace("{{CONTENT_IMAGE}}", contentImage);
-        if (timelineItemsXml != null) {
-            xml = xml.replace("{{TIMELINE_ITEMS}}", timelineItemsXml);
-        }
+                .replace("{{CONTENT_IMAGE}}", contentImage)
+                .replace("{{TIMELINE_ITEMS}}", blankToDefault(timelineItemsXml, ""));
         return xml;
     }
 

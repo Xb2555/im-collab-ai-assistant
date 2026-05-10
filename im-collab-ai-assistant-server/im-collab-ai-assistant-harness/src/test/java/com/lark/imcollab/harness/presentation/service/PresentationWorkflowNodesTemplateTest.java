@@ -165,6 +165,21 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void autoPageCountExpandsWhenUserDidNotSpecifyPageLimit() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "defaultAutoPageCount",
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
+        method.setAccessible(true);
+
+        int pageCount = (int) method.invoke(nodes,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                        .keyMessages(List.of("背景", "方案", "风险", "下一步"))
+                        .build());
+
+        assertThat(pageCount).isGreaterThanOrEqualTo(10);
+    }
+
+    @Test
     void sameThemeDifferentVariantsProduceDifferentStructures() {
         PresentationGenerationOptions options = PresentationGenerationOptions.builder()
                 .style("business-light")
@@ -195,6 +210,52 @@ class PresentationWorkflowNodesTemplateTest {
         assertThat(railNotes).contains("topLeftX=\"44\" topLeftY=\"38\" width=\"12\" height=\"442\"");
         assertThat(splitBand).contains("topLeftX=\"0\" topLeftY=\"74\" width=\"960\" height=\"92\"");
         assertThat(railNotes).isNotEqualTo(splitBand);
+    }
+
+    @Test
+    void tocStripsPrefixedNumbersBeforeOlAutoNumbering() {
+        String xml = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
+                        .index(2)
+                        .title("目录")
+                        .layout("section")
+                        .pageType("TOC")
+                        .templateVariant("headline-panel")
+                        .keyPoints(List.of("1.1.项目背景", "2.2.核心方案", "3.风险与计划"))
+                        .build(),
+                2,
+                5,
+                PresentationGenerationOptions.builder()
+                        .style("business-light")
+                        .themeFamily("business-light")
+                        .density("standard")
+                        .speakerNotes(false)
+                        .templateDiversity("balanced")
+                        .allowVariantMixing(true)
+                        .build());
+
+        assertThat(xml).contains("<ol>");
+        assertThat(xml).contains("项目背景", "核心方案", "风险与计划");
+        assertThat(xml).doesNotContain("1.1.项目背景", "2.2.核心方案", "3.风险与计划");
+    }
+
+    @Test
+    void fallbackOutlineKeepsTransitionPageWhenPageBudgetIsTight() throws Exception {
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+
+        var method = PresentationWorkflowNodes.class.getDeclaredMethod("fallbackOutline", com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
+        method.setAccessible(true);
+        var outline = (com.lark.imcollab.harness.presentation.model.PresentationOutline) method.invoke(localNodes,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                        .title("方案汇报")
+                        .audience("团队")
+                        .style("business-light")
+                        .pageCount(6)
+                        .goal("汇报方案")
+                        .keyMessages(List.of("背景", "方案", "风险", "下一步"))
+                        .build());
+
+        assertThat(outline.getSlides().stream().anyMatch(slide -> "TRANSITION".equals(slide.getPageType()))).isTrue();
     }
 
     @Test
@@ -315,6 +376,137 @@ class PresentationWorkflowNodesTemplateTest {
 
         assertThat(xml).contains("src=\"boxcnSharedBackground\"");
         assertThat(xml).contains("src=\"boxcnContentImage\"");
+    }
+
+    @Test
+    void compileSlideXmlUsesCoverStyleTemplateForThanksPage() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-6")
+                .pageIndex(6)
+                .slideRole("summary")
+                .pageType("THANKS")
+                .pageSubType("THANKS.CLOSING")
+                .title("感谢聆听")
+                .visualIntent("title")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-6-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("next-step-board").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-6-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("Thank you for listening；汇报人：张三；汇报时间：2026年05月10日")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-6-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnThanksBackground").altText("结束页背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnThanksBackground\"");
+        assertThat(xml).contains("感谢聆听");
+        assertThat(xml).contains("Thank you for listening");
+        assertThat(xml).contains("topLeftX=\"88\" topLeftY=\"82\" width=\"748\" height=\"320\"");
+    }
+
+    @Test
+    void timelineWithoutImageDoesNotRenderWhitePlaceholderRectangles() {
+        String xml = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
+                        .index(3)
+                        .title("时间轴")
+                        .layout("timeline")
+                        .templateVariant("horizontal-milestones")
+                        .keyPoints(List.of("阶段一", "阶段二", "阶段三"))
+                        .build(),
+                3,
+                6,
+                PresentationGenerationOptions.builder()
+                        .style("business-light")
+                        .themeFamily("business-light")
+                        .density("standard")
+                        .speakerNotes(false)
+                        .templateDiversity("balanced")
+                        .allowVariantMixing(true)
+                        .build());
+
+        assertThat(xml).doesNotContain("topLeftY=\"328\" width=\"110\" height=\"82\"");
+    }
+
+    @Test
+    void compileSlideXmlRendersTimelineImageIntoTimelineItemsSlot() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-4")
+                .pageIndex(4)
+                .slideRole("timeline")
+                .pageType("TIMELINE")
+                .pageSubType("TIMELINE.HORIZONTAL")
+                .title("实施路径")
+                .visualIntent("action")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("horizontal-milestones").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("需求澄清；方案设计；上线验证")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnTimelineImage").altText("时间轴节点配图").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-background")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("background-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnSharedBackground").altText("统一正文背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnSharedBackground\"");
+        assertThat(xml).contains("src=\"boxcnTimelineImage\"");
+        assertThat(xml).contains("topLeftY=\"328\" width=\"110\" height=\"82\"");
+        assertThat(xml).doesNotContain("{{TIMELINE_ITEMS}}");
     }
 
     @Nested
