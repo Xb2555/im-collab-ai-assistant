@@ -1,9 +1,9 @@
 // src/components/dashboard/AgentWorkspace.tsx
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Bot, Loader2, X, AlertCircle, RefreshCw, CheckCircle2, Play,
-  CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle
+  CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle, Wand2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import confetti from 'canvas-confetti';
@@ -22,6 +22,10 @@ const isRuntimeStepRunning = (status?: string) =>
 const getStatusDisplay = (status?: string) => {
   const s = status?.toUpperCase() || '';
   if (['INTAKE', 'INTENT_READY', 'PLANNING'].includes(s)) return { label: '规划中', style: 'bg-[#D5D6F2] text-[#6353AC] border-[#D5D6F2]' };
+  // ✨ 新增：中断与重规划过程中的状态映射
+  if (['INTERRUPTING'].includes(s)) return { label: '中断中', style: 'bg-amber-100 text-amber-600 border-amber-200 animate-pulse' };
+  if (['REPLANNING'].includes(s)) return { label: '重新推演中', style: 'bg-[#D5D6F2] text-[#6353AC] border-[#D5D6F2] animate-pulse' };
+  
   if (['ASK_USER', 'CLARIFYING'].includes(s)) return { label: '待补充', style: 'bg-[#FF9BB3]/15 text-[#D04568] border-[#FF9BB3]/50' };
   if (['PLAN_READY', 'WAITING_APPROVAL'].includes(s)) return { label: '待确认', style: 'bg-[#9F9DF3] text-white border-[#9F9DF3] shadow-sm' };
   if (['IN_PROGRESS', 'EXECUTING', 'RUNNING'].includes(s)) return { label: '执行中', style: 'bg-[#6353AC] text-white border-[#6353AC] shadow-sm' };
@@ -49,7 +53,7 @@ export function AgentWorkspace() {
     setPlanPreview,
     setTaskRuntime,
     clearTask,
-    isPlanning, // 👈 从 Store 中获取规划状态
+    isPlanning,
   } = useTaskStore();
 
   const [retryFeedback, setRetryFeedback] = useState('');
@@ -58,37 +62,61 @@ export function AgentWorkspace() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isReplanningMode, setIsReplanningMode] = useState(false);
   const [replanFeedback, setReplanFeedback] = useState('');
+  
+  // ✨ 新增：中断并重规划的状态
+  const [isInterruptingMode, setIsInterruptingMode] = useState(false);
+  const [interruptFeedback, setInterruptFeedback] = useState('');
+  
   const [isActionLoading, setIsActionLoading] = useState(false);
-const [isDelivering, setIsDelivering] = useState(false);
+  const [isDelivering, setIsDelivering] = useState(false);
+  
+
+const [lastDeliveredTime, setLastDeliveredTime] = useState<string | null>(null);
+  const [prevTaskId, setPrevTaskId] = useState(activeTaskId); // 记录上一个任务ID
+
+  // ✨ 遵循 React 最佳实践：在渲染期间直接拦截并重置状态，避免引发额外的重复渲染
+  if (activeTaskId !== prevTaskId) {
+    setPrevTaskId(activeTaskId);
+    setLastDeliveredTime(null);
+  }
   const runtimeTask = taskRuntime?.task;
   const runtimeActions = taskRuntime?.actions;
   const runtimeSteps = taskRuntime?.steps ?? [];
   const runtimeArtifacts = taskRuntime?.artifacts ?? [];
 
+  // ✨ 更新类型以支持 INTERRUPT_REPLAN
   const handleCommand = async (
-    action: 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL' | 'RETRY_FAILED' | 'RESUME', 
+    action: 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL' | 'RETRY_FAILED' | 'RESUME' | 'INTERRUPT_REPLAN', 
     customFeedback?: string,
-    extraPayload?: { artifactPolicy?: 'AUTO' | 'EDIT_EXISTING' | 'CREATE_NEW' | 'KEEP_EXISTING_CREATE_NEW', targetArtifactId?: string }
+    extraPayload?: { artifactPolicy?: 'AUTO' | 'EDIT_EXISTING' | 'CREATE_NEW' | 'KEEP_EXISTING_CREATE_NEW', targetArtifactId?: string, autoExecute?: boolean }
   ) => {
     if (!activeTaskId || isActionLoading) return;
     setIsActionLoading(true);
     if (action === 'CANCEL') setIsCancelling(true);
+    
+    // ✨ 匹配相应的反馈内容
+    let finalFeedback = customFeedback;
+    if (action === 'REPLAN') finalFeedback = replanFeedback.trim();
+    if (action === 'INTERRUPT_REPLAN') finalFeedback = interruptFeedback.trim();
+
     try {
       const newPreview = await plannerApi.executeCommand(activeTaskId, {
         action,
-        feedback: customFeedback || (action === 'REPLAN' ? replanFeedback.trim() : undefined),
+        feedback: finalFeedback,
         version: runtimeTask?.version ?? planPreview?.version,
         ...extraPayload
       });
       setPlanPreview(newPreview);
-      // 🚀 核心修复：操作一旦成功，绝对不要等 SSE！立刻主动拉取最新 Runtime 刷新界面！
+      
       try {
         const freshRuntime = await plannerApi.getTaskRuntime(activeTaskId);
         setTaskRuntime(freshRuntime);
       } catch (err) {
         console.warn('主动同步状态失败', err);
       }
+      
       if (action === 'REPLAN') { setIsReplanningMode(false); setReplanFeedback(''); }
+      if (action === 'INTERRUPT_REPLAN') { setIsInterruptingMode(false); setInterruptFeedback(''); }
       if (action === 'RETRY_FAILED') setRetryFeedback('');
       if (action === 'RESUME') setClarifyAnswer('');
     } catch (e: unknown) {
@@ -108,17 +136,19 @@ const [isDelivering, setIsDelivering] = useState(false);
     }
   };
 
-  const handleDeliver = async () => {
+const handleDeliver = async () => {
     if (!activeTaskId || !activeChatId || !taskRuntime?.artifacts || isDelivering) return;
     setIsDelivering(true);
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#6353AC', '#9F9DF3', '#C9EBCA', '#D5D6F2'], zIndex: 9999 });
     try {
       const docLink = taskRuntime.artifacts.find(a => a.type === 'DOC')?.url || '';
       const pptLink = taskRuntime.artifacts.find(a => a.type === 'PPT')?.url || '';
-      const deliverText = `🎉 【Agent-Pilot 工作汇报】任务已完成！\n\n📝 项目文档：${docLink || '暂无'}\n📊 汇报演示：${pptLink || '暂无'}\n\n💡 您可以通过上方的链接直接预览或编辑。如有新需求，请随时在群内唤醒我。`;
+      // ✨ 修复文案：采用纯前端妥协版的第一人称视角
+      const deliverText = `🎉 我已经让 Agent 完成了本次任务，这是最新的成果：\n\n📝 项目文档：${docLink || '暂无'}\n📊 汇报演示：${pptLink || '暂无'}\n\n💡 请大家查阅。如果有需要修改的地方，可以直接在群里@我，或者直接回复本条消息。`;
       await imApi.sendMessage({ chatId: activeChatId, text: deliverText, idempotencyKey: crypto.randomUUID() });
-      toast.success('🎉 总结与交付成功！', { description: 'Agent 已将成果同步至飞书协作群。' });
-      setTimeout(() => clearTask(), 500);
+      toast.success('🎉 总结与交付成功！', { description: '成果已同步至飞书协作群。' });
+      // ✨ 核心修复：不清除任务，而是记录当前任务的最后更新时间戳
+      setLastDeliveredTime(runtimeTask?.updatedAt || null);
     } catch (e: any) {
       toast.error('交付推送失败', { description: e.message });
     } finally {
@@ -138,7 +168,6 @@ const [isDelivering, setIsDelivering] = useState(false);
   return (
     <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-[#FAFAFC] h-full">
       {!activeTaskId || !runtimeTask ? (
-        // 👈 把你心心念念的骨架屏完整接回来了！
         isPlanning ? (
           <div className="flex flex-col gap-4 animate-pulse mt-2">
             <div className="flex items-center gap-3 mb-2">
@@ -189,7 +218,6 @@ const [isDelivering, setIsDelivering] = useState(false);
             </div>
             <p className="text-xs text-zinc-500 mt-2 leading-relaxed">{runtimeTask.goal || planPreview?.summary || '已收到您的意图，正在执行'}</p>
             
-              {/* ✨ 新增：针对 PLANNING 状态的无缝衔接动画（对齐移动端） */}
             {runtimeTask.status === 'PLANNING' && (
               <div className="mt-3 p-3 bg-indigo-50/50 rounded-xl border border-indigo-100 overflow-hidden relative">
                 <div className="flex items-center justify-between mb-2">
@@ -235,14 +263,9 @@ const [isDelivering, setIsDelivering] = useState(false);
                 <div className="bg-blue-50/50 border border-blue-200 rounded-xl p-4 flex flex-col gap-3 shadow-sm">
                   <div className="text-sm font-bold text-blue-700 flex items-center gap-1.5"><Bot className="h-4 w-4" /> 需要您的进一步确认</div>
                   {clarificationQuestions.map((q, idx) => <p key={idx} className="text-xs text-blue-900 bg-white p-2.5 rounded-md border border-blue-100">{q}</p>)}
-                  {planPreview?.capabilityHints && planPreview.capabilityHints.length > 0 && (
-                    <div className="text-[11px] text-blue-600/70 bg-blue-100/40 p-2 rounded-md border border-blue-100/50 leading-relaxed">
-                      <span className="font-bold block mb-0.5 text-blue-500">💡 Agent 提示：</span>{planPreview.capabilityHints.join(' ')}
-                    </div>
-                  )}
                   <textarea value={clarifyAnswer} onChange={(e) => setClarifyAnswer(e.target.value)} placeholder="请输入回答..." className="w-full text-xs p-3 rounded-lg border border-blue-200 outline-none resize-none bg-white focus:border-blue-500" rows={2} disabled={isActionLoading} />
-                  <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white w-full transition-all relative overflow-hidden" disabled={!clarifyAnswer.trim() || isActionLoading} onClick={() => { toast.success('已收到您的补充', { description: 'Agent 正在为您重新推演执行计划...' }); handleCommand('RESUME', clarifyAnswer); }}>
-                    {isActionLoading ? <span className="flex items-center gap-2"><Loader2 className="animate-spin h-4 w-4" /> 🤖 正在火速规划中...</span> : '提交回答'}
+                  <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white w-full transition-all" disabled={!clarifyAnswer.trim() || isActionLoading} onClick={() => { handleCommand('RESUME', clarifyAnswer); }}>
+                    {isActionLoading ? <span className="flex items-center gap-2"><Loader2 className="animate-spin h-4 w-4" /> 正在处理中...</span> : '提交回答'}
                   </Button>
                 </div>
               )}
@@ -270,7 +293,7 @@ const [isDelivering, setIsDelivering] = useState(false);
 
           {runtimeSteps.length > 0 && (
             <div className="bg-white border border-zinc-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
-              <h4 className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-4">Execution Steps</h4>
+              <h4 className="text-[11px] font-bold text-blue-400/80 uppercase tracking-wider mb-4">Execution Steps</h4>
               <div className="space-y-4 relative before:absolute before:inset-0 before:ml-[11px] before:h-full before:w-[2px] before:bg-zinc-100">
                 {runtimeSteps.map((step: RuntimeStepVO, idx: number) => {
                   const isTaskCompleted = runtimeTask.status === 'COMPLETED';
@@ -279,7 +302,7 @@ const [isDelivering, setIsDelivering] = useState(false);
                   const duration = getDuration(step.startedAt, step.endedAt || (isTaskCompleted ? runtimeTask.updatedAt : null));
                   return (
                     <div key={step.stepId || idx} className="relative flex items-start gap-3">
-                      <div className={`flex items-center justify-center w-6 h-6 rounded-full border-[3px] border-white z-10 mt-0.5 ${displayStatus === 'COMPLETED' ? 'bg-zinc-800 text-white' : isRunning ? 'bg-blue-500 text-white' : displayStatus === 'FAILED' ? 'bg-red-500 text-white' : 'bg-zinc-200 text-zinc-400'}`}>
+                      <div className={`flex items-center justify-center w-6 h-6 rounded-full border-[3px] border-white z-10 mt-0.5 transition-colors duration-300 ${displayStatus === 'COMPLETED' ? 'bg-zinc-800 text-white' : isRunning ? 'bg-blue-500 text-white shadow-sm' : displayStatus === 'FAILED' ? 'bg-red-500 text-white' : 'bg-white text-blue-300 ring-1 ring-inset ring-blue-200'}`}>
                         {displayStatus === 'COMPLETED' ? <Check className="w-3.5 h-3.5" /> : isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : displayStatus === 'FAILED' ? <X className="w-3.5 h-3.5" /> : <CircleDashed className="w-3.5 h-3.5" />}
                       </div>
                       <div className="flex-1 pt-1 pb-3">
@@ -296,28 +319,70 @@ const [isDelivering, setIsDelivering] = useState(false);
                         {step.outputSummary && <p className="text-[11px] text-emerald-600 mt-1.5 leading-relaxed bg-emerald-50/50 p-2 rounded-md border border-emerald-100">✅ 成果：{step.outputSummary}</p>}
                         
                         {isRunning && (
-                          <div className="mt-3 p-3 bg-blue-50/50 border border-blue-100 rounded-lg relative overflow-hidden group">
+                          <div className={`mt-3 p-3 rounded-lg relative overflow-hidden group border transition-colors duration-300 ${isInterruptingMode ? 'bg-amber-50/80 border-amber-200' : 'bg-blue-50/50 border-blue-100'}`}>
                             <div className="flex items-start justify-between mb-2">
-                              <span className="text-[11px] font-medium text-blue-700 flex items-center gap-1.5 leading-relaxed">
-                                <Bot className="w-4 h-4 animate-bounce text-blue-500"/> 
-                                {step.type === 'PPT_CREATE' || step.type === 'PPT' ? '正在为您精雕细琢每一页幻灯片，大概需要1分钟，喝口水休息一下吧 ☕' : 'Agent 正在飞速执行作业中，请稍候...'}
+                              <span className={`text-[11px] font-medium flex items-center gap-1.5 leading-relaxed ${isInterruptingMode ? 'text-amber-700' : 'text-blue-700'}`}>
+                                {!isInterruptingMode ? (
+                                  <Bot className="w-4 h-4 animate-bounce text-blue-500" /> 
+                                ) : (
+                                  <span className="text-amber-500 text-sm leading-none mr-0.5">⏸️</span>
+                                )}
+                                {isInterruptingMode 
+                                  ? '任务已挂起，等待您的最新指示...' 
+                                  : (step.type === 'PPT_CREATE' || step.type === 'PPT' ? '正在为您精雕细琢每一页幻灯片...' : 'Agent 正在飞速执行作业中，请稍候...')}
                               </span>
-                              <span className="text-[10px] text-blue-400 font-mono shrink-0 ml-2 mt-0.5">预计 60s</span>
+                              {!isInterruptingMode && <span className="text-[10px] text-blue-400 font-mono shrink-0 ml-2 mt-0.5">预计 60s</span>}
                             </div>
-                            <div className="w-full h-1.5 bg-blue-200/50 rounded-full overflow-hidden shadow-inner mb-3">
-                              <motion.div className="h-full bg-blue-500 relative" initial={{ width: `${step.progress || 0}%` }} animate={{ width: step.progress >= 90 ? `${step.progress}%` : "90%" }} transition={{ duration: step.progress >= 100 ? 0.5 : 60, ease: "easeOut" }}>
-                                <div className="absolute top-0 left-0 w-full h-full bg-white/20 animate-[shimmer_1s_infinite]" />
+                            <div className={`w-full h-1.5 rounded-full overflow-hidden shadow-inner mb-3 transition-colors duration-300 ${isInterruptingMode ? 'bg-amber-200/50' : 'bg-blue-200/50'}`}>
+                              <motion.div 
+                                className={`h-full relative transition-colors duration-300 ${isInterruptingMode ? 'bg-amber-400' : 'bg-blue-500'}`} 
+                                initial={{ width: `${step.progress || 0}%` }} 
+                                animate={isInterruptingMode ? {} : { width: step.progress >= 90 ? `${step.progress}%` : "90%" }} 
+                                transition={{ duration: isInterruptingMode ? 0 : (step.progress >= 100 ? 0.5 : 60), ease: "easeOut" }}
+                              >
+                                {!isInterruptingMode && <div className="absolute top-0 left-0 w-full h-full bg-white/20 animate-[shimmer_1s_infinite]" />}
                               </motion.div>
                             </div>
-                            <div className="flex items-end justify-between mt-2">
-                              <div className="flex-1 space-y-1.5 opacity-40 mr-4">
-                                <div className="h-1.5 bg-blue-300 rounded w-full animate-pulse"></div>
-                                <div className="h-1.5 bg-blue-300 rounded w-5/6 animate-pulse" style={{ animationDelay: '150ms' }}></div>
+                            
+                            {/* ✨ 修复点：修改了执行中的控制台操作区，引入并明确区分中断与永久取消 */}
+                            {!isInterruptingMode ? (
+                              <div className="flex flex-col sm:flex-row items-end sm:items-center justify-between gap-3 mt-2">
+                                <div className="flex-1 space-y-1.5 opacity-40 w-full sm:w-auto">
+                                  <div className="h-1.5 bg-blue-300 rounded w-full animate-pulse"></div>
+                                  <div className="h-1.5 bg-blue-300 rounded w-5/6 animate-pulse" style={{ animationDelay: '150ms' }}></div>
+                                </div>
+                                <div className="flex gap-2 shrink-0">
+                                  {runtimeActions?.canInterruptReplan && (
+                                    <Button variant="outline" size="sm" onClick={() => setIsInterruptingMode(true)} className="h-7 text-xs text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm transition-colors">
+                                      <Wand2 className="w-3.5 h-3.5 mr-1" /> 干预并调整任务
+                                    </Button>
+                                  )}
+                                  <Button variant="ghost" size="sm" disabled={isCancelling} onClick={() => handleCommand('CANCEL')} className="h-7 text-xs px-2 text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors" title="此操作不可逆，将永久终止任务">
+                                    {isCancelling ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <StopCircle className="w-3.5 h-3.5 mr-1" />} 永久取消
+                                  </Button>
+                                </div>
                               </div>
-                              <Button variant="ghost" size="sm" disabled={isCancelling} onClick={() => handleCommand('CANCEL')} className="h-6 text-[10px] px-2 text-red-500 hover:text-red-600 hover:bg-red-100 border border-transparent hover:border-red-200 transition-colors">
-                                {isCancelling ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <StopCircle className="w-3 h-3 mr-1" />} 停止执行
-                              </Button>
-                            </div>
+                            ) : (
+                              <div className="mt-3 flex flex-col gap-2 bg-white p-3 rounded-lg border border-indigo-200 shadow-sm animate-in zoom-in-95 duration-200">
+                                 <div className="text-xs font-bold text-indigo-700 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> 请输入调整指令，Agent 将自动重新规划</div>
+                                 <textarea
+                                   value={interruptFeedback}
+                                   onChange={e => setInterruptFeedback(e.target.value)}
+                                   placeholder="例如：请把第二步改为先调研竞品再输出报告..."
+                                   className="w-full text-xs p-2.5 rounded-md border border-zinc-200 outline-none resize-none bg-zinc-50 focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                                   rows={2}
+                                   autoFocus
+                                 />
+                                 <div className="flex gap-2 justify-end">
+                                   <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => {setIsInterruptingMode(false); setInterruptFeedback('');}}>放弃</Button>
+                                   <Button size="sm" className="h-7 text-xs bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm" disabled={!interruptFeedback.trim() || isActionLoading} onClick={() => handleCommand('INTERRUPT_REPLAN')}>
+                                     {isActionLoading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <RefreshCw className="w-3 h-3 mr-1" />}
+                                     确认调整
+                                   </Button>
+                                 </div>
+                              </div>
+                            )}
+
                           </div>
                         )}
                       </div>
@@ -338,16 +403,20 @@ const [isDelivering, setIsDelivering] = useState(false);
             </div>
           )}
 
-          {runtimeTask.status === 'COMPLETED' && (
-            <Button 
-              className="w-full h-10 font-bold bg-zinc-900 hover:bg-zinc-800 text-white shadow-md animate-in zoom-in duration-500 disabled:opacity-50" 
-              onClick={handleDeliver}
-              disabled={isDelivering}
-            >
-              {isDelivering ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />} 
-              {isDelivering ? '正在同步...' : '总结与交付群聊'}
-            </Button>
-          )}
+          {runtimeTask.status === 'COMPLETED' && (() => {
+            // ✨ 核心逻辑：如果记录的交付时间与当前任务更新时间一致，说明没做过新修改
+            const isDelivered = lastDeliveredTime === runtimeTask.updatedAt;
+            return (
+              <Button 
+                className={`w-full h-10 font-bold text-white shadow-md transition-all duration-300 animate-in zoom-in ${isDelivered ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-zinc-900 hover:bg-zinc-800'} disabled:opacity-60 disabled:cursor-not-allowed`}
+                onClick={handleDeliver}
+                disabled={isDelivering || isDelivered}
+              >
+                {isDelivering ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : (isDelivered ? <CheckCircle2 className="h-4 w-4 mr-2" /> : <Send className="h-4 w-4 mr-2" />)} 
+                {isDelivering ? '正在同步...' : isDelivered ? '✅ 已同步至群聊' : lastDeliveredTime ? '重新同步最新版本' : '总结与交付群聊'}
+              </Button>
+            );
+          })()}
 
           {taskRuntime?.events && taskRuntime.events.length > 0 && (
             <div className="mt-4 border border-zinc-200 rounded-xl bg-[#1C1C1E] overflow-hidden shadow-inner">

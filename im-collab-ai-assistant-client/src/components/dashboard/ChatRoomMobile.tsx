@@ -176,10 +176,18 @@ try {
       });
       
       // ✨ 2. 狸猫换太子：把临时 ID 换成真实 ID
+      // ✨ 核心修复：防止乐观更新与 SSE 竞态导致重复
       if (sendResult?.messageId) {
-        setMessages(prev => prev.map(m => 
-          m.eventId === tempEventId ? { ...m, eventId: sendResult.messageId } : m
-        ));
+        setMessages(prev => {
+          // 检查 SSE 是否已经把这条真实消息推过来了
+          const alreadyExists = prev.some(m => m.eventId === sendResult.messageId && m.eventId !== tempEventId);
+          if (alreadyExists) {
+            // 如果 SSE 已经抢先，我们直接删掉本地假消息
+            return prev.filter(m => m.eventId !== tempEventId);
+          }
+          // 如果 SSE 还没来，就把假消息的 ID 换成真实的
+          return prev.map(m => m.eventId === tempEventId ? { ...m, eventId: sendResult.messageId } : m);
+        });
       }
 
       // 延时触发兜底拉取
@@ -192,6 +200,31 @@ try {
       setMessages(prev => prev.filter(m => m.eventId !== tempEventId));
     } finally {
       setIsSending(false);
+    }
+  };
+
+// ✨ 新增：不弹抽屉，直接把输入框文字发给 Agent 并跳转工作台
+  const handleDirectAgentPlan = async () => {
+    if (!inputText.trim() || !activeChatId) return;
+    try {
+      setIsPlanning(true);
+      const preview = await plannerApi.createPlan({
+        rawInstruction: inputText.trim(),
+        workspaceContext: { chatId: activeChatId },
+      });
+
+      if (preview.transientReply || !preview.runtimeAvailable) {
+        if (preview.assistantReply) alert(`🤖 Agent 回复: ${preview.assistantReply}`);
+      } else {
+        setActiveTaskId(preview.taskId || null);
+        setPlanPreview(preview);
+        onSwitchToWorkspace?.(); // 直接跳转工作台
+      }
+      setInputText('');
+    } catch (e: any) {
+      alert('唤醒 Agent 失败: ' + e.message);
+    } finally {
+      setIsPlanning(false);
     }
   };
 
@@ -419,18 +452,32 @@ try {
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               className="flex-1 max-h-24 min-h-[40px] resize-none rounded-xl bg-zinc-100 border-transparent focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 px-3 py-2 text-sm outline-none transition-colors"
-              placeholder="长按消息多选，或直接输入..."
+              placeholder="长按多选，或输入..."
               rows={1}
             />
-            {inputText.trim() ? (
-              <Button onClick={handleSendMessage} disabled={isSending} size="icon" className="h-10 w-10 shrink-0 rounded-full bg-blue-600 shadow-sm">
+            <div className="flex gap-1.5 shrink-0 items-end mb-0.5">
+              <Button 
+                onClick={handleSendMessage} 
+                disabled={!inputText.trim() || isSending} 
+                size="icon" 
+                className="h-9 w-9 rounded-full bg-blue-600 shadow-sm disabled:opacity-40 transition-opacity"
+              >
                 <Send className="h-4 w-4 ml-0.5 text-white" />
               </Button>
-            ) : (
-              <Button onClick={() => setIsAgentDrawerOpen(true)} variant="outline" size="icon" className="h-10 w-10 shrink-0 rounded-full border-blue-200 text-blue-600 bg-blue-50">
-                <Bot className="h-5 w-5" />
+              <Button 
+                onClick={() => inputText.trim() ? handleDirectAgentPlan() : setIsAgentDrawerOpen(true)} 
+                disabled={isSending || isPlanning} 
+                variant={inputText.trim() ? "default" : "outline"}
+                size="icon" 
+                className={`h-9 w-9 rounded-full shadow-sm transition-all ${
+                  inputText.trim() 
+                    ? 'bg-indigo-600 hover:bg-indigo-700 text-white' 
+                    : 'border-blue-200 text-blue-600 bg-blue-50 hover:bg-blue-100'
+                }`}
+              >
+                {isPlanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4.5 w-4.5" />}
               </Button>
-            )}
+            </div>
           </div>
         )}
       </div>

@@ -189,10 +189,18 @@ try {
       });
       
       // ✨ 2. 核心修复：拿到真实的 messageId 后，立刻替换掉本地假消息的 tempEventId
+      // ✨ 核心修复：防止乐观更新与 SSE 竞态导致重复
       if (sendResult?.messageId) {
-        setMessages(prev => prev.map(m => 
-          m.eventId === tempEventId ? { ...m, eventId: sendResult.messageId } : m
-        ));
+        setMessages(prev => {
+          // 检查 SSE 是否已经把这条真实消息推过来了
+          const alreadyExists = prev.some(m => m.eventId === sendResult.messageId && m.eventId !== tempEventId);
+          if (alreadyExists) {
+            // 如果 SSE 已经抢先，我们直接删掉本地假消息
+            return prev.filter(m => m.eventId !== tempEventId);
+          }
+          // 如果 SSE 还没来，就把假消息的 ID 换成真实的
+          return prev.map(m => m.eventId === tempEventId ? { ...m, eventId: sendResult.messageId } : m);
+        });
       }
 
       // 延时触发兜底拉取

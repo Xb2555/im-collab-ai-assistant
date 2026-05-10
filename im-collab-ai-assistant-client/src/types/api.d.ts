@@ -82,6 +82,8 @@ export interface TaskActionVO {
   canResume?: boolean;
   canInterrupt?: boolean;
   canRetry?: boolean;
+  // ✨ 新增：是否支持中断并重新规划
+  canInterruptReplan?: boolean;
 }
 
 /**
@@ -166,11 +168,12 @@ export interface TaskRuntimeVO {
  * 2. 任务指令请求 (确认执行/重新规划/取消)
  */
 export interface PlanCommandRequest {
-  action?: string; // 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL'
+  action?: string; // 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL' | 'INTERRUPT_REPLAN'
   feedback?: string;
   version?: number; // ✨ 乐观锁：任务版本号，用于防冲突
+  autoExecute?: boolean; // ✨ 新增：INTERRUPT_REPLAN 专属，重规划后是否自动执行
 
-  // 👇 新增：针对完成态任务修改产物的策略控制
+  // 👇 针对完成态任务修改产物的策略控制
   artifactPolicy?: 'AUTO' | 'EDIT_EXISTING' | 'CREATE_NEW' | 'KEEP_EXISTING_CREATE_NEW';
   targetArtifactId?: string; // 如果有多个产物，需明确指定修改哪一个
 }
