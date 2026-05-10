@@ -32,6 +32,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -59,6 +61,7 @@ public class PlannerConversationService {
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
+    private static final DateTimeFormatter COMPLETED_TASK_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final String SELECTION_PURPOSE_COMPLETED_TASK_LIST = "COMPLETED_TASK_LIST";
     private static final String SELECTION_PURPOSE_COMPLETED_TASK_ADJUSTMENT = "COMPLETED_TASK_ADJUSTMENT";
 
@@ -168,7 +171,8 @@ public class PlannerConversationService {
                 rawInstruction,
                 userFeedback,
                 workspaceContext,
-                bypassPendingSelections
+                bypassPendingSelections,
+                preliminaryIntakeDecision
         );
         if (selectionResult != null) {
             return selectionResult;
@@ -378,7 +382,8 @@ public class PlannerConversationService {
             String rawInstruction,
             String userFeedback,
             WorkspaceContext workspaceContext,
-            boolean bypassPendingSelection
+            boolean bypassPendingSelection,
+            TaskIntakeDecision preliminaryIntakeDecision
     ) {
         if (bypassPendingSelection) {
             return null;
@@ -399,6 +404,14 @@ public class PlannerConversationService {
             );
         }
         Integer index = parseCandidateIndex(input);
+        if (index == null && shouldReplayCompletedTaskList(selection, preliminaryIntakeDecision)) {
+            return routeCompletedTaskList(
+                    firstText(selection.getOriginalInstruction(), input),
+                    workspaceContext,
+                    resolution,
+                    session
+            );
+        }
         List<PendingTaskCandidate> candidates = selection.getCandidates() == null ? List.of() : selection.getCandidates();
         if (index == null || index < 1 || index > candidates.size()) {
             PlanTaskSession replySession = transientReply(
@@ -1082,8 +1095,11 @@ public class PlannerConversationService {
                         .append(candidate.getArtifactTypes().stream().map(Enum::name).distinct().reduce((a, b) -> a + "、" + b).orElse(""))
                         .append("）");
             }
-            if (hasText(candidate.getTaskId())) {
-                builder.append(" ").append(shortTaskId(candidate.getTaskId()));
+            if (candidate.getCreatedAt() != null) {
+                builder.append(" | 创建于 ").append(formatCompletedTaskTime(candidate.getCreatedAt()));
+            }
+            if (candidate.getUpdatedAt() != null) {
+                builder.append(" | 更新于 ").append(formatCompletedTaskTime(candidate.getUpdatedAt()));
             }
         }
         builder.append("\n回复编号即可。");
@@ -1101,8 +1117,8 @@ public class PlannerConversationService {
         return builder.toString();
     }
 
-    private String shortTaskId(String taskId) {
-        return taskId.length() <= 8 ? taskId : taskId.substring(0, 8);
+    private String formatCompletedTaskTime(Instant instant) {
+        return COMPLETED_TASK_TIME_FORMATTER.format(instant.atZone(ZoneId.systemDefault()));
     }
 
     private boolean shouldShortCircuitWithoutTask(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
@@ -1153,6 +1169,9 @@ public class PlannerConversationService {
                 || resolution == null
                 || !hasText(resolution.continuationKey())
                 || !hasText(userInput)) {
+            return null;
+        }
+        if (hasPendingSelection(currentSession)) {
             return null;
         }
         if (shouldPreferCurrentTaskExecutionConfirmation(currentSession, userInput)) {
@@ -1234,6 +1253,23 @@ public class PlannerConversationService {
         }
         return session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY
                 || session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING;
+    }
+
+    private boolean hasPendingSelection(PlanTaskSession session) {
+        return session != null
+                && session.getIntakeState() != null
+                && (session.getIntakeState().getPendingTaskSelection() != null
+                || session.getIntakeState().getPendingArtifactSelection() != null);
+    }
+
+    private boolean shouldReplayCompletedTaskList(
+            PendingTaskSelection selection,
+            TaskIntakeDecision intakeDecision
+    ) {
+        return selection != null
+                && intakeDecision != null
+                && intakeDecision.intakeType() == TaskIntakeTypeEnum.STATUS_QUERY
+                && "COMPLETED_TASKS".equalsIgnoreCase(intakeDecision.readOnlyView());
     }
 
     private WorkspaceContext appendFollowUpSourceArtifact(

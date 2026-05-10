@@ -50,7 +50,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         }
         TaskSessionResolution resolution = taskSessionResolver.resolve(taskId, workspaceContext);
         PlanTaskSession session = resolution.existingSession() ? safeGet(resolution.taskId()) : null;
-        String followUpPreview = previewPendingFollowUpImmediateReply(resolution, effectiveInput);
+        String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput);
         if (!followUpPreview.isBlank()) {
             return followUpPreview;
         }
@@ -103,13 +103,20 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         };
     }
 
-    private String previewPendingFollowUpImmediateReply(TaskSessionResolution resolution, String effectiveInput) {
+    private String previewPendingFollowUpImmediateReply(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            String effectiveInput
+    ) {
         if (conversationTaskStateService == null
                 || pendingFollowUpRecommendationMatcher == null
                 || resolution == null
                 || resolution.continuationKey() == null
                 || effectiveInput == null
                 || effectiveInput.isBlank()) {
+            return "";
+        }
+        if (hasPendingSelection(session)) {
             return "";
         }
         List<PendingFollowUpRecommendation> recommendations = conversationTaskStateService.find(resolution.continuationKey())
@@ -130,6 +137,13 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             return "🔢 我这边有多个后续动作，请直接回复编号。";
         }
         return "";
+    }
+
+    private boolean hasPendingSelection(PlanTaskSession session) {
+        return session != null
+                && session.getIntakeState() != null
+                && (session.getIntakeState().getPendingTaskSelection() != null
+                || session.getIntakeState().getPendingArtifactSelection() != null);
     }
 
     private PlanTaskSession safeGet(String taskId) {

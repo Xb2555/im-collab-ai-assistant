@@ -190,6 +190,49 @@ class TaskSessionResolverTest {
         assertThat(candidates).hasSize(1);
         assertThat(candidates.get(0).getTaskId()).isEqualTo("task-1");
         assertThat(candidates.get(0).getArtifactTypes()).containsExactly(ArtifactTypeEnum.PPT);
+        assertThat(candidates.get(0).getUpdatedAt()).isEqualTo(Instant.parse("2026-05-04T08:00:00Z"));
+    }
+
+    @Test
+    void completedCandidatesFallbackToArtifactTimestampsWhenTaskTimeMissing() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        when(stateStore.findTasksByConversation(
+                "LARK_PRIVATE_CHAT",
+                "chat-1",
+                null,
+                "ou-1",
+                List.of(TaskStatusEnum.COMPLETED),
+                5
+        )).thenReturn(List.of(TaskRecord.builder()
+                .taskId("task-1")
+                .title("文档迭代")
+                .build()));
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("artifact-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .createdAt(Instant.parse("2026-05-10T01:00:00Z"))
+                        .updatedAt(Instant.parse("2026-05-10T03:00:00Z"))
+                        .build(),
+                ArtifactRecord.builder()
+                        .artifactId("artifact-2")
+                        .type(ArtifactTypeEnum.PPT)
+                        .createdAt(Instant.parse("2026-05-10T02:00:00Z"))
+                        .updatedAt(Instant.parse("2026-05-10T04:00:00Z"))
+                        .build()
+        ));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        var candidates = resolver.resolveCompletedCandidates(context);
+
+        assertThat(candidates).hasSize(1);
+        assertThat(candidates.get(0).getCreatedAt()).isEqualTo(Instant.parse("2026-05-10T01:00:00Z"));
+        assertThat(candidates.get(0).getUpdatedAt()).isEqualTo(Instant.parse("2026-05-10T04:00:00Z"));
     }
 
     @Test

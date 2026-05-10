@@ -12,11 +12,12 @@ import com.lark.imcollab.store.planner.PlannerStateStore;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.Comparator;
-import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
@@ -201,18 +202,56 @@ public class TaskSessionResolver {
     }
 
     private PendingTaskCandidate toCandidate(TaskRecord task) {
-        List<ArtifactTypeEnum> artifactTypes = stateStore.findArtifactsByTaskId(task.getTaskId()).stream()
+        List<ArtifactRecord> artifacts = stateStore.findArtifactsByTaskId(task.getTaskId());
+        List<ArtifactTypeEnum> artifactTypes = artifacts.stream()
                 .map(ArtifactRecord::getType)
                 .filter(type -> type != null)
                 .distinct()
                 .toList();
+        Instant fallbackCreatedAt = firstNonNull(
+                task.getCreatedAt(),
+                artifacts.stream()
+                        .map(ArtifactRecord::getCreatedAt)
+                        .filter(value -> value != null)
+                        .min(Comparator.naturalOrder())
+                        .orElse(null),
+                task.getUpdatedAt(),
+                artifacts.stream()
+                        .map(ArtifactRecord::getUpdatedAt)
+                        .filter(value -> value != null)
+                        .max(Comparator.naturalOrder())
+                        .orElse(null)
+        );
+        Instant fallbackUpdatedAt = firstNonNull(
+                task.getUpdatedAt(),
+                artifacts.stream()
+                        .map(ArtifactRecord::getUpdatedAt)
+                        .filter(value -> value != null)
+                        .max(Comparator.naturalOrder())
+                        .orElse(null),
+                fallbackCreatedAt
+        );
         return PendingTaskCandidate.builder()
                 .taskId(task.getTaskId())
                 .title(task.getTitle())
                 .goal(task.getGoal())
                 .artifactTypes(artifactTypes)
-                .updatedAt(task.getUpdatedAt())
+                .createdAt(fallbackCreatedAt)
+                .updatedAt(fallbackUpdatedAt)
                 .build();
+    }
+
+    @SafeVarargs
+    private final <T> T firstNonNull(T... values) {
+        if (values == null) {
+            return null;
+        }
+        for (T value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private Optional<String> preferredTaskId(ConversationTaskState state) {
