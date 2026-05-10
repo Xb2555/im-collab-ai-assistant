@@ -45,3 +45,6 @@ build/
 
 .m2/
 .ppt-generated-assets/
+
+### claude ###
+.claude
