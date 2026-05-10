@@ -122,6 +122,43 @@ class TaskSessionResolverTest {
     }
 
     @Test
+    void pendingSelectionBindingWinsOverCompletedActiveTask() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .build();
+        when(stateStore.findPendingSelectionSession("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of(PlanTaskSession.builder()
+                        .taskId("selector-task")
+                        .planningPhase(PlanningPhaseEnum.INTAKE)
+                        .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                                .pendingTaskSelection(com.lark.imcollab.common.model.entity.PendingTaskSelection.builder()
+                                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                                        .build())
+                                .build())
+                        .build()));
+        when(stateStore.findConversationTaskState("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of(ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-completed")
+                        .lastCompletedTaskId("task-completed")
+                        .build()));
+        when(stateStore.findSession("task-completed")).thenReturn(Optional.of(PlanTaskSession.builder()
+                .taskId("task-completed")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build()));
+        when(stateStore.findConversationTaskId("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of("selector-task"));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        TaskSessionResolution resolution = resolver.resolve(null, context);
+
+        assertThat(resolution.taskId()).isEqualTo("selector-task");
+        assertThat(resolution.existingSession()).isTrue();
+    }
+
+    @Test
     void completedCandidatesAreScopedToCurrentConversationAndOwner() {
         PlannerStateStore stateStore = mock(PlannerStateStore.class);
         WorkspaceContext context = WorkspaceContext.builder()
@@ -203,6 +240,97 @@ class TaskSessionResolverTest {
         assertThat(artifact).isPresent();
         assertThat(artifact.get().getType()).isEqualTo(ArtifactTypeEnum.SUMMARY);
         assertThat(artifact.get().getPreview()).contains("项目已完成文档和PPT");
+    }
+
+    @Test
+    void inferEditableArtifactUsesDocumentSemanticsWhenDocAndPptCoexist() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("doc-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .url("https://doc.example/1")
+                        .updatedAt(Instant.parse("2026-05-10T05:00:00Z"))
+                        .build(),
+                ArtifactRecord.builder()
+                        .artifactId("ppt-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .updatedAt(Instant.parse("2026-05-10T04:00:00Z"))
+                        .build()
+        ));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        var artifact = resolver.inferEditableArtifact("task-1", "再加一小节关于项目总结的内容");
+
+        assertThat(artifact).isPresent();
+        assertThat(artifact.get().getType()).isEqualTo(ArtifactTypeEnum.DOC);
+        assertThat(artifact.get().getArtifactId()).isEqualTo("doc-1");
+    }
+
+    @Test
+    void inferEditableArtifactUsesPresentationSemanticsWhenDocAndPptCoexist() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("doc-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .url("https://doc.example/1")
+                        .updatedAt(Instant.parse("2026-05-10T05:00:00Z"))
+                        .build(),
+                ArtifactRecord.builder()
+                        .artifactId("ppt-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .updatedAt(Instant.parse("2026-05-10T04:00:00Z"))
+                        .build()
+        ));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        var artifact = resolver.inferEditableArtifact("task-1", "把第二页标题改成项目总结");
+
+        assertThat(artifact).isPresent();
+        assertThat(artifact.get().getType()).isEqualTo(ArtifactTypeEnum.PPT);
+        assertThat(artifact.get().getArtifactId()).isEqualTo("ppt-1");
+    }
+
+    @Test
+    void inferEditableArtifactPrefersLatestExplicitTypeWhenMultipleDocsExist() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("doc-old")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .url("https://doc.example/old")
+                        .updatedAt(Instant.parse("2026-05-10T03:00:00Z"))
+                        .build(),
+                ArtifactRecord.builder()
+                        .artifactId("doc-new")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .url("https://doc.example/new")
+                        .updatedAt(Instant.parse("2026-05-10T06:00:00Z"))
+                        .build(),
+                ArtifactRecord.builder()
+                        .artifactId("ppt-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .updatedAt(Instant.parse("2026-05-10T04:00:00Z"))
+                        .build()
+        ));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        var artifact = resolver.inferEditableArtifact("task-1", "帮我改一下这个doc，补一段项目总结");
+
+        assertThat(artifact).isPresent();
+        assertThat(artifact.get().getType()).isEqualTo(ArtifactTypeEnum.DOC);
+        assertThat(artifact.get().getArtifactId()).isEqualTo("doc-new");
     }
 
 }

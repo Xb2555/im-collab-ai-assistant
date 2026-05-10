@@ -37,6 +37,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
     private static final Pattern INSERT_AFTER_PATTERN = Pattern.compile("(后插入|后新增|后面插入|之后插入)");
     private static final Pattern INSERT_BEFORE_PATTERN = Pattern.compile("(前插入|前新增|前面插入|之前插入)");
     private static final Pattern INSERTED_SECTION_CANDIDATE_PATTERN = Pattern.compile("(插入|新增)\\s*(?:一章|一节|一部分|第[一二三四五六七八九十百千万0-9]+[章节部分]|\\d+(?:\\.\\d+)+)");
+    private static final Pattern APPEND_SECTION_TO_END_PATTERN = Pattern.compile("(再加|再补|新增|追加|补充|最后补|最后加|末尾补|末尾加).*(一节|一小节|一个小节|一个章节|小节|章节)");
     private static final Pattern DECIMAL_SECTION_HEADING_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)\\s*([^，。；,;\\n]+)");
     private static final Pattern DECIMAL_SECTION_PATH_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)");
     private static final Pattern CHAPTER_THEN_SECTION_PATTERN = Pattern.compile("第([一二三四五六七八九十百千万0-9]+)章第([一二三四五六七八九十百千万0-9]+)节");
@@ -172,6 +173,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
             log.info("DOC_ITER_INTENT validation_null_intent");
             return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
         }
+        intent = normalizeAppendSectionToDocumentEnd(intent);
         intent = normalizeSectionInsertIntent(intent);
         intent = normalizeSectionInlineInsertIntent(intent);
         intent = normalizeSectionAnchorIntent(intent);
@@ -422,6 +424,9 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         }
         DocumentSemanticActionType normalizedAction = normalizeInsertSemanticAction(intent.getUserInstruction(), intent.getSemanticAction());
         DocumentAnchorSpec normalizedAnchor = buildSectionAnchor(sectionReference);
+        if (!hasText(normalizedAnchor.getRelativePosition())) {
+            normalizedAnchor.setRelativePosition(detectRelativePosition(intent.getUserInstruction()));
+        }
         log.info("DOC_ITER_INTENT normalize_insert instruction='{}' fromAction={} toAction={} headingTitle='{}' headingNumber='{}' outlinePath='{}' ordinal={} ordinalScope={}",
                 intent.getUserInstruction(),
                 intent.getSemanticAction(),
@@ -434,6 +439,34 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         intent.setIntentType(DocumentIterationIntentType.INSERT);
         intent.setSemanticAction(normalizedAction);
         intent.setAnchorSpec(normalizedAnchor);
+        return intent;
+    }
+
+    private DocumentEditIntent normalizeAppendSectionToDocumentEnd(DocumentEditIntent intent) {
+        if (intent == null
+                || !hasText(intent.getUserInstruction())
+                || intent.getIntentType() != DocumentIterationIntentType.INSERT) {
+            return intent;
+        }
+        String instruction = intent.getUserInstruction();
+        if (!APPEND_SECTION_TO_END_PATTERN.matcher(instruction).find()) {
+            return intent;
+        }
+        if (INSERT_AFTER_PATTERN.matcher(instruction).find() || INSERT_BEFORE_PATTERN.matcher(instruction).find()) {
+            return intent;
+        }
+        if (mentionsSectionReference(instruction)) {
+            return intent;
+        }
+        log.info("DOC_ITER_INTENT normalize_append_section_to_end instruction='{}' fromAction={} toAction={}",
+                instruction,
+                intent.getSemanticAction(),
+                DocumentSemanticActionType.APPEND_SECTION_TO_DOCUMENT_END);
+        intent.setIntentType(DocumentIterationIntentType.INSERT);
+        intent.setSemanticAction(DocumentSemanticActionType.APPEND_SECTION_TO_DOCUMENT_END);
+        intent.setAnchorSpec(null);
+        intent.setClarificationNeeded(false);
+        intent.setClarificationHint(null);
         return intent;
     }
 
@@ -659,6 +692,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         if (!hasText(instruction)) {
             return null;
         }
+        String relativePosition = detectRelativePosition(instruction);
         String anchorSegment = instruction;
         java.util.regex.Matcher afterMatcher = INSERT_AFTER_PATTERN.matcher(instruction);
         java.util.regex.Matcher beforeMatcher = INSERT_BEFORE_PATTERN.matcher(instruction);
@@ -668,6 +702,19 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
             anchorSegment = instruction.substring(0, beforeMatcher.start()).trim();
         }
         SectionReference sectionReference = extractSectionReference(anchorSegment);
+        if (sectionReference != null && !hasText(sectionReference.relativePosition()) && hasText(relativePosition)) {
+            return new SectionReference(
+                    sectionReference.headingTitle(),
+                    sectionReference.headingNumber(),
+                    sectionReference.outlinePathText(),
+                    sectionReference.outlinePathNumbers(),
+                    sectionReference.structuralOrdinal(),
+                    sectionReference.structuralOrdinalScope(),
+                    relativePosition,
+                    sectionReference.scopeHint(),
+                    sectionReference.parentHeadingNumber()
+            );
+        }
         return sectionReference != null ? sectionReference : extractSectionReference(instruction);
     }
 

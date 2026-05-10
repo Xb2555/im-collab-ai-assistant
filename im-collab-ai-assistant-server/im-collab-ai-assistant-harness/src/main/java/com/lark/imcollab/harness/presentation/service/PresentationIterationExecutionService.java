@@ -240,6 +240,9 @@ public class PresentationIterationExecutionService implements PresentationIterat
         if (pageIndex == null) {
             throw new IllegalArgumentException("请明确要操作第几页");
         }
+        if (pageIndex < 0) {
+            return deck.slides().get(deck.slides().size() - 1);
+        }
         if (pageIndex < 1 || pageIndex > deck.slides().size()) {
             throw new IllegalArgumentException("PPT 中不存在第 " + pageIndex + " 页");
         }

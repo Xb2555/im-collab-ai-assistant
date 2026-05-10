@@ -18,6 +18,7 @@ import org.springframework.stereotype.Repository;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -161,6 +162,28 @@ public class RedisPlannerStateStore implements PlannerStateStore {
             state.setUpdatedAt(Instant.now());
             saveConversationTaskState(state);
         });
+    }
+
+    @Override
+    public Optional<PlanTaskSession> findPendingSelectionSession(String conversationKey) {
+        if (!hasText(conversationKey)) {
+            return Optional.empty();
+        }
+        Set<String> sessionKeys = redisTemplate.keys(SESSION_KEY_PREFIX + "*");
+        if (sessionKeys == null || sessionKeys.isEmpty()) {
+            return Optional.empty();
+        }
+        return sessionKeys.stream()
+                .map(key -> redisTemplate.opsForValue().get(key))
+                .filter(this::hasText)
+                .map(this::readSessionSafely)
+                .flatMap(Optional::stream)
+                .filter(session -> session.getIntakeState() != null)
+                .filter(session -> sameText(conversationKey, session.getIntakeState().getContinuationKey()))
+                .filter(session -> session.getIntakeState().getPendingTaskSelection() != null
+                        || session.getIntakeState().getPendingArtifactSelection() != null)
+                .max(Comparator.comparing(PlanTaskSession::getStateRevision)
+                        .thenComparing(PlanTaskSession::getVersion));
     }
 
     @Override
@@ -471,6 +494,14 @@ public class RedisPlannerStateStore implements PlannerStateStore {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private Optional<PlanTaskSession> readSessionSafely(String json) {
+        try {
+            return Optional.of(objectMapper.readValue(json, PlanTaskSession.class));
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
     }
 
     private boolean sameText(String expected, String actual) {

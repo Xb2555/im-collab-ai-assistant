@@ -223,6 +223,17 @@ public class PlannerConversationService {
             }
             return clarified;
         }
+        PlanTaskSession directCompletedArtifactAdjustment = tryRouteCurrentCompletedArtifactAdjustment(
+                taskId,
+                resolution,
+                session,
+                intakeDecision,
+                workspaceContext,
+                graphInstruction
+        );
+        if (directCompletedArtifactAdjustment != null) {
+            return directCompletedArtifactAdjustment;
+        }
         if (shouldRouteCompletedAdjustment(taskId, resolution, session, intakeDecision, workspaceContext)) {
             PlanTaskSession adjustmentResult = routeCompletedAdjustmentTaskSelection(
                     graphInstruction,
@@ -416,15 +427,17 @@ public class PlannerConversationService {
                     TaskIntakeTypeEnum.STATUS_QUERY,
                     "completed task selected from list",
                     selectedCompletedTaskReply(candidate),
-                    "COMPLETED_TASKS"
+                    "COMPLETED_TASKS",
+                    null
             );
             return sessionService.get(candidate.getTaskId());
         }
         refreshSelectedTaskContext(candidate.getTaskId(), workspaceContext, resolution, selection.getOriginalInstruction());
+        String routedInstruction = routeInstructionToEditableArtifact(candidate.getTaskId(), selection.getOriginalInstruction());
         PlanTaskSession result = graphRunner.run(
                 new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "completed task selected for adjustment"),
                 candidate.getTaskId(),
-                selection.getOriginalInstruction(),
+                routedInstruction,
                 workspaceContext,
                 null
         );
@@ -451,10 +464,11 @@ public class PlannerConversationService {
             PendingTaskCandidate candidate = candidates.get(0);
             sessionResolver.bindConversation(new TaskSessionResolution(candidate.getTaskId(), true, resolution.continuationKey()));
             refreshSelectedTaskContext(candidate.getTaskId(), workspaceContext, resolution, instruction);
+            String routedInstruction = routeInstructionToEditableArtifact(candidate.getTaskId(), instruction);
             PlanTaskSession result = graphRunner.run(
                     new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "single completed task adjusted from conversation"),
                     candidate.getTaskId(),
-                    instruction,
+                    routedInstruction,
                     workspaceContext,
                     null
             );
@@ -503,6 +517,7 @@ public class PlannerConversationService {
                 TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
                 "completed task adjustment from current IM message",
                 null,
+                null,
                 null
         );
     }
@@ -515,7 +530,8 @@ public class PlannerConversationService {
             TaskIntakeTypeEnum intakeType,
             String routingReason,
             String assistantReply,
-            String readOnlyView
+            String readOnlyView,
+            AdjustmentTargetEnum adjustmentTarget
     ) {
         if (!hasText(taskId)) {
             return;
@@ -532,7 +548,8 @@ public class PlannerConversationService {
                         instruction,
                         routingReason,
                         assistantReply,
-                        readOnlyView),
+                        readOnlyView,
+                        adjustmentTarget),
                 new TaskSessionResolution(taskId, true, resolution == null ? null : resolution.continuationKey()),
                 instruction
         );
@@ -596,6 +613,9 @@ public class PlannerConversationService {
         selectionSession.getIntakeState().setPendingInteractionType(PendingInteractionTypeEnum.COMPLETED_TASK_SELECTION);
         selectionSession.setPlanningPhase(PlanningPhaseEnum.INTAKE);
         sessionService.saveWithoutVersionChange(selectionSession);
+        if (conversationTaskStateService != null) {
+            conversationTaskStateService.syncFromSession(selectionSession);
+        }
         sessionResolver.bindConversation(new TaskSessionResolution(
                 selectionSession.getTaskId(),
                 false,
@@ -916,6 +936,96 @@ public class PlannerConversationService {
             return !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
         }
         return false;
+    }
+
+    private PlanTaskSession tryRouteCurrentCompletedArtifactAdjustment(
+            String explicitTaskId,
+            TaskSessionResolution resolution,
+            PlanTaskSession session,
+            TaskIntakeDecision intakeDecision,
+            WorkspaceContext workspaceContext,
+            String instruction
+    ) {
+        if (hasText(explicitTaskId)
+                || intakeDecision == null
+                || intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                || resolution == null
+                || !resolution.existingSession()
+                || !isCompleted(session)
+                || isForcedNewTask(intakeDecision)) {
+            return null;
+        }
+        Optional<ConversationTaskState> conversationState = sessionResolver.conversationState(workspaceContext);
+        boolean currentCompletedTaskIsActive = conversationState
+                .map(ConversationTaskState::getActiveTaskId)
+                .filter(this::hasText)
+                .map(activeTaskId -> activeTaskId.equals(session.getTaskId()))
+                .orElse(false);
+        if (!currentCompletedTaskIsActive) {
+            return null;
+        }
+        if (!shouldDirectCurrentCompletedArtifactAdjustment(session, intakeDecision, instruction)) {
+            return null;
+        }
+        refreshSelectedTaskContext(
+                session.getTaskId(),
+                workspaceContext,
+                resolution,
+                instruction,
+                TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                "current completed task artifact adjustment from IM",
+                null,
+                null,
+                AdjustmentTargetEnum.COMPLETED_ARTIFACT
+        );
+        String routedInstruction = routeInstructionToEditableArtifact(session.getTaskId(), instruction);
+        PlanTaskSession result = graphRunner.run(
+                new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "current completed task adjusted from conversation"),
+                session.getTaskId(),
+                routedInstruction,
+                workspaceContext,
+                null
+        );
+        taskBridgeService.ensureTask(result);
+        return result;
+    }
+
+    private boolean shouldDirectCurrentCompletedArtifactAdjustment(
+            PlanTaskSession session,
+            TaskIntakeDecision intakeDecision,
+            String instruction
+    ) {
+        if (session == null || !hasText(session.getTaskId()) || !sessionResolver.hasEditableArtifacts(session.getTaskId())) {
+            return false;
+        }
+        if (intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
+            return true;
+        }
+        if (looksLikeNewCompletedDeliverableRequest(instruction)) {
+            return false;
+        }
+        return sessionResolver.inferEditableArtifact(session.getTaskId(), instruction).isPresent();
+    }
+
+    private String routeInstructionToEditableArtifact(String taskId, String instruction) {
+        if (!hasText(taskId) || !hasText(instruction) || instruction.contains("目标产物ID：")) {
+            return instruction;
+        }
+        return sessionResolver.inferEditableArtifact(taskId, instruction)
+                .map(ArtifactRecord::getArtifactId)
+                .filter(this::hasText)
+                .map(artifactId -> appendTargetArtifact(instruction, artifactId))
+                .orElse(instruction);
+    }
+
+    private boolean looksLikeNewCompletedDeliverableRequest(String instruction) {
+        if (!hasText(instruction)) {
+            return false;
+        }
+        String lower = instruction.toLowerCase(Locale.ROOT);
+        return (lower.contains("生成") || lower.contains("整理") || lower.contains("做一版") || lower.contains("输出"))
+                && (lower.contains("ppt") || lower.contains("演示稿") || lower.contains("幻灯片")
+                || lower.contains("摘要") || lower.contains("总结") || lower.contains("文档") || lower.contains("报告"));
     }
 
     private boolean isCompleted(PlanTaskSession session) {

@@ -39,6 +39,10 @@ public interface PlannerStateStore {
     default void clearConversationExecutingTask(String conversationKey, String taskId) {
     }
 
+    default Optional<PlanTaskSession> findPendingSelectionSession(String conversationKey) {
+        return Optional.empty();
+    }
+
     void appendEvent(TaskEvent event);
 
     List<String> getEventJsonList(String taskId);

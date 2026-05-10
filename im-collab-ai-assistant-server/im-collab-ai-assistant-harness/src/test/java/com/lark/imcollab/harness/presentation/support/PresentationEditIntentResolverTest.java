@@ -337,4 +337,61 @@ class PresentationEditIntentResolverTest {
         assertThat(intent.getOperations().get(0).getAnchorMode()).isEqualTo(PresentationAnchorMode.BY_ELEMENT_ROLE);
         assertThat(intent.getOperations().get(0).getElementRole()).isEqualTo("right-image");
     }
+
+    @Test
+    void naturalSecondPageTitleChangeIsNormalizedWithoutClarification() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "clarificationNeeded": true,
+                  "clarificationHint": "请明确要改第几页和改成什么内容"
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("把第二页标题改成项目总结");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getActionType()).isEqualTo(PresentationEditActionType.REPLACE_SLIDE_TITLE);
+        assertThat(intent.getPageIndex()).isEqualTo(2);
+        assertThat(intent.getReplacementText()).isEqualTo("项目总结");
+    }
+
+    @Test
+    void naturalAppendSlideAtEndIsNormalizedWithoutClarification() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "clarificationNeeded": true,
+                  "clarificationHint": "请明确新增页内容"
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("在末尾补一页项目总结");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getActionType()).isEqualTo(PresentationEditActionType.INSERT_SLIDE);
+        assertThat(intent.getSlideTitle()).isEqualTo("项目总结");
+        assertThat(intent.getInsertAfterPageIndex()).isNull();
+    }
+
+    @Test
+    void naturalLastPageBodyAppendIsNormalizedWithoutClarification() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "clarificationNeeded": true,
+                  "clarificationHint": "请明确最后一页要加什么"
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("给最后一页加一段项目总结");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getActionType()).isEqualTo(PresentationEditActionType.REPLACE_SLIDE_BODY);
+        assertThat(intent.getPageIndex()).isEqualTo(-1);
+        assertThat(intent.getReplacementText()).isEqualTo("项目总结");
+    }
 }
