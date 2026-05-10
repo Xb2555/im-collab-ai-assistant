@@ -57,6 +57,7 @@ public class AgentPromptInterceptor extends ModelInterceptor {
             case "planning-agent" -> promptFacade.planningPrompt(session);
             case "result-judge-agent" -> promptFacade.resultJudgePrompt(session);
             case "result-advice-agent" -> promptFacade.resultAdvicePrompt(session);
+            case "next-step-recommendation-agent" -> promptFacade.nextStepRecommendationPrompt(session);
             case "supervisor-agent" -> promptFacade.supervisorPrompt(session);
             case "clarification-agent" -> promptFacade.clarificationPrompt(session);
             default -> null;
@@ -80,6 +81,9 @@ public class AgentPromptInterceptor extends ModelInterceptor {
             case "result-advice-agent" -> promptFacade.resultAdviceInstruction(
                     session,
                     asSubmissionVariables(context));
+            case "next-step-recommendation-agent" -> promptFacade.nextStepRecommendationInstruction(
+                    session,
+                    asNextStepVariables(context));
             default -> null;
         };
     }
@@ -90,6 +94,18 @@ public class AgentPromptInterceptor extends ModelInterceptor {
         variables.put("agentTaskId", asString(context.get(PromptContextKeys.SUBMISSION_AGENT_TASK_ID)));
         variables.put("submissionStatus", asString(context.get(PromptContextKeys.SUBMISSION_STATUS)));
         variables.put("rawOutput", asString(context.get(PromptContextKeys.SUBMISSION_RAW_OUTPUT)));
+        return variables;
+    }
+
+    private Map<String, String> asNextStepVariables(Map<String, Object> context) {
+        Map<String, String> variables = new HashMap<>();
+        variables.put("taskGoal", asString(context.get(PromptContextKeys.NEXT_STEP_TASK_GOAL)));
+        variables.put("clarifiedGoal", asString(context.get(PromptContextKeys.NEXT_STEP_CLARIFIED_GOAL)));
+        variables.put("planCards", asString(context.get(PromptContextKeys.NEXT_STEP_PLAN_CARDS)));
+        variables.put("completedSteps", asString(context.get(PromptContextKeys.NEXT_STEP_COMPLETED_STEPS)));
+        variables.put("artifacts", asString(context.get(PromptContextKeys.NEXT_STEP_ARTIFACTS)));
+        variables.put("supportedCapabilities", asString(context.get(PromptContextKeys.NEXT_STEP_SUPPORTED_CAPABILITIES)));
+        variables.put("candidateActions", asString(context.get(PromptContextKeys.NEXT_STEP_CANDIDATE_ACTIONS)));
         return variables;
     }
 

@@ -20,5 +20,6 @@ public class PendingTaskCandidate implements Serializable {
     private String title;
     private String goal;
     private List<ArtifactTypeEnum> artifactTypes;
+    private Instant createdAt;
     private Instant updatedAt;
 }

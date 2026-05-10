@@ -457,7 +457,6 @@ public class ContextNodeService {
                 || plannerProperties.getContextCollection() == null
                 || !plannerProperties.getContextCollection().isEnabled()
                 || !referencesCurrentConversation(rawInstruction)
-                || isPrivateConversationSource(workspaceContext)
                 || (!hasText(workspaceContext.getChatId()) && !hasText(workspaceContext.getThreadId()))
                 || hasRealSelectedMessages(workspaceContext)) {
             return plan;
@@ -548,7 +547,7 @@ public class ContextNodeService {
             return false;
         }
         String text = normalize(rawInstruction);
-        boolean temporalReference = text.matches(".*(刚才|前面|上面|最近|之前|历史消息|本群|群里|聊天记录|这段对话|\\d{1,4}(分钟|分|小时|时|天|日)前).*");
+        boolean temporalReference = text.matches(".*(刚才|前面|上面|最近|之前|历史消息|本群|群里|聊天记录|这段对话|前\\s*\\d{1,4}(分钟|分|小时|时|天|日)|\\d{1,4}(分钟|分|小时|时|天|日)前).*");
         boolean conversationMaterial = text.matches(".*(讨论|聊|消息|对话|记录).*");
         boolean asksForSynthesis = text.matches(".*(整理|总结|汇总|生成|写成|输出).*");
         return asksForSynthesis && (text.contains("本群") || text.contains("群里") || (temporalReference && conversationMaterial));
@@ -581,9 +580,14 @@ public class ContextNodeService {
             return "";
         }
         String cleaned = value
-                .replaceAll("^(最近|近|之前|历史|历史消息|聊天记录|本群|群里|当前|有关|关于|和|与|中|\\d{1,4}\\s*(分钟|分|小时|时|天|日)前)+", "")
+                .replaceAll("^(最近|近|之前|历史|历史消息|聊天记录|本群|群里|当前|有关|关于|和|与|中|前\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)|\\d{1,4}\\s*(分钟|分|小时|时|天|日)前)+", "")
                 .replaceAll("(整理|总结|汇总|输出|生成|写成|文档|ppt|PPT|分析)+$", "")
+                .replaceAll("^(消息|聊天|记录|消息总结|聊天总结|对话总结)+", "")
+                .replaceAll("(消息|聊天|记录|消息总结|聊天总结|对话总结)+$", "")
                 .trim();
+        if (cleaned.matches("^(前\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)|\\d{1,4}\\s*(分钟|分|小时|时|天|日)前)$")) {
+            return "";
+        }
         return cleaned.length() > 40 ? cleaned.substring(0, 40).trim() : cleaned;
     }
 
@@ -592,7 +596,7 @@ public class ContextNodeService {
             return false;
         }
         String text = normalize(rawInstruction);
-        return text.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论|最近\\d{0,4}(分钟|分|小时|时)|\\d{1,4}(分钟|分|小时|时|天|日)前).*");
+        return text.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论|最近\\d{0,4}(分钟|分|小时|时)|前\\s*\\d{1,4}(分钟|分|小时|时|天|日)|\\d{1,4}(分钟|分|小时|时|天|日)前).*");
     }
 
     private boolean usesImmediateConversationWindow(String rawInstruction) {
@@ -600,7 +604,7 @@ public class ContextNodeService {
             return false;
         }
         String text = normalize(rawInstruction);
-        return text.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论|最近\\d{0,4}(分钟|分|小时|时)).*");
+        return text.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论|最近\\d{0,4}(分钟|分|小时|时)|前\\s*\\d{1,4}(分钟|分|小时|时)).*");
     }
 
     private static boolean hasStaticText(String value) {

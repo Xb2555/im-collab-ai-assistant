@@ -130,6 +130,7 @@ class DefaultSummaryExecutionServiceTest {
                 eq("项目进展摘要"), contentCaptor.capture(), eq(null));
         assertThat(contentCaptor.getValue())
                 .contains("本周完成 Planner 上下文拉取", "风险 Slides 授权偶发失败")
+                .contains("相关产物链接：", "https://example.feishu.cn/docx/doc-1")
                 .doesNotContain("#", "- **", "**");
         verify(executionSupport).markSummaryStepCompleted(eq("task-1"), eq(contentCaptor.getValue()));
     }

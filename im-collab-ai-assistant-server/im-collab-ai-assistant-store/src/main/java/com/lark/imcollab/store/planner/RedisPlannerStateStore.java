@@ -18,6 +18,7 @@ import org.springframework.stereotype.Repository;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -37,6 +38,7 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     private static final String RUNTIME_EVENT_KEY_PREFIX = "planner:runtime:events:";
     private static final String SUBMISSION_KEY_PREFIX = "planner:submission:";
     private static final String EVALUATION_KEY_PREFIX = "planner:evaluation:";
+    private static final String LATEST_EVALUATION_KEY_PREFIX = "planner:evaluation-latest:";
     private static final String CONVERSATION_KEY_PREFIX = "planner:conversation:";
     private static final String CONVERSATION_STATE_KEY_PREFIX = "planner:conversation-state:";
     private static final String USER_TASK_KEY_PREFIX = "planner:user-tasks:";
@@ -160,6 +162,28 @@ public class RedisPlannerStateStore implements PlannerStateStore {
             state.setUpdatedAt(Instant.now());
             saveConversationTaskState(state);
         });
+    }
+
+    @Override
+    public Optional<PlanTaskSession> findPendingSelectionSession(String conversationKey) {
+        if (!hasText(conversationKey)) {
+            return Optional.empty();
+        }
+        Set<String> sessionKeys = redisTemplate.keys(SESSION_KEY_PREFIX + "*");
+        if (sessionKeys == null || sessionKeys.isEmpty()) {
+            return Optional.empty();
+        }
+        return sessionKeys.stream()
+                .map(key -> redisTemplate.opsForValue().get(key))
+                .filter(this::hasText)
+                .map(this::readSessionSafely)
+                .flatMap(Optional::stream)
+                .filter(session -> session.getIntakeState() != null)
+                .filter(session -> sameText(conversationKey, session.getIntakeState().getContinuationKey()))
+                .filter(session -> session.getIntakeState().getPendingTaskSelection() != null
+                        || session.getIntakeState().getPendingArtifactSelection() != null)
+                .max(Comparator.comparing(PlanTaskSession::getStateRevision)
+                        .thenComparing(PlanTaskSession::getVersion));
     }
 
     @Override
@@ -391,8 +415,10 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     public void saveEvaluation(TaskResultEvaluation evaluation) {
         try {
             String key = EVALUATION_KEY_PREFIX + evaluation.getTaskId() + ":" + evaluation.getAgentTaskId();
+            String latestKey = LATEST_EVALUATION_KEY_PREFIX + evaluation.getTaskId();
             String json = objectMapper.writeValueAsString(evaluation);
             redisTemplate.opsForValue().set(key, json, SESSION_TTL);
+            redisTemplate.opsForValue().set(latestKey, json, SESSION_TTL);
         } catch (Exception e) {
             throw new RuntimeException("Failed to save evaluation: " + evaluation.getAgentTaskId(), e);
         }
@@ -409,6 +435,19 @@ public class RedisPlannerStateStore implements PlannerStateStore {
             return Optional.of(objectMapper.readValue(json, TaskResultEvaluation.class));
         } catch (Exception e) {
             throw new RuntimeException("Failed to load evaluation: " + agentTaskId, e);
+        }
+    }
+
+    @Override
+    public Optional<TaskResultEvaluation> findLatestEvaluation(String taskId) {
+        try {
+            String json = redisTemplate.opsForValue().get(LATEST_EVALUATION_KEY_PREFIX + taskId);
+            if (json == null) {
+                return Optional.empty();
+            }
+            return Optional.of(objectMapper.readValue(json, TaskResultEvaluation.class));
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load latest evaluation: " + taskId, e);
         }
     }
 
@@ -455,6 +494,14 @@ public class RedisPlannerStateStore implements PlannerStateStore {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private Optional<PlanTaskSession> readSessionSafely(String json) {
+        try {
+            return Optional.of(objectMapper.readValue(json, PlanTaskSession.class));
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
     }
 
     private boolean sameText(String expected, String actual) {

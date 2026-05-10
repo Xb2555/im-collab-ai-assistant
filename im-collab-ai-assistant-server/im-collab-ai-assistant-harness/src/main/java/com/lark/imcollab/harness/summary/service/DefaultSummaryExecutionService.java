@@ -56,6 +56,7 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
                 .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
         String stepId = executionSupport.findSummaryStepId(taskId)
                 .orElseGet(() -> executionSupport.subtaskId(taskId, "generate_summary"));
+        List<Artifact> artifacts = artifactRepository.findByTaskId(taskId);
         try {
             executionSupport.markSummaryStepRunning(taskId);
             executionSupport.publishEvent(taskId, stepId, TaskEventType.STEP_STARTED, "开始生成任务上下文摘要");
@@ -63,11 +64,12 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
                     task,
                     stepRepository.findByTaskId(taskId),
                     eventRepository.findByTaskId(taskId),
-                    artifactRepository.findByTaskId(taskId)
+                    artifacts
             )));
             if (summary.isBlank()) {
                 summary = fallbackSummary(task);
             }
+            summary = appendShareableLinks(summary, artifacts);
             executionSupport.saveArtifact(taskId, stepId, ArtifactType.SUMMARY, summaryTitle(task), summary, null);
             executionSupport.markSummaryStepCompleted(taskId, summary);
             executionSupport.publishEvent(taskId, stepId, TaskEventType.ARTIFACT_CREATED, "已生成任务上下文摘要");
@@ -93,6 +95,7 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
                 4. 必须基于下方任务上下文和已有产物，不要编造未出现的事实。
                 5. 如果上下文里包含已选消息或已拉取消息，优先总结这些消息的事实、风险、结论、待办。
                 6. 如果任务已产生执行步骤、事件或产物，需要把进展、结果、失败点或下一步一起纳入摘要。
+                7. 如果已有产物里包含可访问链接，摘要正文里必须带上这些链接，便于用户直接转发；可以在结尾自然写成“相关产物链接：文档：...；PPT：...”。
 
                 任务信息：
                 任务ID：%s
@@ -247,6 +250,28 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
 
     private String fallbackSummary(Task task) {
         return "本次任务已完成摘要整理。任务目标是：" + firstNonBlank(task.getClarifiedInstruction(), task.getRawInstruction(), "整理当前任务上下文");
+    }
+
+    private String appendShareableLinks(String summary, List<Artifact> artifacts) {
+        List<String> links = artifacts == null ? List.of() : artifacts.stream()
+                .filter(Objects::nonNull)
+                .filter(artifact -> artifact.getExternalUrl() != null && !artifact.getExternalUrl().isBlank())
+                .map(artifact -> firstNonBlank(artifact.getTitle(), artifact.getType() == null ? null : artifact.getType().name())
+                        + "："
+                        + artifact.getExternalUrl().trim())
+                .distinct()
+                .toList();
+        if (links.isEmpty()) {
+            return summary;
+        }
+        String linkBlock = "相关产物链接：" + String.join("；", links);
+        if (summary != null && links.stream().allMatch(link -> summary.contains(link.substring(link.indexOf('：') + 1)))) {
+            return summary;
+        }
+        if (summary == null || summary.isBlank()) {
+            return linkBlock;
+        }
+        return limit(summary.trim() + "\n\n" + linkBlock, MAX_ARTIFACT_CHARS);
     }
 
     private String summaryTitle(Task task) {

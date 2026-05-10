@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.supervisor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionPlan;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.planner.config.PlannerProperties;
@@ -35,6 +36,12 @@ class ContextNodeServiceTest {
     }
 
     @Test
+    void temporalOnlyTopicDoesNotBecomeSearchQuery() {
+        assertThat(ContextNodeService.extractSearchQuery("帮我改doc，加一小节关于前10分钟消息总结的内容，拉取前10分钟的消息作为内容来源。"))
+                .isEmpty();
+    }
+
+    @Test
     void acquisitionPromptRequiresConcreteStartAndEndTimeForRelativeTime() throws Exception {
         PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
         PlanTaskSession session = PlanTaskSession.builder().taskId("task-time").build();
@@ -64,6 +71,37 @@ class ContextNodeServiceTest {
                 .contains("never output only a vague timeRange");
     }
 
+    @Test
+    void privateConversationCanStillBuildConversationReferenceAcquisitionPlan() throws Exception {
+        PlannerProperties properties = new PlannerProperties();
+        properties.getContextCollection().setEnabled(true);
+        ContextNodeService service = new ContextNodeService(
+                null,
+                null,
+                new PlannerContextTool(),
+                mock(PlannerRuntimeTool.class),
+                mock(PlannerConversationMemoryService.class),
+                properties,
+                new ObjectMapper()
+        );
+
+        ContextAcquisitionPlan plan = requiredReferenceAcquisitionPlan(
+                service,
+                WorkspaceContext.builder()
+                        .chatId("oc_private")
+                        .chatType("p2p")
+                        .inputSource("LARK_PRIVATE_CHAT")
+                        .build(),
+                "拉取当前讨论前10分钟的消息作为文档内容来源并生成文档"
+        );
+
+        assertThat(plan).isNotNull();
+        assertThat(plan.isNeedCollection()).isTrue();
+        assertThat(plan.getSources()).hasSize(1);
+        assertThat(plan.getSources().get(0).getChatId()).isEqualTo("oc_private");
+        assertThat(plan.getSources().get(0).getTimeRange()).contains("前10分钟");
+    }
+
     private String buildAcquisitionPrompt(
             ContextNodeService service,
             PlanTaskSession session,
@@ -78,5 +116,19 @@ class ContextNodeServiceTest {
         );
         method.setAccessible(true);
         return (String) method.invoke(service, session, rawInstruction, workspaceContext);
+    }
+
+    private ContextAcquisitionPlan requiredReferenceAcquisitionPlan(
+            ContextNodeService service,
+            WorkspaceContext workspaceContext,
+            String rawInstruction
+    ) throws Exception {
+        Method method = ContextNodeService.class.getDeclaredMethod(
+                "requiredReferenceAcquisitionPlan",
+                WorkspaceContext.class,
+                String.class
+        );
+        method.setAccessible(true);
+        return (ContextAcquisitionPlan) method.invoke(service, workspaceContext, rawInstruction);
     }
 }

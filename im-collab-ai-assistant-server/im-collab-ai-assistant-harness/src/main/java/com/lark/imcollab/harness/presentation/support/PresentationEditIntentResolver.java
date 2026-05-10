@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.entity.PresentationEditOperation;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
@@ -14,9 +15,18 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class PresentationEditIntentResolver implements PresentationEditIntentFacade {
+
+    private static final Pattern PAGE_TITLE_REPLACE_PATTERN = Pattern.compile("第?([一二三四五六七八九十百千万0-9]+)页[^。；，,\n]*?标题(?:改成|改为|为)([^。；，,\n]+)");
+    private static final Pattern PAGE_BODY_REPLACE_PATTERN = Pattern.compile("第?([一二三四五六七八九十百千万0-9]+)页[^。；，,\n]*?(?:正文|内容|要点)(?:改成|改为)([^。；，,\n]+)");
+    private static final Pattern PAGE_GENERIC_REPLACE_PATTERN = Pattern.compile("第?([一二三四五六七八九十百千万0-9]+)页[^。；，,\n]*?改成([^。；，,\n]+)");
+    private static final Pattern APPEND_SLIDE_AT_END_PATTERN = Pattern.compile("(?:在)?(?:末尾|最后)(?:补|新增|加)(?:一页)?([^。；，,\n]+)");
+    private static final Pattern LAST_PAGE_BODY_APPEND_PATTERN = Pattern.compile("(?:给|把)?最后一页(?:加一段|补一段|增加一段)([^。；，,\n]+)");
 
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
@@ -28,8 +38,13 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
 
     @Override
     public PresentationEditIntent resolve(String instruction) {
+        return resolve(instruction, null);
+    }
+
+    @Override
+    public PresentationEditIntent resolve(String instruction, WorkspaceContext workspaceContext) {
         try {
-            String response = chatModel.call(buildPrompt(instruction));
+            String response = chatModel.call(buildPrompt(instruction, workspaceContext));
             JsonNode root = objectMapper.readTree(stripCodeFences(response));
             PresentationEditIntent intent = PresentationEditIntent.builder()
                     .intentType(parseIntentType(root.path("intentType").asText(null)))
@@ -66,6 +81,7 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         if (intent == null) {
             return clarification(null);
         }
+        intent = applyNaturalLanguageHeuristics(intent);
         if (intent.isClarificationNeeded()) {
             return ensureHint(intent);
         }
@@ -127,6 +143,178 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         return intent;
     }
 
+    private PresentationEditIntent applyNaturalLanguageHeuristics(PresentationEditIntent intent) {
+        if (intent == null || !hasText(intent.getUserInstruction())) {
+            return intent;
+        }
+        String instruction = intent.getUserInstruction();
+        List<PresentationEditOperation> heuristicOperations = inferHeuristicOperations(instruction);
+        if (heuristicOperations.isEmpty()) {
+            return intent;
+        }
+        intent.setClarificationNeeded(false);
+        intent.setClarificationHint(null);
+        intent.setIntentType(resolveIntentTypeFromOperation(heuristicOperations.get(0).getActionType()));
+        intent.setOperations(heuristicOperations);
+        return intent;
+    }
+
+    private List<PresentationEditOperation> inferHeuristicOperations(String instruction) {
+        List<PresentationEditOperation> operations = inferTitleReplacementOperations(instruction);
+        if (!operations.isEmpty()) {
+            return operations;
+        }
+        PresentationEditOperation appendSlide = inferAppendSlideOperation(instruction);
+        if (appendSlide != null) {
+            return List.of(appendSlide);
+        }
+        PresentationEditOperation appendLastPageBody = inferLastPageBodyAppendOperation(instruction);
+        if (appendLastPageBody != null) {
+            return List.of(appendLastPageBody);
+        }
+        return List.of();
+    }
+
+    private List<PresentationEditOperation> inferTitleReplacementOperations(String instruction) {
+        List<PresentationEditOperation> operations = new ArrayList<>();
+        for (String clause : instruction.split("[，,；;]")) {
+            String trimmedClause = clause == null ? "" : clause.trim();
+            if (!hasText(trimmedClause)) {
+                continue;
+            }
+            Matcher explicitTitleMatcher = PAGE_TITLE_REPLACE_PATTERN.matcher(trimmedClause);
+            if (explicitTitleMatcher.find()) {
+                Integer pageIndex = parsePageIndex(explicitTitleMatcher.group(1));
+                String replacement = trimHeuristicText(explicitTitleMatcher.group(2));
+                if (pageIndex != null && hasText(replacement)) {
+                    operations.add(titleReplaceOperation(pageIndex, replacement));
+                }
+                continue;
+            }
+            Matcher explicitBodyMatcher = PAGE_BODY_REPLACE_PATTERN.matcher(trimmedClause);
+            if (explicitBodyMatcher.find()) {
+                Integer pageIndex = parsePageIndex(explicitBodyMatcher.group(1));
+                String replacement = trimHeuristicText(explicitBodyMatcher.group(2));
+                if (pageIndex != null && hasText(replacement)) {
+                    operations.add(PresentationEditOperation.builder()
+                            .actionType(PresentationEditActionType.REPLACE_SLIDE_BODY)
+                            .targetElementType(PresentationTargetElementType.BODY)
+                            .pageIndex(pageIndex)
+                            .replacementText(replacement)
+                            .build());
+                }
+                continue;
+            }
+            Matcher genericMatcher = PAGE_GENERIC_REPLACE_PATTERN.matcher(trimmedClause);
+            if (genericMatcher.find()) {
+                Integer pageIndex = parsePageIndex(genericMatcher.group(1));
+                String replacement = trimHeuristicText(genericMatcher.group(2));
+                if (pageIndex != null && hasText(replacement) && !looksLikeBodyReplacement(trimmedClause)) {
+                    operations.add(titleReplaceOperation(pageIndex, replacement));
+                }
+            }
+        }
+        return operations;
+    }
+
+    private PresentationEditOperation inferAppendSlideOperation(String instruction) {
+        Matcher matcher = APPEND_SLIDE_AT_END_PATTERN.matcher(instruction);
+        if (!matcher.find()) {
+            return null;
+        }
+        String title = trimHeuristicText(matcher.group(1));
+        if (!hasText(title)) {
+            return null;
+        }
+        return PresentationEditOperation.builder()
+                .actionType(PresentationEditActionType.INSERT_SLIDE)
+                .insertAfterPageIndex(null)
+                .slideTitle(title)
+                .targetElementType(PresentationTargetElementType.TITLE)
+                .build();
+    }
+
+    private PresentationEditOperation inferLastPageBodyAppendOperation(String instruction) {
+        Matcher matcher = LAST_PAGE_BODY_APPEND_PATTERN.matcher(instruction);
+        if (!matcher.find()) {
+            return null;
+        }
+        String replacement = trimHeuristicText(matcher.group(1));
+        if (!hasText(replacement)) {
+            return null;
+        }
+        return PresentationEditOperation.builder()
+                .actionType(PresentationEditActionType.REPLACE_SLIDE_BODY)
+                .pageIndex(-1)
+                .targetElementType(PresentationTargetElementType.BODY)
+                .replacementText(replacement)
+                .build();
+    }
+
+    private PresentationIterationIntentType resolveIntentTypeFromOperation(PresentationEditActionType actionType) {
+        if (actionType == PresentationEditActionType.INSERT_SLIDE) {
+            return PresentationIterationIntentType.INSERT;
+        }
+        if (actionType == PresentationEditActionType.DELETE_SLIDE) {
+            return PresentationIterationIntentType.DELETE;
+        }
+        return PresentationIterationIntentType.UPDATE_CONTENT;
+    }
+
+    private PresentationEditOperation titleReplaceOperation(Integer pageIndex, String replacement) {
+        return PresentationEditOperation.builder()
+                .actionType(PresentationEditActionType.REPLACE_SLIDE_TITLE)
+                .targetElementType(PresentationTargetElementType.TITLE)
+                .pageIndex(pageIndex)
+                .replacementText(replacement)
+                .build();
+    }
+
+    private boolean looksLikeBodyReplacement(String instruction) {
+        if (!hasText(instruction)) {
+            return false;
+        }
+        String lower = instruction.toLowerCase(Locale.ROOT);
+        return lower.contains("正文")
+                || lower.contains("内容")
+                || lower.contains("要点")
+                || lower.contains("加一段")
+                || lower.contains("补一段");
+    }
+
+    private Integer parsePageIndex(String rawValue) {
+        if (!hasText(rawValue)) {
+            return null;
+        }
+        String normalized = rawValue.trim();
+        try {
+            return Integer.parseInt(normalized);
+        } catch (NumberFormatException ignored) {
+            return switch (normalized) {
+                case "一" -> 1;
+                case "二" -> 2;
+                case "三" -> 3;
+                case "四" -> 4;
+                case "五" -> 5;
+                case "六" -> 6;
+                case "七" -> 7;
+                case "八" -> 8;
+                case "九" -> 9;
+                case "十" -> 10;
+                default -> null;
+            };
+        }
+    }
+
+    private String trimHeuristicText(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        return value.trim()
+                .replaceFirst("^(标题为|标题改成|标题改为)", "")
+                .trim();
+    }
+
     private PresentationEditIntent clarification(String instruction) {
         return PresentationEditIntent.builder()
                 .userInstruction(instruction)
@@ -143,7 +331,7 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         return intent;
     }
 
-    private String buildPrompt(String instruction) {
+    private String buildPrompt(String instruction, WorkspaceContext workspaceContext) {
         return """
                 你是 PPT 编辑意图解析器。根据用户指令输出 JSON，不要解释。
 
@@ -199,9 +387,31 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 7. “把第4页移到第2页后”应解析为 MOVE_SLIDE，pageIndex=4，insertAfterPageIndex=2；移到最前 insertAfterPageIndex=0；移到最后/末尾 insertAfterPageIndex=-1。
                 8. 无法唯一定位时必须 clarificationNeeded=true，禁止默认猜标题。
                 9. 新增页缺少标题和正文，或移动页缺少源页/目标位置，或无法确认替换页码、目标元素、新内容时，clarificationNeeded=true。
+                10. 如果用户要求“把最后一页改成最近10分钟关于风险的消息总结”“基于最近聊天记录补一页总结”，应优先理解为修改最后一页正文，而不是要求再次澄清。
+
+                已有上下文素材：
+                %s
 
                 用户指令：%s
-                """.formatted(instruction == null ? "" : instruction.trim());
+                """.formatted(summarizeWorkspaceContext(workspaceContext), instruction == null ? "" : instruction.trim());
+    }
+
+    private String summarizeWorkspaceContext(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null) {
+            return "无";
+        }
+        List<String> parts = new ArrayList<>();
+        if (hasText(workspaceContext.getTimeRange())) {
+            parts.add("timeRange=" + workspaceContext.getTimeRange());
+        }
+        if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
+            parts.add("selectedMessages=" + workspaceContext.getSelectedMessages().stream()
+                    .filter(this::hasText)
+                    .limit(6)
+                    .reduce((left, right) -> left + " | " + right)
+                    .orElse(""));
+        }
+        return parts.isEmpty() ? "无" : String.join("\n", parts);
     }
 
     private String stripCodeFences(String value) {

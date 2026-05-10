@@ -3,10 +3,12 @@ package com.lark.imcollab.app.planner.facade;
 import com.lark.imcollab.common.facade.TaskUserNotificationFacade;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
@@ -17,13 +19,16 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
+import com.lark.imcollab.planner.service.ConversationTaskStateService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 
 @Service
 public class PlannerExecutionReviewService {
@@ -34,6 +39,7 @@ public class PlannerExecutionReviewService {
     private final PlannerSessionService sessionService;
     private final TaskRuntimeService taskRuntimeService;
     private final TaskResultEvaluationService evaluationService;
+    private final ConversationTaskStateService conversationTaskStateService;
     private final PlannerStateStore stateStore;
     private final List<TaskUserNotificationFacade> notificationFacades;
 
@@ -41,12 +47,14 @@ public class PlannerExecutionReviewService {
             PlannerSessionService sessionService,
             TaskRuntimeService taskRuntimeService,
             TaskResultEvaluationService evaluationService,
+            ConversationTaskStateService conversationTaskStateService,
             PlannerStateStore stateStore,
             List<TaskUserNotificationFacade> notificationFacades
     ) {
         this.sessionService = sessionService;
         this.taskRuntimeService = taskRuntimeService;
         this.evaluationService = evaluationService;
+        this.conversationTaskStateService = conversationTaskStateService;
         this.stateStore = stateStore;
         this.notificationFacades = notificationFacades == null ? List.of() : notificationFacades;
     }
@@ -69,6 +77,7 @@ public class PlannerExecutionReviewService {
             String reason = latestApprovalReason(taskId);
             TaskResultEvaluation evaluation = humanReviewEvaluation(taskId, reason);
             stateStore.saveEvaluation(evaluation);
+            clearPendingFollowUps(session);
             updateSessionForHumanReview(session, reason);
             notifyUser(sessionService.get(taskId), snapshot, evaluation);
             return;
@@ -82,15 +91,35 @@ public class PlannerExecutionReviewService {
             }
             String reason = unfinishedStepReason(snapshot);
             markRuntimeFailed(snapshot, session, reason);
+            clearPendingFollowUps(session);
             updateSessionPhase(session, snapshot, null, reason);
             notifyUser(sessionService.get(taskId), snapshot, null);
             return;
         }
         TaskSubmissionResult submission = buildSubmission(taskId, snapshot);
         stateStore.saveSubmission(submission);
-        TaskResultEvaluation evaluation = evaluationService.evaluate(submission);
+        TaskResultEvaluation evaluation = evaluationService.evaluate(submission, session, snapshot);
+        syncPendingFollowUps(session, evaluation);
         updateSessionPhase(session, snapshot, evaluation, null);
         notifyUser(sessionService.get(taskId), snapshot, evaluation);
+    }
+
+    private void syncPendingFollowUps(PlanTaskSession session, TaskResultEvaluation evaluation) {
+        if (conversationTaskStateService == null || session == null || evaluation == null) {
+            return;
+        }
+        if (evaluation.getVerdict() == ResultVerdictEnum.PASS) {
+            conversationTaskStateService.syncPendingFollowUpRecommendations(session, evaluation);
+            return;
+        }
+        clearPendingFollowUps(session);
+    }
+
+    private void clearPendingFollowUps(PlanTaskSession session) {
+        if (conversationTaskStateService == null || session == null || session.getIntakeState() == null) {
+            return;
+        }
+        conversationTaskStateService.clearPendingFollowUpRecommendations(session.getIntakeState().getContinuationKey());
     }
 
     private TaskSubmissionResult buildSubmission(String taskId, TaskRuntimeSnapshot snapshot) {
@@ -122,6 +151,9 @@ public class PlannerExecutionReviewService {
             return;
         }
         PlanningPhaseEnum nextPhase = resolvePhase(snapshot, evaluation);
+        if (nextPhase == PlanningPhaseEnum.COMPLETED) {
+            syncCompletedPlanCards(session, snapshot);
+        }
         session.setPlanningPhase(nextPhase);
         session.setTransitionReason(overrideReason != null && !overrideReason.isBlank()
                 ? overrideReason
@@ -130,6 +162,41 @@ public class PlannerExecutionReviewService {
         sessionService.save(session);
         taskRuntimeService.syncTaskState(session.getTaskId(), nextPhase);
         sessionService.publishEvent(session.getTaskId(), nextPhase.name());
+    }
+
+    private void syncCompletedPlanCards(PlanTaskSession session, TaskRuntimeSnapshot snapshot) {
+        if (session == null || snapshot == null || snapshot.getSteps() == null || snapshot.getSteps().isEmpty()) {
+            return;
+        }
+        Map<String, TaskStepRecord> stepsById = new LinkedHashMap<>();
+        for (TaskStepRecord step : snapshot.getSteps()) {
+            if (step == null || step.getStepId() == null || step.getStepId().isBlank()) {
+                continue;
+            }
+            stepsById.put(step.getStepId(), step);
+        }
+        syncCompletedPlanCards(session.getPlanCards(), stepsById);
+        PlanBlueprint blueprint = session.getPlanBlueprint();
+        if (blueprint != null) {
+            syncCompletedPlanCards(blueprint.getPlanCards(), stepsById);
+        }
+    }
+
+    private void syncCompletedPlanCards(List<UserPlanCard> cards, Map<String, TaskStepRecord> stepsById) {
+        if (cards == null || cards.isEmpty() || stepsById == null || stepsById.isEmpty()) {
+            return;
+        }
+        for (UserPlanCard card : cards) {
+            if (card == null || card.getCardId() == null || card.getCardId().isBlank()) {
+                continue;
+            }
+            TaskStepRecord step = stepsById.get(card.getCardId());
+            if (step == null || step.getStatus() == null) {
+                continue;
+            }
+            card.setStatus(step.getStatus().name());
+            card.setProgress(step.getProgress());
+        }
     }
 
     private void updateSessionForHumanReview(PlanTaskSession session, String reason) {

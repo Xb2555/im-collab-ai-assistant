@@ -115,6 +115,7 @@ public class PlannerContextAcquisitionTool {
                 .selectedMessageIds(original.getSelectedMessageIds())
                 .attachmentRefs(original.getAttachmentRefs())
                 .docRefs(original.getDocRefs())
+                .sourceArtifacts(original.getSourceArtifacts())
                 .chatId(original.getChatId())
                 .threadId(original.getThreadId())
                 .messageId(original.getMessageId())

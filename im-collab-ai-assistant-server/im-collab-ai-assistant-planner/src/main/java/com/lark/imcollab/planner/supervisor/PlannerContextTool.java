@@ -30,9 +30,15 @@ public class PlannerContextTool {
             }
             if (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty()) {
                 contextParts.add("docRefs=" + workspaceContext.getDocRefs().size());
+                hasCollectedContext = true;
+            }
+            if (workspaceContext.getSourceArtifacts() != null && !workspaceContext.getSourceArtifacts().isEmpty()) {
+                contextParts.add("sourceArtifacts=" + workspaceContext.getSourceArtifacts().size());
+                hasCollectedContext = true;
             }
             if (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty()) {
                 contextParts.add("attachments=" + workspaceContext.getAttachmentRefs().size());
+                hasCollectedContext = true;
             }
             if (workspaceContext.getTimeRange() != null && !workspaceContext.getTimeRange().isBlank()) {
                 contextParts.add("timeRange=" + workspaceContext.getTimeRange());
@@ -79,6 +85,7 @@ public class PlannerContextTool {
                 || normalizedMessage.contains(normalizedInstruction)
                 || normalizedInstruction.contains(normalizedMessage))
                 && (workspaceContext.getDocRefs() == null || workspaceContext.getDocRefs().isEmpty())
+                && (workspaceContext.getSourceArtifacts() == null || workspaceContext.getSourceArtifacts().isEmpty())
                 && (workspaceContext.getAttachmentRefs() == null || workspaceContext.getAttachmentRefs().isEmpty())
                 && (workspaceContext.getSelectedMessageIds() == null || workspaceContext.getSelectedMessageIds().isEmpty());
     }

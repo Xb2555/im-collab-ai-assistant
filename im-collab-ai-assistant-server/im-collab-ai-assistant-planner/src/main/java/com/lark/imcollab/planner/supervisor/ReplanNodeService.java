@@ -1,14 +1,18 @@
 package com.lark.imcollab.planner.supervisor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.facade.PlannerContextAcquisitionFacade;
 import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
 import com.lark.imcollab.common.facade.DocumentEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationIterationFacade;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionPlan;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionResult;
 import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
@@ -58,7 +62,6 @@ public class ReplanNodeService {
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
-
     private final PlannerSessionService sessionService;
     private final PlanAdjustmentInterpreter adjustmentInterpreter;
     private final PlannerPatchTool patchTool;
@@ -71,6 +74,8 @@ public class ReplanNodeService {
     private final ObjectProvider<PresentationIterationFacade> presentationIterationFacadeProvider;
     private final ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider;
     private final ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider;
+    private final ObjectProvider<PlannerContextAcquisitionFacade> plannerContextAcquisitionFacadeProvider;
+    private final ContextNodeService contextNodeService;
     private final ObjectMapper objectMapper;
 
     public ReplanNodeService(
@@ -86,6 +91,8 @@ public class ReplanNodeService {
             ObjectProvider<PresentationIterationFacade> presentationIterationFacadeProvider,
             ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider,
             ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider,
+            ObjectProvider<PlannerContextAcquisitionFacade> plannerContextAcquisitionFacadeProvider,
+            ContextNodeService contextNodeService,
             ObjectMapper objectMapper
     ) {
         this.sessionService = sessionService;
@@ -100,6 +107,8 @@ public class ReplanNodeService {
         this.presentationIterationFacadeProvider = presentationIterationFacadeProvider;
         this.documentEditIntentFacadeProvider = documentEditIntentFacadeProvider;
         this.documentArtifactIterationFacadeProvider = documentArtifactIterationFacadeProvider;
+        this.plannerContextAcquisitionFacadeProvider = plannerContextAcquisitionFacadeProvider;
+        this.contextNodeService = contextNodeService;
         this.objectMapper = objectMapper;
     }
 
@@ -281,6 +290,9 @@ public class ReplanNodeService {
     ) {
         String instruction = normalize(adjustmentInstruction);
         String taskId = session.getTaskId();
+        if (shouldExtendCompletedTask(session, instruction)) {
+            return applyCompletedTaskPatch(session, instruction, workspaceContext);
+        }
         if (wantsNewArtifact(instruction) || wantsOverallReplan(instruction)) {
             return planningNodeService.plan(taskId, instruction, workspaceContext, instruction);
         }
@@ -312,31 +324,86 @@ public class ReplanNodeService {
         );
     }
 
+    private boolean shouldExtendCompletedTask(PlanTaskSession session, String instruction) {
+        return session != null
+                && session.getPlanBlueprint() != null
+                && "KEEP_EXISTING_CREATE_NEW".equalsIgnoreCase(extractArtifactPolicy(instruction));
+    }
+
+    private PlanTaskSession applyCompletedTaskPatch(
+            PlanTaskSession session,
+            String instruction,
+            WorkspaceContext workspaceContext
+    ) {
+        PlanPatchIntent patchIntent = adjustmentInterpreter.interpret(session, instruction, workspaceContext);
+        if (patchIntent == null || patchIntent.getOperation() == null
+                || patchIntent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED) {
+            questionTool.askUser(session, List.of(firstNonBlank(
+                    patchIntent == null ? null : patchIntent.getClarificationQuestion(),
+                    "我先不改当前任务。你是想在现有任务里新增后续步骤，还是整体重新做一版？")));
+            return sessionService.get(session.getTaskId());
+        }
+        if (patchIntent.getOperation() == PlanPatchOperation.REGENERATE_ALL) {
+            return planningNodeService.plan(session.getTaskId(), instruction, workspaceContext, instruction);
+        }
+        resetExecutionSemanticsForPlanAdjustment(session);
+        String beforeSignature = visiblePlanSignature(session.getPlanBlueprint());
+        int beforeCardCount = activeCardCount(session.getPlanBlueprint());
+        PlanBlueprint merged = patchTool.merge(session.getPlanBlueprint(), patchIntent, session.getTaskId());
+        stripPlanLevelExecutionFields(merged);
+        int afterCardCount = activeCardCount(merged);
+        if (Objects.equals(beforeSignature, visiblePlanSignature(merged))
+                || (patchIntent.getOperation() == PlanPatchOperation.ADD_STEP && afterCardCount <= beforeCardCount)) {
+            questionTool.askUser(session, List.of("我理解你想在当前任务里继续加后续步骤，但这次没有形成新的计划变化。你可以再明确一下要新增什么产物。"));
+            return sessionService.get(session.getTaskId());
+        }
+        qualityService.applyMergedPlanAdjustment(session, merged, firstNonBlank(patchIntent.getReason(), "Completed task follow-up adjusted"));
+        sessionService.saveWithoutVersionChange(session);
+        return session;
+    }
+
+    private String extractArtifactPolicy(String instruction) {
+        if (!hasText(instruction)) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("产物策略：\\s*([A-Z_]+)").matcher(instruction);
+        return matcher.find() ? matcher.group(1).trim() : null;
+    }
+
     private PlanTaskSession editExistingArtifact(
             PlanTaskSession session,
             ArtifactRecord artifact,
             String instruction,
             WorkspaceContext workspaceContext
     ) {
+        ContextPreparation preparedContext = prepareWorkspaceContextForArtifactEdit(session, instruction, workspaceContext);
+        if (preparedContext.clarificationQuestion() != null) {
+            return askCompletedAdjustmentQuestion(
+                    session,
+                    instruction,
+                    preparedContext.clarificationQuestion()
+            );
+        }
+        persistArtifactEditSourceScope(session, preparedContext.workspaceContext());
         if (artifact.getType() == ArtifactTypeEnum.PPT) {
-            if (!hasConcretePptEditInstruction(instruction)) {
+            if (!hasConcretePptEditInstruction(instruction, preparedContext.workspaceContext())) {
                 return askCompletedAdjustmentQuestion(
                         session,
                         instruction,
                         "可以改现有 PPT。你可以一次说明一个或多个页面要怎么改，比如“把第2页标题改成采购风险与建议”“在第2页后插入一页，标题为风险应对，正文为里程碑、风险、预算”“删除第3页”“把第4页移到第2页后”。"
                 );
             }
-            return editExistingPpt(session, artifact, instruction, workspaceContext);
+            return editExistingPpt(session, artifact, instruction, preparedContext.workspaceContext());
         }
         if (artifact.getType() == ArtifactTypeEnum.DOC) {
-            if (!hasConcreteDocEditInstruction(instruction)) {
+            if (!hasConcreteDocEditInstruction(instruction, preparedContext.workspaceContext())) {
                 return askCompletedAdjustmentQuestion(
                         session,
                         instruction,
                         "可以改现有文档。你想补哪一段、改哪个章节，或插入什么内容？比如“在 1.2 后补充一段风险分析”。"
                 );
             }
-            return editExistingDoc(session, artifact, instruction, workspaceContext);
+            return editExistingDoc(session, artifact, instruction, preparedContext.workspaceContext());
         }
         return askCompletedAdjustmentQuestion(
                 session,
@@ -369,6 +436,7 @@ public class ReplanNodeService {
                     .presentationUrl(artifact.getUrl())
                     .instruction(instruction)
                     .operatorOpenId(workspaceContext == null ? inputSender(session) : workspaceContext.getSenderOpenId())
+                    .workspaceContext(workspaceContext)
                     .build());
         } catch (RuntimeException exception) {
             markRuntimeStatus(taskId, TaskStatusEnum.COMPLETED);
@@ -625,7 +693,7 @@ public class ReplanNodeService {
         return containsAny(instruction, "整体", "重新规划", "重排计划", "调整计划", "修改计划", "步骤", "流程");
     }
 
-    private boolean hasConcretePptEditInstruction(String instruction) {
+    private boolean hasConcretePptEditInstruction(String instruction, WorkspaceContext workspaceContext) {
         if (!hasText(instruction)) {
             return false;
         }
@@ -635,11 +703,11 @@ public class ReplanNodeService {
         if (facade == null) {
             return false;
         }
-        PresentationEditIntent intent = facade.resolve(instruction);
+        PresentationEditIntent intent = facade.resolve(instruction, workspaceContext);
         return intent != null && !intent.isClarificationNeeded();
     }
 
-    private boolean hasConcreteDocEditInstruction(String instruction) {
+    private boolean hasConcreteDocEditInstruction(String instruction, WorkspaceContext workspaceContext) {
         if (!hasText(instruction)) {
             return false;
         }
@@ -649,9 +717,207 @@ public class ReplanNodeService {
         if (facade == null) {
             return false;
         }
-        DocumentEditIntent intent = facade.resolve(instruction);
+        DocumentEditIntent intent = facade.resolve(instruction, workspaceContext);
         return intent != null && !intent.isClarificationNeeded();
     }
+
+    private ContextPreparation prepareWorkspaceContextForArtifactEdit(
+            PlanTaskSession session,
+            String instruction,
+            WorkspaceContext workspaceContext
+    ) {
+        WorkspaceContext baseContext = normalizeWorkspaceContext(session, workspaceContext);
+        if (contextNodeService == null) {
+            return new ContextPreparation(baseContext, null);
+        }
+        ContextSufficiencyResult checkResult = contextNodeService.check(
+                session,
+                session.getTaskId(),
+                instruction,
+                baseContext
+        );
+        if (checkResult == null || !checkResult.collectionRequired()) {
+            return new ContextPreparation(baseContext, null);
+        }
+        PlannerContextAcquisitionFacade facade = plannerContextAcquisitionFacadeProvider == null
+                ? null
+                : plannerContextAcquisitionFacadeProvider.getIfAvailable();
+        if (facade == null) {
+            return new ContextPreparation(baseContext, firstNonBlank(
+                    checkResult.clarificationQuestion(),
+                    "我需要先拉取相关历史消息，才能继续修改这个产物。请补充消息范围或主题。"
+            ));
+        }
+        ContextAcquisitionPlan plan = checkResult.acquisitionPlan();
+        if (plan == null) {
+            return new ContextPreparation(baseContext, firstNonBlank(
+                    checkResult.clarificationQuestion(),
+                    "我需要先拉取相关历史消息，才能继续修改这个产物。请补充消息范围或主题。"
+            ));
+        }
+        ContextAcquisitionResult result = facade.acquire(
+                plan,
+                baseContext,
+                instruction
+        );
+        if (result == null || result.getSelectedMessages() == null || result.getSelectedMessages().isEmpty()) {
+            return new ContextPreparation(
+                    baseContext,
+                    firstNonBlank(result == null ? null : result.getClarificationQuestion(),
+                            "我没有拉到可用的历史消息。你可以补充更明确的时间范围、主题，或直接贴材料。")
+            );
+        }
+        return new ContextPreparation(mergeWorkspaceContext(baseContext, result), null);
+    }
+
+    private void persistArtifactEditSourceScope(PlanTaskSession session, WorkspaceContext workspaceContext) {
+        if (session == null || workspaceContext == null || !hasWorkspaceContextMaterial(workspaceContext)) {
+            return;
+        }
+        if (session.getIntentSnapshot() == null) {
+            session.setIntentSnapshot(IntentSnapshot.builder().build());
+        }
+        session.getIntentSnapshot().setSourceScope(mergeSessionSourceScope(
+                session.getIntentSnapshot().getSourceScope(),
+                workspaceContext
+        ));
+        if (session.getPlanBlueprint() == null) {
+            session.setPlanBlueprint(PlanBlueprint.builder().build());
+        }
+        session.getPlanBlueprint().setSourceScope(mergeSessionSourceScope(
+                session.getPlanBlueprint().getSourceScope(),
+                workspaceContext
+        ));
+        if (session.getExecutionContract() == null) {
+            session.setExecutionContract(ExecutionContract.builder().build());
+        }
+        session.getExecutionContract().setSourceScope(mergeSessionSourceScope(
+                session.getExecutionContract().getSourceScope(),
+                workspaceContext
+        ));
+        sessionService.saveWithoutVersionChange(session);
+    }
+
+    private WorkspaceContext mergeSessionSourceScope(WorkspaceContext current, WorkspaceContext update) {
+        WorkspaceContext base = current == null ? WorkspaceContext.builder().build() : current;
+        return WorkspaceContext.builder()
+                .selectionType(firstNonBlank(update.getSelectionType(), base.getSelectionType()))
+                .timeRange(firstNonBlank(update.getTimeRange(), base.getTimeRange()))
+                .selectedMessages(preferNonEmpty(update.getSelectedMessages(), base.getSelectedMessages()))
+                .selectedMessageIds(preferNonEmpty(update.getSelectedMessageIds(), base.getSelectedMessageIds()))
+                .attachmentRefs(preferNonEmpty(update.getAttachmentRefs(), base.getAttachmentRefs()))
+                .docRefs(preferNonEmpty(update.getDocRefs(), base.getDocRefs()))
+                .sourceArtifacts(preferNonEmpty(update.getSourceArtifacts(), base.getSourceArtifacts()))
+                .chatId(firstNonBlank(update.getChatId(), base.getChatId()))
+                .threadId(firstNonBlank(update.getThreadId(), base.getThreadId()))
+                .messageId(firstNonBlank(update.getMessageId(), base.getMessageId()))
+                .senderOpenId(firstNonBlank(update.getSenderOpenId(), base.getSenderOpenId()))
+                .chatType(firstNonBlank(update.getChatType(), base.getChatType()))
+                .inputSource(firstNonBlank(update.getInputSource(), base.getInputSource()))
+                .continuationMode(firstNonBlank(update.getContinuationMode(), base.getContinuationMode()))
+                .profession(firstNonBlank(update.getProfession(), base.getProfession()))
+                .industry(firstNonBlank(update.getIndustry(), base.getIndustry()))
+                .audience(firstNonBlank(update.getAudience(), base.getAudience()))
+                .tone(firstNonBlank(update.getTone(), base.getTone()))
+                .language(firstNonBlank(update.getLanguage(), base.getLanguage()))
+                .promptProfile(firstNonBlank(update.getPromptProfile(), base.getPromptProfile()))
+                .promptVersion(firstNonBlank(update.getPromptVersion(), base.getPromptVersion()))
+                .build();
+    }
+
+    private boolean hasWorkspaceContextMaterial(WorkspaceContext workspaceContext) {
+        return workspaceContext != null
+                && ((workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty())
+                || (workspaceContext.getSelectedMessageIds() != null && !workspaceContext.getSelectedMessageIds().isEmpty())
+                || (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty())
+                || (workspaceContext.getSourceArtifacts() != null && !workspaceContext.getSourceArtifacts().isEmpty())
+                || (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty())
+                || hasText(workspaceContext.getTimeRange()));
+    }
+
+    private <T> List<T> preferNonEmpty(List<T> preferred, List<T> fallback) {
+        return preferred != null && !preferred.isEmpty() ? preferred : fallback;
+    }
+
+    private WorkspaceContext normalizeWorkspaceContext(PlanTaskSession session, WorkspaceContext workspaceContext) {
+        if (workspaceContext != null && hasText(workspaceContext.getChatId())) {
+            return workspaceContext;
+        }
+        TaskInputContext inputContext = session == null ? null : session.getInputContext();
+        if (inputContext == null || !hasText(inputContext.getChatId())) {
+            return workspaceContext;
+        }
+        WorkspaceContext.WorkspaceContextBuilder builder = WorkspaceContext.builder()
+                .chatId(inputContext.getChatId())
+                .threadId(inputContext.getThreadId())
+                .messageId(inputContext.getMessageId())
+                .senderOpenId(firstNonBlank(
+                        workspaceContext == null ? null : workspaceContext.getSenderOpenId(),
+                        inputContext.getSenderOpenId()))
+                .chatType(inputContext.getChatType())
+                .inputSource(inputContext.getInputSource());
+        if (workspaceContext != null) {
+            builder.selectionType(workspaceContext.getSelectionType())
+                    .timeRange(workspaceContext.getTimeRange())
+                    .selectedMessages(workspaceContext.getSelectedMessages())
+                    .selectedMessageIds(workspaceContext.getSelectedMessageIds())
+                    .attachmentRefs(workspaceContext.getAttachmentRefs())
+                    .docRefs(workspaceContext.getDocRefs())
+                    .continuationMode(workspaceContext.getContinuationMode())
+                    .profession(workspaceContext.getProfession())
+                    .industry(workspaceContext.getIndustry())
+                    .audience(workspaceContext.getAudience())
+                    .tone(workspaceContext.getTone())
+                    .language(workspaceContext.getLanguage())
+                    .promptProfile(workspaceContext.getPromptProfile())
+                    .promptVersion(workspaceContext.getPromptVersion());
+        }
+        return builder.build();
+    }
+
+    private WorkspaceContext mergeWorkspaceContext(WorkspaceContext baseContext, ContextAcquisitionResult result) {
+        return WorkspaceContext.builder()
+                .selectionType(baseContext == null ? null : baseContext.getSelectionType())
+                .timeRange(firstNonBlank(baseContext == null ? null : baseContext.getTimeRange(), extractTimeRangeFromSummary(result)))
+                .selectedMessages(result.getSelectedMessages())
+                .selectedMessageIds(result.getSelectedMessageIds())
+                .attachmentRefs(baseContext == null ? null : baseContext.getAttachmentRefs())
+                .docRefs(baseContext == null ? null : baseContext.getDocRefs())
+                .chatId(baseContext == null ? null : baseContext.getChatId())
+                .threadId(baseContext == null ? null : baseContext.getThreadId())
+                .messageId(baseContext == null ? null : baseContext.getMessageId())
+                .senderOpenId(baseContext == null ? null : baseContext.getSenderOpenId())
+                .chatType(baseContext == null ? null : baseContext.getChatType())
+                .inputSource(baseContext == null ? null : baseContext.getInputSource())
+                .continuationMode(baseContext == null ? null : baseContext.getContinuationMode())
+                .profession(baseContext == null ? null : baseContext.getProfession())
+                .industry(baseContext == null ? null : baseContext.getIndustry())
+                .audience(baseContext == null ? null : baseContext.getAudience())
+                .tone(baseContext == null ? null : baseContext.getTone())
+                .language(baseContext == null ? null : baseContext.getLanguage())
+                .promptProfile(baseContext == null ? null : baseContext.getPromptProfile())
+                .promptVersion(baseContext == null ? null : baseContext.getPromptVersion())
+                .build();
+    }
+
+    private String extractTimeRangeFromSummary(ContextAcquisitionResult result) {
+        if (result == null || !hasText(result.getContextSummary())) {
+            return "";
+        }
+        String summary = result.getContextSummary();
+        int start = summary.indexOf("time:");
+        if (start < 0) {
+            return "";
+        }
+        int end = summary.indexOf("\n", start);
+        return end < 0 ? summary.substring(start + 5).trim() : summary.substring(start + 5, end).trim();
+    }
+
+    private String normalizeInstruction(String instruction) {
+        return instruction == null ? "" : instruction.replaceAll("\\s+", "");
+    }
+
+    private record ContextPreparation(WorkspaceContext workspaceContext, String clarificationQuestion) {}
 
     private PlanTaskSession applyDocumentIterationResult(
             PlanTaskSession session,

@@ -1,10 +1,12 @@
 package com.lark.imcollab.planner.supervisor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.facade.PlannerContextAcquisitionFacade;
 import com.lark.imcollab.common.facade.DocumentArtifactIterationFacade;
 import com.lark.imcollab.common.facade.DocumentEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationIterationFacade;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionResult;
 import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
@@ -80,6 +82,8 @@ class ReplanNodeServiceTest {
     private final PresentationIterationFacade presentationIterationFacade = mock(PresentationIterationFacade.class);
     private final DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
     private final DocumentArtifactIterationFacade documentArtifactIterationFacade = mock(DocumentArtifactIterationFacade.class);
+    private final PlannerContextAcquisitionFacade plannerContextAcquisitionFacade = mock(PlannerContextAcquisitionFacade.class);
+    private final ContextNodeService contextNodeService = mock(ContextNodeService.class);
     private final ReplanNodeService service = new ReplanNodeService(
             sessionService,
             adjustmentInterpreter,
@@ -93,6 +97,8 @@ class ReplanNodeServiceTest {
             provider(presentationIterationFacade),
             provider(documentEditIntentFacade),
             provider(documentArtifactIterationFacade),
+            provider(plannerContextAcquisitionFacade),
+            contextNodeService,
             new ObjectMapper()
     );
 
@@ -126,6 +132,49 @@ class ReplanNodeServiceTest {
                 .extracting(UserPlanCard::getTitle)
                 .containsExactly("生成技术方案文档（含Mermaid架构图）", "基于技术方案文档生成汇报PPT初稿", "生成群内项目进展摘要");
         verify(questionTool, never()).askUser(any(), any());
+    }
+
+    @Test
+    void completedTaskKeepExistingCreateNewUsesPatchMergeInsteadOfRebuildingWholePlan() {
+        PlanTaskSession session = session();
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(adjustmentInterpreter.interpret(session,
+                "保留现有文档，基于该文档新增一份汇报PPT初稿。\n产物策略：KEEP_EXISTING_CREATE_NEW",
+                null))
+                .thenReturn(PlanPatchIntent.builder()
+                        .operation(PlanPatchOperation.ADD_STEP)
+                        .newCardDrafts(List.of(PlanPatchCardDraft.builder()
+                                .title("基于文档生成汇报PPT初稿")
+                                .description("基于现有文档新增一份汇报PPT初稿")
+                                .type(PlanCardTypeEnum.PPT)
+                                .build()))
+                        .confidence(1.0d)
+                        .reason("add ppt follow-up")
+                        .build());
+        doAnswer(invocation -> {
+            PlanTaskSession target = invocation.getArgument(0);
+            PlanBlueprint merged = invocation.getArgument(1);
+            target.setPlanBlueprint(merged);
+            target.setPlanCards(merged.getPlanCards());
+            target.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+            return target;
+        }).when(qualityService).applyMergedPlanAdjustment(any(), any(), anyString());
+
+        PlanTaskSession result = service.replan(
+                "task-1",
+                "保留现有文档，基于该文档新增一份汇报PPT初稿。\n产物策略：KEEP_EXISTING_CREATE_NEW",
+                null
+        );
+
+        assertThat(result.getPlanCards())
+                .extracting(UserPlanCard::getTitle)
+                .containsExactly(
+                        "生成技术方案文档（含Mermaid架构图）",
+                        "基于技术方案文档生成汇报PPT初稿",
+                        "基于文档生成汇报PPT初稿"
+                );
+        verify(planningNodeService, never()).plan(anyString(), anyString(), any(), anyString());
     }
 
     @Test
@@ -216,6 +265,8 @@ class ReplanNodeServiceTest {
                 provider(presentationIterationFacade),
                 provider(documentEditIntentFacade),
                 provider(documentArtifactIterationFacade),
+                provider(plannerContextAcquisitionFacade),
+                contextNodeService,
                 new ObjectMapper()
         );
 
@@ -231,7 +282,7 @@ class ReplanNodeServiceTest {
         ArtifactRecord artifact = pptArtifact();
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
-        when(presentationEditIntentFacade.resolve("修改一下 PPT")).thenReturn(PresentationEditIntent.builder()
+        when(presentationEditIntentFacade.resolve(eq("修改一下 PPT"), any())).thenReturn(PresentationEditIntent.builder()
                 .clarificationNeeded(true)
                 .clarificationHint("请明确要改第几页和改成什么内容")
                 .build());
@@ -261,7 +312,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationEditIntentFacade.resolve(anyString(), any())).thenReturn(titleIntent(2, "新标题"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -290,7 +341,7 @@ class ReplanNodeServiceTest {
         ArtifactRecord second = pptArtifact("artifact-ppt-2", "新版 PPT", Instant.parse("2026-05-04T10:00:00Z"));
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
-        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationEditIntentFacade.resolve(anyString(), any())).thenReturn(titleIntent(2, "新标题"));
 
         PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", null);
 
@@ -328,7 +379,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationEditIntentFacade.resolve(anyString(), any())).thenReturn(titleIntent(2, "新标题"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -359,7 +410,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(first, second));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(presentationEditIntentFacade.resolve("把第2页标题改成新标题\n目标产物ID：artifact-ppt-1")).thenReturn(titleIntent(2, "新标题"));
+        when(presentationEditIntentFacade.resolve(eq("把第2页标题改成新标题\n目标产物ID：artifact-ppt-1"), any())).thenReturn(titleIntent(2, "新标题"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -389,7 +440,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(presentationEditIntentFacade.resolve("帮我修改第一页标题为7878")).thenReturn(titleIntent(1, "7878"));
+        when(presentationEditIntentFacade.resolve(eq("帮我修改第一页标题为7878"), any())).thenReturn(titleIntent(1, "7878"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -418,7 +469,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(documentEditIntentFacade.resolve("把文档补充风险提示\n目标产物ID：artifact-doc-1"))
+        when(documentEditIntentFacade.resolve(eq("把文档补充风险提示\n目标产物ID：artifact-doc-1"), any()))
                 .thenReturn(concreteDocIntent());
         when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
                 .taskId("doc-iter-1")
@@ -439,6 +490,61 @@ class ReplanNodeServiceTest {
     }
 
     @Test
+    void completedDocEditPullsHistoricalMessagesIntoWorkspaceContext() {
+        PlanTaskSession session = completedSession();
+        session.setInputContext(TaskInputContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_PRIVATE_CHAT")
+                .senderOpenId("ou-user")
+                .build());
+        ArtifactRecord doc = docArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        String instruction = "加一节关于666的内容，拉取前10分钟的消息作为内容总结";
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(contextNodeService.check(eq(session), eq("task-1"), eq(instruction), any())).thenReturn(ContextSufficiencyResult.collect(
+                com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.builder().needCollection(true).build(),
+                "need im history"
+        ));
+        when(documentEditIntentFacade.resolve(eq(instruction), any())).thenReturn(DocumentEditIntent.builder()
+                .intentType(DocumentIterationIntentType.INSERT)
+                .semanticAction(DocumentSemanticActionType.APPEND_SECTION_TO_DOCUMENT_END)
+                .clarificationNeeded(false)
+                .build());
+        when(plannerContextAcquisitionFacade.acquire(any(), any(), eq(instruction))).thenReturn(ContextAcquisitionResult.builder()
+                .success(true)
+                .sufficient(true)
+                .selectedMessages(List.of("19:20 风险消息A", "19:25 风险消息B"))
+                .selectedMessageIds(List.of("m-1", "m-2"))
+                .build());
+        when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
+                .taskId("doc-iter-1")
+                .artifactId("artifact-doc-1")
+                .docUrl(doc.getUrl())
+                .status(DocumentArtifactIterationStatus.COMPLETED)
+                .summary("已插入历史消息总结")
+                .preview("已插入历史消息总结")
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", instruction, null);
+
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已插入历史消息总结");
+        ArgumentCaptor<DocumentArtifactIterationRequest> request = forClass(DocumentArtifactIterationRequest.class);
+        verify(documentArtifactIterationFacade).edit(request.capture());
+        assertThat(request.getValue().getWorkspaceContext().getSelectedMessages())
+                .containsExactly("19:20 风险消息A", "19:25 风险消息B");
+        assertThat(result.getIntentSnapshot().getSourceScope().getSelectedMessages())
+                .containsExactly("19:20 风险消息A", "19:25 风险消息B");
+        assertThat(result.getPlanBlueprint().getSourceScope().getSelectedMessages())
+                .containsExactly("19:20 风险消息A", "19:25 风险消息B");
+    }
+
+    @Test
     void completedDocEditWaitingApprovalStoresPendingApprovalContext() {
         PlanTaskSession session = completedSession();
         ArtifactRecord doc = docArtifact();
@@ -450,7 +556,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(documentEditIntentFacade.resolve("在1.2后补充风险提示\n目标产物ID：artifact-doc-1"))
+        when(documentEditIntentFacade.resolve(eq("在1.2后补充风险提示\n目标产物ID：artifact-doc-1"), any()))
                 .thenReturn(concreteDocIntent());
         when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
                 .taskId("doc-iter-1")
@@ -488,7 +594,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
-        when(documentEditIntentFacade.resolve("把这份文档在 2.2 验证结论末尾补充一句：IM-DOC-ONCE-UNIQUE-CHECK-001。"))
+        when(documentEditIntentFacade.resolve(eq("把这份文档在 2.2 验证结论末尾补充一句：IM-DOC-ONCE-UNIQUE-CHECK-001。"), any()))
                 .thenReturn(concreteDocIntent());
         when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
                 .taskId("doc-iter-1")
@@ -520,7 +626,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(documentEditIntentFacade.resolve(instruction)).thenReturn(concreteDocIntent());
+        when(documentEditIntentFacade.resolve(eq(instruction), any())).thenReturn(concreteDocIntent());
         when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
                 .taskId("doc-iter-1")
                 .artifactId("artifact-doc-1")
@@ -539,6 +645,63 @@ class ReplanNodeServiceTest {
     }
 
     @Test
+    void completedPptEditPullsHistoricalMessagesIntoWorkspaceContext() {
+        PlanTaskSession session = completedSession();
+        session.setInputContext(TaskInputContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_PRIVATE_CHAT")
+                .senderOpenId("ou-user")
+                .build());
+        ArtifactRecord ppt = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        String instruction = "把最后一页改成最近10分钟关于风险的消息总结";
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(ppt));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(contextNodeService.check(eq(session), eq("task-1"), eq(instruction), any())).thenReturn(ContextSufficiencyResult.collect(
+                com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.builder().needCollection(true).build(),
+                "need im history"
+        ));
+        when(presentationEditIntentFacade.resolve(eq(instruction), any()))
+                .thenReturn(PresentationEditIntent.builder()
+                        .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                        .actionType(PresentationEditActionType.REPLACE_SLIDE_BODY)
+                        .pageIndex(2)
+                        .replacementText("基于历史消息整理")
+                        .clarificationNeeded(false)
+                        .build());
+        when(plannerContextAcquisitionFacade.acquire(any(), any(), eq(instruction))).thenReturn(ContextAcquisitionResult.builder()
+                .success(true)
+                .sufficient(true)
+                .selectedMessages(List.of("19:20 风险消息A", "19:25 风险消息B"))
+                .selectedMessageIds(List.of("m-1", "m-2"))
+                .build());
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("ppt-iter-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("ppt-id")
+                .presentationUrl(ppt.getUrl())
+                .summary("已更新最后一页")
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", instruction, null);
+
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已更新最后一页");
+        ArgumentCaptor<PresentationIterationRequest> request = forClass(PresentationIterationRequest.class);
+        verify(presentationIterationFacade).edit(request.capture());
+        assertThat(request.getValue().getWorkspaceContext().getSelectedMessages())
+                .containsExactly("19:20 风险消息A", "19:25 风险消息B");
+        assertThat(result.getIntentSnapshot().getSourceScope().getSelectedMessages())
+                .containsExactly("19:20 风险消息A", "19:25 风险消息B");
+        assertThat(result.getPlanBlueprint().getSourceScope().getSelectedMessages())
+                .containsExactly("19:20 风险消息A", "19:25 风险消息B");
+    }
+
+    @Test
     void unclearDocEditStillAsksClarification() {
         PlanTaskSession session = completedSession();
         ArtifactRecord doc = docArtifact();
@@ -551,7 +714,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(documentEditIntentFacade.resolve(instruction)).thenReturn(DocumentEditIntent.builder()
+        when(documentEditIntentFacade.resolve(eq(instruction), any())).thenReturn(DocumentEditIntent.builder()
                 .userInstruction(instruction)
                 .clarificationNeeded(true)
                 .clarificationHint("请明确改哪个章节")

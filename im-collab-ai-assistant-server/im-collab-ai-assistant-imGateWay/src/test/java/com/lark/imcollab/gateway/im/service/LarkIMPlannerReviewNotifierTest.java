@@ -1,6 +1,7 @@
 package com.lark.imcollab.gateway.im.service;
 
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.NextStepRecommendation;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskRecord;
@@ -8,6 +9,7 @@ import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
+import com.lark.imcollab.common.model.enums.NextStepRecommendationCodeEnum;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.StepTypeEnum;
@@ -152,8 +154,51 @@ class LarkIMPlannerReviewNotifierTest {
                 org.mockito.ArgumentMatchers.anyString()
         );
         assertThat(textCaptor.getValue())
-                .contains("技术方案文档", "https://doc.example", "项目进展摘要：", "项目已完成IM入口")
+                .contains("技术方案文档", "https://doc.example", "SUMMARY（项目进展摘要）：", "项目已完成IM入口")
                 .doesNotContain("# 项目进展摘要", "摘要内容");
+        assertThat(textCaptor.getValue()).contains("已有产物：2 个");
+    }
+
+    @Test
+    void reviewNoticeIncludesNextStepRecommendations() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("d2f254d0-48b7-4520-a652-a454a291cbdb")
+                .inputContext(TaskInputContext.builder()
+                        .chatType("p2p")
+                        .senderOpenId("ou-user")
+                        .build())
+                .build();
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().taskId("task-1").status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(ArtifactRecord.builder()
+                        .artifactId("doc-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .title("技术方案文档")
+                        .url("https://doc.example")
+                        .build()))
+                .build();
+
+        notifier.notifyExecutionReviewed(session, snapshot, TaskResultEvaluation.builder()
+                .verdict(ResultVerdictEnum.PASS)
+                .nextStepRecommendations(List.of(NextStepRecommendation.builder()
+                        .code(NextStepRecommendationCodeEnum.GENERATE_PPT_FROM_DOC)
+                        .title("基于当前文档生成一版汇报 PPT")
+                        .reason("当前已经有结构化文档，下一步适合整理成汇报材料。")
+                        .suggestedUserInstruction("基于这份文档生成一版汇报PPT")
+                        .targetDeliverable(ArtifactTypeEnum.PPT)
+                        .priority(1)
+                        .build()))
+                .build());
+
+        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool).sendPrivateText(
+                org.mockito.ArgumentMatchers.eq("ou-user"),
+                textCaptor.capture(),
+                org.mockito.ArgumentMatchers.anyString()
+        );
+        assertThat(textCaptor.getValue())
+                .contains("推荐下一步", "基于当前文档生成一版汇报 PPT", "直接回复：基于这份文档生成一版汇报PPT")
+                .doesNotContain("自动发送");
     }
 
     @Test
