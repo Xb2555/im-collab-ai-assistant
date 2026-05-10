@@ -101,6 +101,7 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         if (operations.isEmpty()) {
             return heuristicFallback(intent.getUserInstruction());
         }
+        coerceOperationsByInstruction(intent.getUserInstruction(), operations);
         for (PresentationEditOperation operation : operations) {
             if (operation.getActionType() == null) {
                 return heuristicFallback(intent.getUserInstruction());
@@ -145,6 +146,52 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
             intent.setTargetElementType(first.getTargetElementType());
         }
         return intent;
+    }
+
+    private void coerceOperationsByInstruction(String instruction, List<PresentationEditOperation> operations) {
+        if (!hasText(instruction) || operations == null || operations.isEmpty()) {
+            return;
+        }
+        String normalized = instruction.trim();
+        for (PresentationEditOperation operation : operations) {
+            if (operation == null) {
+                continue;
+            }
+            if (containsDeleteSemantic(normalized)) {
+                coerceDeleteOperation(operation, normalized);
+                continue;
+            }
+            if (containsInsertSemantic(normalized) && operation.getActionType() == PresentationEditActionType.REWRITE_ELEMENT) {
+                operation.setActionType(PresentationEditActionType.INSERT_AFTER_ELEMENT);
+                if (operation.getTargetElementType() == null) {
+                    operation.setTargetElementType(PresentationTargetElementType.BODY);
+                }
+                if (operation.getAnchorMode() == null && hasText(operation.getQuotedText())) {
+                    operation.setAnchorMode(PresentationAnchorMode.BY_QUOTED_TEXT);
+                }
+            }
+        }
+    }
+
+    private void coerceDeleteOperation(PresentationEditOperation operation, String instruction) {
+        if (operation.getActionType() == PresentationEditActionType.DELETE_SLIDE
+                || operation.getActionType() == PresentationEditActionType.DELETE_ELEMENT) {
+            return;
+        }
+        if (mentionsSlideDelete(instruction) && operation.getPageIndex() != null) {
+            operation.setActionType(PresentationEditActionType.DELETE_SLIDE);
+            return;
+        }
+        operation.setActionType(PresentationEditActionType.DELETE_ELEMENT);
+        if (operation.getTargetElementType() == null) {
+            operation.setTargetElementType(PresentationTargetElementType.BODY);
+        }
+        if (operation.getAnchorMode() == null && hasText(operation.getQuotedText())) {
+            operation.setAnchorMode(PresentationAnchorMode.BY_QUOTED_TEXT);
+        }
+        if (operation.getExpectedMatchCount() == null) {
+            operation.setExpectedMatchCount(1);
+        }
     }
 
     private PresentationEditIntent clarification(String instruction) {
@@ -337,7 +384,7 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 schema:
                 {
                   "intentType": "UPDATE_CONTENT|INSERT|DELETE|EXPLAIN",
-                  "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|REWRITE_ELEMENT|EXPAND_ELEMENT|SHORTEN_ELEMENT|REPLACE_ELEMENT|REPLACE_IMAGE|REPLACE_CHART|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
+                  "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|REWRITE_ELEMENT|EXPAND_ELEMENT|SHORTEN_ELEMENT|REPLACE_ELEMENT|REPLACE_IMAGE|REPLACE_CHART|INSERT_AFTER_ELEMENT|DELETE_ELEMENT|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
                   "targetElementType": "TITLE|BODY|IMAGE|CHART|TABLE|CAPTION|SHAPE",
                   "anchorMode": "BY_PAGE_INDEX|BY_QUOTED_TEXT|BY_ELEMENT_ROLE|BY_BLOCK_ID",
                   "pageIndex": 1,
@@ -357,7 +404,7 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                   "replacementText": "新的标题或内容",
                   "operations": [
                     {
-                      "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|REWRITE_ELEMENT|EXPAND_ELEMENT|SHORTEN_ELEMENT|REPLACE_ELEMENT|REPLACE_IMAGE|REPLACE_CHART|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
+                      "actionType": "REPLACE_SLIDE_TITLE|REPLACE_SLIDE_BODY|REWRITE_ELEMENT|EXPAND_ELEMENT|SHORTEN_ELEMENT|REPLACE_ELEMENT|REPLACE_IMAGE|REPLACE_CHART|INSERT_AFTER_ELEMENT|DELETE_ELEMENT|INSERT_SLIDE|DELETE_SLIDE|MOVE_SLIDE",
                       "targetElementType": "TITLE|BODY|IMAGE|CHART|TABLE|CAPTION|SHAPE",
                       "anchorMode": "BY_PAGE_INDEX|BY_QUOTED_TEXT|BY_ELEMENT_ROLE|BY_BLOCK_ID",
                       "pageIndex": 1,
@@ -390,12 +437,13 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 6. 如果用户说“第2页右侧图片换成门店实景图”，使用 targetElementType=IMAGE、anchorMode=BY_ELEMENT_ROLE、elementRole=right-image、actionType=REPLACE_IMAGE。
                 7. 如果用户说“第3页流程图改成采购->评审->执行”，使用 targetElementType=CHART、actionType=REPLACE_CHART。
                 7.1 如果用户明确说“第2页第三个 bullet”“第二段”“第1页第2条”，优先填 targetListItemIndex 或 targetParagraphIndex。
-                7.2 如果用户说“第一页的 xxx 这一段删了/删除/去掉”，优先使用 targetElementType=BODY、anchorMode=BY_QUOTED_TEXT、quotedText=xxx、actionType=DELETE_ELEMENT。
-                5. “在第2页后插入一页，标题为风险应对，正文为预算、排期、依赖”应解析为 INSERT_SLIDE，insertAfterPageIndex=2，slideTitle/slideBody 填入新增内容；插到最前 insertAfterPageIndex=0；插到末尾 insertAfterPageIndex 可为 null。
-                6. “删除第3页”应解析为 DELETE_SLIDE，pageIndex=3。
-                7. “把第4页移到第2页后”应解析为 MOVE_SLIDE，pageIndex=4，insertAfterPageIndex=2；移到最前 insertAfterPageIndex=0；移到最后/末尾 insertAfterPageIndex=-1。
-                8. 无法唯一定位时必须 clarificationNeeded=true，禁止默认猜标题。
-                9. 新增页缺少标题和正文，或移动页缺少源页/目标位置，或无法确认替换页码、目标元素、新内容时，clarificationNeeded=true。
+                7.2 如果用户说“第一页的 xxx 这一段删了/删除/去掉”，必须使用 targetElementType=BODY、anchorMode=BY_QUOTED_TEXT、quotedText=xxx、actionType=DELETE_ELEMENT，禁止返回 REWRITE_ELEMENT。
+                7.3 如果用户说“在第一页的 xxx 后插入一句/一段”，优先使用 targetElementType=BODY、anchorMode=BY_QUOTED_TEXT、quotedText=xxx、actionType=INSERT_AFTER_ELEMENT。
+                8. “在第2页后插入一页，标题为风险应对，正文为预算、排期、依赖”应解析为 INSERT_SLIDE，insertAfterPageIndex=2，slideTitle/slideBody 填入新增内容；插到最前 insertAfterPageIndex=0；插到末尾 insertAfterPageIndex 可为 null。
+                9. “删除第3页”应解析为 DELETE_SLIDE，pageIndex=3。
+                10. “把第4页移到第2页后”应解析为 MOVE_SLIDE，pageIndex=4，insertAfterPageIndex=2；移到最前 insertAfterPageIndex=0；移到最后/末尾 insertAfterPageIndex=-1。
+                11. 无法唯一定位时必须 clarificationNeeded=true，禁止默认猜标题。
+                12. 新增页缺少标题和正文，或移动页缺少源页/目标位置，或无法确认替换页码、目标元素、新内容时，clarificationNeeded=true。
 
                 用户指令：%s
                 """.formatted(instruction == null ? "" : instruction.trim());
@@ -593,6 +641,28 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean containsDeleteSemantic(String instruction) {
+        return instruction.contains("删了")
+                || instruction.contains("删掉")
+                || instruction.contains("删除")
+                || instruction.contains("去掉")
+                || instruction.contains("移除");
+    }
+
+    private boolean containsInsertSemantic(String instruction) {
+        return instruction.contains("插入")
+                || instruction.contains("补充")
+                || instruction.contains("加上")
+                || instruction.contains("增加");
+    }
+
+    private boolean mentionsSlideDelete(String instruction) {
+        return instruction.contains("删除第")
+                || instruction.contains("删掉第")
+                || instruction.contains("删第")
+                || instruction.contains("移除第");
     }
 
     private record PageAnchor(Integer pageIndex, String anchorText) {

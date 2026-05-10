@@ -27,6 +27,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.model.enums.PresentationIterationStatus;
 import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.planner.replan.PlanAdjustmentInterpreter;
@@ -376,6 +377,24 @@ public class ReplanNodeService {
                     "PPT 修改失败：" + exception.getMessage());
             throw exception;
         }
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        intakeState.setPendingArtifactSelection(null);
+        session.setIntakeState(intakeState);
+        PresentationIterationStatus status = result == null ? PresentationIterationStatus.FAILED_BEFORE_WRITE : result.getStatus();
+        if (status == PresentationIterationStatus.FAILED_BEFORE_WRITE) {
+            markRuntimeStatus(taskId, TaskStatusEnum.COMPLETED);
+            String reply = firstNonBlank(result == null ? null : result.getFailureReason(), result == null ? null : result.getSummary(), "PPT 修改在写入前被拒绝");
+            appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.STEP_FAILED, reply);
+            intakeState.setAssistantReply(reply);
+            session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+            session.setTransitionReason("Completed PPT adjustment rejected before write");
+            sessionService.saveWithoutVersionChange(session);
+            sessionService.publishEvent(taskId, "COMPLETED");
+            return session;
+        }
 
         artifact.setPreview(firstNonBlank(result.getSummary(), artifact.getPreview()));
         artifact.setStatus("UPDATED");
@@ -384,16 +403,23 @@ public class ReplanNodeService {
         stateStore.saveArtifact(artifact);
         markRuntimeStatus(taskId, TaskStatusEnum.COMPLETED);
         appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.ARTIFACT_UPDATED, firstNonBlank(result.getSummary(), "PPT 已更新"));
+        if (status == PresentationIterationStatus.PARTIAL_SUCCESS) {
+            String partialReply = firstNonBlank(result.getSummary(), "PPT 已写入飞书，但校验未完全通过，产物可能已部分变更")
+                    + "；已写入飞书，但校验未完全通过，产物可能已部分变更";
+            appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.TASK_COMPLETED, partialReply);
+            intakeState.setAssistantReply(partialReply);
+            intakeState.setPendingAdjustmentInstruction(null);
+            session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+            session.setTransitionReason("Scenario D PPT artifact partially verified after write");
+            sessionService.saveWithoutVersionChange(session);
+            sessionService.publishEvent(taskId, "COMPLETED");
+            return session;
+        }
+
         appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.TASK_COMPLETED, "PPT 原地修改完成");
-        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
-        TaskIntakeState intakeState = session.getIntakeState() == null
-                ? TaskIntakeState.builder().build()
-                : session.getIntakeState();
-        intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         intakeState.setAssistantReply(firstNonBlank(result.getSummary(), "PPT 已更新"));
-        intakeState.setPendingArtifactSelection(null);
         intakeState.setPendingAdjustmentInstruction(null);
-        session.setIntakeState(intakeState);
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
         session.setTransitionReason("Scenario D PPT artifact updated in place by planner replan");
         sessionService.saveWithoutVersionChange(session);
         sessionService.publishEvent(taskId, "COMPLETED");

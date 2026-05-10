@@ -32,6 +32,7 @@ import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
+import com.lark.imcollab.common.model.enums.PresentationIterationStatus;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
 import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
@@ -283,6 +284,74 @@ class ReplanNodeServiceTest {
         verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
         verify(stateStore).saveArtifact(artifact);
         verify(planningNodeService, never()).plan(anyString(), anyString(), any(), any());
+        verify(sessionService).publishEvent("task-1", "COMPLETED");
+    }
+
+    @Test
+    void completedPptEditPartialSuccessStillUpdatesArtifactButWarnsUser() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .status(PresentationIterationStatus.PARTIAL_SUCCESS)
+                .writeApplied(true)
+                .verificationPassed(false)
+                .failureReason("PPT update verification failed: target text not applied to resolved node")
+                .summary("已将第2页标题改成新标题")
+                .modifiedSlides(List.of("2"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(artifact.getVersion()).isEqualTo(2);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("已写入飞书，但校验未完全通过");
+        verify(stateStore).saveArtifact(artifact);
+        verify(sessionService).publishEvent("task-1", "COMPLETED");
+    }
+
+    @Test
+    void completedPptEditFailedBeforeWriteDoesNotUpdateArtifactVersion() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .status(PresentationIterationStatus.FAILED_BEFORE_WRITE)
+                .writeApplied(false)
+                .verificationPassed(false)
+                .failureReason("页内锚点命中不唯一，请补充更具体的位置")
+                .summary("页内锚点命中不唯一，请补充更具体的位置")
+                .modifiedSlides(List.of())
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(artifact.getVersion()).isEqualTo(1);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("命中不唯一");
+        verify(stateStore, never()).saveArtifact(artifact);
         verify(sessionService).publishEvent("task-1", "COMPLETED");
     }
 

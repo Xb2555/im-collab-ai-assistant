@@ -84,7 +84,7 @@ public class PresentationAnchorResolver {
         }
         int expected = operation == null || operation.getExpectedMatchCount() == null ? 1 : operation.getExpectedMatchCount();
         if (candidates.size() > expected) {
-            throw new IllegalArgumentException("PPT 页内" + anchorLabel + "命中不唯一，请补充更具体的修改位置");
+            throw new IllegalArgumentException("页内锚点命中不唯一，请补充更具体的位置");
         }
         return candidates.get(0);
     }

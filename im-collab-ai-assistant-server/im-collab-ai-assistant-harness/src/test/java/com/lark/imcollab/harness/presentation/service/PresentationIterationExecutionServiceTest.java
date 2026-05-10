@@ -6,6 +6,7 @@ import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.entity.PresentationEditOperation;
 import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
+import com.lark.imcollab.common.model.enums.PresentationIterationStatus;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
 import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesFetchResult;
@@ -392,14 +393,15 @@ class PresentationIterationExecutionServiceTest {
                 .build());
         PresentationIterationExecutionService singleService = new PresentationIterationExecutionService(singleSlideTool, singleIntentFacade);
 
-        assertThatThrownBy(() -> singleService.edit(PresentationIterationRequest.builder()
+        var singleResult = singleService.edit(PresentationIterationRequest.builder()
                 .taskId("task-2")
                 .artifactId("artifact-2")
                 .presentationId("slides-2")
                 .instruction("删除第1页")
-                .build()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("不能删除唯一一页");
+                .build());
+        assertThat(singleResult.getStatus()).isEqualTo(PresentationIterationStatus.FAILED_BEFORE_WRITE);
+        assertThat(singleResult.getWriteApplied()).isFalse();
+        assertThat(singleResult.getFailureReason()).contains("不能删除唯一一页");
         verify(singleSlideTool, never()).deleteSlide(eq("slides-2"), eq("only"));
     }
 
@@ -448,7 +450,6 @@ class PresentationIterationExecutionServiceTest {
         inOrder.verify(slidesTool).fetchSlide("slides-1", "s3");
         inOrder.verify(slidesTool).createSlide(eq("slides-1"), anyString(), eq("s2"));
         inOrder.verify(slidesTool).deleteSlide("slides-1", "s3");
-        inOrder.verify(slidesTool).fetchPresentation("slides-1");
         assertThat(result.getModifiedSlides()).containsExactly("moved");
         assertThat(result.getSummary()).isEqualTo("已移动第 3 页到第 1 页后");
     }
@@ -613,15 +614,16 @@ class PresentationIterationExecutionServiceTest {
                 .build());
         PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
 
-        assertThatThrownBy(() -> service.edit(PresentationIterationRequest.builder()
+        var result = service.edit(PresentationIterationRequest.builder()
                 .taskId("task-1")
                 .artifactId("artifact-1")
                 .presentationId("slides-1")
                 .instruction("把第一页左边正文改详细一些")
-                .build()))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("命中不唯一");
+                .build());
 
+        assertThat(result.getStatus()).isEqualTo(PresentationIterationStatus.FAILED_BEFORE_WRITE);
+        assertThat(result.getWriteApplied()).isFalse();
+        assertThat(result.getFailureReason()).contains("命中不唯一");
         verify(slidesTool, never()).replaceSlide(eq("slides-1"), anyString(), anyList());
     }
 
@@ -835,5 +837,110 @@ class PresentationIterationExecutionServiceTest {
         String replacement = (String) partsCaptor.getValue().get(0).get("replacement");
         assertThat(replacement).contains("第二条");
         assertThat(replacement).doesNotContain("文旅融合创新，消费场景丰富多元");
+    }
+
+    @Test
+    void rejectsDeleteInstructionWhenResolverDriftsToRewriteBeforeWrite() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(intentFacade.resolve("第一页这段删了")).thenReturn(PresentationEditIntent.builder()
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.REWRITE_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .pageIndex(1)
+                        .replacementText("新正文")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+
+        var result = service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("第一页这段删了")
+                .build());
+
+        assertThat(result.getStatus()).isEqualTo(PresentationIterationStatus.FAILED_BEFORE_WRITE);
+        assertThat(result.getWriteApplied()).isFalse();
+        assertThat(result.getFailureReason()).contains("用户要求是删除");
+        verify(slidesTool, never()).fetchPresentation(anyString());
+        verify(slidesTool, never()).replaceSlide(anyString(), anyString(), anyList());
+    }
+
+    @Test
+    void returnsPartialSuccessWhenWriteSucceedsButVerificationFails() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(slidesTool.fetchPresentation("slides-1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="b1" type="text"><content textType="body"><p>旧正文</p></content></shape></data></slide></presentation>
+                                """)
+                        .build())
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="b1"><content><p>旧正文</p></content></shape></data></slide></presentation>
+                                """)
+                        .build());
+        when(intentFacade.resolve("把第一页正文改成新正文")).thenReturn(PresentationEditIntent.builder()
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.REPLACE_SLIDE_BODY)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .pageIndex(1)
+                        .replacementText("新正文")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+
+        var result = service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("把第一页正文改成新正文")
+                .build());
+
+        assertThat(result.getStatus()).isEqualTo(PresentationIterationStatus.PARTIAL_SUCCESS);
+        assertThat(result.getWriteApplied()).isTrue();
+        assertThat(result.getVerificationPassed()).isFalse();
+        assertThat(result.getFailureReason()).contains("verification failed");
+        verify(slidesTool).replaceSlide(eq("slides-1"), eq("s1"), anyList());
+    }
+
+    @Test
+    void rejectsUnsupportedDeleteTargetBeforeWrite() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(slidesTool.fetchPresentation("slides-1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="shape-1" type="shape"><content><p>装饰图形</p></content></shape></data></slide></presentation>
+                                """)
+                        .build());
+        when(intentFacade.resolve("把第一页这个图形删了")).thenReturn(PresentationEditIntent.builder()
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.DELETE_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.SHAPE)
+                        .pageIndex(1)
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+
+        var result = service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("把第一页这个图形删了")
+                .build());
+
+        assertThat(result.getStatus()).isEqualTo(PresentationIterationStatus.FAILED_BEFORE_WRITE);
+        assertThat(result.getWriteApplied()).isFalse();
+        assertThat(result.getFailureReason()).contains("当前仅支持文本和图片元素删除");
+        verify(slidesTool, never()).replaceSlide(anyString(), anyString(), anyList());
     }
 }

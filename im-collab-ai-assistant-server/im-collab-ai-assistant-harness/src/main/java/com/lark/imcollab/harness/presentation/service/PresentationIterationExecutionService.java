@@ -8,9 +8,12 @@ import com.lark.imcollab.common.model.entity.PresentationEditOperation;
 import com.lark.imcollab.common.model.entity.PresentationSnapshot;
 import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
+import com.lark.imcollab.common.model.enums.PresentationIterationStatus;
 import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.harness.presentation.support.PresentationAnchorResolver;
+import com.lark.imcollab.harness.presentation.support.PresentationIntentGuard;
+import com.lark.imcollab.harness.presentation.support.PresentationPatchContractValidator;
 import com.lark.imcollab.harness.presentation.support.PresentationTargetStateVerifier;
 import com.lark.imcollab.harness.presentation.support.SlideSnapshotBuilder;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesFetchResult;
@@ -48,6 +51,8 @@ public class PresentationIterationExecutionService implements PresentationIterat
     private final PresentationBodyRewriteService bodyRewriteService;
     private final SlideSnapshotBuilder slideSnapshotBuilder;
     private final PresentationAnchorResolver anchorResolver;
+    private final PresentationIntentGuard intentGuard;
+    private final PresentationPatchContractValidator patchContractValidator;
     private final PresentationTargetStateVerifier targetStateVerifier;
 
     @Autowired
@@ -57,6 +62,8 @@ public class PresentationIterationExecutionService implements PresentationIterat
             PresentationBodyRewriteService bodyRewriteService,
             SlideSnapshotBuilder slideSnapshotBuilder,
             PresentationAnchorResolver anchorResolver,
+            PresentationIntentGuard intentGuard,
+            PresentationPatchContractValidator patchContractValidator,
             PresentationTargetStateVerifier targetStateVerifier
     ) {
         this.larkSlidesTool = larkSlidesTool;
@@ -64,6 +71,8 @@ public class PresentationIterationExecutionService implements PresentationIterat
         this.bodyRewriteService = bodyRewriteService;
         this.slideSnapshotBuilder = slideSnapshotBuilder;
         this.anchorResolver = anchorResolver;
+        this.intentGuard = intentGuard;
+        this.patchContractValidator = patchContractValidator;
         this.targetStateVerifier = targetStateVerifier;
     }
 
@@ -71,7 +80,8 @@ public class PresentationIterationExecutionService implements PresentationIterat
             LarkSlidesTool larkSlidesTool,
             PresentationEditIntentFacade intentFacade
     ) {
-        this(larkSlidesTool, intentFacade, null, new SlideSnapshotBuilder(), new PresentationAnchorResolver(), new PresentationTargetStateVerifier());
+        this(larkSlidesTool, intentFacade, null, new SlideSnapshotBuilder(), new PresentationAnchorResolver(),
+                new PresentationIntentGuard(), new PresentationPatchContractValidator(), new PresentationTargetStateVerifier());
     }
 
     public PresentationIterationExecutionService(
@@ -79,7 +89,8 @@ public class PresentationIterationExecutionService implements PresentationIterat
             PresentationEditIntentFacade intentFacade,
             PresentationBodyRewriteService bodyRewriteService
     ) {
-        this(larkSlidesTool, intentFacade, bodyRewriteService, new SlideSnapshotBuilder(), new PresentationAnchorResolver(), new PresentationTargetStateVerifier());
+        this(larkSlidesTool, intentFacade, bodyRewriteService, new SlideSnapshotBuilder(), new PresentationAnchorResolver(),
+                new PresentationIntentGuard(), new PresentationPatchContractValidator(), new PresentationTargetStateVerifier());
     }
 
     @Override
@@ -96,19 +107,43 @@ public class PresentationIterationExecutionService implements PresentationIterat
         if (operations.isEmpty()) {
             throw new IllegalArgumentException("请明确要修改哪些页面，以及每页要改成什么内容");
         }
+        try {
+            intentGuard.validate(instruction, operations);
+        } catch (RuntimeException exception) {
+            return failedBeforeWrite(request, presentation, exception.getMessage());
+        }
         LinkedHashSet<String> modifiedSlideIds = new LinkedHashSet<>();
         List<String> summarySegments = new ArrayList<>();
+        boolean writeApplied = false;
+        boolean verificationPassed = true;
+        String failureReason = null;
         for (PresentationEditOperation operation : operations) {
             LarkSlidesFetchResult beforePresentation = larkSlidesTool.fetchPresentation(presentation);
-            OperationResult operationResult = executeOperation(presentation, beforePresentation.getXml(), operation);
+            OperationResult operationResult;
+            try {
+                operationResult = executeOperation(presentation, beforePresentation.getXml(), operation);
+            } catch (WriteGuardFailureException exception) {
+                return failedBeforeWrite(request, presentation, exception.getMessage());
+            } catch (IllegalArgumentException exception) {
+                return failedBeforeWrite(request, presentation, exception.getMessage());
+            }
             modifiedSlideIds.addAll(operationResult.modifiedSlideIds());
             summarySegments.add(operationResult.summarySegment());
+            writeApplied = writeApplied || operationResult.writeApplied();
+            verificationPassed = verificationPassed && operationResult.verificationPassed();
+            if (!operationResult.verificationPassed() && !hasText(failureReason)) {
+                failureReason = operationResult.failureReason();
+            }
         }
         return PresentationIterationVO.builder()
                 .taskId(request.getTaskId())
                 .artifactId(request.getArtifactId())
                 .presentationId(firstNonBlank(request.getPresentationId(), presentation))
                 .presentationUrl(request.getPresentationUrl())
+                .status(writeApplied && verificationPassed ? PresentationIterationStatus.SUCCESS : PresentationIterationStatus.PARTIAL_SUCCESS)
+                .writeApplied(writeApplied)
+                .verificationPassed(verificationPassed)
+                .failureReason(failureReason)
                 .summary(joinSummary(summarySegments))
                 .modifiedSlides(new ArrayList<>(modifiedSlideIds))
                 .build();
@@ -132,7 +167,7 @@ public class PresentationIterationExecutionService implements PresentationIterat
         List<PresentationSnapshot> beforeSnapshots = slideSnapshotBuilder.build(slide, slideRef.pageIndex());
         PresentationSnapshot targetSnapshot = anchorResolver.resolve(beforeSnapshots, operation);
         if (targetSnapshot == null && operation.getAnchorMode() != null && operation.getAnchorMode() != PresentationAnchorMode.BY_PAGE_INDEX) {
-            throw new IllegalArgumentException("无法唯一定位到要修改的 PPT 元素，请补充更具体的页内锚点");
+            throw new IllegalArgumentException("当前页未找到该原文锚点，可能内容已被修改，请引用当前页实际文字再试");
         }
         Element targetElement = resolveTargetElement(slide, targetSnapshot, operation);
         if (targetElement == null) {
@@ -143,61 +178,82 @@ public class PresentationIterationExecutionService implements PresentationIterat
         if (executableOperation.getActionType() == PresentationEditActionType.INSERT_AFTER_ELEMENT) {
             InsertionUpdate insertionUpdate = buildInsertionUpdate(target, executableOperation);
             if (insertionUpdate.replaceTargetElement()) {
+                validatePatchContract(operation, target, insertionUpdate.updatedTargetElementXml(), List.of(
+                        replacePart(target.blockId(), insertionUpdate.updatedTargetElementXml())
+                ), false);
                 larkSlidesTool.replaceSlide(presentationId, target.slideId(), List.of(
                         replacePart(target.blockId(), insertionUpdate.updatedTargetElementXml())
                 ));
-                verifyAfterReplaceSlide(presentationId, target, executableOperation);
+                return buildWriteResult(presentationId, target, executableOperation,
+                        verifyAfterReplaceSlide(presentationId, target, executableOperation));
             } else {
+                validatePatchContract(operation, target, insertionUpdate.updatedSlideXml(), List.of(
+                        replacePart(target.blockId(), insertionUpdate.updatedSlideXml())
+                ), true);
                 larkSlidesTool.replaceWholeSlide(presentationId, target.slideId(), insertionUpdate.updatedSlideXml());
-                verifyAfterReplaceWholeSlide(presentationId, target, executableOperation);
+                return buildWriteResult(presentationId, target, executableOperation,
+                        verifyAfterReplaceWholeSlide(presentationId, target, executableOperation));
             }
-            return new OperationResult(List.of(target.slideId()), buildSummarySegment(target.pageIndex(), executableOperation));
         }
         if (executableOperation.getActionType() == PresentationEditActionType.DELETE_ELEMENT) {
             String updatedElementXml = buildDeleteElementReplacement(target, executableOperation);
+            validatePatchContract(operation, target, updatedElementXml, List.of(
+                    replacePart(target.blockId(), updatedElementXml)
+            ), false);
             larkSlidesTool.replaceSlide(presentationId, target.slideId(), List.of(
                     replacePart(target.blockId(), updatedElementXml)
             ));
-            verifyAfterReplaceSlide(presentationId, target, executableOperation);
-            return new OperationResult(List.of(target.slideId()), buildSummarySegment(target.pageIndex(), executableOperation));
+            return buildWriteResult(presentationId, target, executableOperation,
+                    verifyAfterReplaceSlide(presentationId, target, executableOperation));
         }
         Map<String, Object> part = buildPart(target, executableOperation);
+        validatePatchContract(operation, target, (String) part.get("replacement"), List.of(part), false);
         larkSlidesTool.replaceSlide(presentationId, target.slideId(), List.of(part));
-        verifyAfterReplaceSlide(presentationId, target, executableOperation);
-        return new OperationResult(List.of(target.slideId()), buildSummarySegment(target.pageIndex(), executableOperation));
+        return buildWriteResult(presentationId, target, executableOperation,
+                verifyAfterReplaceSlide(presentationId, target, executableOperation));
     }
 
-    private void verifyAfterReplaceSlide(String presentationId, SlideTarget target, PresentationEditOperation operation) {
-        String slideXml = fetchUpdatedSlideXml(presentationId, target);
-        Element slide = findSlideElement(parseXml(slideXml));
-        List<PresentationSnapshot> afterSnapshots = slideSnapshotBuilder.build(slide, target.pageIndex());
-        if (operation.getActionType() == PresentationEditActionType.INSERT_AFTER_ELEMENT) {
-            String expected = firstNonBlank(operation.getReplacementText());
-            boolean matched = afterSnapshots.stream()
-                    .filter(snapshot -> target.snapshot() != null && target.snapshot().getBlockId() != null
-                            && target.snapshot().getBlockId().equals(snapshot.getBlockId()))
-                    .anyMatch(snapshot -> snapshot.getTextContent() != null && snapshot.getTextContent().contains(expected));
-            if (!matched) {
-                throw new IllegalStateException("PPT update verification failed: inserted content not found in target element");
+    private VerificationResult verifyAfterReplaceSlide(String presentationId, SlideTarget target, PresentationEditOperation operation) {
+        try {
+            String slideXml = fetchUpdatedSlideXml(presentationId, target);
+            Element slide = findSlideElement(parseXml(slideXml));
+            List<PresentationSnapshot> afterSnapshots = slideSnapshotBuilder.build(slide, target.pageIndex());
+            if (operation.getActionType() == PresentationEditActionType.INSERT_AFTER_ELEMENT) {
+                String expected = firstNonBlank(operation.getReplacementText());
+                boolean matched = afterSnapshots.stream()
+                        .filter(snapshot -> target.snapshot() != null && target.snapshot().getBlockId() != null
+                                && target.snapshot().getBlockId().equals(snapshot.getBlockId()))
+                        .anyMatch(snapshot -> snapshot.getTextContent() != null && snapshot.getTextContent().contains(expected));
+                if (!matched) {
+                    throw new IllegalStateException("PPT update verification failed: inserted content not found in target element");
+                }
+                return VerificationResult.success();
             }
-            return;
+            targetStateVerifier.verify(target.snapshot(), operation, afterSnapshots);
+            return VerificationResult.success();
+        } catch (RuntimeException exception) {
+            return VerificationResult.failure(exception.getMessage());
         }
-        targetStateVerifier.verify(target.snapshot(), operation, afterSnapshots);
     }
 
-    private void verifyAfterReplaceWholeSlide(String presentationId, SlideTarget target, PresentationEditOperation operation) {
-        String slideXml = fetchUpdatedSlideXml(presentationId, target);
-        Element slide = findSlideElement(parseXml(slideXml));
-        List<PresentationSnapshot> afterSnapshots = slideSnapshotBuilder.build(slide, target.pageIndex());
-        if (operation.getActionType() == PresentationEditActionType.INSERT_AFTER_ELEMENT) {
-            String expected = firstNonBlank(operation.getReplacementText());
-            boolean matched = afterSnapshots.stream().anyMatch(snapshot -> snapshot.getTextContent() != null && snapshot.getTextContent().contains(expected));
-            if (!matched) {
-                throw new IllegalStateException("PPT update verification failed: inserted content not found on target slide");
+    private VerificationResult verifyAfterReplaceWholeSlide(String presentationId, SlideTarget target, PresentationEditOperation operation) {
+        try {
+            String slideXml = fetchUpdatedSlideXml(presentationId, target);
+            Element slide = findSlideElement(parseXml(slideXml));
+            List<PresentationSnapshot> afterSnapshots = slideSnapshotBuilder.build(slide, target.pageIndex());
+            if (operation.getActionType() == PresentationEditActionType.INSERT_AFTER_ELEMENT) {
+                String expected = firstNonBlank(operation.getReplacementText());
+                boolean matched = afterSnapshots.stream().anyMatch(snapshot -> snapshot.getTextContent() != null && snapshot.getTextContent().contains(expected));
+                if (!matched) {
+                    throw new IllegalStateException("PPT update verification failed: inserted content not found on target slide");
+                }
+                return VerificationResult.success();
             }
-            return;
+            targetStateVerifier.verify(target.snapshot(), operation, afterSnapshots);
+            return VerificationResult.success();
+        } catch (RuntimeException exception) {
+            return VerificationResult.failure(exception.getMessage());
         }
-        targetStateVerifier.verify(target.snapshot(), operation, afterSnapshots);
     }
 
     private SlideRef resolveTargetSlide(Deck deck, PresentationEditOperation operation) {
@@ -224,7 +280,7 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 return matches.get(0);
             }
             if (matches.size() > 1) {
-                throw new IllegalArgumentException("页标题命中不唯一，请补充页码");
+                throw new IllegalArgumentException("页内锚点命中不唯一，请补充更具体的位置");
             }
         }
         if (operation.getAnchorMode() == PresentationAnchorMode.BY_QUOTED_TEXT && hasText(operation.getQuotedText())) {
@@ -250,7 +306,10 @@ public class PresentationIterationExecutionService implements PresentationIterat
         LarkSlidesReplaceResult result = larkSlidesTool.createSlide(presentationId, slideXml, position.beforeSlideId());
         return new OperationResult(
                 List.of(firstNonBlank(result.getSlideId(), "inserted-after-" + position.insertAfterLabel())),
-                buildSummarySegment(position.insertAfterPageIndex(), operation)
+                buildSummarySegment(position.insertAfterPageIndex(), operation),
+                true,
+                true,
+                null
         );
     }
 
@@ -261,7 +320,7 @@ public class PresentationIterationExecutionService implements PresentationIterat
         }
         SlideRef target = slideAtPage(deck, operation.getPageIndex());
         larkSlidesTool.deleteSlide(presentationId, target.slideId());
-        return new OperationResult(List.of(target.slideId()), buildSummarySegment(target.pageIndex(), operation));
+        return new OperationResult(List.of(target.slideId()), buildSummarySegment(target.pageIndex(), operation), true, true, null);
     }
 
     private OperationResult moveSlide(String presentationId, String presentationXml, PresentationEditOperation operation) {
@@ -285,7 +344,13 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 .slideBody(operation.getSlideBody())
                 .replacementText(operation.getReplacementText())
                 .build();
-        return new OperationResult(List.of(firstNonBlank(created.getSlideId(), source.slideId())), buildSummarySegment(source.pageIndex(), summaryOperation));
+        return new OperationResult(
+                List.of(firstNonBlank(created.getSlideId(), source.slideId())),
+                buildSummarySegment(source.pageIndex(), summaryOperation),
+                true,
+                true,
+                null
+        );
     }
 
     private Integer insertAfterPageIndex(PresentationEditOperation operation) {
@@ -498,7 +563,19 @@ public class PresentationIterationExecutionService implements PresentationIterat
     }
 
     private String buildDeleteElementReplacement(SlideTarget target, PresentationEditOperation operation) {
+        if (operation.getTargetElementType() == PresentationTargetElementType.TITLE) {
+            return "<deleted-shape id=\"" + escapeXml(firstNonBlank(target.blockId(), "title-shape")) + "\"/>";
+        }
+        if (operation.getTargetElementType() == PresentationTargetElementType.IMAGE) {
+            return "<deleted-image id=\"" + escapeXml(firstNonBlank(target.blockId(), "image-shape")) + "\"/>";
+        }
+        if (operation.getTargetElementType() != PresentationTargetElementType.BODY) {
+            throw new IllegalArgumentException("当前仅支持文本和图片元素删除");
+        }
         if (target.snapshot() == null) {
+            if ("shape".equalsIgnoreCase(target.element().getTagName())) {
+                return "<deleted-shape id=\"" + escapeXml(firstNonBlank(target.blockId(), "body-shape")) + "\"/>";
+            }
             throw new IllegalArgumentException("无法定位到要删除的具体段落");
         }
         Element content = findContent(target.element(), operation.getTargetElementType());
@@ -1124,6 +1201,57 @@ public class PresentationIterationExecutionService implements PresentationIterat
         return value == null ? "" : value.replaceAll("\\s+", "");
     }
 
+    private PresentationIterationVO failedBeforeWrite(PresentationIterationRequest request, String presentation, String reason) {
+        return PresentationIterationVO.builder()
+                .taskId(request.getTaskId())
+                .artifactId(request.getArtifactId())
+                .presentationId(firstNonBlank(request.getPresentationId(), presentation))
+                .presentationUrl(request.getPresentationUrl())
+                .status(PresentationIterationStatus.FAILED_BEFORE_WRITE)
+                .writeApplied(false)
+                .verificationPassed(false)
+                .failureReason(reason)
+                .summary(firstNonBlank(reason, "PPT 修改在写入前被拒绝"))
+                .modifiedSlides(List.of())
+                .build();
+    }
+
+    private void validatePatchContract(
+            PresentationEditOperation originalOperation,
+            SlideTarget target,
+            String replacementXml,
+            List<Map<String, Object>> parts,
+            boolean wholeSlideReplacement
+    ) {
+        try {
+            patchContractValidator.validate(
+                    originalOperation == null ? null : originalOperation.getContentInstruction(),
+                    originalOperation,
+                    target.snapshot(),
+                    replacementXml,
+                    parts,
+                    wholeSlideReplacement
+            );
+        } catch (IllegalArgumentException exception) {
+            throw new WriteGuardFailureException(exception.getMessage());
+        }
+    }
+
+    private OperationResult buildWriteResult(
+            String presentationId,
+            SlideTarget target,
+            PresentationEditOperation operation,
+            VerificationResult verificationResult
+    ) {
+        return new OperationResult(
+                List.of(target.slideId()),
+                buildSummarySegment(target.pageIndex(), operation),
+                true,
+                verificationResult.passed(),
+                verificationResult.failureReason()
+        );
+    }
+
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
@@ -1172,9 +1300,31 @@ public class PresentationIterationExecutionService implements PresentationIterat
     private record InsertPosition(String beforeSlideId, int templateIndex, int insertAfterPageIndex, String insertAfterLabel) {
     }
 
-    private record OperationResult(List<String> modifiedSlideIds, String summarySegment) {
+    private record OperationResult(
+            List<String> modifiedSlideIds,
+            String summarySegment,
+            boolean writeApplied,
+            boolean verificationPassed,
+            String failureReason
+    ) {
     }
 
     private record InsertionUpdate(String updatedTargetElementXml, String updatedSlideXml, boolean replaceTargetElement) {
+    }
+
+    private record VerificationResult(boolean passed, String failureReason) {
+        private static VerificationResult success() {
+            return new VerificationResult(true, null);
+        }
+
+        private static VerificationResult failure(String failureReason) {
+            return new VerificationResult(false, failureReason);
+        }
+    }
+
+    private static class WriteGuardFailureException extends RuntimeException {
+        private WriteGuardFailureException(String message) {
+            super(message);
+        }
     }
 }
