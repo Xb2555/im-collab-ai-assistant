@@ -29,6 +29,7 @@ import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentIterationIntentType;
 import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
@@ -205,6 +206,28 @@ class ReplanNodeServiceTest {
         verify(questionTool).askUser(eq(session), any());
         verify(documentArtifactIterationFacade, never()).edit(any());
         verify(planningNodeService, never()).plan(anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
+    void replanningClarificationPreservesResumeExecutionMarker() {
+        PlanTaskSession session = session();
+        session.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(adjustmentInterpreter.interpret(session, "中断一下", null))
+                .thenReturn(PlanPatchIntent.builder()
+                        .operation(PlanPatchOperation.CLARIFY_REQUIRED)
+                        .clarificationQuestion("我先不改计划。你想新增、删除、改写，还是调整某一步？")
+                        .build());
+        PlanTaskSession askUser = session();
+        askUser.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        askUser.setIntakeState(TaskIntakeState.builder().build());
+        when(sessionService.get("task-1")).thenReturn(askUser);
+
+        PlanTaskSession result = service.replan("task-1", "中断一下", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
+        assertThat(result.getIntakeState().getPendingInteractionType()).isEqualTo(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
+        assertThat(result.getIntakeState().getPendingAdjustmentInstruction()).isEqualTo("中断一下");
     }
 
     @Test

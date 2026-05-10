@@ -27,6 +27,7 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
+import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
@@ -137,13 +138,16 @@ public class ReplanNodeService {
         if (session.getPlanBlueprint() == null) {
             return planningNodeService.plan(taskId, adjustmentInstruction, workspaceContext, null);
         }
+        boolean resumableInterruptedExecution = session.getPlanningPhase() == PlanningPhaseEnum.REPLANNING;
         PlanPatchIntent patchIntent = adjustmentInterpreter.interpret(session, adjustmentInstruction, workspaceContext);
         if (patchIntent == null || patchIntent.getOperation() == null
                 || patchIntent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED) {
             questionTool.askUser(session, List.of(firstNonBlank(
                     patchIntent == null ? null : patchIntent.getClarificationQuestion(),
                     "我先不改计划。你想新增、删除、改写，还是调整某一步？")));
-            return sessionService.get(taskId);
+            return resumableInterruptedExecution
+                    ? markInterruptedExecutionClarification(sessionService.get(taskId), adjustmentInstruction)
+                    : sessionService.get(taskId);
         }
         if (patchIntent.getOperation() == PlanPatchOperation.REGENERATE_ALL) {
             return planningNodeService.plan(taskId, adjustmentInstruction, workspaceContext, adjustmentInstruction);
@@ -170,9 +174,26 @@ public class ReplanNodeService {
                 || (patchIntent.getOperation() == PlanPatchOperation.ADD_STEP
                 && afterCardCount <= beforeCardCount)) {
             questionTool.askUser(session, List.of("我理解你想调整计划，但这次没有形成新的步骤变化。你可以再说具体一点：想新增、删除、修改，还是调整顺序？"));
-            return sessionService.get(taskId);
+            return resumableInterruptedExecution
+                    ? markInterruptedExecutionClarification(sessionService.get(taskId), adjustmentInstruction)
+                    : sessionService.get(taskId);
         }
         qualityService.applyMergedPlanAdjustment(session, merged, patchIntent.getReason());
+        sessionService.saveWithoutVersionChange(session);
+        return session;
+    }
+
+    private PlanTaskSession markInterruptedExecutionClarification(PlanTaskSession session, String instruction) {
+        if (session == null) {
+            return null;
+        }
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        intakeState.setPendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
+        intakeState.setPendingAdjustmentInstruction(instruction);
+        intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        session.setIntakeState(intakeState);
         sessionService.saveWithoutVersionChange(session);
         return session;
     }

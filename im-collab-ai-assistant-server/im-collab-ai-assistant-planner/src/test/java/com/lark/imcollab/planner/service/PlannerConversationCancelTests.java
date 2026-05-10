@@ -1174,9 +1174,17 @@ class PlannerConversationCancelTests {
                         .assistantReply("您是想暂停当前任务的执行流程，还是想修改计划内容？")
                         .build())
                 .build();
+        PlannerExecutionTool executionTool = mock(PlannerExecutionTool.class);
+        when(executionTool.confirmExecution("task-1"))
+                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.EXECUTING, "execution confirmed", null));
+        PlanTaskSession resumed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .build();
 
         when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
-        when(sessionService.get("task-1")).thenReturn(askUser);
+        when(sessionService.get("task-1")).thenReturn(askUser, resumed);
         when(intakeService.decide(askUser, "继续执行", null, true))
                 .thenReturn(new TaskIntakeDecision(
                         TaskIntakeTypeEnum.CONFIRM_ACTION,
@@ -1192,7 +1200,7 @@ class PlannerConversationCancelTests {
                 taskBridgeService,
                 new PlannerConversationMemoryService(new PlannerProperties()),
                 graphRunner,
-                null,
+                executionTool,
                 taskRuntimeService
         );
 
@@ -1203,10 +1211,6 @@ class PlannerConversationCancelTests {
         assertThat(result.getIntakeState().getPendingInteractionType()).isNull();
         assertThat(result.getIntakeState().getPendingAdjustmentInstruction()).isNull();
         verify(graphRunner, never()).run(any(), any(), any(), any(), any());
-        verify(taskRuntimeService).projectPhaseTransition(
-                "task-1",
-                PlanningPhaseEnum.EXECUTING,
-                TaskEventTypeEnum.USER_INTERVENTION
-        );
+        verify(executionTool).confirmExecution("task-1");
     }
 }

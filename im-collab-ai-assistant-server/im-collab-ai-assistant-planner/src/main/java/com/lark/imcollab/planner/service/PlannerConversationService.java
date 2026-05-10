@@ -1217,27 +1217,47 @@ public class PlannerConversationService {
                 || !ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
             return null;
         }
-        PlanTaskSession resumed = saveWithoutVersionChangeRetrying(session, current -> {
-            current.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+        saveWithoutVersionChangeRetrying(session, current -> {
             current.setTransitionReason("User resumed original execution after interrupt clarification");
             TaskIntakeState intakeState = current.getIntakeState() == null
                     ? TaskIntakeState.builder().build()
                     : current.getIntakeState();
-            intakeState.setIntakeType(TaskIntakeTypeEnum.CONFIRM_ACTION);
-            intakeState.setAssistantReply("好的，继续按原执行流程推进。");
             intakeState.setPendingInteractionType(null);
             intakeState.setPendingAdjustmentInstruction(null);
             current.setIntakeState(intakeState);
         });
-        if (taskRuntimeService != null) {
-            taskRuntimeService.projectPhaseTransition(
-                    resumed.getTaskId(),
-                    PlanningPhaseEnum.EXECUTING,
-                    com.lark.imcollab.common.model.enums.TaskEventTypeEnum.USER_INTERVENTION
-            );
+        if (executionTool == null) {
+            PlanTaskSession resumed = saveWithoutVersionChangeRetrying(sessionService.get(session.getTaskId()), current -> {
+                current.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+                TaskIntakeState intakeState = current.getIntakeState() == null
+                        ? TaskIntakeState.builder().build()
+                        : current.getIntakeState();
+                intakeState.setIntakeType(TaskIntakeTypeEnum.CONFIRM_ACTION);
+                intakeState.setAssistantReply("好的，继续按原执行流程推进。");
+                current.setIntakeState(intakeState);
+            });
+            if (taskRuntimeService != null) {
+                taskRuntimeService.projectPhaseTransition(
+                        resumed.getTaskId(),
+                        PlanningPhaseEnum.EXECUTING,
+                        com.lark.imcollab.common.model.enums.TaskEventTypeEnum.USER_INTERVENTION
+                );
+            }
+            sessionService.publishEvent(resumed.getTaskId(), PlanningPhaseEnum.EXECUTING.name());
+            memoryService.appendAssistantTurn(resumed, resumed.getIntakeState().getAssistantReply());
+            return resumed;
         }
-        sessionService.publishEvent(resumed.getTaskId(), PlanningPhaseEnum.EXECUTING.name());
-        memoryService.appendAssistantTurn(resumed, resumed.getIntakeState().getAssistantReply());
+        executionTool.confirmExecution(session.getTaskId());
+        PlanTaskSession resumed = sessionService.get(session.getTaskId());
+        TaskIntakeState intakeState = resumed.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : resumed.getIntakeState();
+        intakeState.setIntakeType(TaskIntakeTypeEnum.CONFIRM_ACTION);
+        intakeState.setAssistantReply("好的，继续按原执行流程推进。");
+        resumed.setIntakeState(intakeState);
+        resumed.setTransitionReason("User resumed original execution after interrupt clarification");
+        sessionService.saveWithoutVersionChange(resumed);
+        memoryService.appendAssistantTurn(resumed, intakeState.getAssistantReply());
         return resumed;
     }
 
