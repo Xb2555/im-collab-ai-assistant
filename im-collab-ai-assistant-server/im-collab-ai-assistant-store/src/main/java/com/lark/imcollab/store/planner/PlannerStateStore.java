@@ -84,4 +84,8 @@ public interface PlannerStateStore {
     void saveEvaluation(TaskResultEvaluation evaluation);
 
     Optional<TaskResultEvaluation> findEvaluation(String taskId, String agentTaskId);
+
+    default Optional<TaskResultEvaluation> findLatestEvaluation(String taskId) {
+        return Optional.empty();
+    }
 }

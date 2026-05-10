@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.AgentTool;
 import com.alibaba.cloud.ai.graph.agent.hook.summarization.SummarizationHook;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
+import com.lark.imcollab.common.model.entity.NextStepRecommendationOutput;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -147,6 +148,23 @@ public class AgentFrameworkConfig {
                 .description("将用户需求拆解为结构化任务计划")
                 .systemPrompt(promptFacade.planningPrompt(DEFAULT_PROMPT_SESSION))
                 .outputType(PlanBlueprint.class)
+                .model(chatModel)
+                .interceptors(agentPromptInterceptor)
+                .hooks(summarizationHook)
+                .build();
+    }
+
+    @Bean(name = "nextStepRecommendationAgent")
+    public ReactAgent nextStepRecommendationAgent(
+            ChatModel chatModel,
+            SummarizationHook summarizationHook,
+            PlannerPromptFacade promptFacade,
+            AgentPromptInterceptor agentPromptInterceptor) {
+        return ReactAgent.builder()
+                .name("next-step-recommendation-agent")
+                .description("为已完成任务生成下一步推荐")
+                .systemPrompt(promptFacade.nextStepRecommendationPrompt(DEFAULT_PROMPT_SESSION))
+                .outputType(NextStepRecommendationOutput.class)
                 .model(chatModel)
                 .interceptors(agentPromptInterceptor)
                 .hooks(summarizationHook)

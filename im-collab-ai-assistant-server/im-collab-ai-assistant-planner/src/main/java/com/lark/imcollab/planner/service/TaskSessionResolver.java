@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.Comparator;
 
 @Service
 @RequiredArgsConstructor
@@ -96,6 +97,44 @@ public class TaskSessionResolver {
                 .anyMatch(candidate -> candidate.getArtifactTypes() != null
                         && candidate.getArtifactTypes().stream()
                                 .anyMatch(type -> type == ArtifactTypeEnum.PPT || type == ArtifactTypeEnum.DOC));
+    }
+
+    public Optional<ArtifactRecord> findLatestShareableArtifact(String taskId, ArtifactTypeEnum preferredType) {
+        if (!hasText(taskId)) {
+            return Optional.empty();
+        }
+        Comparator<ArtifactRecord> byNewest = Comparator
+                .comparing(ArtifactRecord::getUpdatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(ArtifactRecord::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()));
+        List<ArtifactRecord> shareable = stateStore.findArtifactsByTaskId(taskId).stream()
+                .filter(artifact -> artifact != null
+                        && (artifact.getType() == ArtifactTypeEnum.DOC
+                        || artifact.getType() == ArtifactTypeEnum.PPT
+                        || artifact.getType() == ArtifactTypeEnum.SUMMARY)
+                        && (hasText(artifact.getUrl())
+                        || hasText(artifact.getPreview())
+                        || hasText(artifact.getTitle())))
+                .sorted(byNewest.reversed())
+                .toList();
+        if (shareable.isEmpty()) {
+            return Optional.empty();
+        }
+        if (preferredType == null) {
+            return Optional.of(shareable.get(0));
+        }
+        return shareable.stream()
+                .filter(artifact -> artifact.getType() == preferredType)
+                .findFirst()
+                .or(() -> Optional.of(shareable.get(0)));
+    }
+
+    public Optional<ArtifactRecord> findArtifactById(String taskId, String artifactId) {
+        if (!hasText(taskId) || !hasText(artifactId)) {
+            return Optional.empty();
+        }
+        return stateStore.findArtifactsByTaskId(taskId).stream()
+                .filter(artifact -> artifact != null && artifactId.trim().equals(artifact.getArtifactId()))
+                .findFirst();
     }
 
     public String conversationKey(WorkspaceContext workspaceContext) {

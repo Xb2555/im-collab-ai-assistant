@@ -52,6 +52,30 @@ public class TaskRuntimeService {
         syncDomainTask(session, graph);
     }
 
+    public void reconcilePlanReadyProjection(PlanTaskSession session, TaskEventTypeEnum eventType) {
+        if (session == null
+                || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY
+                || session.getPlanBlueprint() == null) {
+            return;
+        }
+        TaskPlanGraph graph = planGraphBuilder.build(session.getTaskId(), session.getPlanBlueprint());
+        TaskRecord task = stateStore.findTask(session.getTaskId()).orElse(null);
+        List<TaskStepRecord> steps = stateStore.findStepsByTaskId(session.getTaskId());
+        int activeStepCount = steps == null ? 0 : (int) steps.stream()
+                .filter(step -> step != null && step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .count();
+        boolean staleTask = task == null
+                || task.getStatus() != TaskStatusEnum.WAITING_APPROVAL
+                || task.getPlanVersion() != session.getPlanVersion()
+                || task.getCurrentStage() == null
+                || !PlanningPhaseEnum.PLAN_READY.name().equalsIgnoreCase(task.getCurrentStage());
+        boolean staleSteps = graph.getSteps() != null && activeStepCount != graph.getSteps().size();
+        if (staleTask || staleSteps) {
+            projectionService.projectPlanGraph(session, graph, eventType);
+            syncDomainTask(session, graph);
+        }
+    }
+
     public void projectPhaseTransition(String taskId, PlanningPhaseEnum phase, TaskEventTypeEnum eventType) {
         int version = stateStore.findSession(taskId)
                 .map(PlanTaskSession::getVersion)

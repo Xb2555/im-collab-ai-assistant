@@ -56,7 +56,7 @@ class StepDispatcherTest {
     }
 
     @Test
-    void mixedTaskRunsSummaryAfterDocumentAndPresentationComplete() {
+    void mixedTaskRunsSummaryWithoutReexecutingCompletedDocumentOrPresentation() {
         Task task = Task.builder()
                 .taskId("task-1")
                 .type(TaskType.MIXED)
@@ -72,9 +72,30 @@ class StepDispatcherTest {
 
         dispatcher.dispatch(task);
 
-        verify(documentExecutionService).execute("task-1");
-        verify(presentationExecutionService).execute("task-1");
+        verify(documentExecutionService, never()).execute("task-1");
+        verify(presentationExecutionService, never()).execute("task-1");
         verify(summaryExecutionService).execute("task-1");
+    }
+
+    @Test
+    void mixedTaskSkipsDocumentExecutionWhenDocumentStepAlreadyCompleted() {
+        Task task = Task.builder()
+                .taskId("task-1")
+                .type(TaskType.MIXED)
+                .executionContract(ExecutionContract.builder()
+                        .allowedArtifacts(List.of("DOC", "PPT"))
+                        .build())
+                .build();
+        when(plannerStateStore.findStepsByTaskId("task-1")).thenReturn(List.of(
+                step(StepTypeEnum.DOC_CREATE, StepStatusEnum.COMPLETED),
+                step(StepTypeEnum.PPT_CREATE, StepStatusEnum.READY)
+        ));
+
+        dispatcher.dispatch(task);
+
+        verify(documentExecutionService, never()).execute("task-1");
+        verify(presentationExecutionService).execute("task-1");
+        verify(summaryExecutionService, never()).execute("task-1");
     }
 
     private TaskStepRecord step(StepTypeEnum type, StepStatusEnum status) {

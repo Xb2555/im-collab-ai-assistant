@@ -10,6 +10,7 @@ import com.lark.imcollab.common.model.entity.ContextSourceRequest;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.SourceArtifactRef;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
@@ -247,6 +248,11 @@ public class PlanningNodeService {
                 && hasText(workspaceContext.getInputSource())) {
             sourceScope.setInputSource(workspaceContext.getInputSource());
         }
+        if ((sourceScope.getSourceArtifacts() == null || sourceScope.getSourceArtifacts().isEmpty())
+                && workspaceContext.getSourceArtifacts() != null
+                && !workspaceContext.getSourceArtifacts().isEmpty()) {
+            sourceScope.setSourceArtifacts(workspaceContext.getSourceArtifacts());
+        }
     }
 
     private boolean isCollectedImSource(String inputSource) {
@@ -302,6 +308,7 @@ public class PlanningNodeService {
                 && ((workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty())
                 || (workspaceContext.getSelectedMessageIds() != null && !workspaceContext.getSelectedMessageIds().isEmpty())
                 || (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty())
+                || (workspaceContext.getSourceArtifacts() != null && !workspaceContext.getSourceArtifacts().isEmpty())
                 || (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty()));
     }
 
@@ -789,6 +796,22 @@ public class PlanningNodeService {
             builder.append("Selected message ids: ")
                     .append(String.join(", ", workspaceContext.getSelectedMessageIds()))
                     .append("\n");
+        }
+        if (workspaceContext.getSourceArtifacts() != null && !workspaceContext.getSourceArtifacts().isEmpty()) {
+            builder.append("Source artifacts:\n");
+            for (SourceArtifactRef artifact : workspaceContext.getSourceArtifacts()) {
+                if (artifact == null) {
+                    continue;
+                }
+                builder.append("- [")
+                        .append(artifact.getArtifactType() == null ? "" : artifact.getArtifactType().name())
+                        .append("] ")
+                        .append(firstNonBlank(artifact.getTitle(), artifact.getUrl(), artifact.getArtifactId()))
+                        .append("\n");
+                if (hasText(artifact.getPreview())) {
+                    builder.append("  preview: ").append(artifact.getPreview().trim()).append("\n");
+                }
+            }
         }
         return builder.toString().trim();
     }

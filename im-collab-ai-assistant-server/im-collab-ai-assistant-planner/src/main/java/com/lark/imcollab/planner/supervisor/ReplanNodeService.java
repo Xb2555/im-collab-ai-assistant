@@ -281,6 +281,9 @@ public class ReplanNodeService {
     ) {
         String instruction = normalize(adjustmentInstruction);
         String taskId = session.getTaskId();
+        if (shouldExtendCompletedTask(session, instruction)) {
+            return applyCompletedTaskPatch(session, instruction, workspaceContext);
+        }
         if (wantsNewArtifact(instruction) || wantsOverallReplan(instruction)) {
             return planningNodeService.plan(taskId, instruction, workspaceContext, instruction);
         }
@@ -310,6 +313,52 @@ public class ReplanNodeService {
                 instruction,
                 "这个任务已经完成并有现有产物。你是要直接修改现有产物，还是保留现有产物再新建一版？"
         );
+    }
+
+    private boolean shouldExtendCompletedTask(PlanTaskSession session, String instruction) {
+        return session != null
+                && session.getPlanBlueprint() != null
+                && "KEEP_EXISTING_CREATE_NEW".equalsIgnoreCase(extractArtifactPolicy(instruction));
+    }
+
+    private PlanTaskSession applyCompletedTaskPatch(
+            PlanTaskSession session,
+            String instruction,
+            WorkspaceContext workspaceContext
+    ) {
+        PlanPatchIntent patchIntent = adjustmentInterpreter.interpret(session, instruction, workspaceContext);
+        if (patchIntent == null || patchIntent.getOperation() == null
+                || patchIntent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED) {
+            questionTool.askUser(session, List.of(firstNonBlank(
+                    patchIntent == null ? null : patchIntent.getClarificationQuestion(),
+                    "我先不改当前任务。你是想在现有任务里新增后续步骤，还是整体重新做一版？")));
+            return sessionService.get(session.getTaskId());
+        }
+        if (patchIntent.getOperation() == PlanPatchOperation.REGENERATE_ALL) {
+            return planningNodeService.plan(session.getTaskId(), instruction, workspaceContext, instruction);
+        }
+        resetExecutionSemanticsForPlanAdjustment(session);
+        String beforeSignature = visiblePlanSignature(session.getPlanBlueprint());
+        int beforeCardCount = activeCardCount(session.getPlanBlueprint());
+        PlanBlueprint merged = patchTool.merge(session.getPlanBlueprint(), patchIntent, session.getTaskId());
+        stripPlanLevelExecutionFields(merged);
+        int afterCardCount = activeCardCount(merged);
+        if (Objects.equals(beforeSignature, visiblePlanSignature(merged))
+                || (patchIntent.getOperation() == PlanPatchOperation.ADD_STEP && afterCardCount <= beforeCardCount)) {
+            questionTool.askUser(session, List.of("我理解你想在当前任务里继续加后续步骤，但这次没有形成新的计划变化。你可以再明确一下要新增什么产物。"));
+            return sessionService.get(session.getTaskId());
+        }
+        qualityService.applyMergedPlanAdjustment(session, merged, firstNonBlank(patchIntent.getReason(), "Completed task follow-up adjusted"));
+        sessionService.saveWithoutVersionChange(session);
+        return session;
+    }
+
+    private String extractArtifactPolicy(String instruction) {
+        if (!hasText(instruction)) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("产物策略：\\s*([A-Z_]+)").matcher(instruction);
+        return matcher.find() ? matcher.group(1).trim() : null;
     }
 
     private PlanTaskSession editExistingArtifact(

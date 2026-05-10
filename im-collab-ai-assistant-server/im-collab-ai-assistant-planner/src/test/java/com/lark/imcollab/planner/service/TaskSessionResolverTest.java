@@ -155,4 +155,54 @@ class TaskSessionResolverTest {
         assertThat(candidates.get(0).getArtifactTypes()).containsExactly(ArtifactTypeEnum.PPT);
     }
 
+    @Test
+    void findLatestShareableArtifactPrefersRequestedType() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("ppt-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .updatedAt(Instant.parse("2026-05-10T04:00:00Z"))
+                        .build(),
+                ArtifactRecord.builder()
+                        .artifactId("doc-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .url("https://doc.example/1")
+                        .updatedAt(Instant.parse("2026-05-10T03:00:00Z"))
+                        .build()
+        ));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        var artifact = resolver.findLatestShareableArtifact("task-1", ArtifactTypeEnum.DOC);
+
+        assertThat(artifact).isPresent();
+        assertThat(artifact.get().getType()).isEqualTo(ArtifactTypeEnum.DOC);
+        assertThat(artifact.get().getUrl()).isEqualTo("https://doc.example/1");
+    }
+
+    @Test
+    void findLatestShareableArtifactCanReturnSummaryWithoutUrl() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("summary-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.SUMMARY)
+                        .title("项目摘要")
+                        .preview("项目已完成文档和PPT，可继续同步。")
+                        .updatedAt(Instant.parse("2026-05-10T05:00:00Z"))
+                        .build()
+        ));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        var artifact = resolver.findLatestShareableArtifact("task-1", ArtifactTypeEnum.SUMMARY);
+
+        assertThat(artifact).isPresent();
+        assertThat(artifact.get().getType()).isEqualTo(ArtifactTypeEnum.SUMMARY);
+        assertThat(artifact.get().getPreview()).contains("项目已完成文档和PPT");
+    }
+
 }

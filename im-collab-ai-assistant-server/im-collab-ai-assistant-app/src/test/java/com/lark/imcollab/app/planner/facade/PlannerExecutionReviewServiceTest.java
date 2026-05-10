@@ -3,18 +3,21 @@ package com.lark.imcollab.app.planner.facade;
 import com.lark.imcollab.common.facade.TaskUserNotificationFacade;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskSubmissionResult;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.planner.service.ConversationTaskStateService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
@@ -35,12 +38,14 @@ class PlannerExecutionReviewServiceTest {
     private final PlannerSessionService sessionService = mock(PlannerSessionService.class);
     private final TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
     private final TaskResultEvaluationService evaluationService = mock(TaskResultEvaluationService.class);
+    private final ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
     private final PlannerStateStore stateStore = mock(PlannerStateStore.class);
     private final TaskUserNotificationFacade notificationFacade = mock(TaskUserNotificationFacade.class);
     private final PlannerExecutionReviewService service = new PlannerExecutionReviewService(
             sessionService,
             taskRuntimeService,
             evaluationService,
+            conversationTaskStateService,
             stateStore,
             List.of(notificationFacade)
     );
@@ -50,6 +55,14 @@ class PlannerExecutionReviewServiceTest {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
                 .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .planCards(List.of(
+                        UserPlanCard.builder().cardId("card-001").title("生成技术方案文档").status("READY").progress(0).build()
+                ))
+                .planBlueprint(PlanBlueprint.builder()
+                        .planCards(List.of(
+                                UserPlanCard.builder().cardId("card-001").title("生成技术方案文档").status("READY").progress(0).build()
+                        ))
+                        .build())
                 .build();
         ArtifactRecord artifact = ArtifactRecord.builder()
                 .artifactId("artifact-1")
@@ -59,6 +72,14 @@ class PlannerExecutionReviewServiceTest {
                 .build();
         TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
                 .task(TaskRecord.builder().taskId("task-1").status(TaskStatusEnum.COMPLETED).build())
+                .steps(List.of(
+                        TaskStepRecord.builder()
+                                .stepId("card-001")
+                                .name("生成技术方案文档")
+                                .status(StepStatusEnum.COMPLETED)
+                                .progress(100)
+                                .build()
+                ))
                 .artifacts(List.of(artifact))
                 .build();
         TaskResultEvaluation evaluation = TaskResultEvaluation.builder()
@@ -68,7 +89,10 @@ class PlannerExecutionReviewServiceTest {
                 .build();
         when(sessionService.get("task-1")).thenReturn(session);
         when(taskRuntimeService.getSnapshot("task-1")).thenReturn(snapshot);
-        when(evaluationService.evaluate(org.mockito.ArgumentMatchers.any(TaskSubmissionResult.class)))
+        when(evaluationService.evaluate(
+                org.mockito.ArgumentMatchers.any(TaskSubmissionResult.class),
+                org.mockito.ArgumentMatchers.eq(session),
+                org.mockito.ArgumentMatchers.eq(snapshot)))
                 .thenReturn(evaluation);
 
         service.reviewAndNotify("task-1");
@@ -77,9 +101,12 @@ class PlannerExecutionReviewServiceTest {
         verify(stateStore).saveSubmission(submissionCaptor.capture());
         assertThat(submissionCaptor.getValue().getArtifactRefs()).containsExactly("artifact-1");
         assertThat(session.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(session.getPlanCards()).extracting(UserPlanCard::getStatus).containsExactly("COMPLETED");
+        assertThat(session.getPlanBlueprint().getPlanCards()).extracting(UserPlanCard::getStatus).containsExactly("COMPLETED");
         verify(sessionService).save(session);
         verify(taskRuntimeService).syncTaskState("task-1", PlanningPhaseEnum.COMPLETED);
         verify(sessionService).publishEvent("task-1", "COMPLETED");
+        verify(conversationTaskStateService).syncPendingFollowUpRecommendations(session, evaluation);
         verify(notificationFacade).notifyExecutionReviewed(session, snapshot, evaluation);
     }
 

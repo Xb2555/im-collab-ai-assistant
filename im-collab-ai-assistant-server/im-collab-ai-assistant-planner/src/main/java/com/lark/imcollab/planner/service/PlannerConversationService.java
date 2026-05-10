@@ -2,18 +2,23 @@ package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
+import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
 import com.lark.imcollab.common.model.entity.PendingTaskCandidate;
 import com.lark.imcollab.common.model.entity.PendingTaskSelection;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.ConversationTaskState;
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.SourceArtifactRef;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.common.util.ExecutionCommandGuard;
 import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.planner.supervisor.PlannerExecutionTool;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
@@ -48,6 +53,9 @@ public class PlannerConversationService {
     private final PlannerSupervisorGraphRunner graphRunner;
     private final PlannerExecutionTool executionTool;
     private final TaskRuntimeService taskRuntimeService;
+    private final FollowUpArtifactContextResolver followUpArtifactContextResolver;
+    private final ConversationTaskStateService conversationTaskStateService;
+    private final PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher;
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
@@ -62,7 +70,7 @@ public class PlannerConversationService {
             PlannerConversationMemoryService memoryService,
             PlannerSupervisorGraphRunner graphRunner
     ) {
-        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null);
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null, null, null, null);
     }
 
     @Autowired
@@ -74,7 +82,10 @@ public class PlannerConversationService {
             PlannerConversationMemoryService memoryService,
             PlannerSupervisorGraphRunner graphRunner,
             PlannerExecutionTool executionTool,
-            TaskRuntimeService taskRuntimeService
+            TaskRuntimeService taskRuntimeService,
+            FollowUpArtifactContextResolver followUpArtifactContextResolver,
+            ConversationTaskStateService conversationTaskStateService,
+            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher
     ) {
         this.sessionResolver = sessionResolver;
         this.intakeService = intakeService;
@@ -84,6 +95,23 @@ public class PlannerConversationService {
         this.graphRunner = graphRunner;
         this.executionTool = executionTool;
         this.taskRuntimeService = taskRuntimeService;
+        this.followUpArtifactContextResolver = followUpArtifactContextResolver;
+        this.conversationTaskStateService = conversationTaskStateService;
+        this.pendingFollowUpRecommendationMatcher = pendingFollowUpRecommendationMatcher;
+    }
+
+    public PlannerConversationService(
+            TaskSessionResolver sessionResolver,
+            TaskIntakeService intakeService,
+            PlannerSessionService sessionService,
+            TaskBridgeService taskBridgeService,
+            PlannerConversationMemoryService memoryService,
+            PlannerSupervisorGraphRunner graphRunner,
+            PlannerExecutionTool executionTool,
+            TaskRuntimeService taskRuntimeService
+    ) {
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
+                executionTool, taskRuntimeService, null, null, null);
     }
 
     public PlanTaskSession handlePlanRequest(
@@ -96,6 +124,15 @@ public class PlannerConversationService {
         PlanTaskSession session = resolution.existingSession()
                 ? sessionService.get(resolution.taskId())
                 : transientSession(resolution.taskId(), workspaceContext);
+        PlanTaskSession followUpResult = tryResumePendingFollowUpRecommendation(
+                session,
+                resolution,
+                firstText(userFeedback, rawInstruction),
+                workspaceContext
+        );
+        if (followUpResult != null) {
+            return finalizePlanAdjustmentResult(followUpResult);
+        }
         TaskIntakeDecision preliminaryIntakeDecision = intakeService.decide(
                 session,
                 rawInstruction,
@@ -137,14 +174,16 @@ public class PlannerConversationService {
             return selectionResult;
         }
         String userInput = firstText(userFeedback, rawInstruction);
+        String graphInstruction = stripLeadingMentionPlaceholders(userInput);
 
         TaskIntakeDecision intakeDecision = preliminaryIntakeDecision;
         intakeDecision = absorbDocLinksDuringClarification(session, resolution, workspaceContext, intakeDecision, userFeedback, rawInstruction);
+        clearPendingFollowUpRecommendationsIfExplicitNewTask(resolution, intakeDecision);
         if (shouldStartFreshTask(taskId, resolution, intakeDecision)) {
+            workspaceContext = carryForwardCompletedArtifactContext(session, workspaceContext, intakeDecision, graphInstruction);
             resolution = new TaskSessionResolution(UUID.randomUUID().toString(), false, resolution.continuationKey());
             session = transientSession(resolution.taskId(), workspaceContext);
         }
-        String graphInstruction = stripLeadingMentionPlaceholders(userInput);
         if (graphInstruction.isBlank()) {
             graphInstruction = intakeDecision.effectiveInput();
         }
@@ -794,7 +833,7 @@ public class PlannerConversationService {
                 workspaceContext,
                 replanInstruction
         );
-        taskBridgeService.ensureTask(replanned);
+        finalizePlanAdjustmentResult(replanned);
         if (replanned == null) {
             return sessionService.get(session.getTaskId());
         }
@@ -808,6 +847,20 @@ public class PlannerConversationService {
             return replanned;
         }
         return replanned;
+    }
+
+    private PlanTaskSession finalizePlanAdjustmentResult(PlanTaskSession session) {
+        if (session == null) {
+            return null;
+        }
+        taskBridgeService.ensureTask(session);
+        if (taskRuntimeService != null && session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
+            taskRuntimeService.reconcilePlanReadyProjection(
+                    session,
+                    com.lark.imcollab.common.model.enums.TaskEventTypeEnum.PLAN_ADJUSTED
+            );
+        }
+        return session;
     }
 
     private PlanTaskSession rejectExecutingCompletedArtifactAdjustment(PlanTaskSession session) {
@@ -965,6 +1018,294 @@ public class PlannerConversationService {
         return intakeService.isForcedNewTaskDecision(intakeDecision);
     }
 
+    private void clearPendingFollowUpRecommendationsIfExplicitNewTask(
+            TaskSessionResolution resolution,
+            TaskIntakeDecision intakeDecision
+    ) {
+        if (conversationTaskStateService == null
+                || resolution == null
+                || !hasText(resolution.continuationKey())
+                || intakeDecision == null
+                || !isForcedNewTask(intakeDecision)) {
+            return;
+        }
+        conversationTaskStateService.clearPendingFollowUpRecommendations(resolution.continuationKey());
+    }
+
+    private PlanTaskSession tryResumePendingFollowUpRecommendation(
+            PlanTaskSession currentSession,
+            TaskSessionResolution resolution,
+            String userInput,
+            WorkspaceContext workspaceContext
+    ) {
+        if (conversationTaskStateService == null
+                || pendingFollowUpRecommendationMatcher == null
+                || resolution == null
+                || !hasText(resolution.continuationKey())
+                || !hasText(userInput)) {
+            return null;
+        }
+        if (shouldPreferCurrentTaskExecutionConfirmation(currentSession, userInput)) {
+            return null;
+        }
+        Optional<ConversationTaskState> stateOptional = conversationTaskStateService.find(resolution.continuationKey());
+        if (stateOptional.isEmpty() || stateOptional.get().getPendingFollowUpRecommendations() == null
+                || stateOptional.get().getPendingFollowUpRecommendations().isEmpty()) {
+            return null;
+        }
+        ConversationTaskState state = stateOptional.get();
+        List<PendingFollowUpRecommendation> recommendations = defaultList(state.getPendingFollowUpRecommendations());
+        PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
+                userInput,
+                recommendations,
+                state.isPendingFollowUpAwaitingSelection()
+        );
+        if (match.type() == PendingFollowUpRecommendationMatcher.Type.ASK_SELECTION) {
+            conversationTaskStateService.markPendingFollowUpAwaitingSelection(resolution.continuationKey(), true);
+            return followUpSelectionReply(currentSession, recommendations);
+        }
+        if (match.type() != PendingFollowUpRecommendationMatcher.Type.SELECTED || match.recommendation() == null) {
+            return null;
+        }
+        PendingFollowUpRecommendation recommendation = match.recommendation();
+        if (recommendation.getFollowUpMode() != com.lark.imcollab.common.model.enums.FollowUpModeEnum.CONTINUE_CURRENT_TASK
+                || !hasText(recommendation.getTargetTaskId())) {
+            return null;
+        }
+        PlanTaskSession targetSession = sessionService.get(recommendation.getTargetTaskId());
+        WorkspaceContext followUpContext = appendFollowUpSourceArtifact(
+                workspaceContext,
+                recommendation,
+                targetSession
+        );
+        String plannerInstruction = appendFollowUpPlannerHints(recommendation, userInput);
+        conversationTaskStateService.clearPendingFollowUpRecommendations(resolution.continuationKey());
+        PlanTaskSession result = graphRunner.run(
+                new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "resume pending follow-up recommendation"),
+                recommendation.getTargetTaskId(),
+                plannerInstruction,
+                followUpContext,
+                userInput
+        );
+        normalizeFollowUpContinuationResult(result, resolution, userInput);
+        markPreserveExistingArtifactsOnExecution(result);
+        return result;
+    }
+
+    private PlanTaskSession followUpSelectionReply(
+            PlanTaskSession session,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        PlanTaskSession response = session == null ? PlanTaskSession.builder().taskId(UUID.randomUUID().toString()).build() : session;
+        TaskIntakeState intakeState = response.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : response.getIntakeState();
+        intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        intakeState.setAssistantReply(buildFollowUpSelectionReply(recommendations));
+        response.setIntakeState(intakeState);
+        response.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        return response;
+    }
+
+    private String buildFollowUpSelectionReply(List<PendingFollowUpRecommendation> recommendations) {
+        StringBuilder builder = new StringBuilder("我这边有多个后续动作，你想继续哪一个？");
+        for (int index = 0; index < recommendations.size(); index++) {
+            PendingFollowUpRecommendation recommendation = recommendations.get(index);
+            builder.append("\n").append(index + 1).append(". ")
+                    .append(firstText(recommendation.getSuggestedUserInstruction(), recommendation.getPlannerInstruction()));
+        }
+        builder.append("\n回复编号即可。");
+        return builder.toString();
+    }
+
+    private boolean shouldPreferCurrentTaskExecutionConfirmation(PlanTaskSession session, String userInput) {
+        if (session == null || !ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
+            return false;
+        }
+        return session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY
+                || session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING;
+    }
+
+    private WorkspaceContext appendFollowUpSourceArtifact(
+            WorkspaceContext workspaceContext,
+            PendingFollowUpRecommendation recommendation,
+            PlanTaskSession targetSession
+    ) {
+        if (!hasText(recommendation.getTargetTaskId())) {
+            return workspaceContext;
+        }
+        ArtifactRecord artifact = resolveFollowUpSourceArtifact(recommendation);
+        if (artifact == null) {
+            return workspaceContext;
+        }
+        WorkspaceContext merged = copyWorkspaceContextWithSourceArtifact(workspaceContext, artifact);
+        if (targetSession != null
+                && targetSession.getIntakeState() != null
+                && !hasText(merged.getContinuationMode())
+                && hasText(targetSession.getIntakeState().getContinuationKey())) {
+            merged.setContinuationMode(targetSession.getIntakeState().getContinuationKey());
+        }
+        return merged;
+    }
+
+    private ArtifactRecord resolveFollowUpSourceArtifact(PendingFollowUpRecommendation recommendation) {
+        if (recommendation == null || !hasText(recommendation.getTargetTaskId())) {
+            return null;
+        }
+        if (hasText(recommendation.getSourceArtifactId())) {
+            Optional<ArtifactRecord> exact = sessionResolver.findArtifactById(
+                    recommendation.getTargetTaskId(),
+                    recommendation.getSourceArtifactId()
+            );
+            if (exact.isPresent()) {
+                return exact.get();
+            }
+        }
+        return sessionResolver.findLatestShareableArtifact(
+                recommendation.getTargetTaskId(),
+                recommendation.getSourceArtifactType()
+        ).orElse(null);
+    }
+
+    private String appendFollowUpPlannerHints(PendingFollowUpRecommendation recommendation, String userInput) {
+        StringBuilder builder = new StringBuilder(firstText(
+                recommendation == null ? null : recommendation.getPlannerInstruction(),
+                userInput
+        ));
+        if (recommendation != null && hasText(recommendation.getArtifactPolicy())) {
+            builder.append("\n产物策略：").append(recommendation.getArtifactPolicy().trim());
+        }
+        if (recommendation != null && hasText(recommendation.getSourceArtifactId())) {
+            builder.append("\n来源产物ID：").append(recommendation.getSourceArtifactId().trim());
+        }
+        if (hasText(userInput)
+                && !compact(userInput).equals(compact(recommendation == null ? null : recommendation.getSuggestedUserInstruction()))
+                && !ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
+            builder.append("\n用户补充：").append(userInput.trim());
+        }
+        return builder.toString();
+    }
+
+    private void markPreserveExistingArtifactsOnExecution(PlanTaskSession session) {
+        if (session == null) {
+            return;
+        }
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        intakeState.setPreserveExistingArtifactsOnExecution(true);
+        session.setIntakeState(intakeState);
+        sessionService.saveWithoutVersionChange(session);
+    }
+
+    private void normalizeFollowUpContinuationResult(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            String userInput
+    ) {
+        if (session == null) {
+            return;
+        }
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        intakeState.setContinuedConversation(resolution != null && resolution.existingSession());
+        intakeState.setContinuationKey(resolution == null ? null : resolution.continuationKey());
+        intakeState.setLastUserMessage(userInput);
+        intakeState.setRoutingReason("resume pending follow-up recommendation");
+        intakeState.setAssistantReply(null);
+        intakeState.setReadOnlyView(null);
+        intakeState.setAdjustmentTarget(AdjustmentTargetEnum.READY_PLAN);
+        session.setIntakeState(intakeState);
+        sessionService.saveWithoutVersionChange(session);
+    }
+
+    private WorkspaceContext carryForwardCompletedArtifactContext(
+            PlanTaskSession session,
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision intakeDecision,
+            String userInput
+    ) {
+        if (session == null
+                || intakeDecision == null
+                || intakeDecision.intakeType() != TaskIntakeTypeEnum.NEW_TASK
+                || session.getPlanningPhase() != PlanningPhaseEnum.COMPLETED
+                || hasExplicitSourceContext(workspaceContext)
+                || !hasText(userInput)
+                || followUpArtifactContextResolver == null) {
+            return workspaceContext;
+        }
+        ArtifactTypeEnum preferredType = followUpArtifactContextResolver
+                .resolvePreferredArtifactType(session, userInput, workspaceContext)
+                .orElse(null);
+        if (preferredType == null) {
+            return workspaceContext;
+        }
+        Optional<ArtifactRecord> latest = sessionResolver.findLatestShareableArtifact(session.getTaskId(), preferredType);
+        if (latest.isEmpty()) {
+            return workspaceContext;
+        }
+        return copyWorkspaceContextWithSourceArtifact(workspaceContext, latest.get());
+    }
+
+    private boolean hasExplicitSourceContext(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null) {
+            return false;
+        }
+        return (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty())
+                || (workspaceContext.getSourceArtifacts() != null && !workspaceContext.getSourceArtifacts().isEmpty())
+                || (workspaceContext.getAttachmentRefs() != null && !workspaceContext.getAttachmentRefs().isEmpty())
+                || (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty())
+                || (workspaceContext.getSelectedMessageIds() != null && !workspaceContext.getSelectedMessageIds().isEmpty());
+    }
+
+    private WorkspaceContext copyWorkspaceContextWithSourceArtifact(WorkspaceContext original, ArtifactRecord artifact) {
+        String artifactUrl = hasText(artifact.getUrl()) ? artifact.getUrl().trim() : null;
+        List<String> docRefs = artifact.getType() == ArtifactTypeEnum.DOC && hasText(artifactUrl)
+                ? List.of(artifactUrl)
+                : List.of();
+        List<SourceArtifactRef> sourceArtifacts = List.of(SourceArtifactRef.builder()
+                .artifactId(artifact.getArtifactId())
+                .taskId(artifact.getTaskId())
+                .artifactType(artifact.getType())
+                .title(artifact.getTitle())
+                .url(artifactUrl)
+                .preview(artifact.getPreview())
+                .usage("PRIMARY_SOURCE")
+                .build());
+        if (original == null) {
+            return WorkspaceContext.builder()
+                    .selectionType("ARTIFACT")
+                    .docRefs(docRefs)
+                    .sourceArtifacts(sourceArtifacts)
+                    .build();
+        }
+        return WorkspaceContext.builder()
+                .selectionType(hasText(original.getSelectionType()) ? original.getSelectionType() : "ARTIFACT")
+                .timeRange(original.getTimeRange())
+                .selectedMessages(original.getSelectedMessages())
+                .selectedMessageIds(original.getSelectedMessageIds())
+                .attachmentRefs(original.getAttachmentRefs())
+                .docRefs(docRefs)
+                .sourceArtifacts(sourceArtifacts)
+                .chatId(original.getChatId())
+                .threadId(original.getThreadId())
+                .messageId(original.getMessageId())
+                .senderOpenId(original.getSenderOpenId())
+                .chatType(original.getChatType())
+                .inputSource(original.getInputSource())
+                .continuationMode(original.getContinuationMode())
+                .profession(original.getProfession())
+                .industry(original.getIndustry())
+                .audience(original.getAudience())
+                .tone(original.getTone())
+                .language(original.getLanguage())
+                .promptProfile(original.getPromptProfile())
+                .promptVersion(original.getPromptVersion())
+                .build();
+    }
+
     private boolean shouldBindConversation(TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
         if (resolution == null || intakeDecision == null) {
             return false;
@@ -1057,6 +1398,7 @@ public class PlannerConversationService {
             TaskSessionResolution resolution,
             String userInput
     ) {
+        TaskIntakeState previousIntakeState = session.getIntakeState();
         if (!resolution.existingSession() && session.getRawInstruction() == null) {
             session.setRawInstruction(firstText(userInput, intakeDecision.effectiveInput()));
         }
@@ -1078,6 +1420,8 @@ public class PlannerConversationService {
                 .readOnlyView(intakeDecision.readOnlyView())
                 .adjustmentTarget(intakeDecision.adjustmentTarget())
                 .lastInputAt(workspaceContext == null ? null : workspaceContext.getTimeRange())
+                .preserveExistingArtifactsOnExecution(previousIntakeState != null
+                        && previousIntakeState.isPreserveExistingArtifactsOnExecution())
                 .build());
         if (session.getScenarioPath() == null || session.getScenarioPath().isEmpty()) {
             session.setScenarioPath(List.of(ScenarioCodeEnum.A_IM, ScenarioCodeEnum.B_PLANNING));
@@ -1093,6 +1437,30 @@ public class PlannerConversationService {
             return first.trim();
         }
         return second == null ? "" : second.trim();
+    }
+
+    private <T> List<T> defaultList(List<T> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private String compact(String value) {
+        if (!hasText(value)) {
+            return "";
+        }
+        return value.trim().toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", "")
+                .replace("“", "")
+                .replace("”", "")
+                .replace("\"", "")
+                .replace("'", "")
+                .replace("？", "")
+                .replace("?", "")
+                .replace("。", "")
+                .replace(".", "")
+                .replace("，", "")
+                .replace(",", "")
+                .replace("！", "")
+                .replace("!", "");
     }
 
     private PlanTaskSession updateExecutingAdjustmentReply(

@@ -37,6 +37,7 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     private static final String RUNTIME_EVENT_KEY_PREFIX = "planner:runtime:events:";
     private static final String SUBMISSION_KEY_PREFIX = "planner:submission:";
     private static final String EVALUATION_KEY_PREFIX = "planner:evaluation:";
+    private static final String LATEST_EVALUATION_KEY_PREFIX = "planner:evaluation-latest:";
     private static final String CONVERSATION_KEY_PREFIX = "planner:conversation:";
     private static final String CONVERSATION_STATE_KEY_PREFIX = "planner:conversation-state:";
     private static final String USER_TASK_KEY_PREFIX = "planner:user-tasks:";
@@ -391,8 +392,10 @@ public class RedisPlannerStateStore implements PlannerStateStore {
     public void saveEvaluation(TaskResultEvaluation evaluation) {
         try {
             String key = EVALUATION_KEY_PREFIX + evaluation.getTaskId() + ":" + evaluation.getAgentTaskId();
+            String latestKey = LATEST_EVALUATION_KEY_PREFIX + evaluation.getTaskId();
             String json = objectMapper.writeValueAsString(evaluation);
             redisTemplate.opsForValue().set(key, json, SESSION_TTL);
+            redisTemplate.opsForValue().set(latestKey, json, SESSION_TTL);
         } catch (Exception e) {
             throw new RuntimeException("Failed to save evaluation: " + evaluation.getAgentTaskId(), e);
         }
@@ -409,6 +412,19 @@ public class RedisPlannerStateStore implements PlannerStateStore {
             return Optional.of(objectMapper.readValue(json, TaskResultEvaluation.class));
         } catch (Exception e) {
             throw new RuntimeException("Failed to load evaluation: " + agentTaskId, e);
+        }
+    }
+
+    @Override
+    public Optional<TaskResultEvaluation> findLatestEvaluation(String taskId) {
+        try {
+            String json = redisTemplate.opsForValue().get(LATEST_EVALUATION_KEY_PREFIX + taskId);
+            if (json == null) {
+                return Optional.empty();
+            }
+            return Optional.of(objectMapper.readValue(json, TaskResultEvaluation.class));
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load latest evaluation: " + taskId, e);
         }
     }
 

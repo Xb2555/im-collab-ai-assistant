@@ -36,11 +36,15 @@ public class StepDispatcher {
             return;
         }
         if (task.getType() == TaskType.MIXED) {
-            documentExecutionService.execute(task.getTaskId());
+            if (!isDocumentStepCompleted(task.getTaskId())) {
+                documentExecutionService.execute(task.getTaskId());
+            }
             if (!isDocumentStepCompleted(task.getTaskId())) {
                 return;
             }
-            presentationExecutionService.execute(task.getTaskId());
+            if (!isPresentationStepCompleted(task.getTaskId())) {
+                presentationExecutionService.execute(task.getTaskId());
+            }
             if (!isPresentationStepCompleted(task.getTaskId())) {
                 return;
             }

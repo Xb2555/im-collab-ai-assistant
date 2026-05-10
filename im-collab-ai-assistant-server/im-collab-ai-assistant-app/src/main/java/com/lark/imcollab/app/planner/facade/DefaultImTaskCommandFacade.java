@@ -94,12 +94,15 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             return session;
         }
         cancellationRegistry.clear(taskId);
-        taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
+        if (!shouldPreserveExistingArtifacts(session)) {
+            taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
+        }
         taskBridgeService.ensureTask(session);
         String executionAttemptId = UUID.randomUUID().toString();
         session.setActiveExecutionAttemptId(executionAttemptId);
         session.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
         session.setTransitionReason("User confirmed execution from IM");
+        clearPreserveExistingArtifactsFlag(session);
         sessionService.save(session);
         sessionService.publishEvent(taskId, "EXECUTING");
         taskRuntimeService.projectPhaseTransition(taskId, PlanningPhaseEnum.EXECUTING, TaskEventTypeEnum.PLAN_APPROVED);
@@ -118,10 +121,13 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             return session;
         }
         cancellationRegistry.clear(taskId);
-        taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
         PlanTaskSession retrying = plannerRetryService.prepareRetry(taskId, feedback);
+        if (!shouldPreserveExistingArtifacts(retrying)) {
+            taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
+        }
         String executionAttemptId = UUID.randomUUID().toString();
         retrying.setActiveExecutionAttemptId(executionAttemptId);
+        clearPreserveExistingArtifactsFlag(retrying);
         sessionService.save(retrying);
         taskBridgeService.ensureTask(retrying);
         submitExecution(taskId, executionAttemptId);
@@ -315,6 +321,19 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             return;
         }
         execution.timeoutFuture.cancel(false);
+    }
+
+    private boolean shouldPreserveExistingArtifacts(PlanTaskSession session) {
+        return session != null
+                && session.getIntakeState() != null
+                && session.getIntakeState().isPreserveExistingArtifactsOnExecution();
+    }
+
+    private void clearPreserveExistingArtifactsFlag(PlanTaskSession session) {
+        if (session == null || session.getIntakeState() == null) {
+            return;
+        }
+        session.getIntakeState().setPreserveExistingArtifactsOnExecution(false);
     }
 
     private boolean awaitPreviousExecutionDrain(String taskId) {

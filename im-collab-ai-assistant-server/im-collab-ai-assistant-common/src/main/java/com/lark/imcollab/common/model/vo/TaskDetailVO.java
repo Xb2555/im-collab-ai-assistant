@@ -7,6 +7,16 @@ public record TaskDetailVO(
         List<TaskStepVO> steps,
         List<TaskArtifactVO> artifacts,
         List<TaskEventVO> events,
-        TaskActionVO actions
+        TaskActionVO actions,
+        TaskEvaluationVO evaluation
 ) {
+    public TaskDetailVO(
+            TaskSummaryVO task,
+            List<TaskStepVO> steps,
+            List<TaskArtifactVO> artifacts,
+            List<TaskEventVO> events,
+            TaskActionVO actions
+    ) {
+        this(task, steps, artifacts, events, actions, null);
+    }
 }

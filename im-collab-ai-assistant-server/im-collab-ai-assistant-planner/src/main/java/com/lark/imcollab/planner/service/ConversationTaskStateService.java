@@ -1,6 +1,8 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.ConversationTaskState;
+import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
+import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -9,6 +11,7 @@ import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 @Service
@@ -42,6 +45,47 @@ public class ConversationTaskStateService {
         stateStore.clearConversationExecutingTask(conversationKey, taskId);
     }
 
+    public void syncPendingFollowUpRecommendations(PlanTaskSession session, TaskResultEvaluation evaluation) {
+        if (session == null || evaluation == null) {
+            return;
+        }
+        String conversationKey = resolveConversationKey(session);
+        if (!hasText(conversationKey)) {
+            return;
+        }
+        ConversationTaskState state = find(conversationKey)
+                .orElseGet(() -> ConversationTaskState.builder().conversationKey(conversationKey).build());
+        state.setConversationKey(conversationKey);
+        state.setUpdatedAt(Instant.now());
+        state.setPendingFollowUpRecommendations(toPendingRecommendations(evaluation));
+        state.setPendingFollowUpAwaitingSelection(false);
+        save(state);
+    }
+
+    public void clearPendingFollowUpRecommendations(String conversationKey) {
+        if (!hasText(conversationKey)) {
+            return;
+        }
+        find(conversationKey).ifPresent(state -> {
+            state.setPendingFollowUpRecommendations(List.of());
+            state.setPendingFollowUpAwaitingSelection(false);
+            state.setUpdatedAt(Instant.now());
+            save(state);
+        });
+    }
+
+    public void markPendingFollowUpAwaitingSelection(String conversationKey, boolean awaitingSelection) {
+        if (!hasText(conversationKey)) {
+            return;
+        }
+        ConversationTaskState state = find(conversationKey)
+                .orElseGet(() -> ConversationTaskState.builder().conversationKey(conversationKey).build());
+        state.setConversationKey(conversationKey);
+        state.setPendingFollowUpAwaitingSelection(awaitingSelection);
+        state.setUpdatedAt(Instant.now());
+        save(state);
+    }
+
     public void syncFromSession(PlanTaskSession session) {
         if (session == null) {
             return;
@@ -59,6 +103,10 @@ public class ConversationTaskStateService {
         if (phase == PlanningPhaseEnum.EXECUTING) {
             state.setActiveTaskId(session.getTaskId());
             state.setExecutingTaskId(session.getTaskId());
+            if (!sameTaskAsLastCompleted(state, session.getTaskId())) {
+                state.setPendingFollowUpRecommendations(List.of());
+                state.setPendingFollowUpAwaitingSelection(false);
+            }
         } else if (phase == PlanningPhaseEnum.COMPLETED) {
             state.setActiveTaskId(session.getTaskId());
             state.setLastCompletedTaskId(session.getTaskId());
@@ -78,10 +126,41 @@ public class ConversationTaskStateService {
             if (session.getTaskId().equals(state.getExecutingTaskId())) {
                 state.setExecutingTaskId(null);
             }
+            if (!sameTaskAsLastCompleted(state, session.getTaskId())) {
+                state.setPendingFollowUpRecommendations(List.of());
+                state.setPendingFollowUpAwaitingSelection(false);
+            }
         } else if (shouldTrackAsActive(session)) {
             state.setActiveTaskId(session.getTaskId());
         }
         save(state);
+    }
+
+    private boolean sameTaskAsLastCompleted(ConversationTaskState state, String taskId) {
+        return state != null
+                && hasText(state.getLastCompletedTaskId())
+                && state.getLastCompletedTaskId().equals(taskId);
+    }
+
+    private List<PendingFollowUpRecommendation> toPendingRecommendations(TaskResultEvaluation evaluation) {
+        if (evaluation.getNextStepRecommendations() == null || evaluation.getNextStepRecommendations().isEmpty()) {
+            return List.of();
+        }
+        return evaluation.getNextStepRecommendations().stream()
+                .filter(value -> value != null && value.getRecommendationId() != null && !value.getRecommendationId().isBlank())
+                .map(value -> PendingFollowUpRecommendation.builder()
+                        .recommendationId(value.getRecommendationId())
+                        .targetTaskId(value.getTargetTaskId())
+                        .followUpMode(value.getFollowUpMode())
+                        .sourceArtifactId(value.getSourceArtifactId())
+                        .sourceArtifactType(value.getSourceArtifactType())
+                        .targetDeliverable(value.getTargetDeliverable())
+                        .plannerInstruction(value.getPlannerInstruction())
+                        .artifactPolicy(value.getArtifactPolicy())
+                        .suggestedUserInstruction(value.getSuggestedUserInstruction())
+                        .priority(value.getPriority())
+                        .build())
+                .toList();
     }
 
     private boolean shouldTrackAsActive(PlanTaskSession session) {

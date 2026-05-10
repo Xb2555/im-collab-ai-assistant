@@ -129,6 +129,49 @@ class ReplanNodeServiceTest {
     }
 
     @Test
+    void completedTaskKeepExistingCreateNewUsesPatchMergeInsteadOfRebuildingWholePlan() {
+        PlanTaskSession session = session();
+        session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(adjustmentInterpreter.interpret(session,
+                "保留现有文档，基于该文档新增一份汇报PPT初稿。\n产物策略：KEEP_EXISTING_CREATE_NEW",
+                null))
+                .thenReturn(PlanPatchIntent.builder()
+                        .operation(PlanPatchOperation.ADD_STEP)
+                        .newCardDrafts(List.of(PlanPatchCardDraft.builder()
+                                .title("基于文档生成汇报PPT初稿")
+                                .description("基于现有文档新增一份汇报PPT初稿")
+                                .type(PlanCardTypeEnum.PPT)
+                                .build()))
+                        .confidence(1.0d)
+                        .reason("add ppt follow-up")
+                        .build());
+        doAnswer(invocation -> {
+            PlanTaskSession target = invocation.getArgument(0);
+            PlanBlueprint merged = invocation.getArgument(1);
+            target.setPlanBlueprint(merged);
+            target.setPlanCards(merged.getPlanCards());
+            target.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+            return target;
+        }).when(qualityService).applyMergedPlanAdjustment(any(), any(), anyString());
+
+        PlanTaskSession result = service.replan(
+                "task-1",
+                "保留现有文档，基于该文档新增一份汇报PPT初稿。\n产物策略：KEEP_EXISTING_CREATE_NEW",
+                null
+        );
+
+        assertThat(result.getPlanCards())
+                .extracting(UserPlanCard::getTitle)
+                .containsExactly(
+                        "生成技术方案文档（含Mermaid架构图）",
+                        "基于技术方案文档生成汇报PPT初稿",
+                        "基于文档生成汇报PPT初稿"
+                );
+        verify(planningNodeService, never()).plan(anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
     void replanClearsLegacyExecutionSemanticsBeforeApplyingPatch() {
         PlanTaskSession session = session();
         session.setClarifiedInstruction("旧澄清\n执行约束：标题必须包含 OLD_PLAN_IM_INTERRUPT_20260508");
