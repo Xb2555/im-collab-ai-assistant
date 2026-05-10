@@ -5,6 +5,8 @@ public record NextStepRecommendationVO(
         String recommendationId,
         String title,
         String reason,
+        String actionLabel,
+        boolean executable,
         String suggestedUserInstruction,
         String targetDeliverable,
         String followUpMode,

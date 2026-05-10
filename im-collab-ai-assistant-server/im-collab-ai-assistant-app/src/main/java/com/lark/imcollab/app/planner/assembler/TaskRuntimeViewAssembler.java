@@ -111,6 +111,9 @@ public class TaskRuntimeViewAssembler {
         if (task == null || stateStore == null || task.getTaskId() == null || task.getTaskId().isBlank()) {
             return null;
         }
+        if (task.getStatus() != TaskStatusEnum.COMPLETED) {
+            return null;
+        }
         return stateStore.findLatestEvaluation(task.getTaskId())
                 .map(this::toTaskEvaluation)
                 .orElse(null);
@@ -121,17 +124,22 @@ public class TaskRuntimeViewAssembler {
                 enumName(evaluation.getVerdict()),
                 defaultList(evaluation.getSuggestions()),
                 defaultList(evaluation.getNextStepRecommendations()).stream()
-                        .map(this::toNextStepRecommendation)
+                        .map(recommendation -> toNextStepRecommendation(
+                                recommendation,
+                                evaluation.getVerdict() == com.lark.imcollab.common.model.enums.ResultVerdictEnum.PASS
+                        ))
                         .toList()
         );
     }
 
-    private NextStepRecommendationVO toNextStepRecommendation(NextStepRecommendation recommendation) {
+    private NextStepRecommendationVO toNextStepRecommendation(NextStepRecommendation recommendation, boolean executable) {
         return new NextStepRecommendationVO(
                 enumName(recommendation.getCode()),
                 recommendation.getRecommendationId(),
                 recommendation.getTitle(),
                 recommendation.getReason(),
+                resolveActionLabel(recommendation),
+                executable && recommendation.getFollowUpMode() != null,
                 recommendation.getSuggestedUserInstruction(),
                 enumName(recommendation.getTargetDeliverable()),
                 enumName(recommendation.getFollowUpMode()),
@@ -142,6 +150,28 @@ public class TaskRuntimeViewAssembler {
                 recommendation.getArtifactPolicy(),
                 recommendation.getPriority()
         );
+    }
+
+    private String resolveActionLabel(NextStepRecommendation recommendation) {
+        if (recommendation == null) {
+            return "继续";
+        }
+        if (recommendation.getCode() != null) {
+            return switch (recommendation.getCode()) {
+                case GENERATE_PPT_FROM_DOC -> "生成 PPT";
+                case GENERATE_DOC_FROM_PPT -> "生成文档";
+                case GENERATE_SHAREABLE_SUMMARY -> "生成摘要";
+            };
+        }
+        if (recommendation.getTargetDeliverable() == null) {
+            return "继续";
+        }
+        return switch (recommendation.getTargetDeliverable()) {
+            case PPT -> "生成 PPT";
+            case DOC -> "生成文档";
+            case SUMMARY -> "生成摘要";
+            default -> "继续";
+        };
     }
 
     private TaskActionVO resolveActions(TaskRecord task, List<TaskStepRecord> steps) {

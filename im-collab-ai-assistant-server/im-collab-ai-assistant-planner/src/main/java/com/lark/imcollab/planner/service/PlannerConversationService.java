@@ -58,6 +58,7 @@ public class PlannerConversationService {
     private final FollowUpArtifactContextResolver followUpArtifactContextResolver;
     private final ConversationTaskStateService conversationTaskStateService;
     private final PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher;
+    private final FollowUpRecommendationExecutionService followUpRecommendationExecutionService;
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
@@ -73,7 +74,7 @@ public class PlannerConversationService {
             PlannerConversationMemoryService memoryService,
             PlannerSupervisorGraphRunner graphRunner
     ) {
-        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null, null, null, null);
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null, null, null, null, null);
     }
 
     @Autowired
@@ -88,7 +89,8 @@ public class PlannerConversationService {
             TaskRuntimeService taskRuntimeService,
             FollowUpArtifactContextResolver followUpArtifactContextResolver,
             ConversationTaskStateService conversationTaskStateService,
-            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher
+            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
+            FollowUpRecommendationExecutionService followUpRecommendationExecutionService
     ) {
         this.sessionResolver = sessionResolver;
         this.intakeService = intakeService;
@@ -101,6 +103,7 @@ public class PlannerConversationService {
         this.followUpArtifactContextResolver = followUpArtifactContextResolver;
         this.conversationTaskStateService = conversationTaskStateService;
         this.pendingFollowUpRecommendationMatcher = pendingFollowUpRecommendationMatcher;
+        this.followUpRecommendationExecutionService = followUpRecommendationExecutionService;
     }
 
     public PlannerConversationService(
@@ -114,7 +117,25 @@ public class PlannerConversationService {
             TaskRuntimeService taskRuntimeService
     ) {
         this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
-                executionTool, taskRuntimeService, null, null, null);
+                executionTool, taskRuntimeService, null, null, null, null);
+    }
+
+    public PlannerConversationService(
+            TaskSessionResolver sessionResolver,
+            TaskIntakeService intakeService,
+            PlannerSessionService sessionService,
+            TaskBridgeService taskBridgeService,
+            PlannerConversationMemoryService memoryService,
+            PlannerSupervisorGraphRunner graphRunner,
+            PlannerExecutionTool executionTool,
+            TaskRuntimeService taskRuntimeService,
+            FollowUpArtifactContextResolver followUpArtifactContextResolver,
+            ConversationTaskStateService conversationTaskStateService,
+            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher
+    ) {
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
+                executionTool, taskRuntimeService, followUpArtifactContextResolver, conversationTaskStateService,
+                pendingFollowUpRecommendationMatcher, null);
     }
 
     public PlanTaskSession handlePlanRequest(
@@ -271,6 +292,14 @@ public class PlannerConversationService {
             if (listResult != null) {
                 return listResult;
             }
+        }
+        PlanTaskSession resumedExecuting = tryResumeExecutingAfterInterruptedAdjustmentClarification(
+                session,
+                intakeDecision,
+                graphInstruction
+        );
+        if (resumedExecuting != null) {
+            return resumedExecuting;
         }
         if (shouldRejectPrematureExecutionConfirmation(session, intakeDecision)) {
             return transientReply(
@@ -1172,6 +1201,66 @@ public class PlannerConversationService {
                 && phase != PlanningPhaseEnum.EXECUTING;
     }
 
+    private PlanTaskSession tryResumeExecutingAfterInterruptedAdjustmentClarification(
+            PlanTaskSession session,
+            TaskIntakeDecision intakeDecision,
+            String userInput
+    ) {
+        if (session == null
+                || session.getIntakeState() == null
+                || (session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
+                && session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING)
+                || session.getIntakeState().getPendingInteractionType() != PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT
+                || !hasText(session.getIntakeState().getPendingAdjustmentInstruction())
+                || intakeDecision == null
+                || intakeDecision.intakeType() != TaskIntakeTypeEnum.CONFIRM_ACTION
+                || !ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
+            return null;
+        }
+        saveWithoutVersionChangeRetrying(session, current -> {
+            current.setTransitionReason("User resumed original execution after interrupt clarification");
+            TaskIntakeState intakeState = current.getIntakeState() == null
+                    ? TaskIntakeState.builder().build()
+                    : current.getIntakeState();
+            intakeState.setPendingInteractionType(null);
+            intakeState.setPendingAdjustmentInstruction(null);
+            current.setIntakeState(intakeState);
+        });
+        if (executionTool == null) {
+            PlanTaskSession resumed = saveWithoutVersionChangeRetrying(sessionService.get(session.getTaskId()), current -> {
+                current.setPlanningPhase(PlanningPhaseEnum.EXECUTING);
+                TaskIntakeState intakeState = current.getIntakeState() == null
+                        ? TaskIntakeState.builder().build()
+                        : current.getIntakeState();
+                intakeState.setIntakeType(TaskIntakeTypeEnum.CONFIRM_ACTION);
+                intakeState.setAssistantReply("好的，继续按原执行流程推进。");
+                current.setIntakeState(intakeState);
+            });
+            if (taskRuntimeService != null) {
+                taskRuntimeService.projectPhaseTransition(
+                        resumed.getTaskId(),
+                        PlanningPhaseEnum.EXECUTING,
+                        com.lark.imcollab.common.model.enums.TaskEventTypeEnum.USER_INTERVENTION
+                );
+            }
+            sessionService.publishEvent(resumed.getTaskId(), PlanningPhaseEnum.EXECUTING.name());
+            memoryService.appendAssistantTurn(resumed, resumed.getIntakeState().getAssistantReply());
+            return resumed;
+        }
+        executionTool.confirmExecution(session.getTaskId());
+        PlanTaskSession resumed = sessionService.get(session.getTaskId());
+        TaskIntakeState intakeState = resumed.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : resumed.getIntakeState();
+        intakeState.setIntakeType(TaskIntakeTypeEnum.CONFIRM_ACTION);
+        intakeState.setAssistantReply("好的，继续按原执行流程推进。");
+        resumed.setIntakeState(intakeState);
+        resumed.setTransitionReason("User resumed original execution after interrupt clarification");
+        sessionService.saveWithoutVersionChange(resumed);
+        memoryService.appendAssistantTurn(resumed, intakeState.getAssistantReply());
+        return resumed;
+    }
+
     private boolean shouldStartFreshTask(String explicitTaskId, TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
         return resolution != null
                 && !hasText(explicitTaskId)
@@ -1238,7 +1327,18 @@ public class PlannerConversationService {
         }
         PendingFollowUpRecommendation recommendation = match.recommendation();
         if (recommendation.getFollowUpMode() != com.lark.imcollab.common.model.enums.FollowUpModeEnum.CONTINUE_CURRENT_TASK
-                || !hasText(recommendation.getTargetTaskId())) {
+                && recommendation.getFollowUpMode() != com.lark.imcollab.common.model.enums.FollowUpModeEnum.START_NEW_TASK) {
+            return null;
+        }
+        if (followUpRecommendationExecutionService != null) {
+            return followUpRecommendationExecutionService.executePendingRecommendation(
+                    recommendation,
+                    workspaceContext,
+                    userInput,
+                    resolution.continuationKey()
+            );
+        }
+        if (!hasText(recommendation.getTargetTaskId())) {
             return null;
         }
         PlanTaskSession targetSession = sessionService.get(recommendation.getTargetTaskId());

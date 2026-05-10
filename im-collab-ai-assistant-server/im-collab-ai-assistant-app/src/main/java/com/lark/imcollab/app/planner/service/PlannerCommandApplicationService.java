@@ -11,8 +11,10 @@ import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
+import com.lark.imcollab.planner.service.FollowUpRecommendationExecutionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
@@ -37,6 +39,7 @@ public class PlannerCommandApplicationService {
     private final ImTaskCommandFacade taskCommandFacade;
     private final TaskRuntimeService taskRuntimeService;
     private final PlannerSessionService sessionService;
+    private final FollowUpRecommendationExecutionService followUpRecommendationExecutionService;
     private final ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider;
 
     @Autowired
@@ -47,6 +50,7 @@ public class PlannerCommandApplicationService {
             ImTaskCommandFacade taskCommandFacade,
             TaskRuntimeService taskRuntimeService,
             PlannerSessionService sessionService,
+            FollowUpRecommendationExecutionService followUpRecommendationExecutionService,
             ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider
     ) {
         this.graphRunner = graphRunner;
@@ -55,6 +59,7 @@ public class PlannerCommandApplicationService {
         this.taskCommandFacade = taskCommandFacade;
         this.taskRuntimeService = taskRuntimeService;
         this.sessionService = sessionService;
+        this.followUpRecommendationExecutionService = followUpRecommendationExecutionService;
         this.documentArtifactIterationFacadeProvider = documentArtifactIterationFacadeProvider;
     }
 
@@ -214,6 +219,23 @@ public class PlannerCommandApplicationService {
             return continueDocumentApproval(currentSession, null, null, true);
         }
         return taskCommandFacade.confirmExecution(taskId);
+    }
+
+    public PlanTaskSession executeRecommendation(
+            String taskId,
+            String recommendationId,
+            WorkspaceContext workspaceContext
+    ) {
+        PlanTaskSession session = followUpRecommendationExecutionService.executeGuiRecommendation(
+                taskId,
+                recommendationId,
+                workspaceContext
+        );
+        taskBridgeService.ensureTask(session);
+        if (session != null && session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY) {
+            taskRuntimeService.reconcilePlanReadyProjection(session, TaskEventTypeEnum.PLAN_ADJUSTED);
+        }
+        return session;
     }
 
     public PlanTaskSession cancel(String taskId) {

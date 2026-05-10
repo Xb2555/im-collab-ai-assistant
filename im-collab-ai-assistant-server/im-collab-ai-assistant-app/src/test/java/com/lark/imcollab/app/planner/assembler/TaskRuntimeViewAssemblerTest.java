@@ -124,8 +124,30 @@ class TaskRuntimeViewAssemblerTest {
         assertThat(detail.evaluation().nextStepRecommendations()).hasSize(1);
         assertThat(detail.evaluation().nextStepRecommendations().get(0).code()).isEqualTo("GENERATE_PPT_FROM_DOC");
         assertThat(detail.evaluation().nextStepRecommendations().get(0).recommendationId()).isEqualTo("GENERATE_PPT_FROM_DOC");
+        assertThat(detail.evaluation().nextStepRecommendations().get(0).actionLabel()).isEqualTo("生成 PPT");
+        assertThat(detail.evaluation().nextStepRecommendations().get(0).executable()).isTrue();
         assertThat(detail.evaluation().nextStepRecommendations().get(0).targetDeliverable()).isEqualTo("PPT");
         assertThat(detail.evaluation().nextStepRecommendations().get(0).followUpMode()).isEqualTo("CONTINUE_CURRENT_TASK");
         assertThat(detail.evaluation().nextStepRecommendations().get(0).targetTaskId()).isEqualTo("task-1");
+    }
+
+    @Test
+    void nonCompletedTaskDoesNotExposeStaleEvaluationRecommendations() {
+        when(stateStore.findLatestEvaluation("task-1")).thenReturn(Optional.of(TaskResultEvaluation.builder()
+                .taskId("task-1")
+                .verdict(ResultVerdictEnum.PASS)
+                .nextStepRecommendations(java.util.List.of(NextStepRecommendation.builder()
+                        .recommendationId("GENERATE_SHAREABLE_SUMMARY")
+                        .build()))
+                .build()));
+
+        TaskDetailVO detail = assembler.toTaskDetail(TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder()
+                        .taskId("task-1")
+                        .status(TaskStatusEnum.WAITING_APPROVAL)
+                        .build())
+                .build());
+
+        assertThat(detail.evaluation()).isNull();
     }
 }

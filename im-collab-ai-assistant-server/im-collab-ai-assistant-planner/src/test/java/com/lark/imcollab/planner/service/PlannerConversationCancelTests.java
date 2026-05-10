@@ -10,6 +10,7 @@ import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.FollowUpModeEnum;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.exception.VersionConflictException;
@@ -1150,5 +1151,66 @@ class PlannerConversationCancelTests {
         assertThat(result).isSameAs(stillAskUser);
         verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("1"), eq(workspaceContext), eq(null));
         verify(resolver, never()).resolveCompletedCandidates(workspaceContext);
+    }
+
+    @Test
+    void executingPlanAdjustmentClarificationCanResumeOriginalExecutionOnExplicitContinue() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_GROUP")
+                .build();
+        PlanTaskSession askUser = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .pendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT)
+                        .pendingAdjustmentInstruction("中断一下")
+                        .assistantReply("您是想暂停当前任务的执行流程，还是想修改计划内容？")
+                        .build())
+                .build();
+        PlannerExecutionTool executionTool = mock(PlannerExecutionTool.class);
+        when(executionTool.confirmExecution("task-1"))
+                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.EXECUTING, "execution confirmed", null));
+        PlanTaskSession resumed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
+        when(sessionService.get("task-1")).thenReturn(askUser, resumed);
+        when(intakeService.decide(askUser, "继续执行", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.CONFIRM_ACTION,
+                        "继续执行",
+                        "explicit confirm",
+                        null
+                ));
+
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                executionTool,
+                taskRuntimeService
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("继续执行", workspaceContext, null, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("继续按原执行流程推进");
+        assertThat(result.getIntakeState().getPendingInteractionType()).isNull();
+        assertThat(result.getIntakeState().getPendingAdjustmentInstruction()).isNull();
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+        verify(executionTool).confirmExecution("task-1");
     }
 }
