@@ -98,6 +98,27 @@ class StepDispatcherTest {
         verify(summaryExecutionService, never()).execute("task-1");
     }
 
+    @Test
+    void writeDocTaskSkipsDocumentExecutionWhenOnlySummaryStepRemains() {
+        Task task = Task.builder()
+                .taskId("task-1")
+                .type(TaskType.WRITE_DOC)
+                .executionContract(ExecutionContract.builder()
+                        .allowedArtifacts(List.of("DOC", "SUMMARY"))
+                        .build())
+                .build();
+        when(plannerStateStore.findStepsByTaskId("task-1")).thenReturn(List.of(
+                step(StepTypeEnum.DOC_CREATE, StepStatusEnum.COMPLETED),
+                step(StepTypeEnum.SUMMARY, StepStatusEnum.READY)
+        ));
+
+        dispatcher.dispatch(task);
+
+        verify(documentExecutionService, never()).execute("task-1");
+        verify(summaryExecutionService).execute("task-1");
+        verify(presentationExecutionService, never()).execute("task-1");
+    }
+
     private TaskStepRecord step(StepTypeEnum type, StepStatusEnum status) {
         return TaskStepRecord.builder()
                 .taskId("task-1")

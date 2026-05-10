@@ -154,8 +154,9 @@ class LarkIMPlannerReviewNotifierTest {
                 org.mockito.ArgumentMatchers.anyString()
         );
         assertThat(textCaptor.getValue())
-                .contains("技术方案文档", "https://doc.example", "项目进展摘要：", "项目已完成IM入口")
+                .contains("技术方案文档", "https://doc.example", "SUMMARY（项目进展摘要）：", "项目已完成IM入口")
                 .doesNotContain("# 项目进展摘要", "摘要内容");
+        assertThat(textCaptor.getValue()).contains("已有产物：2 个");
     }
 
     @Test

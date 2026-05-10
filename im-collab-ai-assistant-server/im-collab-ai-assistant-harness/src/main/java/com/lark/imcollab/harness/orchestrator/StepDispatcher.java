@@ -31,7 +31,12 @@ public class StepDispatcher {
             return;
         }
         if (task.getType() == TaskType.WRITE_SLIDES) {
-            presentationExecutionService.execute(task.getTaskId());
+            if (!isPresentationStepCompleted(task.getTaskId())) {
+                presentationExecutionService.execute(task.getTaskId());
+            }
+            if (!isPresentationStepCompleted(task.getTaskId())) {
+                return;
+            }
             dispatchSummaryIfReady(task);
             return;
         }
@@ -51,7 +56,9 @@ public class StepDispatcher {
             dispatchSummaryIfReady(task);
             return;
         }
-        documentExecutionService.execute(task.getTaskId());
+        if (!isDocumentStepCompleted(task.getTaskId())) {
+            documentExecutionService.execute(task.getTaskId());
+        }
         if (!isDocumentStepCompleted(task.getTaskId())) {
             return;
         }

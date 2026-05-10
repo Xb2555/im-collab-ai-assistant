@@ -188,7 +188,10 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
         if (!hasText(preview)) {
             return;
         }
-        builder.append("\n\n").append(firstNonBlank(summary.getTitle(), "SUMMARY 结果")).append("：\n")
+        String label = hasText(summary == null ? null : summary.getTitle())
+                ? "SUMMARY（" + summary.getTitle().trim() + "）"
+                : "SUMMARY";
+        builder.append("\n\n").append(label).append("：\n")
                 .append(truncateSummaryBody(stripMarkdownHeading(preview), MAX_SUMMARY_BODY_CHARS));
     }
 
@@ -306,9 +309,17 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
         return TaskRuntimeSnapshot.builder()
                 .task(snapshot.getTask())
                 .steps(snapshot.getSteps())
-                .artifacts(shareableArtifacts(snapshot.getArtifacts()))
+                .artifacts(statusVisibleArtifacts(snapshot.getArtifacts()))
                 .events(snapshot.getEvents())
                 .build();
+    }
+
+    private List<ArtifactRecord> statusVisibleArtifacts(List<ArtifactRecord> artifacts) {
+        return artifacts == null ? List.of() : artifacts.stream()
+                .filter(artifact -> artifact != null)
+                .filter(artifact -> hasText(artifact.getUrl())
+                        || artifact.getType() == ArtifactTypeEnum.SUMMARY && hasText(artifact.getPreview()))
+                .toList();
     }
 
     private String stripMarkdownHeading(String value) {
