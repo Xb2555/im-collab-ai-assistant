@@ -547,4 +547,5 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.APPEND_SECTION_TO_DOCUMENT_END);
         assertThat(intent.getAnchorSpec()).isNull();
     }
+
 }

@@ -54,7 +54,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
 
     public DocumentEditIntent resolve(String instruction, WorkspaceContext workspaceContext) {
         try {
-            String response = chatModel.call(buildPrompt(instruction));
+            String response = chatModel.call(buildPrompt(instruction, workspaceContext));
             Map<String, Object> payload = objectMapper.readValue(stripCodeFences(response), new TypeReference<>() {});
             DocumentEditIntent parsedIntent = fromPayload(instruction, payload);
             DocumentEditIntent validatedIntent = validate(parsedIntent);
@@ -248,7 +248,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         return intent;
     }
 
-    private String buildPrompt(String instruction) {
+    private String buildPrompt(String instruction, WorkspaceContext workspaceContext) {
         String intentTypes = Arrays.stream(DocumentIterationIntentType.values()).map(Enum::name).collect(Collectors.joining("|"));
         String semanticActions = Arrays.stream(DocumentSemanticActionType.values()).map(Enum::name).collect(Collectors.joining("|"));
         String anchorKinds = Arrays.stream(DocumentAnchorKind.values()).map(Enum::name).collect(Collectors.joining("|"));
@@ -314,10 +314,36 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
                    不允许把“总体复苏态势中的数据”“客源市场结构那部分内容”这类抽象概括写入 quotedText。
                 8. 如果用户已经给出章节号/章节标题，同时又描述该章节里的内容问题，应保留章节锚点，不要凭空构造 quotedText 锚点。
                 9. 如果既不能稳定识别章节，也没有真实可引用原文，返回 clarificationNeeded=true，不要编造 anchorSpec。
+                10. 如果用户明确要求“在文档里加/补/新增一个小节或章节”，即使没有给锚点，也应优先识别为 APPEND_SECTION_TO_DOCUMENT_END，而不是要求再次澄清。
+                11. 如果用户说“关于前10分钟的消息总结”“基于最近聊天记录补一节总结”之类，历史消息只是写作素材来源，不等于锚点缺失；只要新增位置默认是文末追加，就不要因为没有章节锚点而澄清。
+
+                已有上下文素材：
+                %s
 
                 用户指令：%s
-                """.formatted(intentTypes, semanticActions, riskLevels, anchorKinds, matchModes, assetTypes, sourceTypes, instruction);
+                """.formatted(intentTypes, semanticActions, riskLevels, anchorKinds, matchModes, assetTypes, sourceTypes,
+                summarizeWorkspaceContext(workspaceContext), instruction);
         return prompt;
+    }
+
+    private String summarizeWorkspaceContext(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null) {
+            return "无";
+        }
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        if (hasText(workspaceContext.getTimeRange())) {
+            parts.add("timeRange=" + workspaceContext.getTimeRange());
+        }
+        if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
+            parts.add("selectedMessages=" + workspaceContext.getSelectedMessages().stream()
+                    .filter(this::hasText)
+                    .limit(6)
+                    .collect(Collectors.joining(" | ")));
+        }
+        if (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty()) {
+            parts.add("docRefs=" + String.join(",", workspaceContext.getDocRefs()));
+        }
+        return parts.isEmpty() ? "无" : String.join("\n", parts);
     }
 
     private String stripCodeFences(String response) {

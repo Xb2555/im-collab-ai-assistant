@@ -1,5 +1,6 @@
 package com.lark.imcollab.common.model.dto;
 
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -19,4 +20,5 @@ public class PresentationIterationRequest implements Serializable {
     private String presentationUrl;
     private String instruction;
     private String operatorOpenId;
+    private WorkspaceContext workspaceContext;
 }

@@ -836,6 +836,66 @@ class PlannerConversationCompletedSelectionTest {
     }
 
     @Test
+    void completedCurrentTaskArtifactEditStillRoutesWhenClassifierSaysNewTask() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-doc")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-doc", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-doc")).thenReturn(completed);
+        when(intakeService.decide(completed, "帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.NEW_TASK,
+                        "帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结",
+                        "llm misclassified as standalone task",
+                        null));
+        when(resolver.conversationState(context)).thenReturn(java.util.Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-doc")
+                        .lastCompletedTaskId("task-doc")
+                        .build()
+        ));
+        when(resolver.hasEditableArtifacts("task-doc")).thenReturn(true);
+        when(resolver.inferEditableArtifact("task-doc", "帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结"))
+                .thenReturn(java.util.Optional.of(ArtifactRecord.builder()
+                        .artifactId("artifact-doc-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .build()));
+        when(graphRunner.run(any(), eq("task-doc"),
+                eq("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结\n目标产物ID：artifact-doc-1"),
+                eq(context), isNull()))
+                .thenReturn(completed);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结", context, null, null);
+
+        assertThat(result).isSameAs(completed);
+        verify(graphRunner).run(any(), eq("task-doc"),
+                eq("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结\n目标产物ID：artifact-doc-1"),
+                eq(context), isNull());
+        verify(taskBridgeService).ensureTask(completed);
+    }
+
+    @Test
     void completedBoundConversationStillListsMultipleCandidatesInsteadOfDefaulting() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);

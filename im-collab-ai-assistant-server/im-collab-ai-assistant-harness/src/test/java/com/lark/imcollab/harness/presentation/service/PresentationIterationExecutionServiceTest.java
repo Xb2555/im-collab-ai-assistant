@@ -20,6 +20,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -47,7 +48,7 @@ class PresentationIterationExecutionServiceTest {
                         .presentationId("slides-1")
                         .xml("<presentation><slide id=\"s2\"><data><shape id=\"b2\"><content><p>新采购评审结论</p></content></shape></data></slide></presentation>")
                         .build());
-        when(intentFacade.resolve("把第二页标题改成新采购评审结论")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("把第二页标题改成新采购评审结论"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
                 .actionType(PresentationEditActionType.REPLACE_SLIDE_TITLE)
                 .pageIndex(2)
@@ -102,7 +103,7 @@ class PresentationIterationExecutionServiceTest {
                                 <presentation><slide id="s2"><data><shape id="b2"><content><p>新的关键结论</p></content></shape></data></slide></presentation>
                                 """)
                         .build());
-        when(intentFacade.resolve("把第一页标题改成新封面，第二页正文改成新的关键结论")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("把第一页标题改成新封面，第二页正文改成新的关键结论"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
                 .operations(List.of(
                         PresentationEditOperation.builder()
@@ -162,7 +163,7 @@ class PresentationIterationExecutionServiceTest {
         when(slidesTool.createSlide(eq("slides-1"), anyString(), eq("s2"))).thenReturn(LarkSlidesReplaceResult.builder()
                 .slideId("new-slide")
                 .build());
-        when(intentFacade.resolve("在第1页后插入一页，标题为风险应对，正文为预算、排期、依赖")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("在第1页后插入一页，标题为风险应对，正文为预算、排期、依赖"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.INSERT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.INSERT_SLIDE)
@@ -218,7 +219,7 @@ class PresentationIterationExecutionServiceTest {
         when(slidesTool.createSlide(eq("slides-1"), anyString(), eq("s3"))).thenReturn(LarkSlidesReplaceResult.builder()
                 .slideId("new-slide")
                 .build());
-        when(intentFacade.resolve("在第2页后插入一页，标题为多端协作闭环，正文为 IM 发起、Planner 执行、文档沉淀、PPT 交付")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("在第2页后插入一页，标题为多端协作闭环，正文为 IM 发起、Planner 执行、文档沉淀、PPT 交付"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.INSERT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.INSERT_SLIDE)
@@ -268,7 +269,7 @@ class PresentationIterationExecutionServiceTest {
         when(slidesTool.createSlide(eq("slides-1"), anyString(), isNull())).thenReturn(LarkSlidesReplaceResult.builder()
                 .slideId("new-slide")
                 .build());
-        when(intentFacade.resolve("在最后插入一页，标题为后续行动计划，正文为确认试点范围、补齐权限配置、组织演示验收")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("在最后插入一页，标题为后续行动计划，正文为确认试点范围、补齐权限配置、组织演示验收"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.INSERT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.INSERT_SLIDE)
@@ -320,7 +321,7 @@ class PresentationIterationExecutionServiceTest {
         when(slidesTool.createSlide(eq("slides-1"), anyString(), isNull())).thenReturn(LarkSlidesReplaceResult.builder()
                 .slideId("new-slide")
                 .build());
-        when(intentFacade.resolve("在最后插入一页，标题为后续行动计划，正文为确认试点范围")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("在最后插入一页，标题为后续行动计划，正文为确认试点范围"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.INSERT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.INSERT_SLIDE)
@@ -360,7 +361,7 @@ class PresentationIterationExecutionServiceTest {
                         .presentationId("slides-1")
                         .xml("<presentation><slide id=\"s1\"/><slide id=\"s3\"/></presentation>")
                         .build());
-        when(intentFacade.resolve("删除第2页")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("删除第2页"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.DELETE)
                 .actionType(PresentationEditActionType.DELETE_SLIDE)
                 .pageIndex(2)
@@ -384,7 +385,7 @@ class PresentationIterationExecutionServiceTest {
                 .presentationId("slides-2")
                 .xml("<presentation><slide id=\"only\"/></presentation>")
                 .build());
-        when(singleIntentFacade.resolve("删除第1页")).thenReturn(PresentationEditIntent.builder()
+        when(singleIntentFacade.resolve(eq("删除第1页"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.DELETE)
                 .actionType(PresentationEditActionType.DELETE_SLIDE)
                 .pageIndex(1)
@@ -425,7 +426,7 @@ class PresentationIterationExecutionServiceTest {
         when(slidesTool.createSlide(eq("slides-1"), anyString(), eq("s2"))).thenReturn(LarkSlidesReplaceResult.builder()
                 .slideId("moved")
                 .build());
-        when(intentFacade.resolve("把第3页移到第1页后")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("把第3页移到第1页后"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.MOVE_SLIDE)
@@ -475,7 +476,7 @@ class PresentationIterationExecutionServiceTest {
         when(slidesTool.createSlide(eq("slides-1"), anyString(), isNull())).thenReturn(LarkSlidesReplaceResult.builder()
                 .slideId("moved")
                 .build());
-        when(intentFacade.resolve("把第2页移到最后")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("把第2页移到最后"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.MOVE_SLIDE)
@@ -517,7 +518,7 @@ class PresentationIterationExecutionServiceTest {
                         .presentationId("slides-1")
                         .xml("<presentation><slide id=\"s1\"><data><img id=\"img-1\" src=\"boxcn-replaced-image\" topLeftX=\"560\" topLeftY=\"90\" width=\"320\" height=\"180\" alt=\"门店实景图\"/></data></slide></presentation>")
                         .build());
-        when(intentFacade.resolve("把第1页右侧图片换成门店实景图")).thenReturn(PresentationEditIntent.builder()
+        when(intentFacade.resolve(eq("把第1页右侧图片换成门店实景图"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.REPLACE_IMAGE)

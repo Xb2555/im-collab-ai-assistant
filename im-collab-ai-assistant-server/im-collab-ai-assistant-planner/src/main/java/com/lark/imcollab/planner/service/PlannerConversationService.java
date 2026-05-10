@@ -182,7 +182,19 @@ public class PlannerConversationService {
 
         TaskIntakeDecision intakeDecision = preliminaryIntakeDecision;
         intakeDecision = absorbDocLinksDuringClarification(session, resolution, workspaceContext, intakeDecision, userFeedback, rawInstruction);
+        intakeDecision = absorbSourceContextSupplementForReadyPlan(session, resolution, workspaceContext, intakeDecision, userFeedback, rawInstruction);
         clearPendingFollowUpRecommendationsIfExplicitNewTask(resolution, intakeDecision);
+        PlanTaskSession earlyCompletedArtifactAdjustment = tryRouteCurrentCompletedArtifactAdjustment(
+                taskId,
+                resolution,
+                session,
+                intakeDecision,
+                workspaceContext,
+                graphInstruction
+        );
+        if (earlyCompletedArtifactAdjustment != null) {
+            return earlyCompletedArtifactAdjustment;
+        }
         if (shouldStartFreshTask(taskId, resolution, intakeDecision)) {
             workspaceContext = carryForwardCompletedArtifactContext(session, workspaceContext, intakeDecision, graphInstruction);
             resolution = new TaskSessionResolution(UUID.randomUUID().toString(), false, resolution.continuationKey());
@@ -259,6 +271,14 @@ public class PlannerConversationService {
             if (listResult != null) {
                 return listResult;
             }
+        }
+        if (shouldRejectPrematureExecutionConfirmation(session, intakeDecision)) {
+            return transientReply(
+                    session,
+                    workspaceContext,
+                    resolution,
+                    "当前还没到可执行阶段。我会先把计划或上下文准备好，等进入可执行状态后你再回复“开始执行”。"
+            );
         }
         if (shouldShortCircuitWithoutTask(resolution, intakeDecision)) {
             updateSessionEnvelope(session, workspaceContext, intakeDecision, resolution, graphInstruction);
@@ -961,7 +981,6 @@ public class PlannerConversationService {
     ) {
         if (hasText(explicitTaskId)
                 || intakeDecision == null
-                || intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT
                 || resolution == null
                 || !resolution.existingSession()
                 || !isCompleted(session)
@@ -1009,6 +1028,13 @@ public class PlannerConversationService {
             String instruction
     ) {
         if (session == null || !hasText(session.getTaskId()) || !sessionResolver.hasEditableArtifacts(session.getTaskId())) {
+            return false;
+        }
+        if (intakeDecision == null) {
+            return false;
+        }
+        if (intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                && intakeDecision.intakeType() != TaskIntakeTypeEnum.NEW_TASK) {
             return false;
         }
         if (intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
@@ -1130,6 +1156,20 @@ public class PlannerConversationService {
                 || type == TaskIntakeTypeEnum.STATUS_QUERY
                 || type == TaskIntakeTypeEnum.CANCEL_TASK
                 || type == TaskIntakeTypeEnum.CONFIRM_ACTION;
+    }
+
+    private boolean shouldRejectPrematureExecutionConfirmation(
+            PlanTaskSession session,
+            TaskIntakeDecision intakeDecision
+    ) {
+        if (session == null
+                || intakeDecision == null
+                || intakeDecision.intakeType() != TaskIntakeTypeEnum.CONFIRM_ACTION) {
+            return false;
+        }
+        PlanningPhaseEnum phase = session.getPlanningPhase();
+        return phase != PlanningPhaseEnum.PLAN_READY
+                && phase != PlanningPhaseEnum.EXECUTING;
     }
 
     private boolean shouldStartFreshTask(String explicitTaskId, TaskSessionResolution resolution, TaskIntakeDecision intakeDecision) {
@@ -1501,6 +1541,68 @@ public class PlannerConversationService {
                 null,
                 null
         );
+    }
+
+    private TaskIntakeDecision absorbSourceContextSupplementForReadyPlan(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision current,
+            String userFeedback,
+            String rawInstruction
+    ) {
+        if (session == null
+                || resolution == null
+                || !resolution.existingSession()
+                || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY
+                || current == null
+                || (current.intakeType() != TaskIntakeTypeEnum.NEW_TASK
+                && current.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT)
+                || hasExplicitSourceContext(workspaceContext)) {
+            return current;
+        }
+        String effectiveInput = firstText(userFeedback, rawInstruction);
+        if (!looksLikeCurrentTaskSourceContextSupplement(effectiveInput)) {
+            return current;
+        }
+        return new TaskIntakeDecision(
+                TaskIntakeTypeEnum.CLARIFICATION_REPLY,
+                effectiveInput,
+                "guard source context supplement for ready plan",
+                null,
+                null
+        );
+    }
+
+    private boolean looksLikeCurrentTaskSourceContextSupplement(String input) {
+        if (!hasText(input)) {
+            return false;
+        }
+        String normalized = compact(input);
+        boolean mentionsSourceEntity = containsAny(normalized,
+                "消息", "聊天记录", "群聊记录", "文档材料", "内容来源", "来源", "材料");
+        boolean mentionsSupplementPattern = containsAny(normalized,
+                "作为文档内容来源", "作为内容来源", "作为来源", "改成基于", "不要直接编造", "用刚才聊天记录",
+                "用聊天记录", "做材料", "取前10分钟", "取最近消息", "拉取前10分钟", "拉取最近");
+        if (!mentionsSourceEntity || !mentionsSupplementPattern) {
+            return false;
+        }
+        return !containsAny(normalized,
+                "新建一个任务", "新开一个任务", "另起一个任务", "重新开始一个新任务",
+                "新增一页", "加一页", "补一页", "加一小节", "补一小节",
+                "删一步", "删除步骤", "重排步骤", "调整计划顺序");
+    }
+
+    private boolean containsAny(String value, String... needles) {
+        if (!hasText(value) || needles == null) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (hasText(needle) && value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private TaskIntakeDecision absorbExecutingPlanAdjustmentClarification(

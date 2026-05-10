@@ -107,6 +107,85 @@ class PlannerConversationCancelTests {
     }
 
     @Test
+    void shouldRejectExecutionConfirmationBeforePlanReady() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
+        PlanTaskSession intake = PlanTaskSession.builder()
+                .taskId("task-intake")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build();
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-intake", true, "LARK:chat-1"));
+        when(sessionService.get("task-intake")).thenReturn(intake);
+        when(intakeService.decide(intake, "开始执行", null, true))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.CONFIRM_ACTION, "开始执行", "explicit confirm", null));
+
+        PlanTaskSession result = service.handlePlanRequest("开始执行", workspaceContext, null, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTAKE);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("当前还没到可执行阶段");
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldTreatReadyPlanSourceSupplementAsClarificationResume() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-ready")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-ready", true, "LARK:chat-1"));
+        when(sessionService.get("task-ready")).thenReturn(ready);
+        when(intakeService.decide(ready, "拉取前10分钟的消息作为文档内容来源，直接生成即可。", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "拉取前10分钟的消息作为文档内容来源，直接生成即可。",
+                        "model source supplement",
+                        null
+                ));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-ready"),
+                eq("拉取前10分钟的消息作为文档内容来源，直接生成即可。"), eq(workspaceContext), eq(null)))
+                .thenAnswer(invocation -> ready);
+
+        service.handlePlanRequest("拉取前10分钟的消息作为文档内容来源，直接生成即可。", workspaceContext, null, null);
+
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(com.lark.imcollab.planner.supervisor.PlannerSupervisorAction.CLARIFICATION_REPLY,
+                        "guard source context supplement for ready plan")),
+                eq("task-ready"),
+                eq("拉取前10分钟的消息作为文档内容来源，直接生成即可。"),
+                eq(workspaceContext),
+                eq(null)
+        );
+    }
+
+    @Test
     void shouldRouteCancelTaskToAbortSession() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);

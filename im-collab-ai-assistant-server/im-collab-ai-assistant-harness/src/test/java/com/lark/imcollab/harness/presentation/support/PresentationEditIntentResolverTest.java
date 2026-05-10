@@ -394,4 +394,5 @@ class PresentationEditIntentResolverTest {
         assertThat(intent.getPageIndex()).isEqualTo(-1);
         assertThat(intent.getReplacementText()).isEqualTo("项目总结");
     }
+
 }

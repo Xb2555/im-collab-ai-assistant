@@ -466,6 +466,9 @@ public class PlanningNodeService {
             IntentSnapshot intentSnapshot,
             String userFeedback
     ) {
+        if (looksLikeSourceReferenceSupplement(userFeedback)) {
+            return false;
+        }
         return hasSupportedDeliverable(intentSnapshot)
                 && (hasSubstantialClarificationAnswer(session) || hasSubstantialFeedbackMaterial(userFeedback));
     }
@@ -476,6 +479,30 @@ public class PlanningNodeService {
         }
         String normalized = userFeedback.trim();
         return normalized.length() >= 12 || (normalized.contains("\n") && normalized.length() >= 8);
+    }
+
+    private boolean looksLikeSourceReferenceSupplement(String userFeedback) {
+        if (!hasText(userFeedback)) {
+            return false;
+        }
+        String normalized = compact(userFeedback);
+        boolean mentionsConversationMaterial = containsAny(normalized,
+                "消息", "聊天记录", "群聊记录", "讨论记录", "对话记录", "内容来源", "来源", "材料");
+        boolean mentionsRetrievalAction = containsAny(normalized,
+                "拉取", "取", "基于", "从刚才", "从最近", "最近10分钟", "前10分钟", "前5分钟", "前30分钟", "历史消息");
+        return mentionsConversationMaterial && mentionsRetrievalAction;
+    }
+
+    private boolean containsAny(String value, String... needles) {
+        if (!hasText(value) || needles == null) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (hasText(needle) && value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean hasSupportedDeliverable(IntentSnapshot intentSnapshot) {
@@ -873,6 +900,10 @@ public class PlanningNodeService {
 
     private String normalize(String value) {
         return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String compact(String value) {
+        return normalize(value).replaceAll("\\s+", "");
     }
 
     private boolean hasText(String value) {

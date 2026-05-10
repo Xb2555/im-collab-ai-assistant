@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.entity.PresentationEditOperation;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
@@ -37,8 +38,13 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
 
     @Override
     public PresentationEditIntent resolve(String instruction) {
+        return resolve(instruction, null);
+    }
+
+    @Override
+    public PresentationEditIntent resolve(String instruction, WorkspaceContext workspaceContext) {
         try {
-            String response = chatModel.call(buildPrompt(instruction));
+            String response = chatModel.call(buildPrompt(instruction, workspaceContext));
             JsonNode root = objectMapper.readTree(stripCodeFences(response));
             PresentationEditIntent intent = PresentationEditIntent.builder()
                     .intentType(parseIntentType(root.path("intentType").asText(null)))
@@ -325,7 +331,7 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         return intent;
     }
 
-    private String buildPrompt(String instruction) {
+    private String buildPrompt(String instruction, WorkspaceContext workspaceContext) {
         return """
                 你是 PPT 编辑意图解析器。根据用户指令输出 JSON，不要解释。
 
@@ -381,9 +387,31 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 7. “把第4页移到第2页后”应解析为 MOVE_SLIDE，pageIndex=4，insertAfterPageIndex=2；移到最前 insertAfterPageIndex=0；移到最后/末尾 insertAfterPageIndex=-1。
                 8. 无法唯一定位时必须 clarificationNeeded=true，禁止默认猜标题。
                 9. 新增页缺少标题和正文，或移动页缺少源页/目标位置，或无法确认替换页码、目标元素、新内容时，clarificationNeeded=true。
+                10. 如果用户要求“把最后一页改成最近10分钟关于风险的消息总结”“基于最近聊天记录补一页总结”，应优先理解为修改最后一页正文，而不是要求再次澄清。
+
+                已有上下文素材：
+                %s
 
                 用户指令：%s
-                """.formatted(instruction == null ? "" : instruction.trim());
+                """.formatted(summarizeWorkspaceContext(workspaceContext), instruction == null ? "" : instruction.trim());
+    }
+
+    private String summarizeWorkspaceContext(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null) {
+            return "无";
+        }
+        List<String> parts = new ArrayList<>();
+        if (hasText(workspaceContext.getTimeRange())) {
+            parts.add("timeRange=" + workspaceContext.getTimeRange());
+        }
+        if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
+            parts.add("selectedMessages=" + workspaceContext.getSelectedMessages().stream()
+                    .filter(this::hasText)
+                    .limit(6)
+                    .reduce((left, right) -> left + " | " + right)
+                    .orElse(""));
+        }
+        return parts.isEmpty() ? "无" : String.join("\n", parts);
     }
 
     private String stripCodeFences(String value) {

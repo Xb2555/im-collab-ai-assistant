@@ -102,6 +102,8 @@ public class AgentFrameworkConfig {
                         Identity or capability questions such as "你是谁" or "你能做什么" are UNKNOWN unless they include a concrete deliverable request.
                         In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material.
                         If the pending question asks for material or range and the user asks identity/capability, chats casually, or starts a separate task, do not choose ANSWER_CLARIFICATION.
+                        If phase=ASK_USER and the user supplements the current task's source material or range, such as 指定最近10分钟消息、改成基于聊天记录生成、补一个文档材料链接, prefer ANSWER_CLARIFICATION instead of START_TASK.
+                        If phase=PLAN_READY and a plan already exists, a short message that only changes the current task's source material, range, or references should usually be ADJUST_PLAN rather than START_TASK.
                         If the user asks to add something and also mentions a desired output, it is ADJUST_PLAN, not QUERY_STATUS.
                         If the user explicitly asks to "新建一个任务", "新建任务", "新开一个任务", "另起一个任务", or "再开一个任务" and also gives a deliverable or work goal, choose START_TASK even when an old task is bound to the conversation.
                         If such wording appears only inside a title, topic, slide text, or quoted content, classify by the actual command intent.
