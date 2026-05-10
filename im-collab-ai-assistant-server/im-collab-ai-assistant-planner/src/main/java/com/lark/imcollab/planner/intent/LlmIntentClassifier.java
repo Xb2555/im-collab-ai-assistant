@@ -4,12 +4,14 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+@Slf4j
 @Service
 public class LlmIntentClassifier {
 
@@ -43,13 +46,17 @@ public class LlmIntentClassifier {
     }
 
     public Optional<IntentRoutingResult> classify(PlanTaskSession session, String rawInput, boolean existingSession) {
-        if (intentAgent == null || !plannerProperties.getIntent().isModelEnabled()) {
+        if (intentAgent == null) {
+            return Optional.empty();
+        }
+        if (!plannerProperties.getIntent().isModelEnabled()) {
             return Optional.empty();
         }
         String prompt = buildPrompt(session, rawInput, existingSession);
         RunnableConfig config = RunnableConfig.builder()
                 .threadId((session == null ? "unknown" : session.getTaskId()) + "-intent")
                 .build();
+
         try {
             return CompletableFuture
                     .supplyAsync(() -> {
@@ -60,25 +67,30 @@ public class LlmIntentClassifier {
                         }
                     }, executorService)
                     .orTimeout(timeoutSeconds(), TimeUnit.SECONDS)
-                    .thenApply(this::parse)
+                    .thenApply(text -> parse(text, session == null ? null : session.getTaskId()))
                     .get(timeoutSeconds() + 1L, TimeUnit.SECONDS);
-        } catch (Exception ignored) {
+        } catch (Exception exception) {
             return Optional.empty();
         }
     }
 
     Optional<IntentRoutingResult> parse(String text) {
+        return parse(text, null);
+    }
+
+    Optional<IntentRoutingResult> parse(String text, String taskId) {
         if (text == null || text.isBlank()) {
             return Optional.empty();
         }
         try {
-            JsonNode root = objectMapper.readTree(extractJson(text));
+            String extractedJson = extractJson(text);
+            JsonNode root = objectMapper.readTree(extractedJson);
             TaskCommandTypeEnum type = TaskCommandTypeEnum.valueOf(root.path("intent").asText("UNKNOWN"));
             String normalizedInput = root.path("normalizedInput").asText("");
             if (normalizedInput.isBlank()) {
                 normalizedInput = root.path("normalized_input").asText("");
             }
-            return Optional.of(new IntentRoutingResult(
+            IntentRoutingResult result = new IntentRoutingResult(
                     type,
                     root.path("confidence").asDouble(0.0d),
                     root.path("reason").asText("llm intent classification"),
@@ -90,9 +102,15 @@ public class LlmIntentClassifier {
                             root.path("read_only_view").asText(null),
                             root.path("queryView").asText(null),
                             root.path("query_view").asText(null)
+                    )),
+                    normalizeAdjustmentTarget(firstNonBlank(
+                            root.path("adjustmentTarget").asText(null),
+                            root.path("adjustment_target").asText(null),
+                            root.path("target").asText(null)
                     ))
-            ));
-        } catch (Exception ignored) {
+            );
+            return Optional.of(result);
+        } catch (Exception exception) {
             return Optional.empty();
         }
     }
@@ -102,11 +120,16 @@ public class LlmIntentClassifier {
         builder.append("You classify one user message into a fixed task command intent.\n");
         builder.append("Return JSON only. Do not plan steps, do not execute actions, do not answer the user.\n");
         builder.append("Allowed intents: START_TASK, ANSWER_CLARIFICATION, ADJUST_PLAN, QUERY_STATUS, CONFIRM_ACTION, CANCEL_TASK, UNKNOWN.\n");
-        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false,\"readOnlyView\":\"PLAN|STATUS|ARTIFACTS|COMPLETED_TASKS|\"}\n");
+        builder.append("JSON shape: {\"intent\":\"...\",\"confidence\":0.0,\"reason\":\"\",\"normalizedInput\":\"\",\"needsClarification\":false,\"readOnlyView\":\"PLAN|STATUS|ARTIFACTS|COMPLETED_TASKS|\",\"adjustmentTarget\":\"RUNNING_PLAN|READY_PLAN|COMPLETED_ARTIFACT|UNKNOWN|\"}\n");
         builder.append("Decision hints:\n");
         builder.append("- QUERY_STATUS means the user asks progress, status, task overview, current plan summary, full plan, existing artifacts, completed-task list, or what is being done.\n");
         builder.append("- For QUERY_STATUS, set readOnlyView=PLAN when the user wants the stored plan/steps; STATUS when they want progress/current status; ARTIFACTS when they want outputs/links/artifacts; COMPLETED_TASKS when they want to browse finished tasks before choosing one for artifact edits.\n");
-        builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, or regenerate plan steps.\n");
+        builder.append("- ADJUST_PLAN means the user asks to add, remove, update, reorder, regenerate, or otherwise change existing work.\n");
+        builder.append("- For ADJUST_PLAN, also set adjustmentTarget. Use RUNNING_PLAN only when the user explicitly asks to interrupt or stop the current execution and restructure/change the overall plan approach or steps. Use READY_PLAN when they are changing a prepared but not yet executing plan. Use COMPLETED_ARTIFACT when they want to modify an already generated document/PPT/artifact. Use UNKNOWN when the message is clearly an adjustment but you cannot safely tell whether they mean replan or artifact edit.\n");
+        builder.append("- Requests like 修改刚生成的文档 / 把 PPT 第 2 页改一下 / 把刚出的文档标题改一下 are usually COMPLETED_ARTIFACT.\n");
+        builder.append("- Requests like 中断当前执行 / 中断当前任务 / 先停下来 / 按新计划继续 / 不要按刚才那个方案做了 / 重新规划一下 are ADJUST_PLAN with adjustmentTarget=RUNNING_PLAN when there is an executing task. Do NOT classify 中断/暂停 as CANCEL_TASK — only 取消任务 / 放弃 / 不要做了 warrant CANCEL_TASK.\n");
+        builder.append("- When phase=EXECUTING and the message modifies specific content (标题, 文字, 内容, a data value) without explicitly mentioning stopping/interrupting, prefer UNKNOWN over RUNNING_PLAN.\n");
+        builder.append("- If the message is short and ambiguous, such as 改一下标题 / 换成 78787 / 帮我把标题改成X, prefer adjustmentTarget=UNKNOWN instead of guessing.\n");
         builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 开始计划 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
         builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
         builder.append("- In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material. Meta questions, identity/capability questions, greetings, or a standalone new task request are not clarification answers.\n");
@@ -186,6 +209,20 @@ public class LlmIntentClassifier {
         };
     }
 
+    private AdjustmentTargetEnum normalizeAdjustmentTarget(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "RUNNING_PLAN" -> AdjustmentTargetEnum.RUNNING_PLAN;
+            case "READY_PLAN" -> AdjustmentTargetEnum.READY_PLAN;
+            case "COMPLETED_ARTIFACT" -> AdjustmentTargetEnum.COMPLETED_ARTIFACT;
+            case "UNKNOWN" -> AdjustmentTargetEnum.UNKNOWN;
+            default -> null;
+        };
+    }
+
     private String firstNonBlank(String... values) {
         if (values == null) {
             return null;
@@ -200,5 +237,16 @@ public class LlmIntentClassifier {
 
     private long timeoutSeconds() {
         return Math.max(1, plannerProperties.getIntent().getTimeoutSeconds());
+    }
+
+    private String abbreviate(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replace('\n', ' ').replace('\r', ' ').trim();
+        if (normalized.length() <= 600) {
+            return normalized;
+        }
+        return normalized.substring(0, 600) + "...";
     }
 }

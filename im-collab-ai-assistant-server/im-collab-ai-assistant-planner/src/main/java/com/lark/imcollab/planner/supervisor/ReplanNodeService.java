@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.dto.DocumentArtifactIterationRequest;
 import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
@@ -138,10 +139,7 @@ public class ReplanNodeService {
         if (patchIntent.getOperation() == PlanPatchOperation.REGENERATE_ALL) {
             return planningNodeService.plan(taskId, adjustmentInstruction, workspaceContext, adjustmentInstruction);
         }
-        session.setClarifiedInstruction(appendSupplement(
-                firstNonBlank(session.getClarifiedInstruction(), session.getRawInstruction()),
-                adjustmentInstruction
-        ));
+        resetExecutionSemanticsForPlanAdjustment(session);
         String beforeSignature = visiblePlanSignature(session.getPlanBlueprint());
         int beforeCardCount = activeCardCount(session.getPlanBlueprint());
         log.info("Planner replan patch selected task={} operation={} confidence={} targetCards={} newDrafts={} reason={}",
@@ -152,6 +150,7 @@ public class ReplanNodeService {
                 patchIntent.getNewCardDrafts() == null ? 0 : patchIntent.getNewCardDrafts().size(),
                 patchIntent.getReason());
         PlanBlueprint merged = patchTool.merge(session.getPlanBlueprint(), patchIntent, taskId);
+        stripPlanLevelExecutionFields(merged);
         int afterCardCount = activeCardCount(merged);
         log.info("Planner replan merge result task={} operation={} beforeCards={} afterCards={}",
                 taskId,
@@ -324,7 +323,7 @@ public class ReplanNodeService {
                 return askCompletedAdjustmentQuestion(
                         session,
                         instruction,
-                        "可以改现有 PPT。你可以一次说明一个或多个页面要怎么改，比如“把第2页标题改成采购风险与建议，再把第3页正文改成里程碑、风险、预算”。"
+                        "可以改现有 PPT。你可以一次说明一个或多个页面要怎么改，比如“把第2页标题改成采购风险与建议”“在第2页后插入一页，标题为风险应对，正文为里程碑、风险、预算”“删除第3页”“把第4页移到第2页后”。"
                 );
             }
             return editExistingPpt(session, artifact, instruction, workspaceContext);
@@ -787,6 +786,29 @@ public class ReplanNodeService {
             }
         }
         return count;
+    }
+
+    private void resetExecutionSemanticsForPlanAdjustment(PlanTaskSession session) {
+        if (session == null) {
+            return;
+        }
+        session.setClarifiedInstruction(null);
+        session.setExecutionContract(null);
+        session.setClarificationAnswers(List.of());
+        stripPlanLevelExecutionFields(session.getPlanBlueprint());
+        IntentSnapshot intentSnapshot = session.getIntentSnapshot();
+        if (intentSnapshot != null) {
+            intentSnapshot.setConstraints(List.of());
+        }
+    }
+
+    private void stripPlanLevelExecutionFields(PlanBlueprint blueprint) {
+        if (blueprint == null) {
+            return;
+        }
+        blueprint.setConstraints(List.of());
+        blueprint.setSuccessCriteria(List.of());
+        blueprint.setRisks(List.of());
     }
 
     private String appendSupplement(String base, String supplement) {

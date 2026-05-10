@@ -14,6 +14,7 @@ import com.lark.imcollab.harness.document.template.DocumentBodyNormalizer;
 import com.lark.imcollab.harness.document.template.DocumentTemplateRenderer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.harness.document.workflow.DocumentStateKeys;
+import com.lark.imcollab.harness.support.ExecutionInterruptedException;
 import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 

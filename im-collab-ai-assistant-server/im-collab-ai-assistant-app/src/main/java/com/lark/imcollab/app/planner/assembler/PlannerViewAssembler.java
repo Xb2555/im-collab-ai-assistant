@@ -97,15 +97,18 @@ public class PlannerViewAssembler {
         if (phase == PlanningPhaseEnum.COMPLETED) {
             return new TaskActionVO(false, true, false, false, false, false);
         }
+        if (phase == PlanningPhaseEnum.INTERRUPTING || phase == PlanningPhaseEnum.REPLANNING) {
+            return new TaskActionVO(false, false, true, false, false, false, false);
+        }
         boolean canConfirm = phase == PlanningPhaseEnum.PLAN_READY;
         boolean canReplan = phase == PlanningPhaseEnum.PLAN_READY
-                || phase == PlanningPhaseEnum.EXECUTING
                 || phase == PlanningPhaseEnum.FAILED;
         boolean canCancel = phase != PlanningPhaseEnum.COMPLETED && phase != PlanningPhaseEnum.ABORTED;
         boolean canResume = phase == PlanningPhaseEnum.ASK_USER || phase == PlanningPhaseEnum.FAILED;
         boolean canInterrupt = phase == PlanningPhaseEnum.EXECUTING;
+        boolean canInterruptReplan = phase == PlanningPhaseEnum.EXECUTING;
         boolean canRetry = phase == PlanningPhaseEnum.FAILED;
-        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry);
+        return new TaskActionVO(canConfirm, canReplan, canCancel, canResume, canInterrupt, canRetry, canInterruptReplan);
     }
 
     private boolean isTransientReply(PlanTaskSession session) {

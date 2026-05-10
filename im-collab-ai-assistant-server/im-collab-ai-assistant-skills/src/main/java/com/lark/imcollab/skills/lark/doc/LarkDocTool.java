@@ -23,6 +23,14 @@ public class LarkDocTool {
 
     private static final Pattern DOC_URL_PATTERN = Pattern.compile("/(?:docx|wiki)/([A-Za-z0-9]+)");
     private static final Pattern MERMAID_BLOCK_PATTERN = Pattern.compile("(?s)```mermaid\\s*(.*?)\\s*```");
+    private static final List<String> SUPPORTED_MERMAID_HEADERS = List.of(
+            "flowchart",
+            "graph",
+            "sequencediagram",
+            "statediagram",
+            "statediagram-v2",
+            "erdiagram"
+    );
 
     private final LarkDocReadGateway readGateway;
     private final LarkDocWriteGateway writeGateway;
@@ -246,7 +254,12 @@ public class LarkDocTool {
         List<String> mermaidBlocks = new ArrayList<>();
         StringBuffer replaced = new StringBuffer();
         while (matcher.find()) {
-            String mermaid = matcher.group(1) == null ? "" : matcher.group(1).trim();
+            String originalBlock = matcher.group(0) == null ? "" : matcher.group(0);
+            String mermaid = supportedMermaidOrBlank(matcher.group(1));
+            if (mermaid.isBlank()) {
+                matcher.appendReplacement(replaced, Matcher.quoteReplacement(originalBlock));
+                continue;
+            }
             mermaidBlocks.add(mermaid);
             matcher.appendReplacement(replaced, Matcher.quoteReplacement("<whiteboard type=\"blank\"></whiteboard>"));
         }
@@ -281,6 +294,26 @@ public class LarkDocTool {
             return normalized;
         }
         return normalized.substring(0, 200) + "...";
+    }
+
+    private String supportedMermaidOrBlank(String mermaid) {
+        String normalized = mermaid == null ? "" : mermaid.trim();
+        if (normalized.isBlank()) {
+            return "";
+        }
+        String firstLine = normalized.lines()
+                .map(String::strip)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("")
+                .toLowerCase();
+        for (String header : SUPPORTED_MERMAID_HEADERS) {
+            if (firstLine.startsWith(header)) {
+                return normalized;
+            }
+        }
+        log.warn("LARK_DOC_CREATE mermaid_unsupported_header firstLine='{}', keep_original_markdown_block", firstLine);
+        return "";
     }
 
     private record MermaidWhiteboardPlan(String markdownWithWhiteboardPlaceholders, List<String> mermaidBlocks) {

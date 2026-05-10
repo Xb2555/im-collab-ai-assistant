@@ -3,6 +3,7 @@ package com.lark.imcollab.harness.presentation.workflow;
 public final class PresentationStateKeys {
 
     public static final String TASK_ID = "taskId";
+    public static final String EXECUTION_ATTEMPT_ID = "executionAttemptId";
     public static final String CARD_ID = "cardId";
     public static final String USER_FEEDBACK = "userFeedback";
     public static final String RAW_INSTRUCTION = "rawInstruction";
@@ -17,6 +18,11 @@ public final class PresentationStateKeys {
     public static final String GENERATION_OPTIONS = "generationOptions";
     public static final String STORYLINE = "storyline";
     public static final String SLIDE_OUTLINE = "slideOutline";
+    public static final String VISUAL_PLAN = "visualPlan";
+    public static final String ASSET_PLAN = "assetPlan";
+    public static final String ASSET_RESOURCES = "assetResources";
+    public static final String PRESENTATION_IR = "presentationIr";
+    public static final String PREFLIGHT_RESULT = "preflightResult";
     public static final String SLIDE_XML_LIST = "slideXmlList";
     public static final String SLIDE_CONTENT = "slideContent";
     public static final String SPEAKER_NOTES = "speakerNotes";
@@ -27,7 +33,12 @@ public final class PresentationStateKeys {
     public static final String PRESENTATION_URL = "presentationUrl";
     public static final String DONE_STORYLINE = "doneStoryline";
     public static final String DONE_OUTLINE = "doneOutline";
+    public static final String DONE_VISUAL_PLAN = "doneVisualPlan";
+    public static final String DONE_ASSET_PLAN = "doneAssetPlan";
+    public static final String DONE_ASSET_RESOLVE = "doneAssetResolve";
+    public static final String DONE_IR = "doneIr";
     public static final String DONE_XML = "doneXml";
+    public static final String DONE_PREFLIGHT = "donePreflight";
     public static final String DONE_REVIEW = "doneReview";
     public static final String DONE_WRITE = "doneWrite";
     public static final String WAITING_HUMAN_REVIEW = "waitingHumanReview";

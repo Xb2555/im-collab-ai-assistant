@@ -8,6 +8,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.domain.ArtifactType;
 import com.lark.imcollab.common.domain.TaskEventType;
+import com.lark.imcollab.common.service.ExecutionAttemptContext;
 import com.lark.imcollab.common.model.entity.DocumentCompletenessReport;
 import com.lark.imcollab.common.model.entity.ComposedDocumentDraft;
 import com.lark.imcollab.common.model.entity.DocumentSectionCompleteness;
@@ -52,6 +53,14 @@ public class DocumentWorkflowNodes {
             "零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
             "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"
     };
+    private static final Set<String> SUPPORTED_MERMAID_HEADERS = Set.of(
+            "flowchart",
+            "graph",
+            "sequencediagram",
+            "statediagram",
+            "statediagram-v2",
+            "erdiagram"
+    );
     private static final Pattern BODY_HEADING_PATTERN = Pattern.compile("(?m)^#+\\s*");
     private static final Pattern BODY_WHITESPACE_PATTERN = Pattern.compile("\\s+");
 
@@ -136,6 +145,7 @@ public class DocumentWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of());
         }
         String taskId = state.value(DocumentStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         String clarifiedInstruction = state.value(DocumentStateKeys.CLARIFIED_INSTRUCTION, state.value(DocumentStateKeys.RAW_INSTRUCTION, ""));
         DocumentPlan plan = requireValue(state, DocumentStateKeys.DOCUMENT_PLAN, DocumentPlan.class);
         List<DocumentSectionDraft> drafts = new ArrayList<>();
@@ -152,7 +162,9 @@ public class DocumentWorkflowNodes {
                     + "\n章节职责：" + defaultString(section.getPurpose())
                     + "\n要点：" + String.join("；", safeList(section.getMustCover()))
                     + summaryOnlyStyle;
+            support.ensureExecutionCanContinue(taskId);
             AssistantMessage response = callAgent(documentSectionAgent, prompt, taskId + ":section:" + section.getSectionId());
+            support.ensureExecutionCanContinue(taskId);
             drafts.add(parseSectionDraft(response.getText(), section));
         }
         return CompletableFuture.completedFuture(Map.of(
@@ -178,10 +190,12 @@ public class DocumentWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of(DocumentStateKeys.MERMAID_DIAGRAM, ""));
         }
         String taskId = state.value(DocumentStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         String clarifiedInstruction = state.value(DocumentStateKeys.CLARIFIED_INSTRUCTION, state.value(DocumentStateKeys.RAW_INSTRUCTION, ""));
         DocumentOutline outline = requireValue(state, DocumentStateKeys.OUTLINE, DocumentOutline.class);
         String prompt = buildDiagramPrompt(diagramPlan, clarifiedInstruction, outline, state);
         AssistantMessage response = callAgent(documentDiagramAgent, prompt, taskId + ":diagram:" + diagramPlan.toLowerCase());
+        support.ensureExecutionCanContinue(taskId);
         String mermaid = coerceMermaid(response.getText(), diagramPlan);
         support.saveArtifact(taskId, taskId + ":document:diagram", ArtifactType.DIAGRAM_SOURCE, outline.getTitle() + " 图表", mermaid, null);
         return CompletableFuture.completedFuture(Map.of(DocumentStateKeys.MERMAID_DIAGRAM, mermaid));
@@ -211,6 +225,7 @@ public class DocumentWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of());
         }
         String taskId = state.value(DocumentStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         String userFeedback = state.value(DocumentStateKeys.USER_FEEDBACK, "");
         String clarifiedInstruction = state.value(DocumentStateKeys.CLARIFIED_INSTRUCTION, state.value(DocumentStateKeys.RAW_INSTRUCTION, ""));
         String rawInstruction = state.value(DocumentStateKeys.RAW_INSTRUCTION, clarifiedInstruction);
@@ -269,10 +284,17 @@ public class DocumentWorkflowNodes {
     }
 
     public CompletableFuture<Map<String, Object>> writeDocAndSync(OverAllState state, RunnableConfig config) {
+        String taskId = state.value(DocumentStateKeys.TASK_ID, "");
+        try (ExecutionAttemptContext.Scope ignored = bindExecutionAttempt(state, taskId)) {
+            return doWriteDocAndSync(state, taskId);
+        }
+    }
+
+    private CompletableFuture<Map<String, Object>> doWriteDocAndSync(OverAllState state, String taskId) {
         if (Boolean.TRUE.equals(state.value(DocumentStateKeys.WAITING_HUMAN_REVIEW, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
-        String taskId = state.value(DocumentStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         DocumentPlan plan = requireValue(state, DocumentStateKeys.DOCUMENT_PLAN, DocumentPlan.class);
         ComposedDocumentDraft composedDraft = requireValue(state, DocumentStateKeys.COMPOSED_DRAFT, ComposedDocumentDraft.class);
         DocumentReviewResult reviewResult = requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class);
@@ -303,7 +325,9 @@ public class DocumentWorkflowNodes {
                 previewMarkdownForLog(markdown));
         composedDraft.setComposedMarkdown(markdown);
         ensurePublishable(plan, composedDraft);
+        support.ensureExecutionCanContinue(taskId);
         LarkDocCreateResult result = larkDocTool.createDoc(plan.getTitle(), markdown);
+        support.ensureExecutionCanContinue(taskId);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.WRITE_TASK_SUFFIX),
                 ArtifactType.DOC_LINK, plan.getTitle(), null, result.getDocId(), result.getDocUrl());
         support.publishEvent(taskId, null, TaskEventType.ARTIFACT_CREATED);
@@ -316,6 +340,11 @@ public class DocumentWorkflowNodes {
         ));
     }
 
+    private ExecutionAttemptContext.Scope bindExecutionAttempt(OverAllState state, String taskId) {
+        String attemptId = state.value(DocumentStateKeys.EXECUTION_ATTEMPT_ID, "");
+        return ExecutionAttemptContext.open(taskId, attemptId);
+    }
+
     private void saveSummaryArtifact(
             String taskId,
             DocumentPlan plan,
@@ -326,6 +355,7 @@ public class DocumentWorkflowNodes {
         String summary = summaryOnly
                 ? buildPureSummaryArtifact(plan, composedDraft, reviewResult)
                 : buildSummaryArtifact(plan, composedDraft);
+        support.ensureExecutionCanContinue(taskId);
         String stepId = support.findSummaryStepId(taskId)
                 .orElseGet(() -> support.subtaskId(taskId, "generate_summary"));
         support.saveArtifact(taskId, stepId, ArtifactType.SUMMARY, plan.getTitle() + " - 摘要", summary, null);
@@ -346,6 +376,7 @@ public class DocumentWorkflowNodes {
             return CompletableFuture.completedFuture(Map.of());
         }
         String taskId = state.value(DocumentStateKeys.TASK_ID, "");
+        support.ensureExecutionCanContinue(taskId);
         DocumentPlan plan = requireValue(state, DocumentStateKeys.DOCUMENT_PLAN, DocumentPlan.class);
         DocumentReviewResult reviewResult = requireValue(state, DocumentStateKeys.REVIEW_RESULT, DocumentReviewResult.class);
         List<DocumentSectionDraft> drafts = mergeSupplementalSections(readSectionDrafts(state), reviewResult.getSupplementalSections());
@@ -359,6 +390,7 @@ public class DocumentWorkflowNodes {
         );
         DocumentReviewResult finalizedReview = reviseReviewSummary(reviewResult, composedDraft.getCompletenessReport());
         ensurePublishable(plan, composedDraft);
+        support.ensureExecutionCanContinue(taskId);
         support.saveArtifact(taskId, support.subtaskId(taskId, DocumentExecutionSupport.REVIEW_TASK_SUFFIX),
                 ArtifactType.DOC_DRAFT, plan.getTitle(), composedDraft.getComposedMarkdown(), null);
         return CompletableFuture.completedFuture(Map.of(
@@ -369,7 +401,9 @@ public class DocumentWorkflowNodes {
     }
 
     private DocumentOutline invokeOutline(String prompt, String taskId) {
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         AssistantMessage response = callAgent(documentOutlineAgent, prompt, taskId + ":outline");
+        support.ensureExecutionCanContinue(rootTaskId(taskId));
         try {
             return objectMapper.readValue(response.getText(), DocumentOutline.class);
         } catch (Exception e) {
@@ -501,6 +535,9 @@ public class DocumentWorkflowNodes {
                 1. 如果图类型是 flowchart，请优先使用 TB 方向。
                 2. 如果图类型是 sequenceDiagram，请显式声明 participant，并用箭头表达调用方向。
                 3. 节点命名必须贴合当前文档主题，不要输出泛泛的 A/B/C 或 Node1/Node2。
+                4. 只允许使用以下 Mermaid 顶层图类型：flowchart、graph、sequenceDiagram、stateDiagram-v2、erDiagram。
+                5. 严禁输出 usecaseDiagram、journey、gantt、classDiagram、pie、mindmap、timeline 或其他未列出的图类型。
+                6. Mermaid 不支持 usecaseDiagram；如果你想表达角色、系统、用例之间关系，必须改写成 flowchart，禁止输出任何 usecaseDiagram 代码。
                 """.formatted(
                 requiredHeader,
                 diagramPlan,
@@ -513,11 +550,8 @@ public class DocumentWorkflowNodes {
     }
 
     private String coerceMermaid(String text, String diagramPlan) {
-        String sanitized = extractMermaid(text);
-        if (sanitized.isBlank()) {
-            sanitized = defaultMermaid(diagramPlan);
-        }
-        if (!isMermaidValid(sanitized, diagramPlan)) {
+        String sanitized = normalizeSupportedMermaid(extractMermaid(text));
+        if (sanitized.isBlank() || !isMermaidValid(sanitized, diagramPlan)) {
             return defaultMermaid(diagramPlan);
         }
         return sanitized;
@@ -565,17 +599,12 @@ public class DocumentWorkflowNodes {
     }
 
     private boolean looksLikeMermaid(String text) {
-        String lower = text.toLowerCase();
-        return lower.startsWith("flowchart")
-                || lower.startsWith("graph")
-                || lower.startsWith("sequencediagram")
-                || lower.startsWith("statediagram")
-                || lower.startsWith("statediagram-v2")
-                || lower.startsWith("erdiagram");
+        String lower = defaultString(text).trim().toLowerCase();
+        return SUPPORTED_MERMAID_HEADERS.stream().anyMatch(lower::startsWith);
     }
 
     private boolean isMermaidValid(String mermaid, String diagramPlan) {
-        String lower = mermaid.toLowerCase();
+        String lower = normalizeSupportedMermaid(mermaid).toLowerCase();
         if (lower.isBlank()) {
             return false;
         }
@@ -586,6 +615,20 @@ public class DocumentWorkflowNodes {
             case "CONTEXT" -> lower.startsWith("flowchart") || lower.startsWith("graph");
             default -> lower.startsWith("flowchart") || lower.startsWith("graph") || lower.startsWith("sequencediagram");
         };
+    }
+
+    private String normalizeSupportedMermaid(String mermaid) {
+        String normalized = defaultString(mermaid).trim();
+        if (normalized.isBlank()) {
+            return "";
+        }
+        String firstLine = normalized.lines()
+                .map(String::strip)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("")
+                .toLowerCase();
+        return SUPPORTED_MERMAID_HEADERS.stream().anyMatch(firstLine::startsWith) ? normalized : "";
     }
 
     private String defaultMermaid(String diagramPlan) {
@@ -1204,7 +1247,9 @@ public class DocumentWorkflowNodes {
             prompt.append("Mermaid 图：\n```mermaid\n").append(mermaid).append("\n```\n");
         }
         drafts.forEach(s -> prompt.append("## ").append(s.getHeading()).append("\n").append(s.getBody()).append("\n"));
+        support.ensureExecutionCanContinue(taskId);
         AssistantMessage response = callAgent(documentReviewAgent, prompt.toString(), taskId + ":review");
+        support.ensureExecutionCanContinue(taskId);
         return parseReviewResult(response.getText());
     }
 
@@ -1285,11 +1330,47 @@ public class DocumentWorkflowNodes {
     }
 
     protected AssistantMessage callAgent(ReactAgent agent, String prompt, String threadId) {
+        support.ensureExecutionCanContinue(rootTaskId(threadId));
         try {
-            return agent.call(prompt, RunnableConfig.builder().threadId(threadId).build());
+            AssistantMessage response = agent.call(prompt, RunnableConfig.builder().threadId(threadId).build());
+            if (looksInterrupted(response == null ? null : response.getText())) {
+                Thread.currentThread().interrupt();
+            }
+            support.ensureExecutionCanContinue(rootTaskId(threadId));
+            return response;
         } catch (Exception e) {
+            if (isInterruptedFailure(e)) {
+                Thread.currentThread().interrupt();
+                support.ensureExecutionCanContinue(rootTaskId(threadId));
+            }
             throw new IllegalStateException("Agent call failed for thread: " + threadId, e);
         }
+    }
+
+    private String rootTaskId(String threadId) {
+        if (threadId == null || threadId.isBlank()) {
+            return "";
+        }
+        int separator = threadId.indexOf(':');
+        return separator < 0 ? threadId : threadId.substring(0, separator);
+    }
+
+    private boolean looksInterrupted(String text) {
+        return text != null && text.toLowerCase().contains("thread interrupted");
+    }
+
+    private boolean isInterruptedFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof InterruptedException) {
+                return true;
+            }
+            if (looksInterrupted(current.getMessage())) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private List<DocumentSectionDraft> readSectionDrafts(OverAllState state) {

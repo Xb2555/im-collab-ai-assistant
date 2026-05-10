@@ -70,7 +70,6 @@ class ExecutionContractFactoryTest {
         var contract = factory.build(session);
 
         assertThat(contract.getClarifiedInstruction())
-                .contains("当前计划要求")
                 .contains("生成飞书项目协作方案文档 - 面向老板说明项目目标和进展")
                 .contains("项目风险评估表 - 识别风险、影响等级和应对措施");
     }
@@ -110,6 +109,36 @@ class ExecutionContractFactoryTest {
                 .contains("生成飞书项目协作方案文档 - 面向老板说明项目目标和进展")
                 .contains("项目风险评估表 - 识别风险、影响等级和应对措施")
                 .doesNotContain("旧文档步骤 - 旧描述");
+    }
+
+    @Test
+    void buildUsesMergedPlanAsPrimaryExecutionSemanticsDuringReplan() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .rawInstruction("生成 OLD_PLAN_IM_INTERRUPT_20260508 旧计划测试文档")
+                .clarifiedInstruction("生成 OLD_PLAN_IM_INTERRUPT_20260508 旧计划测试文档\n补充说明：标题改成 78787")
+                .planBlueprint(PlanBlueprint.builder()
+                        .taskBrief("生成飞书文档（标题含 78787，6 小节，每节 150 字）")
+                        .planCards(List.of(
+                                UserPlanCard.builder()
+                                        .cardId("card-001")
+                                        .title("生成飞书文档（标题含 78787，6 小节，每节 150 字）")
+                                        .description("基于用户要求，生成一份飞书文档，标题必须包含 78787，内容为“旧计划测试文档”，分 6 个小节，每节约 150 字，内容随意。")
+                                        .type(PlanCardTypeEnum.DOC)
+                                        .build()
+                        ))
+                        .build())
+                .build();
+
+        var contract = factory.build(session);
+
+        assertThat(contract.getRawInstruction())
+                .contains("标题含 78787")
+                .doesNotContain("OLD_PLAN_IM_INTERRUPT_20260508");
+        assertThat(contract.getClarifiedInstruction())
+                .contains("标题含 78787")
+                .contains("标题改成 78787")
+                .doesNotContain("OLD_PLAN_IM_INTERRUPT_20260508");
     }
 
     @Test

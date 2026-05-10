@@ -21,7 +21,10 @@ public class CorsConfig implements WebMvcConfigurer {
                 .allowedOrigins(
                         "http://localhost:5173",
                         "http://tauri.localhost",
-                        "tauri://localhost")
+                        "tauri://localhost",
+                        "https://im-collab-ai-assistant.vercel.app",
+                        "https://im-web.yiiie.cn"
+                )
                 .allowedHeaders("*")
                 .exposedHeaders("*");
     }

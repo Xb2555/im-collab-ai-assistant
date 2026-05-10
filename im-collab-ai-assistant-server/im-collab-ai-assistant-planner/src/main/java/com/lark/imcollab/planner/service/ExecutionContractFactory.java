@@ -10,6 +10,8 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.planner.intent.ArtifactIntentResolver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -23,6 +25,8 @@ import java.util.Set;
 @Service
 public class ExecutionContractFactory {
 
+    private static final Logger log = LoggerFactory.getLogger(ExecutionContractFactory.class);
+
     private final ArtifactIntentResolver artifactIntentResolver;
 
     public ExecutionContractFactory() {
@@ -35,15 +39,21 @@ public class ExecutionContractFactory {
     }
 
     public ExecutionContract build(PlanTaskSession session) {
-        String rawInstruction = firstNonBlank(
-                session.getRawInstruction(),
-                session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getUserGoal(),
-                session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getTaskBrief(),
-                session.getPlanBlueprintSummary()
-        );
+        String rawInstruction = resolveExecutionInstruction(session);
         List<String> requestedArtifacts = deriveRequestedArtifacts(session);
         List<String> allowedArtifacts = requestedArtifacts.isEmpty() ? List.of("DOC") : requestedArtifacts;
         String clarifiedInstruction = buildClarifiedInstruction(session, rawInstruction);
+        List<String> resolvedConstraints = resolveConstraints(session);
+        log.info("EXEC_CONTRACT build: taskId={}, sessionTaskBrief='{}', blueprintConstraints={}, intentConstraints={}, clarificationAnswers={}, existingClarified='{}', resolvedConstraints={}, raw='{}', clarified='{}'",
+                session == null ? null : session.getTaskId(),
+                abbreviate(session == null || session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getTaskBrief()),
+                session == null || session.getPlanBlueprint() == null ? null : defaultList(session.getPlanBlueprint().getConstraints()),
+                session == null || session.getIntentSnapshot() == null ? null : defaultList(session.getIntentSnapshot().getConstraints()),
+                session == null ? null : defaultList(session.getClarificationAnswers()),
+                abbreviate(session == null ? null : session.getClarifiedInstruction()),
+                resolvedConstraints,
+                abbreviate(rawInstruction),
+                abbreviate(clarifiedInstruction));
         WorkspaceContext sourceScope = session.getPlanBlueprint() != null && session.getPlanBlueprint().getSourceScope() != null
                 ? session.getPlanBlueprint().getSourceScope()
                 : session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getSourceScope();
@@ -70,13 +80,13 @@ public class ExecutionContractFactory {
                                 ? null : session.getPlanBlueprint().getSourceScope().getTimeRange(),
                         session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getTimeRange()
                 ))
-                .constraints(resolveConstraints(session))
+                .constraints(resolvedConstraints)
                 .sourceScope(sourceScope)
                 .contextRefs(resolveContextRefs(sourceScope))
                 .domainContext(resolveDomainContext(session))
                 .termResolutions(defaultList(session.getTermResolutions()))
                 .templateStrategy(resolveTemplateStrategy(rawInstruction, clarifiedInstruction))
-                .diagramRequirement(resolveDiagramRequirement(rawInstruction, clarifiedInstruction, resolveConstraints(session)))
+                .diagramRequirement(resolveDiagramRequirement(rawInstruction, clarifiedInstruction, resolvedConstraints))
                 .frozenAt(Instant.now())
                 .build();
     }
@@ -136,14 +146,10 @@ public class ExecutionContractFactory {
     }
 
     private String buildClarifiedInstruction(PlanTaskSession session, String rawInstruction) {
-        List<String> answers = defaultList(session.getClarificationAnswers());
+        List<String> answers = mergeUnique(defaultList(session.getClarificationAnswers()), extractSupplementalNotes(session));
         List<String> constraints = resolveConstraints(session);
         List<String> planRequirements = resolvePlanRequirements(session);
-        StringBuilder builder = new StringBuilder(safe(firstNonBlank(
-                session.getClarifiedInstruction(),
-                session.getRawInstruction(),
-                rawInstruction
-        )));
+        StringBuilder builder = new StringBuilder(safe(resolveClarifiedInstructionBase(session, rawInstruction)));
         appendUniqueSection(builder, "补充说明：", answers);
         appendUniqueSection(builder, "当前计划要求：", planRequirements);
         appendUniqueSection(builder, "执行约束：", constraints);
@@ -154,6 +160,92 @@ public class ExecutionContractFactory {
                     .toList());
         }
         return builder.toString();
+    }
+
+    private String resolveExecutionInstruction(PlanTaskSession session) {
+        String planBasedInstruction = buildPlanBasedInstruction(session);
+        if (planBasedInstruction != null && !planBasedInstruction.isBlank()) {
+            return planBasedInstruction;
+        }
+        return firstNonBlank(
+                session.getRawInstruction(),
+                session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getUserGoal(),
+                session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getTaskBrief(),
+                session.getPlanBlueprintSummary()
+        );
+    }
+
+    private String resolveClarifiedInstructionBase(PlanTaskSession session, String rawInstruction) {
+        String planBasedInstruction = buildPlanBasedInstruction(session);
+        if (planBasedInstruction != null && !planBasedInstruction.isBlank()) {
+            return planBasedInstruction;
+        }
+        return firstNonBlank(
+                session.getClarifiedInstruction(),
+                session.getRawInstruction(),
+                rawInstruction
+        );
+    }
+
+    private String buildPlanBasedInstruction(PlanTaskSession session) {
+        PlanBlueprint blueprint = session.getPlanBlueprint();
+        if (blueprint == null) {
+            return null;
+        }
+        List<String> planRequirements = resolvePlanRequirements(session);
+        String brief = firstNonBlank(
+                blueprint.getTaskBrief(),
+                session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getUserGoal(),
+                session.getPlanBlueprintSummary()
+        );
+        if ((brief == null || brief.isBlank()) && planRequirements.isEmpty()) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        if (brief != null && !brief.isBlank()) {
+            builder.append(brief.trim());
+        }
+        if (!planRequirements.isEmpty()) {
+            if (builder.length() > 0) {
+                builder.append("\n");
+            }
+            builder.append("执行任务：").append(String.join("；", planRequirements));
+        }
+        return builder.toString().trim();
+    }
+
+    private List<String> extractSupplementalNotes(PlanTaskSession session) {
+        String clarifiedInstruction = session.getClarifiedInstruction();
+        if (clarifiedInstruction == null || clarifiedInstruction.isBlank()) {
+            return List.of();
+        }
+        List<String> notes = new ArrayList<>();
+        for (String line : clarifiedInstruction.split("\\R")) {
+            if (line == null) {
+                continue;
+            }
+            String trimmed = line.trim();
+            if (trimmed.startsWith("补充说明：")) {
+                String note = trimmed.substring("补充说明：".length()).trim();
+                if (!note.isBlank()) {
+                    notes.add(note);
+                }
+            }
+        }
+        return notes;
+    }
+
+    private List<String> mergeUnique(List<String> first, List<String> second) {
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        defaultList(first).stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .forEach(values::add);
+        defaultList(second).stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .forEach(values::add);
+        return List.copyOf(values);
     }
 
     private String resolveDomainContext(PlanTaskSession session) {
@@ -259,6 +351,17 @@ public class ExecutionContractFactory {
             }
         }
         return null;
+    }
+
+    private String abbreviate(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 180) {
+            return normalized;
+        }
+        return normalized.substring(0, 180) + "...";
     }
 
     private String safe(String value) {

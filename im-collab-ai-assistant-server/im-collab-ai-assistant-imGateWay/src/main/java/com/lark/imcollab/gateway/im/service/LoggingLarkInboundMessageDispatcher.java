@@ -3,6 +3,7 @@ package com.lark.imcollab.gateway.im.service;
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -124,6 +125,11 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
     }
 
     private void dispatchAndReply(LarkInboundMessage message) {
+        log.info("SCENARIO_A inbound_dispatch_start messageId={} chatId={} senderOpenId={} content='{}'",
+                message == null ? null : message.messageId(),
+                message == null ? null : message.chatId(),
+                message == null ? null : message.senderOpenId(),
+                message == null ? null : message.content());
         PlanTaskSession session;
         try {
             session = plannerPlanFacade.plan(
@@ -137,6 +143,13 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                     message.messageId(), message.chatId(), exception);
             session = failedSession(message, humanizeFailure(exception));
         }
+        log.info("SCENARIO_A inbound_dispatch_result messageId={} chatId={} taskId={} phase={} intakeType={} assistantReply='{}'",
+                message == null ? null : message.messageId(),
+                message == null ? null : message.chatId(),
+                session == null ? null : session.getTaskId(),
+                session == null ? null : session.getPlanningPhase(),
+                session == null || session.getIntakeState() == null ? null : session.getIntakeState().getIntakeType(),
+                session == null || session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply());
         replyBySessionState(message, session);
         log.info("Scenario A inbound Lark message bridged to planner: messageId={}, chatId={}, taskId={}, phase={}",
                 message.messageId(), message.chatId(), session == null ? null : session.getTaskId(),
@@ -172,10 +185,19 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             return;
         }
         if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING
+                && hasAssistantReply(session)) {
+            replyText(message, session,
+                    withStatus(replyFormatter.assistantReply(session.getIntakeState().getAssistantReply()), snapshot(session)),
+                    session.getIntakeState() != null
+                            && session.getIntakeState().getAdjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                            ? "completed artifact edit blocked during execution"
+                            : "plan adjustment reply during execution");
+            return;
+        }
+        if (intakeType == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
                 && session.getPlanningPhase() == PlanningPhaseEnum.EXECUTING) {
-            String confirmation = replyFormatter.executionReplannedAndRestarted(
-                    session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply());
-            replyText(message, session, withStatus(confirmation, snapshot(session)), "plan adjustment resumed execution");
+            replyText(message, session, replyFormatter.status(snapshot(session)), "plan adjustment status during execution");
             return;
         }
         if (session.getPlanningPhase() == PlanningPhaseEnum.FAILED) {

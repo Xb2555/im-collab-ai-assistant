@@ -1,5 +1,6 @@
 package com.lark.imcollab.harness.document.support;
 
+import com.lark.imcollab.harness.support.ExecutionBusyException;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.ObjectProvider;
@@ -12,6 +13,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 @Component
 public class DocumentExecutionGuard {
+
+    private static final long LOCK_WAIT_SECONDS = 5L;
+    private static final long LOCK_LEASE_SECONDS = 600L;
 
     private final ObjectProvider<RedissonClient> redissonClientProvider;
     private final Map<String, ReentrantLock> localLocks = new ConcurrentHashMap<>();
@@ -38,9 +42,9 @@ public class DocumentExecutionGuard {
     private void executeWithDistributedLock(RLock lock, Runnable action) {
         boolean acquired = false;
         try {
-            acquired = lock.tryLock(1, 30, TimeUnit.SECONDS);
+            acquired = lock.tryLock(LOCK_WAIT_SECONDS, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
             if (!acquired) {
-                throw new IllegalStateException("Task is already executing");
+                throw new ExecutionBusyException("Task is already executing");
             }
             action.run();
         } catch (InterruptedException exception) {
