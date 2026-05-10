@@ -100,24 +100,96 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
   const [isAgentDrawerOpen, setIsAgentDrawerOpen] = useState(false);
   const [agentInstruction, setAgentInstruction] = useState('');
 
-  // 👇 将其替换为浏览器兼容的类型：
+  //  将其替换为浏览器兼容的类型：
   const abortControllerRef = useRef<AbortController | null>(null);
   // ✨ 修复：使用 ReturnType 让 TS 自动推导环境定时器类型，兼容性最好
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  //  ======== 新增 ======== 
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const scrollToBottom = (behavior: 'smooth' | 'auto' = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  };
+
+  useEffect(() => {
+    scrollToBottom('smooth');
+  }, [messages]);
+  //  ======================= 
+//  ============ 插入补拉方法 ============ 
+  const loadLatestHistory = async () => {
+    if (!activeChatId) return;
+    try {
+      const historyRes = await imApi.getChatHistory({
+        containerIdType: 'chat',
+        containerId: activeChatId,
+        sortType: 'ByCreateTimeDesc',
+        pageSize: 20,
+      });
+      const formattedHistory = historyRes.items.reverse().map((item: any) => ({
+        eventId: item.messageId || crypto.randomUUID(),
+        senderOpenId: item.senderId,
+        senderType: item.senderType,
+        senderName: item.senderName,
+        senderAvatar: item.senderAvatar,
+        content: parseFeishuContent(item.content, item.msgType),
+        createTime: item.createTime,
+      }));
+      setMessages(prev => {
+        const newMessages = [...prev];
+        formattedHistory.forEach((newItem: any) => {
+          if (!newMessages.some(m => m.eventId === newItem.eventId)) newMessages.push(newItem);
+        });
+        return newMessages.sort((a, b) => Number(a.createTime) - Number(b.createTime));
+      });
+    } catch (err) {
+      console.warn('手动拉取历史消息失败', err);
+    }
+  };
+  // 👆 ===================================== 👆
   // 1. 发送常规消息
+// 1. 发送常规消息
   const handleSendMessage = async () => {
     if (!inputText.trim() || !activeChatId) return;
-    try {
+    
+    const currentText = inputText.trim();
+    setInputText(''); 
+
+    const tempEventId = `temp-${crypto.randomUUID()}`;
+    const optimisticMsg = {
+      eventId: tempEventId,
+      senderOpenId: (user as any)?.openId || 'me',
+      senderType: 'user',
+      senderName: user?.name || '我',
+      senderAvatar: user?.avatarUrl,
+      content: currentText,
+      createTime: Date.now().toString(),
+    };
+    setMessages(prev => [...prev, optimisticMsg]);
+
+try {
       setIsSending(true);
-      await imApi.sendMessage({
+      // ✨ 1. 接收返回值
+      const sendResult = await imApi.sendMessage({
         chatId: activeChatId,
-        text: inputText.trim(),
+        text: currentText,
         idempotencyKey: crypto.randomUUID(),
       });
-      setInputText('');
+      
+      // ✨ 2. 狸猫换太子：把临时 ID 换成真实 ID
+      if (sendResult?.messageId) {
+        setMessages(prev => prev.map(m => 
+          m.eventId === tempEventId ? { ...m, eventId: sendResult.messageId } : m
+        ));
+      }
+
+      // 延时触发兜底拉取
+      setTimeout(() => {
+        loadLatestHistory();
+      }, 800);
+
     } catch (e: any) {
       alert('发送失败: ' + e.message);
+      setMessages(prev => prev.filter(m => m.eventId !== tempEventId));
     } finally {
       setIsSending(false);
     }
@@ -239,17 +311,21 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
           },
 
           onmessage(event) {
-            if (event.event === 'message') {
+            console.log('[Mobile SSE 接收消息]', event.event, event.data);
+            if (!event.event || event.event === 'message') {
               try {
                 const msgData = JSON.parse(event.data);
                 if (msgData.state === 'connected') return;
                 setMessages((prev) => {
-                  if (prev.some((m) => m.eventId === msgData.eventId)) return prev;
-                  return [...prev, { ...msgData, content: parseFeishuContent(msgData.content, msgData.messageType) }];
+                  if (prev.some((m) => m.eventId === msgData.eventId || m.messageId === msgData.messageId)) return prev;
+                  return [...prev, { ...msgData, content: parseFeishuContent(msgData.content, msgData.messageType || msgData.msgType) }];
                 });
-              } catch (e) {}
+              } catch (e) {
+                console.debug('JSON解析失败:', e);
+              }
             }
           },
+
           onerror(err) {
             if (err.message === 'UNAUTHORIZED') {
               console.error('IM SSE 鉴权失败，停止重试');
@@ -318,6 +394,8 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
             );
           })
         )}
+        {/* 👇 ============ 新增：移动端底部锚点 ============ 👇 */}
+        <div ref={messagesEndRef} className="h-4 w-full shrink-0" />
       </div>
 
       {/* 底部输入区 / 悬浮操作栏 */}
