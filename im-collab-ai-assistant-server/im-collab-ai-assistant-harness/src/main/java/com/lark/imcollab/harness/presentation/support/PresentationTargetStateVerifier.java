@@ -2,6 +2,7 @@ package com.lark.imcollab.harness.presentation.support;
 
 import com.lark.imcollab.common.model.entity.PresentationEditOperation;
 import com.lark.imcollab.common.model.entity.PresentationSnapshot;
+import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -23,6 +24,13 @@ public class PresentationTargetStateVerifier {
         }
         if (targetSnapshot == null) {
             throw new IllegalStateException("PPT update verification failed: target snapshot missing");
+        }
+        if (operation.getActionType() == PresentationEditActionType.DELETE_ELEMENT) {
+            boolean stillExists = afterSnapshots != null && afterSnapshots.stream().anyMatch(snapshot -> sameTarget(targetSnapshot, snapshot));
+            if (stillExists) {
+                throw new IllegalStateException("PPT update verification failed: target node still exists after delete");
+            }
+            return;
         }
         PresentationSnapshot matched = afterSnapshots == null ? null : afterSnapshots.stream()
                 .filter(snapshot -> sameTarget(targetSnapshot, snapshot))

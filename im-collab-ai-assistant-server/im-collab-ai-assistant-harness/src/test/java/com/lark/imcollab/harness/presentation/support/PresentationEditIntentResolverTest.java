@@ -422,6 +422,25 @@ class PresentationEditIntentResolverTest {
     }
 
     @Test
+    void fallsBackToDeleteQuotedBodyAnchor() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "clarificationNeeded": true
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("第一页的文旅融合创新，消费场景丰富多元这一段删了");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getOperations()).hasSize(1);
+        assertThat(intent.getOperations().get(0).getActionType()).isEqualTo(PresentationEditActionType.DELETE_ELEMENT);
+        assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("文旅融合创新，消费场景丰富多元");
+    }
+
+    @Test
     void infersParagraphAndListItemIndexFromNaturalLanguage() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""

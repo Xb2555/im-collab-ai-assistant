@@ -25,6 +25,8 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
             "(?<anchor>.+?)(?:这一段|这段|这一部分|这部分)(?<action>写得|写的|展开|补充|丰富)?(?<degree>详细一些|更详细一些|详细点|展开一些|补充一些|丰富一些)?$");
     private static final Pattern SHORTEN_ANCHOR_PATTERN = Pattern.compile(
             "(?<anchor>.+?)(?:这一段|这段|这一部分|这部分)(?<action>精简|缩短|压缩|简化)(?<degree>一些|一点)?$");
+    private static final Pattern DELETE_ANCHOR_PATTERN = Pattern.compile(
+            "(?<anchor>.+?)(?:这一段|这段|这一部分|这部分)(?<action>删了|删掉|删除|去掉|移除)$");
     private static final Pattern INSERT_AFTER_ANCHOR_PATTERN = Pattern.compile(
             "(?:在)?(?<anchor>.+?)(?:后|后面)(?<action>插入|补充|加上|增加)(?<degree>新的一小点|一小点|一点|一句|一条|一段|内容.*)?$");
 
@@ -166,7 +168,11 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         if (shortened.getOperations() != null && !shortened.getOperations().isEmpty()) {
             return shortened;
         }
-        return shortened;
+        PresentationEditIntent deleted = anchorRewriteFallback(instruction, DELETE_ANCHOR_PATTERN, PresentationEditActionType.DELETE_ELEMENT);
+        if (deleted.getOperations() != null && !deleted.getOperations().isEmpty()) {
+            return deleted;
+        }
+        return clarification(instruction);
     }
 
     private PresentationEditIntent anchorInsertFallback(String instruction) {
@@ -384,6 +390,7 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 6. 如果用户说“第2页右侧图片换成门店实景图”，使用 targetElementType=IMAGE、anchorMode=BY_ELEMENT_ROLE、elementRole=right-image、actionType=REPLACE_IMAGE。
                 7. 如果用户说“第3页流程图改成采购->评审->执行”，使用 targetElementType=CHART、actionType=REPLACE_CHART。
                 7.1 如果用户明确说“第2页第三个 bullet”“第二段”“第1页第2条”，优先填 targetListItemIndex 或 targetParagraphIndex。
+                7.2 如果用户说“第一页的 xxx 这一段删了/删除/去掉”，优先使用 targetElementType=BODY、anchorMode=BY_QUOTED_TEXT、quotedText=xxx、actionType=DELETE_ELEMENT。
                 5. “在第2页后插入一页，标题为风险应对，正文为预算、排期、依赖”应解析为 INSERT_SLIDE，insertAfterPageIndex=2，slideTitle/slideBody 填入新增内容；插到最前 insertAfterPageIndex=0；插到末尾 insertAfterPageIndex 可为 null。
                 6. “删除第3页”应解析为 DELETE_SLIDE，pageIndex=3。
                 7. “把第4页移到第2页后”应解析为 MOVE_SLIDE，pageIndex=4，insertAfterPageIndex=2；移到最前 insertAfterPageIndex=0；移到最后/末尾 insertAfterPageIndex=-1。

@@ -141,9 +141,24 @@ public class PresentationIterationExecutionService implements PresentationIterat
         SlideTarget target = new SlideTarget(slideRef.slideId(), slideRef.pageIndex(), targetSnapshot, targetElement, slide);
         PresentationEditOperation executableOperation = materializeOperation(target, operation);
         if (executableOperation.getActionType() == PresentationEditActionType.INSERT_AFTER_ELEMENT) {
-            String updatedSlideXml = buildSlideXmlWithInsertedContent(target, executableOperation);
-            larkSlidesTool.replaceWholeSlide(presentationId, target.slideId(), updatedSlideXml);
-            verifyAfterReplaceWholeSlide(presentationId, target, executableOperation);
+            InsertionUpdate insertionUpdate = buildInsertionUpdate(target, executableOperation);
+            if (insertionUpdate.replaceTargetElement()) {
+                larkSlidesTool.replaceSlide(presentationId, target.slideId(), List.of(
+                        replacePart(target.blockId(), insertionUpdate.updatedTargetElementXml())
+                ));
+                verifyAfterReplaceSlide(presentationId, target, executableOperation);
+            } else {
+                larkSlidesTool.replaceWholeSlide(presentationId, target.slideId(), insertionUpdate.updatedSlideXml());
+                verifyAfterReplaceWholeSlide(presentationId, target, executableOperation);
+            }
+            return new OperationResult(List.of(target.slideId()), buildSummarySegment(target.pageIndex(), executableOperation));
+        }
+        if (executableOperation.getActionType() == PresentationEditActionType.DELETE_ELEMENT) {
+            String updatedElementXml = buildDeleteElementReplacement(target, executableOperation);
+            larkSlidesTool.replaceSlide(presentationId, target.slideId(), List.of(
+                    replacePart(target.blockId(), updatedElementXml)
+            ));
+            verifyAfterReplaceSlide(presentationId, target, executableOperation);
             return new OperationResult(List.of(target.slideId()), buildSummarySegment(target.pageIndex(), executableOperation));
         }
         Map<String, Object> part = buildPart(target, executableOperation);
@@ -156,6 +171,17 @@ public class PresentationIterationExecutionService implements PresentationIterat
         String slideXml = fetchUpdatedSlideXml(presentationId, target);
         Element slide = findSlideElement(parseXml(slideXml));
         List<PresentationSnapshot> afterSnapshots = slideSnapshotBuilder.build(slide, target.pageIndex());
+        if (operation.getActionType() == PresentationEditActionType.INSERT_AFTER_ELEMENT) {
+            String expected = firstNonBlank(operation.getReplacementText());
+            boolean matched = afterSnapshots.stream()
+                    .filter(snapshot -> target.snapshot() != null && target.snapshot().getBlockId() != null
+                            && target.snapshot().getBlockId().equals(snapshot.getBlockId()))
+                    .anyMatch(snapshot -> snapshot.getTextContent() != null && snapshot.getTextContent().contains(expected));
+            if (!matched) {
+                throw new IllegalStateException("PPT update verification failed: inserted content not found in target element");
+            }
+            return;
+        }
         targetStateVerifier.verify(target.snapshot(), operation, afterSnapshots);
     }
 
@@ -471,6 +497,69 @@ public class PresentationIterationExecutionService implements PresentationIterat
         return replacePart(target.blockId(), buildTextShape(newText, target.element(), textType));
     }
 
+    private String buildDeleteElementReplacement(SlideTarget target, PresentationEditOperation operation) {
+        if (target.snapshot() == null) {
+            throw new IllegalArgumentException("无法定位到要删除的具体段落");
+        }
+        Element content = findContent(target.element(), operation.getTargetElementType());
+        if (content == null) {
+            throw new IllegalArgumentException("无法定位到要删除的正文内容");
+        }
+        if (target.snapshot().getNodePath() != null && target.snapshot().getNodePath().contains("/li[")) {
+            NodeList listNodes = content.getElementsByTagName("li");
+            int targetIndex = target.snapshot().getListItemIndex() == null ? -1 : target.snapshot().getListItemIndex() - 1;
+            if (targetIndex >= 0 && targetIndex < listNodes.getLength()) {
+                Node targetNode = listNodes.item(targetIndex);
+                targetNode.getParentNode().removeChild(targetNode);
+                cleanupEmptyLists(content);
+                ensureNonEmptyContent(content);
+                return serializeElement(target.element());
+            }
+        }
+        if (target.snapshot().getNodePath() != null && target.snapshot().getNodePath().contains("/p[")) {
+            NodeList paragraphs = content.getElementsByTagName("p");
+            int targetIndex = target.snapshot().getParagraphIndex() == null ? -1 : target.snapshot().getParagraphIndex() - 1;
+            if (targetIndex >= 0 && targetIndex < paragraphs.getLength()) {
+                Node targetNode = paragraphs.item(targetIndex);
+                Node parent = targetNode.getParentNode();
+                parent.removeChild(targetNode);
+                cleanupEmptyLists(content);
+                ensureNonEmptyContent(content);
+                return serializeElement(target.element());
+            }
+        }
+        throw new IllegalArgumentException("无法定位到要删除的具体段落");
+    }
+
+    private void cleanupEmptyLists(Element content) {
+        NodeList lists = content.getChildNodes();
+        for (int i = lists.getLength() - 1; i >= 0; i--) {
+            Node child = lists.item(i);
+            if (!(child instanceof Element element)) {
+                continue;
+            }
+            String tagName = element.getTagName();
+            if (("ul".equalsIgnoreCase(tagName) || "ol".equalsIgnoreCase(tagName)) && !element.hasChildNodes()) {
+                content.removeChild(element);
+            }
+        }
+    }
+
+    private void ensureNonEmptyContent(Element content) {
+        boolean hasElementChild = false;
+        NodeList children = content.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            if (children.item(i) instanceof Element) {
+                hasElementChild = true;
+                break;
+            }
+        }
+        if (!hasElementChild) {
+            Element p = content.getOwnerDocument().createElement("p");
+            content.appendChild(p);
+        }
+    }
+
     private void replaceTextNode(Element content, PresentationSnapshot snapshot, String newText) {
         if (snapshot.getNodePath() != null && snapshot.getNodePath().contains("/li[")) {
             NodeList listNodes = content.getElementsByTagName("li");
@@ -535,7 +624,7 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 """.formatted(x, y, width, height, textType, escapeXml(newText)).trim();
     }
 
-    private String buildSlideXmlWithInsertedContent(SlideTarget target, PresentationEditOperation operation) {
+    private InsertionUpdate buildInsertionUpdate(SlideTarget target, PresentationEditOperation operation) {
         if (target.snapshot() != null && target.snapshot().getNodePath() != null && target.snapshot().getNodePath().contains("/li[")) {
             Element content = findContent(target.element(), operation.getTargetElementType());
             NodeList listNodes = content == null ? null : content.getElementsByTagName("li");
@@ -552,7 +641,7 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 } else {
                     targetLi.getParentNode().insertBefore(insertedLi, next);
                 }
-                return serializeElement(target.slide());
+                return new InsertionUpdate(serializeElement(target.element()), serializeElement(target.slide()), true);
             }
         }
         if (target.snapshot() != null && target.snapshot().getNodePath() != null && target.snapshot().getNodePath().contains("/p[")) {
@@ -569,7 +658,7 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 } else {
                     targetParagraph.getParentNode().insertBefore(insertedParagraph, next);
                 }
-                return serializeElement(target.slide());
+                return new InsertionUpdate(serializeElement(target.element()), serializeElement(target.slide()), true);
             }
         }
         Element originalShape = target.element();
@@ -581,7 +670,7 @@ public class PresentationIterationExecutionService implements PresentationIterat
         } else {
             originalShape.getParentNode().insertBefore(imported, next);
         }
-        return serializeElement(target.slide());
+        return new InsertionUpdate(null, serializeElement(target.slide()), false);
     }
 
     private String buildInsertedTextShape(SlideTarget target, String newText, PresentationTargetElementType targetType) {
@@ -956,6 +1045,9 @@ public class PresentationIterationExecutionService implements PresentationIterat
         if (operation.getActionType() == PresentationEditActionType.INSERT_AFTER_ELEMENT) {
             return "已在第 " + pageIndex + " 页目标段落后插入内容";
         }
+        if (operation.getActionType() == PresentationEditActionType.DELETE_ELEMENT) {
+            return "已删除第 " + pageIndex + " 页目标段落";
+        }
         String label = operation.getTargetElementType() == PresentationTargetElementType.BODY ? "正文" : "标题";
         return "第 " + pageIndex + " 页" + label + "改为" + firstNonBlank(operation.getReplacementText(), "指定内容");
     }
@@ -1081,5 +1173,8 @@ public class PresentationIterationExecutionService implements PresentationIterat
     }
 
     private record OperationResult(List<String> modifiedSlideIds, String summarySegment) {
+    }
+
+    private record InsertionUpdate(String updatedTargetElementXml, String updatedSlideXml, boolean replaceTargetElement) {
     }
 }
