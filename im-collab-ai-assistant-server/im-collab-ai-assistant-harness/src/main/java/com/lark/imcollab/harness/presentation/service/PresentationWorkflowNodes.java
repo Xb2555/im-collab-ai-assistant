@@ -44,6 +44,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -52,6 +53,7 @@ import org.xml.sax.InputSource;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.StringReader;
+import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -70,6 +72,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -82,6 +85,8 @@ public class PresentationWorkflowNodes {
     private static final int MAX_SLIDES = 12;
     private static final Pattern SLIDE_XML_PATTERN = Pattern.compile("(?s)<slide\\b.*?</slide>");
     private static final Pattern PAGE_COUNT_PATTERN = Pattern.compile("(\\d{1,2})\\s*(页|p|P|slides?|Slides?)");
+    private static final String PRESENTATION_TEMPLATE_ROOT = "templates/presentation/xml/";
+    private static final String UNIFIED_CONTENT_BACKGROUND_ASSET_ID = "content-background-shared";
     private static final List<String> COVER_VARIANTS = List.of("hero-band", "center-stack", "asymmetric-title");
     private static final List<String> SECTION_VARIANTS = List.of("headline-panel", "rail-notes", "split-band");
     private static final List<String> TWO_COLUMN_VARIANTS = List.of("dual-cards", "offset-columns");
@@ -1249,388 +1254,42 @@ public class PresentationWorkflowNodes {
                 ? "\n  <note><content textType=\"body\"><p>" + escapeXml(slide.getSpeakerNotes()) + "</p></content></note>"
                 : "";
         String pageType = blankToDefault(slide == null ? null : slide.getPageType(), defaultPageType(layout, index, total));
-        if ("THANKS".equalsIgnoreCase(pageType) && "summary".equals(layout)) {
-            return buildThanksSlide(title, profile, note);
-        }
-        if ("TOC".equalsIgnoreCase(pageType) && "section".equals(layout)) {
-            return buildTocSlide(title, points, profile, note);
-        }
-        if ("TRANSITION".equalsIgnoreCase(pageType) && "section".equals(layout)) {
-            return buildTransitionSlide(title, points, profile, note);
-        }
-        return switch (layout) {
-            case "cover" -> buildCoverSlide(title, points, profile, templateVariant, emphasis, note);
-            case "two-column", "comparison" -> buildTwoColumnSlide(title, points, profile, templateVariant, emphasis, index, total, note);
-            case "timeline" -> buildTimelineSlide(title, points, profile, templateVariant, emphasis, index, total, note);
-            case "metric-cards", "risk-list" -> buildMetricCardsSlide(title, points, profile, templateVariant, emphasis, index, total, note);
-            case "summary" -> buildSummarySlide(title, points, profile, templateVariant, emphasis, index, total, note);
-            default -> buildSectionSlide(title, points, profile, templateVariant, emphasis, index, total, note);
-        };
-    }
-
-    private String buildTocSlide(String title, List<String> points, StyleProfile profile, String note) {
-        List<String> tocPoints = normalizeTocPoints(points);
-        return """
-                <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                  <style><fill><fillColor color="%s"/></fill></style>
-                  <data>
-                    <shape type="rect" topLeftX="0" topLeftY="0" width="960" height="18"><fill><fillColor color="%s"/></fill></shape>
-                    <shape type="text" topLeftX="64" topLeftY="52" width="820" height="72">%s</shape>
-                    <shape type="rect" topLeftX="72" topLeftY="150" width="816" height="278"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                    <shape type="text" topLeftX="108" topLeftY="190" width="744" height="212"><content textType="body" lineSpacing="multiple:1.45"><ol>%s</ol></content></shape>
-                  </data>%s
-                </slide>
-                """.formatted(profile.background(), profile.accent(),
-                headlineContent(title, profile.text(), 32),
-                profile.cardFill(), profile.cardBorder(),
-                orderedList(tocPoints, profile.text(), 20), note).trim();
-    }
-
-    private String buildTransitionSlide(String title, List<String> points, StyleProfile profile, String note) {
-        return """
-                <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                  <style><fill><fillColor color="%s"/></fill></style>
-                  <data>
-                    <shape type="rect" topLeftX="0" topLeftY="0" width="960" height="540"><fill><fillColor color="rgba(15,23,42,0.20)"/></fill></shape>
-                    <shape type="rect" topLeftX="88" topLeftY="112" width="512" height="244"><fill><fillColor color="rgba(255,255,255,0.93)"/></fill><border color="rgba(255,255,255,0.98)" width="1"/></shape>
-                    <shape type="rect" topLeftX="88" topLeftY="112" width="512" height="12"><fill><fillColor color="%s"/></fill></shape>
-                    <shape type="text" topLeftX="132" topLeftY="154" width="404" height="88">%s</shape>
-                    <shape type="text" topLeftX="134" topLeftY="262" width="404" height="76"><content textType="body" lineSpacing="multiple:1.25"><p><span color="%s" fontSize="20">%s</span></p></content></shape>
-                  </data>%s
-                </slide>
-                """.formatted(profile.background(), profile.accent(),
-                titleContent(title, profile.text(), 38),
-                profile.muted(), escapeXml(points.isEmpty() ? "进入下一章节" : points.get(0)), note).trim();
-    }
-
-    private String buildThanksSlide(String title, StyleProfile profile, String note) {
-        return """
-                <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                  <style><fill><fillColor color="%s"/></fill></style>
-                  <data>
-                    <shape type="rect" topLeftX="72" topLeftY="74" width="430" height="392"><fill><fillColor color="rgba(255,255,255,0.93)"/></fill><border color="%s" width="1"/></shape>
-                    <shape type="rect" topLeftX="72" topLeftY="74" width="430" height="12"><fill><fillColor color="%s"/></fill></shape>
-                    <shape type="text" topLeftX="126" topLeftY="184" width="300" height="88">%s</shape>
-                    <shape type="text" topLeftX="126" topLeftY="298" width="280" height="34">%s</shape>
-                  </data>%s
-                </slide>
-                """.formatted(profile.background(), profile.cardBorder(), profile.accent(),
-                titleContent(title, profile.text(), 40),
-                plainContent("期待交流指正", profile.muted(), 16, false, "center"),
-                note).trim();
-    }
-
-    private String buildCoverSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, String note) {
-        String subtitle = coverSubtitle(points);
-        String footer = coverFooter(points);
-        return switch (templateVariant) {
-            case "center-stack" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="rect" topLeftX="132" topLeftY="86" width="696" height="356"><fill><fillColor color="%s"/></fill><border color="%s" width="2"/></shape>
-                        <shape type="rect" topLeftX="132" topLeftY="86" width="696" height="14"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="text" topLeftX="188" topLeftY="146" width="584" height="112">%s</shape>
-                        <shape type="text" topLeftX="210" topLeftY="286" width="540" height="58">%s</shape>
-                        <shape type="rect" topLeftX="210" topLeftY="372" width="136" height="40"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="rect" topLeftX="346" topLeftY="372" width="178" height="40"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
-                        <shape type="text" topLeftX="222" topLeftY="380" width="112" height="22">%s</shape>
-                        <shape type="text" topLeftX="360" topLeftY="380" width="150" height="22">%s</shape>
-                        <shape type="rect" topLeftX="540" topLeftY="372" width="136" height="40"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="rect" topLeftX="676" topLeftY="372" width="108" height="40"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
-                        <shape type="text" topLeftX="552" topLeftY="380" width="112" height="22">%s</shape>
-                        <shape type="text" topLeftX="690" topLeftY="380" width="80" height="22">%s</shape>
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), profile.cardFill(), profile.cardBorder(), profile.accent(),
-                    titleContent(title, profile.text(), "title".equals(emphasis) ? 40 : 36),
-                    plainContent(subtitle, profile.muted(), 22, false, "center"),
-                    profile.accent(),
-                    plainContent("汇报人", "rgb(255,255,255)", 14, true, "center"),
-                    plainContent(coverMetaValue(points, "汇报人"), profile.text(), 14, false, "center"),
-                    profile.accent(),
-                    plainContent("汇报时间", "rgb(255,255,255)", 14, true, "center"),
-                    plainContent(coverMetaValue(points, "汇报时间"), profile.text(), 14, false, "center"),
-                    note).trim();
-            case "asymmetric-title" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="rect" topLeftX="0" topLeftY="0" width="220" height="540"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="rect" topLeftX="48" topLeftY="100" width="90" height="8"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="text" topLeftX="248" topLeftY="106" width="620" height="150">%s</shape>
-                        <shape type="text" topLeftX="250" topLeftY="286" width="560" height="64">%s</shape>
-                        <shape type="rect" topLeftX="250" topLeftY="390" width="126" height="38"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="rect" topLeftX="376" topLeftY="390" width="154" height="38"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
-                        <shape type="text" topLeftX="260" topLeftY="398" width="104" height="20">%s</shape>
-                        <shape type="text" topLeftX="388" topLeftY="398" width="130" height="20">%s</shape>
-                        <shape type="rect" topLeftX="548" topLeftY="390" width="126" height="38"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="rect" topLeftX="674" topLeftY="390" width="150" height="38"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
-                        <shape type="text" topLeftX="558" topLeftY="398" width="104" height="20">%s</shape>
-                        <shape type="text" topLeftX="686" topLeftY="398" width="126" height="20">%s</shape>
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), profile.cardFill(), profile.accent(),
-                    titleContent(title, profile.text(), "title".equals(emphasis) ? 44 : 40),
-                    plainContent(subtitle, profile.muted(), 22, false, "left"),
-                    profile.accent(),
-                    plainContent("汇报人", "rgb(255,255,255)", 14, true, "center"),
-                    plainContent(coverMetaValue(points, "汇报人"), profile.text(), 14, false, "center"),
-                    profile.accent(),
-                    plainContent("汇报时间", "rgb(255,255,255)", 14, true, "center"),
-                    plainContent(coverMetaValue(points, "汇报时间"), profile.text(), 14, false, "center"),
-                    note).trim();
-            default -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="rect" topLeftX="0" topLeftY="0" width="960" height="540"><fill><fillColor color="rgba(15,23,42,0.28)"/></fill></shape>
-                        <shape type="rect" topLeftX="88" topLeftY="82" width="748" height="320"><fill><fillColor color="rgba(255,255,255,0.94)"/></fill><border color="rgba(255,255,255,0.98)" width="1"/></shape>
-                        <shape type="rect" topLeftX="88" topLeftY="82" width="748" height="12"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="text" topLeftX="132" topLeftY="130" width="662" height="122">%s</shape>
-                        <shape type="text" topLeftX="136" topLeftY="272" width="620" height="58">%s</shape>
-                        <shape type="rect" topLeftX="136" topLeftY="346" width="126" height="38"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="rect" topLeftX="262" topLeftY="346" width="162" height="38"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
-                        <shape type="text" topLeftX="146" topLeftY="354" width="104" height="20">%s</shape>
-                        <shape type="text" topLeftX="274" topLeftY="354" width="138" height="20">%s</shape>
-                        <shape type="rect" topLeftX="446" topLeftY="346" width="126" height="38"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="rect" topLeftX="572" topLeftY="346" width="188" height="38"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
-                        <shape type="text" topLeftX="456" topLeftY="354" width="104" height="20">%s</shape>
-                        <shape type="text" topLeftX="584" topLeftY="354" width="164" height="20">%s</shape>
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), profile.accent(),
-                    titleContent(title, "rgb(15,23,42)", "title".equals(emphasis) ? 42 : 40),
-                    plainContent(subtitle, "rgb(71,85,105)", 22, false, "left"),
-                    profile.accent(),
-                    plainContent("汇报人", "rgb(255,255,255)", 14, true, "center"),
-                    plainContent(coverMetaValue(points, "汇报人"), "rgb(15,23,42)", 14, false, "center"),
-                    profile.accent(),
-                    plainContent("汇报时间", "rgb(255,255,255)", 14, true, "center"),
-                    plainContent(coverMetaValue(points, "汇报时间"), "rgb(15,23,42)", 14, false, "center"),
-                    note).trim();
-        };
-    }
-
-    private String buildSectionSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
-        return switch (templateVariant) {
-            case "rail-notes" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="rect" topLeftX="44" topLeftY="38" width="12" height="442"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="text" topLeftX="84" topLeftY="44" width="788" height="78">%s</shape>
-                        <shape type="text" topLeftX="104" topLeftY="156" width="428" height="252"><content textType="body" lineSpacing="multiple:1.4"><ul>%s</ul></content></shape>
-                        <shape type="rect" topLeftX="584" topLeftY="154" width="254" height="220"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="610" topLeftY="188" width="204" height="146">%s</shape>
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), profile.accent(),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 34 : 31),
-                    bulletList(points, profile.text(), 20),
-                    profile.cardFill(), profile.cardBorder(),
-                    plainContent("", profile.muted(), 16, false, "left"),
-                    pageNumber(index, total, profile), note).trim();
-            case "split-band" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="rect" topLeftX="0" topLeftY="74" width="960" height="92"><fill><fillColor color="%s"/></fill></shape>
-                        <shape type="text" topLeftX="64" topLeftY="88" width="800" height="62">%s</shape>
-                        <shape type="rect" topLeftX="64" topLeftY="206" width="832" height="244"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="104" topLeftY="238" width="742" height="180"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), profile.cardFill(),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 34 : 30),
-                    "data".equals(emphasis) ? profile.background() : profile.cardFill(),
-                    profile.cardBorder(),
-                    bulletList(points, profile.text(), "data".equals(emphasis) ? 22 : 20),
-                    pageNumber(index, total, profile), note).trim();
-            default -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        %s
-                        <shape type="text" topLeftX="64" topLeftY="48" width="820" height="88">%s</shape>
-                        <shape type="rect" topLeftX="72" topLeftY="154" width="800" height="270"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="108" topLeftY="188" width="720" height="206"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), accentRail(profile),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 34 : 31),
-                    profile.cardFill(), profile.cardBorder(),
-                    bulletList(points, profile.text(), 20),
-                    pageNumber(index, total, profile), note).trim();
-        };
-    }
-
-    private String buildTwoColumnSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
-        return switch (templateVariant) {
-            case "offset-columns" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="text" topLeftX="64" topLeftY="44" width="760" height="78">%s</shape>
-                        <shape type="rect" topLeftX="66" topLeftY="144" width="404" height="286"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="rect" topLeftX="500" topLeftY="144" width="350" height="286"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="102" topLeftY="184" width="332" height="214"><content textType="body" lineSpacing="multiple:1.34"><ul>%s</ul></content></shape>
-                        <shape type="text" topLeftX="536" topLeftY="392" width="278" height="22">%s</shape>
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
-                    profile.cardFill(), profile.cardBorder(), profile.cardFill(), profile.cardBorder(),
-                    bulletList(points, profile.text(), 19),
-                    plainContent("", profile.muted(), 12, false, "center"),
-                    pageNumber(index, total, profile), note).trim();
-            default -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        %s
-                        <shape type="text" topLeftX="64" topLeftY="44" width="820" height="78">%s</shape>
-                        <shape type="rect" topLeftX="66" topLeftY="144" width="410" height="286"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="rect" topLeftX="500" topLeftY="144" width="350" height="286"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="102" topLeftY="184" width="338" height="214"><content textType="body" lineSpacing="multiple:1.34"><ul>%s</ul></content></shape>
-                        <shape type="text" topLeftX="536" topLeftY="392" width="278" height="22">%s</shape>
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), accentRail(profile),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
-                    profile.cardFill(), profile.cardBorder(), profile.cardFill(), profile.cardBorder(),
-                    bulletList(points, profile.text(), 19),
-                    plainContent("", profile.muted(), 12, false, "center"),
-                    pageNumber(index, total, profile), note).trim();
-        };
-    }
-
-    private String buildTimelineSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
-        return switch (templateVariant) {
-            case "stacked-steps" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
-                        %s
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
-                    stackedTimelineItems(points, profile, "action".equals(emphasis)),
-                    pageNumber(index, total, profile), note).trim();
-            default -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        %s
-                        <shape type="text" topLeftX="64" topLeftY="44" width="820" height="78">%s</shape>
-                        <line startX="130" startY="280" endX="830" endY="280"><border color="%s" width="3"/></line>
-                        %s
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), accentRail(profile),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31), profile.accent(),
-                    timelineItems(points, profile), pageNumber(index, total, profile), note).trim();
-        };
-    }
-
-    private String buildMetricCardsSlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
-        return switch (templateVariant) {
-            case "compact-grid" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        %s
-                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
-                        %s
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), accentRail(profile),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
-                    compactMetricGrid(points, profile, "data".equals(emphasis)),
-                    pageNumber(index, total, profile), note).trim();
-            case "spotlight-metric" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="text" topLeftX="64" topLeftY="40" width="820" height="78">%s</shape>
-                        <shape type="rect" topLeftX="74" topLeftY="154" width="260" height="234"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="108" topLeftY="204" width="190" height="126">%s</shape>
-                        <shape type="rect" topLeftX="376" topLeftY="154" width="492" height="234"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="410" topLeftY="188" width="424" height="170"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
-                    profile.cardFill(), profile.cardBorder(),
-                    plainContent(firstMetric(points), profile.text(), "data".equals(emphasis) ? 24 : 20, true, "center"),
-                    profile.cardFill(), profile.cardBorder(),
-                    bulletList(remainingMetrics(points), profile.text(), 18),
-                    pageNumber(index, total, profile), note).trim();
-            default -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        %s
-                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
-                        %s
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), accentRail(profile),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
-                    metricCards(points, profile), pageNumber(index, total, profile), note).trim();
-        };
-    }
-
-    private String buildSummarySlide(String title, List<String> points, StyleProfile profile, String templateVariant, String emphasis, int index, int total, String note) {
-        return switch (templateVariant) {
-            case "next-step-board" -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
-                        <shape type="rect" topLeftX="74" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="rect" topLeftX="354" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="rect" topLeftX="634" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        %s
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
-                    profile.cardFill(), profile.cardBorder(),
-                    profile.cardFill(), profile.cardBorder(),
-                    profile.cardFill(), profile.cardBorder(),
-                    summaryBoard(points, profile),
-                    pageNumber(index, total, profile), note).trim();
-            default -> """
-                    <slide xmlns="http://www.larkoffice.com/sml/2.0">
-                      <style><fill><fillColor color="%s"/></fill></style>
-                      <data>
-                        %s
-                        <shape type="text" topLeftX="64" topLeftY="42" width="820" height="78">%s</shape>
-                        <shape type="rect" topLeftX="82" topLeftY="154" width="786" height="248"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
-                        <shape type="text" topLeftX="116" topLeftY="188" width="712" height="180"><content textType="body" lineSpacing="multiple:1.4"><ul>%s</ul></content></shape>
-                        %s
-                      </data>%s
-                    </slide>
-                    """.formatted(profile.background(), accentRail(profile),
-                    headlineContent(title, profile.text(), "title".equals(emphasis) ? 33 : 31),
-                    profile.cardFill(), profile.cardBorder(),
-                    bulletList(points, profile.text(), "action".equals(emphasis) ? 22 : 20),
-                    pageNumber(index, total, profile), note).trim();
-        };
+        PresentationCoverMeta coverMeta = resolveCoverMetaFromSlide(slide, points);
+        Map<String, String> placeholders = new LinkedHashMap<>();
+        placeholders.put("{{BACKGROUND}}", profile.background());
+        placeholders.put("{{ACCENT}}", profile.accent());
+        placeholders.put("{{CARD_FILL}}", profile.cardFill());
+        placeholders.put("{{CARD_BORDER}}", profile.cardBorder());
+        placeholders.put("{{MUTED}}", profile.muted());
+        placeholders.put("{{TITLE}}", "TRANSITION".equalsIgnoreCase(pageType)
+                ? titleContent(title, profile.text(), 38)
+                : headlineContent(title, resolveTitleColor(pageType, layout, profile), resolveTitleFontSize(pageType, layout, emphasis)));
+        placeholders.put("{{NOTE}}", note);
+        placeholders.put("{{BACKGROUND_IMAGE}}", "{{BACKGROUND_IMAGE}}");
+        placeholders.put("{{PAGE_NUMBER}}", requiresPageNumber(pageType, layout) ? pageNumber(index, total, profile) : "");
+        placeholders.put("{{PRESENTER_LABEL}}", plainContent("汇报人", "rgb(255,255,255)", 14, true, "center"));
+        placeholders.put("{{PRESENTER_VALUE}}", plainContent(coverMeta.presenter(), titleValueColor(layout), 14, false, "center"));
+        placeholders.put("{{DATE_LABEL}}", plainContent("汇报时间", "rgb(255,255,255)", 14, true, "center"));
+        placeholders.put("{{DATE_VALUE}}", plainContent(coverMeta.reportDate(), titleValueColor(layout), 14, false, "center"));
+        placeholders.put("{{SUBTITLE}}", resolveSubtitle(pageType, layout, points, profile, coverMeta));
+        placeholders.put("{{TOC_LIST}}", orderedList(normalizeTocPoints(points), profile.text(), 20));
+        placeholders.put("{{LEAD}}", escapeXml(points.isEmpty() ? "进入下一章节" : points.get(0)));
+        placeholders.put("{{BODY_LIST}}", bulletList(points, profile.text(), "data".equals(emphasis) ? 22 : 20));
+        placeholders.put("{{LEFT_LIST}}", bulletList(firstHalf(points), profile.text(), 19));
+        placeholders.put("{{RIGHT_LIST}}", bulletList(secondHalf(points), profile.text(), 19));
+        placeholders.put("{{RIGHT_IMAGE}}", "{{RIGHT_IMAGE}}");
+        placeholders.put("{{CONTENT_IMAGE}}", "{{CONTENT_IMAGE}}");
+        placeholders.put("{{RAIL_NOTE}}", plainContent("", profile.muted(), 16, false, "left"));
+        placeholders.put("{{BAND_FILL}}", "data".equals(emphasis) ? profile.background() : profile.cardFill());
+        placeholders.put("{{METRIC_BLOCK}}", resolveMetricBlock(points, profile, templateVariant, emphasis));
+        placeholders.put("{{SUMMARY_BLOCK}}", resolveSummaryBlock(points, profile, templateVariant, emphasis));
+        placeholders.put("{{TIMELINE_AXIS}}", resolveTimelineAxis(profile, templateVariant));
+        placeholders.put("{{TIMELINE_ITEMS}}", "stacked-steps".equals(templateVariant)
+                ? stackedTimelineItems(points, profile, "action".equals(emphasis))
+                : timelineItems(points, profile));
+        placeholders.put("{{SIDE_IMAGE}}", "{{SIDE_IMAGE}}");
+        String template = loadSlideTemplate(pageType, layout, templateVariant);
+        return applyTemplate(template, placeholders);
     }
 
     private String bulletList(List<String> points, String color, int fontSize) {
@@ -1661,6 +1320,152 @@ public class PresentationWorkflowNodes {
                     .append("</span></p></li>");
         }
         return builder.toString();
+    }
+
+    private String loadSlideTemplate(String pageType, String layout, String templateVariant) {
+        String resourceName;
+        if ("TOC".equalsIgnoreCase(pageType)) {
+            resourceName = "toc.xml";
+        } else if ("TRANSITION".equalsIgnoreCase(pageType)) {
+            resourceName = "transition.xml";
+        } else if ("THANKS".equalsIgnoreCase(pageType)) {
+            resourceName = "thanks.xml";
+        } else if ("cover".equals(layout)) {
+            resourceName = switch (blankToDefault(templateVariant, "hero-band")) {
+                case "center-stack" -> "cover-center-stack.xml";
+                case "asymmetric-title" -> "cover-asymmetric-title.xml";
+                default -> "cover-hero-band.xml";
+            };
+        } else if ("timeline".equals(layout)) {
+            resourceName = "timeline-frame.xml";
+        } else if ("two-column".equals(layout) || "comparison".equals(layout)) {
+            resourceName = "two-column-frame.xml";
+        } else if ("metric-cards".equals(layout) || "risk-list".equals(layout)) {
+            resourceName = "metric-frame.xml";
+        } else if ("summary".equals(layout)) {
+            resourceName = "summary-frame.xml";
+        } else {
+            resourceName = switch (blankToDefault(templateVariant, "")) {
+                case "rail-notes" -> "section-rail-notes.xml";
+                case "split-band" -> "section-split-band.xml";
+                default -> "section-frame.xml";
+            };
+        }
+        try {
+            ClassPathResource resource = new ClassPathResource(PRESENTATION_TEMPLATE_ROOT + resourceName);
+            try (var stream = resource.getInputStream()) {
+                return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to load presentation template: " + resourceName, exception);
+        }
+    }
+
+    private String applyTemplate(String template, Map<String, String> placeholders) {
+        String rendered = blankToDefault(template, "");
+        for (Map.Entry<String, String> entry : placeholders.entrySet()) {
+            rendered = rendered.replace(entry.getKey(), blankToDefault(entry.getValue(), ""));
+        }
+        return rendered;
+    }
+
+    private boolean requiresPageNumber(String pageType, String layout) {
+        return !"cover".equals(layout)
+                && !"TOC".equalsIgnoreCase(pageType)
+                && !"TRANSITION".equalsIgnoreCase(pageType)
+                && !"THANKS".equalsIgnoreCase(pageType);
+    }
+
+    private String resolveTitleColor(String pageType, String layout, StyleProfile profile) {
+        if ("cover".equals(layout)) {
+            return "rgb(15,23,42)";
+        }
+        return profile.text();
+    }
+
+    private int resolveTitleFontSize(String pageType, String layout, String emphasis) {
+        if ("cover".equals(layout)) {
+            return "title".equals(emphasis) ? 42 : 40;
+        }
+        if ("THANKS".equalsIgnoreCase(pageType)) {
+            return 40;
+        }
+        if ("TOC".equalsIgnoreCase(pageType)) {
+            return 32;
+        }
+        return "title".equals(emphasis) ? 34 : 31;
+    }
+
+    private String resolveSubtitle(String pageType, String layout, List<String> points, StyleProfile profile, PresentationCoverMeta coverMeta) {
+        if ("THANKS".equalsIgnoreCase(pageType)) {
+            return plainContent("Thank you for listening", profile.muted(), 16, false, "center");
+        }
+        if ("cover".equals(layout)) {
+            return plainContent(coverSubtitle(points), profile.muted(), 22, false, "left");
+        }
+        return plainContent(coverSubtitle(points), profile.muted(), 22, false, "left");
+    }
+
+    private String titleValueColor(String layout) {
+        return "rgb(15,23,42)";
+    }
+
+    private PresentationCoverMeta resolveCoverMetaFromSlide(PresentationSlidePlan slide, List<String> points) {
+        String presenter = coverMetaValue(points, "汇报人");
+        String reportDate = coverMetaValue(points, "汇报时间");
+        return new PresentationCoverMeta(
+                firstNonBlank(presenter, "张三"),
+                normalizeReportDate(firstNonBlank(reportDate, DEFAULT_REPORT_DATE)));
+    }
+
+    private String twoColumnRightBlock(StyleProfile profile) {
+        return """
+                <shape type="rect" topLeftX="468" topLeftY="160" width="396" height="252"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                <shape type="text" topLeftX="536" topLeftY="424" width="278" height="22">%s</shape>
+                """.formatted(profile.cardFill(), profile.cardBorder(), plainContent("", profile.muted(), 12, false, "center")).trim();
+    }
+
+    private String resolveMetricBlock(List<String> points, StyleProfile profile, String templateVariant, String emphasis) {
+        return switch (blankToDefault(templateVariant, "")) {
+            case "compact-grid" -> compactMetricGrid(points, profile, "data".equals(emphasis));
+            case "spotlight-metric" -> """
+                    <shape type="rect" topLeftX="74" topLeftY="154" width="260" height="234"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    <shape type="text" topLeftX="108" topLeftY="204" width="190" height="126">%s</shape>
+                    <shape type="rect" topLeftX="376" topLeftY="154" width="492" height="234"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    <shape type="text" topLeftX="410" topLeftY="188" width="424" height="170"><content textType="body" lineSpacing="multiple:1.35"><ul>%s</ul></content></shape>
+                    """.formatted(profile.cardFill(), profile.cardBorder(),
+                    plainContent(firstMetric(points), profile.text(), "data".equals(emphasis) ? 24 : 20, true, "center"),
+                    profile.cardFill(), profile.cardBorder(), bulletList(remainingMetrics(points), profile.text(), 18)).trim();
+            default -> metricCards(points, profile);
+        };
+    }
+
+    private String resolveSummaryBlock(List<String> points, StyleProfile profile, String templateVariant, String emphasis) {
+        return switch (blankToDefault(templateVariant, "")) {
+            case "next-step-board" -> """
+                    <shape type="rect" topLeftX="74" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    <shape type="rect" topLeftX="354" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    <shape type="rect" topLeftX="634" topLeftY="148" width="250" height="258"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    %s
+                    """.formatted(profile.cardFill(), profile.cardBorder(), profile.cardFill(), profile.cardBorder(),
+                    profile.cardFill(), profile.cardBorder(), summaryBoard(points, profile)).trim();
+            default -> """
+                    <shape type="rect" topLeftX="82" topLeftY="154" width="786" height="248"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    <shape type="text" topLeftX="116" topLeftY="188" width="712" height="180"><content textType="body" lineSpacing="multiple:1.4"><ul>%s</ul></content></shape>
+                    """.formatted(profile.cardFill(), profile.cardBorder(),
+                    bulletList(points, profile.text(), "action".equals(emphasis) ? 22 : 20)).trim();
+        };
+    }
+
+    private String resolveTimelineAxis(StyleProfile profile, String templateVariant) {
+        if ("stacked-steps".equals(templateVariant)) {
+            return "";
+        }
+        return """
+                <line startX="130" startY="280" endX="830" endY="280"><border color="%s" width="3"/></line>
+                <line startX="808" startY="264" endX="830" endY="280"><border color="%s" width="3"/></line>
+                <line startX="808" startY="296" endX="830" endY="280"><border color="%s" width="3"/></line>
+                """.formatted(profile.accent(), profile.accent(), profile.accent()).trim();
     }
 
     private List<String> normalizeTocPoints(List<String> points) {
@@ -1935,10 +1740,32 @@ public class PresentationWorkflowNodes {
         for (int i = 0; i < count; i++) {
             int x = 110 + gap * i;
             builder.append("""
-                    <shape type="rect" topLeftX="%d" topLeftY="262" width="36" height="36"><fill><fillColor color="%s"/></fill></shape>
-                    <shape type="text" topLeftX="%d" topLeftY="322" width="142" height="92">%s</shape>
-                    """.formatted(x, profile.accent(), x - 52,
-                    plainContent(safePoints.get(i), profile.text(), 16, false, "center")));
+                    <ellipse topLeftX="%d" topLeftY="262" width="36" height="36"><fill><fillColor color="%s"/></fill><border color="%s" width="2"/></ellipse>
+                    <shape type="text" topLeftX="%d" topLeftY="192" width="142" height="48">%s</shape>
+                    <shape type="rect" topLeftX="%d" topLeftY="328" width="110" height="82"><fill><fillColor color="%s"/></fill><border color="%s" width="1"/></shape>
+                    """.formatted(x, profile.accent(), profile.cardBorder(), x - 52,
+                    plainContent(compactSlidePoint(safePoints.get(i), 12), profile.text(), 16, false, "center"),
+                    x - 38, profile.cardFill(), profile.cardBorder()));
+        }
+        return builder.toString().trim();
+    }
+
+    private String timelineItems(List<String> points, StyleProfile profile, String imageSrc, String altText) {
+        List<String> safePoints = points == null || points.isEmpty() ? List.of("明确目标", "梳理方案", "推进落地") : points;
+        int count = Math.min(5, safePoints.size());
+        int gap = count <= 1 ? 0 : 700 / (count - 1);
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            int x = 110 + gap * i;
+            builder.append("""
+                    <ellipse topLeftX="%d" topLeftY="262" width="36" height="36"><fill><fillColor color="%s"/></fill><border color="%s" width="2"/></ellipse>
+                    <shape type="text" topLeftX="%d" topLeftY="192" width="142" height="48">%s</shape>
+                    <img src="%s" topLeftX="%d" topLeftY="328" width="110" height="82" alpha="1" alt="%s">
+                      <border color="rgba(0,0,0,0.08)" width="1"/>
+                    </img>
+                    """.formatted(x, profile.accent(), profile.cardBorder(), x - 52,
+                    plainContent(compactSlidePoint(safePoints.get(i), 12), profile.text(), 16, false, "center"),
+                    imageSrc, x - 38, altText));
         }
         return builder.toString().trim();
     }
@@ -2768,6 +2595,30 @@ public class PresentationWorkflowNodes {
                         .build())
                 .editability(PresentationEditability.HYBRID_EDITABLE)
                 .build()));
+        resolveUnifiedContentBackground(slide, resources).ifPresent(image -> elements.add(PresentationElementIR.builder()
+                .elementId(slide.getSlideId() + "-background-image")
+                .elementKind(PresentationElementKind.IMAGE)
+                .targetElementType(PresentationTargetElementType.IMAGE)
+                .semanticRole("background-image")
+                .layoutBox(PresentationLayoutSpec.builder()
+                        .topLeftX(0)
+                        .topLeftY(0)
+                        .width(960)
+                        .height(540)
+                        .templateVariant(slide.getTemplateVariant())
+                        .build())
+                .assetRef(PresentationAssetRef.builder()
+                        .assetId(firstNonBlank(image.getAssetId(), UNIFIED_CONTENT_BACKGROUND_ASSET_ID))
+                        .fileToken(image.getFileToken())
+                        .sourceRef("")
+                        .sourceType("resolved-background")
+                        .elementKind(PresentationElementKind.IMAGE)
+                        .editability(PresentationEditability.HYBRID_EDITABLE)
+                        .altText("统一正文背景图")
+                        .caption("统一正文背景图")
+                        .build())
+                .editability(PresentationEditability.HYBRID_EDITABLE)
+                .build()));
         log.info("slide ir built: slideId={}, layout={}, templateVariant={}, imageSelected={}, keyPointCount={}",
                 slide.getSlideId(),
                 slide.getLayout(),
@@ -2831,6 +2682,26 @@ public class PresentationWorkflowNodes {
         return java.util.Optional.empty();
     }
 
+    private java.util.Optional<PresentationAssetResources.AssetResource> resolveUnifiedContentBackground(
+            PresentationSlidePlan slide,
+            PresentationAssetResources resources) {
+        if (slide == null || resources == null || resources.getSlides() == null) {
+            return java.util.Optional.empty();
+        }
+        String pageType = blankToDefault(slide.getPageType(), "");
+        if (!List.of("CONTENT", "TIMELINE", "COMPARISON", "CHART", "BACKGROUND").contains(pageType.toUpperCase())) {
+            return java.util.Optional.empty();
+        }
+        return resources.getSlides().stream()
+                .filter(Objects::nonNull)
+                .map(PresentationAssetResources.SlideAssetResource::getImages)
+                .filter(Objects::nonNull)
+                .flatMap(List::stream)
+                .filter(Objects::nonNull)
+                .filter(asset -> hasText(asset.getFileToken()))
+                .findFirst();
+    }
+
     private String compileSlideXml(PresentationSlideIR slideIr, int totalSlides, PresentationGenerationOptions options) {
         if (slideIr == null) {
             return "";
@@ -2851,69 +2722,104 @@ public class PresentationWorkflowNodes {
                 .speakerNotes(slideIr.getMessage())
                 .build();
         String baseXml = buildSlideXmlTemplate(plan, plan.getIndex(), totalSlides, options);
-        if (!containsImage(slideIr)) {
-            return baseXml;
-        }
-        PresentationElementIR image = slideIr.getElements().stream()
+        String layout = normalizeLayout(plan.getLayout(), plan.getIndex(), totalSlides);
+        PresentationElementIR image = slideIr.getElements() == null ? null : slideIr.getElements().stream()
                 .filter(element -> element.getElementKind() == PresentationElementKind.IMAGE)
+                .filter(element -> !"background-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
                 .findFirst()
                 .orElse(null);
+        PresentationElementIR backgroundImage = slideIr.getElements() == null ? null : slideIr.getElements().stream()
+                .filter(element -> element.getElementKind() == PresentationElementKind.IMAGE)
+                .filter(element -> "background-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
+                .findFirst()
+                .orElse(null);
+        String compiledXml = injectSlideImages(baseXml, plan, layout, image, backgroundImage);
+        if (!containsImage(slideIr)) {
+            return clearUnresolvedImageSlots(compiledXml);
+        }
+        return clearUnresolvedImageSlots(compiledXml);
+    }
+
+    private String injectSlideImages(String baseXml, PresentationSlidePlan plan, String layout, PresentationElementIR image, PresentationElementIR backgroundElement) {
+        String backgroundImage = "";
+        String rightImage = twoColumnRightBlock(styleProfile("minimal-professional"));
+        String sideImage = "";
+        String contentImage = "";
+        String timelineItemsXml = null;
+        String backgroundSrc = resolveRenderableImageSrc(backgroundElement);
+        if (hasText(backgroundSrc)) {
+            backgroundImage = """
+                    <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
+                    """.formatted(backgroundSrc, "统一正文背景图");
+        }
+        if (image != null && image.getAssetRef() != null) {
+            String src = resolveRenderableImageSrc(image);
+            if (hasText(src)) {
+                if ("cover".equals(layout) || "TRANSITION".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
+                    backgroundImage = """
+                            <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
+                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "背景图")));
+                } else if ("THANKS".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
+                    sideImage = """
+                            <img src="%s" topLeftX="522" topLeftY="74" width="366" height="392" alpha="1" alt="%s">
+                              <border color="rgba(255,255,255,0.55)" width="1"/>
+                            </img>
+                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "结束页配图")));
+                } else if ("two-column".equals(layout) || "comparison".equals(layout)) {
+                    rightImage = """
+                            <img src="%s" topLeftX="468" topLeftY="160" width="396" height="252" alpha="1" alt="%s">
+                              <border color="rgba(0,0,0,0.08)" width="1"/>
+                            </img>
+                            <shape type="text" topLeftX="536" topLeftY="424" width="278" height="22">%s</shape>
+                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "配图")),
+                            plainContent(blankToDefault(image.getAssetRef().getAltText(), ""), styleProfile("minimal-professional").muted(), 12, false, "center"));
+                } else if ("timeline".equals(layout)) {
+                    timelineItemsXml = timelineItems(extractBodyPointsFromPlan(plan), styleProfile(effectiveThemeFamily(null)), src,
+                            escapeXml(blankToDefault(image.getAssetRef().getAltText(), "节点配图")));
+                } else if ("section".equals(layout)) {
+                    contentImage = """
+                            <img src="%s" topLeftX="640" topLeftY="168" width="228" height="204" alpha="1" alt="%s">
+                              <border color="rgba(0,0,0,0.08)" width="1"/>
+                            </img>
+                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "正文配图")));
+                } else {
+                    contentImage = """
+                            <img src="%s" topLeftX="640" topLeftY="168" width="228" height="204" alpha="1" alt="%s">
+                              <border color="rgba(0,0,0,0.08)" width="1"/>
+                            </img>
+                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "正文配图")));
+                }
+            }
+        }
+        String xml = baseXml
+                .replace("{{BACKGROUND_IMAGE}}", backgroundImage)
+                .replace("{{RIGHT_IMAGE}}", rightImage)
+                .replace("{{SIDE_IMAGE}}", sideImage)
+                .replace("{{CONTENT_IMAGE}}", contentImage);
+        if (timelineItemsXml != null) {
+            xml = xml.replace("{{TIMELINE_ITEMS}}", timelineItemsXml);
+        }
+        return xml;
+    }
+
+    private String resolveRenderableImageSrc(PresentationElementIR image) {
         if (image == null || image.getAssetRef() == null) {
-            log.info("slide xml compile without image: slideId={}, reason=no_asset_ref", slideIr.getSlideId());
-            return baseXml;
+            return "";
         }
-        String src = hasText(image.getAssetRef().getFileToken())
-                ? image.getAssetRef().getFileToken()
-                : blankToDefault(image.getAssetRef().getSourceRef(), "");
-        if (!hasText(src)) {
-            log.info("slide xml compile without image: slideId={}, reason=no_image_src", slideIr.getSlideId());
-            return baseXml;
-        }
-        String imgXml = """
-                <img src="%s" topLeftX="%d" topLeftY="%d" width="%d" height="%d" alpha="1" alt="%s">
-                  <border color="rgba(0,0,0,0.08)" width="1"/>
-                </img>
-                """.formatted(
-                src,
-                valueOrDefault(image.getLayoutBox() == null ? null : image.getLayoutBox().getTopLeftX(), 560),
-                valueOrDefault(image.getLayoutBox() == null ? null : image.getLayoutBox().getTopLeftY(), 90),
-                valueOrDefault(image.getLayoutBox() == null ? null : image.getLayoutBox().getWidth(), 320),
-                valueOrDefault(image.getLayoutBox() == null ? null : image.getLayoutBox().getHeight(), 180),
-                escapeXml(blankToDefault(image.getAssetRef().getAltText(), "配图")));
-        log.info("slide xml compile with image: slideId={}, imageSrc={}, assetId={}",
-                slideIr.getSlideId(),
-                src,
-                image.getAssetRef().getAssetId());
-        String layout = normalizeLayout(plan.getLayout(), plan.getIndex(), totalSlides);
-        if ("cover".equals(layout)) {
-            return baseXml.replace("<data>",
-                    "<data>\n" + """
-                    <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
-                    """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "封面图"))));
-        }
-        if ("TRANSITION".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
-            return baseXml.replace("<data>",
-                    "<data>\n" + """
-                    <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
-                    """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "章节过渡图"))));
-        }
-        if ("THANKS".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
-            return baseXml.replace("<data>",
-                    "<data>\n" + """
-                    <img src="%s" topLeftX="522" topLeftY="74" width="366" height="392" alpha="1" alt="%s">
-                      <border color="rgba(255,255,255,0.55)" width="1"/>
-                    </img>
-                    """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "结束页配图"))));
-        }
-        if ("two-column".equals(layout) || "comparison".equals(layout)) {
-            return baseXml.replace("</data>", """
-                    <img src="%s" topLeftX="510" topLeftY="152" width="330" height="270" alpha="1" alt="%s">
-                      <border color="rgba(0,0,0,0.08)" width="1"/>
-                    </img>
-                    </data>
-                    """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "配图"))));
-        }
-        return baseXml;
+        return blankToDefault(image.getAssetRef().getFileToken(), "");
+    }
+
+    private String clearUnresolvedImageSlots(String xml) {
+        return blankToDefault(xml, "")
+                .replace("{{BACKGROUND_IMAGE}}", "")
+                .replace("{{RIGHT_IMAGE}}", "")
+                .replace("{{SIDE_IMAGE}}", "")
+                .replace("{{CONTENT_IMAGE}}", "")
+                .replace("{{TIMELINE_ITEMS}}", "");
+    }
+
+    private List<String> extractBodyPointsFromPlan(PresentationSlidePlan plan) {
+        return plan == null || plan.getKeyPoints() == null ? List.of() : plan.getKeyPoints();
     }
 
     private String toSlidesLocalPath(String localTempPath) {

@@ -27,7 +27,7 @@ public class LarkIMMessageStreamController {
             @PathVariable String chatId
     ) {
         return ResponseEntity.ok()
-
+                .header("X-Accel-Buffering", "no")
                 .contentType(MediaType.TEXT_EVENT_STREAM)
                 .body(streamService.subscribe(authorization, chatId));
     }

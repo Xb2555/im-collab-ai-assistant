@@ -3,6 +3,11 @@ package com.lark.imcollab.harness.presentation.service;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.lark.imcollab.common.domain.Task;
+import com.lark.imcollab.common.model.entity.PresentationAssetRef;
+import com.lark.imcollab.common.model.entity.PresentationElementIR;
+import com.lark.imcollab.common.model.entity.PresentationLayoutSpec;
+import com.lark.imcollab.common.model.entity.PresentationSlideIR;
+import com.lark.imcollab.common.model.enums.PresentationElementKind;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetPlan;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetResources;
@@ -57,6 +62,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .contains("rgb(246,249,255)")
                 .contains("fontSize=\"31\"")
                 .contains("startX=\"130\" startY=\"280\"")
+                .contains("<ellipse topLeftX=\"110\" topLeftY=\"262\" width=\"36\" height=\"36\">")
                 .contains("<note>")
                 .contains("实施路径");
     }
@@ -253,6 +259,62 @@ class PresentationWorkflowNodesTemplateTest {
         List<PresentationSlideXml> validated = (List<PresentationSlideXml>) result.get("slideXmlList");
         assertThat(validated).hasSize(1);
         assertThat(validated.get(0).getXml()).contains("<img src=\"boxcnRealImageToken\"");
+    }
+
+    @Test
+    void compileSlideXmlUsesSharedBackgroundAndContentImageForContentPage() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-3")
+                .pageIndex(3)
+                .slideRole("two-column")
+                .pageType("CONTENT")
+                .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                .title("核心方案")
+                .visualIntent("balance")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("headline-panel").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("要点一；要点二")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnContentImage").altText("正文配图").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-background")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("background-image")
+                                .targetElementType(com.lark.imcollab.common.model.enums.PresentationTargetElementType.IMAGE)
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnSharedBackground").altText("统一正文背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnSharedBackground\"");
+        assertThat(xml).contains("src=\"boxcnContentImage\"");
     }
 
     @Nested

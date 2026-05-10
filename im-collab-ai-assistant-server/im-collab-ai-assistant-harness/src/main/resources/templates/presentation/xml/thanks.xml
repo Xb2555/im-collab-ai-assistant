@@ -1,0 +1,12 @@
+<slide xmlns="http://www.larkoffice.com/sml/2.0">
+  <style><fill><fillColor color="{{BACKGROUND}}"/></fill></style>
+  <data>
+    {{SIDE_IMAGE}}
+    <shape type="rect" topLeftX="72" topLeftY="74" width="430" height="392"><fill><fillColor color="rgba(255,255,255,0.93)"/></fill><border color="{{CARD_BORDER}}" width="1"/></shape>
+    <shape type="rect" topLeftX="72" topLeftY="74" width="430" height="12"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
+    <shape type="text" topLeftX="126" topLeftY="184" width="300" height="88">{{TITLE}}</shape>
+    <shape type="text" topLeftX="126" topLeftY="298" width="280" height="34">{{SUBTITLE}}</shape>
+    <shape type="text" topLeftX="126" topLeftY="348" width="280" height="24">{{PRESENTER_VALUE}}</shape>
+    <shape type="text" topLeftX="126" topLeftY="380" width="280" height="24">{{DATE_VALUE}}</shape>
+  </data>{{NOTE}}
+</slide>
