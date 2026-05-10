@@ -18,10 +18,13 @@ public class PresentationSnapshot implements Serializable {
     private Integer pageIndex;
     private String elementId;
     private String blockId;
+    private String nodePath;
     private PresentationElementKind elementKind;
     private String textType;
     private String textContent;
     private String normalizedText;
+    private Integer paragraphIndex;
+    private Integer listItemIndex;
     private PresentationLayoutSpec boundingBox;
     private String semanticRole;
     private PresentationEditability editability;

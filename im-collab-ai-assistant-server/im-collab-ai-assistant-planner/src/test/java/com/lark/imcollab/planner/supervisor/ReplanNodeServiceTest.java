@@ -18,6 +18,7 @@ import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
+import com.lark.imcollab.common.model.entity.PresentationEditOperation;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
@@ -32,8 +33,11 @@ import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
+import com.lark.imcollab.common.model.enums.PresentationIterationStatus;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
+import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.DocumentArtifactApprovalPayload;
@@ -385,6 +389,153 @@ class ReplanNodeServiceTest {
         verify(stateStore).saveArtifact(artifact);
         verify(planningNodeService, never()).plan(anyString(), anyString(), any(), any());
         verify(sessionService).publishEvent("task-1", "COMPLETED");
+    }
+
+    @Test
+    void completedPptEditPartialSuccessStillUpdatesArtifactButWarnsUser() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .status(PresentationIterationStatus.PARTIAL_SUCCESS)
+                .writeApplied(true)
+                .verificationPassed(false)
+                .failureReason("PPT update verification failed: target text not applied to resolved node")
+                .summary("已将第2页标题改成新标题")
+                .modifiedSlides(List.of("2"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(artifact.getVersion()).isEqualTo(2);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("已写入飞书，但校验未完全通过");
+        verify(stateStore).saveArtifact(artifact);
+        verify(sessionService).publishEvent("task-1", "COMPLETED");
+    }
+
+    @Test
+    void completedPptEditFailedBeforeWriteDoesNotUpdateArtifactVersion() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .status(PresentationIterationStatus.FAILED_BEFORE_WRITE)
+                .writeApplied(false)
+                .verificationPassed(false)
+                .failureReason("页内锚点命中不唯一，请补充更具体的位置")
+                .summary("页内锚点命中不唯一，请补充更具体的位置")
+                .modifiedSlides(List.of())
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "把第2页标题改成新标题", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(artifact.getVersion()).isEqualTo(1);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("命中不唯一");
+        verify(stateStore, never()).saveArtifact(artifact);
+        verify(sessionService).publishEvent("task-1", "COMPLETED");
+    }
+
+    @Test
+    void completedQuotedPptEditWithoutPageIndexStillUpdatesExistingArtifact() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve("历史文化遗产这一段写的详细一些")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.EXPAND_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                        .quotedText("历史文化遗产")
+                        .replacementText("历史文化遗产，形成了上海旅游的重要文化吸引力与国际传播名片。")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .summary("已将“历史文化遗产”这一段扩写")
+                .modifiedSlides(List.of("s2"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "历史文化遗产这一段写的详细一些", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已将“历史文化遗产”这一段扩写");
+        verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
+        verify(questionTool, never()).askUser(any(), any());
+    }
+
+    @Test
+    void completedInsertAfterQuotedPptEditUpdatesExistingArtifact() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.INSERT_AFTER_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                        .pageIndex(1)
+                        .quotedText("文旅融合创新，消费场景丰富多元")
+                        .contentInstruction("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .summary("已在第 1 页目标段落后插入内容")
+                .modifiedSlides(List.of("s1"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已在第 1 页目标段落后插入内容");
+        verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
+        verify(questionTool, never()).askUser(any(), any());
     }
 
     @Test

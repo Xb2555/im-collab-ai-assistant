@@ -16,8 +16,12 @@ public class PresentationAnchorRef implements Serializable {
     private PresentationAnchorMode anchorMode;
     private Integer pageIndex;
     private String slideId;
+    private String pageTitle;
     private String quotedText;
     private String elementRole;
     private String blockId;
+    private Integer paragraphIndex;
+    private Integer listItemIndex;
+    private String nodePath;
     private Integer expectedMatchCount;
 }

@@ -35,6 +35,10 @@ public class PresentationEditIntent implements Serializable {
     private String contentInstruction;
     private String targetElementId;
     private String targetBlockId;
+    private String targetPageTitle;
+    private Integer targetParagraphIndex;
+    private Integer targetListItemIndex;
+    private String targetNodePath;
     private List<PresentationEditOperation> operations;
     private boolean clarificationNeeded;
     private String clarificationHint;
