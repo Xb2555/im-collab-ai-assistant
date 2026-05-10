@@ -1,10 +1,16 @@
 package com.lark.imcollab.planner.service;
 
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.ConversationTaskState;
+import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
+import com.lark.imcollab.common.model.enums.FollowUpModeEnum;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.exception.VersionConflictException;
@@ -14,11 +20,14 @@ import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import com.lark.imcollab.planner.supervisor.PlannerToolResult;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
@@ -96,6 +105,85 @@ class PlannerConversationCancelTests {
         assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.STATUS_QUERY);
         assertThat(result.getIntakeState().getAssistantReply()).contains("\u8fd8\u6ca1\u6709\u627e\u5230");
         verifyNoInteractions(sessionService, graphRunner, taskBridgeService);
+    }
+
+    @Test
+    void shouldRejectExecutionConfirmationBeforePlanReady() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
+        PlanTaskSession intake = PlanTaskSession.builder()
+                .taskId("task-intake")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build();
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-intake", true, "LARK:chat-1"));
+        when(sessionService.get("task-intake")).thenReturn(intake);
+        when(intakeService.decide(intake, "开始执行", null, true))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.CONFIRM_ACTION, "开始执行", "explicit confirm", null));
+
+        PlanTaskSession result = service.handlePlanRequest("开始执行", workspaceContext, null, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.INTAKE);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("当前还没到可执行阶段");
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldTreatReadyPlanSourceSupplementAsClarificationResume() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().chatId("chat-1").build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-ready")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-ready", true, "LARK:chat-1"));
+        when(sessionService.get("task-ready")).thenReturn(ready);
+        when(intakeService.decide(ready, "拉取前10分钟的消息作为文档内容来源，直接生成即可。", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "拉取前10分钟的消息作为文档内容来源，直接生成即可。",
+                        "model source supplement",
+                        null
+                ));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-ready"),
+                eq("拉取前10分钟的消息作为文档内容来源，直接生成即可。"), eq(workspaceContext), eq(null)))
+                .thenAnswer(invocation -> ready);
+
+        service.handlePlanRequest("拉取前10分钟的消息作为文档内容来源，直接生成即可。", workspaceContext, null, null);
+
+        verify(graphRunner).run(
+                eq(new PlannerSupervisorDecision(com.lark.imcollab.planner.supervisor.PlannerSupervisorAction.CLARIFICATION_REPLY,
+                        "guard source context supplement for ready plan")),
+                eq("task-ready"),
+                eq("拉取前10分钟的消息作为文档内容来源，直接生成即可。"),
+                eq(workspaceContext),
+                eq(null)
+        );
     }
 
     @Test
@@ -288,6 +376,314 @@ class PlannerConversationCancelTests {
     }
 
     @Test
+    void completedDocFollowUpCarriesPreviousDocUrlIntoFreshTaskWorkspaceContext() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        FollowUpArtifactContextResolver followUpResolver = mock(FollowUpArtifactContextResolver.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                null,
+                null,
+                followUpResolver,
+                null,
+                null
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .threadId("thread-1")
+                .inputSource("LARK_GROUP")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("old-task")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        String input = "再帮我基于这个文档生成一版汇报ppt";
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("old-task", true, "LARK:chat-1"));
+        when(sessionService.get("old-task")).thenReturn(completed);
+        when(intakeService.decide(completed, input, null, true))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.NEW_TASK, input, "standalone new task", null));
+        when(followUpResolver.resolvePreferredArtifactType(completed, input, workspaceContext))
+                .thenReturn(Optional.of(ArtifactTypeEnum.DOC));
+        when(resolver.findLatestShareableArtifact("old-task", ArtifactTypeEnum.DOC))
+                .thenReturn(Optional.of(ArtifactRecord.builder()
+                        .artifactId("doc-1")
+                        .taskId("old-task")
+                        .type(ArtifactTypeEnum.DOC)
+                        .url("https://doc.example/old-task")
+                        .build()));
+        when(sessionService.getOrCreate(org.mockito.ArgumentMatchers.argThat(taskId -> !"old-task".equals(taskId))))
+                .thenAnswer(invocation -> PlanTaskSession.builder()
+                        .taskId(invocation.getArgument(0))
+                        .planningPhase(PlanningPhaseEnum.INTAKE)
+                        .build());
+        when(graphRunner.run(
+                any(PlannerSupervisorDecision.class),
+                org.mockito.ArgumentMatchers.argThat(taskId -> !"old-task".equals(taskId)),
+                eq(input),
+                org.mockito.ArgumentMatchers.argThat(context -> context != null
+                        && context.getDocRefs() != null
+                        && context.getDocRefs().contains("https://doc.example/old-task")),
+                eq(null)))
+                .thenAnswer(invocation -> PlanTaskSession.builder()
+                        .taskId(invocation.getArgument(1))
+                        .planningPhase(PlanningPhaseEnum.ASK_USER)
+                        .build());
+
+        PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
+
+        assertThat(result.getTaskId()).isNotEqualTo("old-task");
+        verify(graphRunner).run(
+                any(PlannerSupervisorDecision.class),
+                eq(result.getTaskId()),
+                eq(input),
+                org.mockito.ArgumentMatchers.argThat(context -> context != null
+                        && context.getDocRefs() != null
+                        && context.getDocRefs().contains("https://doc.example/old-task")),
+                eq(null));
+    }
+
+    @Test
+    void matchedPendingFollowUpRecommendationContinuesCompletedTaskInsteadOfStartingNewTask() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        FollowUpArtifactContextResolver followUpResolver = mock(FollowUpArtifactContextResolver.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                null,
+                taskRuntimeService,
+                followUpResolver,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .threadId("thread-1")
+                .inputSource("LARK_GROUP")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .build())
+                .build();
+        PendingFollowUpRecommendation recommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_PPT_FROM_DOC")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .sourceArtifactId("artifact-doc")
+                .sourceArtifactType(ArtifactTypeEnum.DOC)
+                .targetDeliverable(ArtifactTypeEnum.PPT)
+                .plannerInstruction("保留现有文档，基于该文档新增一份汇报PPT初稿。")
+                .artifactPolicy("KEEP_EXISTING_CREATE_NEW")
+                .suggestedUserInstruction("基于这份文档生成一版汇报PPT")
+                .priority(1)
+                .build();
+        ConversationTaskState conversationState = ConversationTaskState.builder()
+                .conversationKey("LARK:chat-1")
+                .activeTaskId("task-1")
+                .lastCompletedTaskId("task-1")
+                .pendingFollowUpRecommendations(List.of(recommendation))
+                .build();
+        ArtifactRecord artifact = ArtifactRecord.builder()
+                .artifactId("artifact-doc")
+                .taskId("task-1")
+                .type(ArtifactTypeEnum.DOC)
+                .title("项目执行方案")
+                .url("https://doc.example/task-1")
+                .build();
+        PlanTaskSession replanned = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .build())
+                .build();
+        String input = "再帮我基于这个文档生成一版汇报用ppt，要求要5页，每页50字左右即可";
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(conversationTaskStateService.find("LARK:chat-1")).thenReturn(Optional.of(conversationState));
+        when(matcher.match(input, List.of(recommendation), false))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
+        when(resolver.findArtifactById("task-1", "artifact-doc")).thenReturn(Optional.of(artifact));
+        when(graphRunner.run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                org.mockito.ArgumentMatchers.contains("保留现有文档"),
+                org.mockito.ArgumentMatchers.argThat(context -> context != null
+                        && context.getSourceArtifacts() != null
+                        && context.getSourceArtifacts().stream().anyMatch(ref -> "artifact-doc".equals(ref.getArtifactId()))),
+                eq(input)))
+                .thenReturn(replanned);
+
+        PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
+
+        assertThat(result).isSameAs(replanned);
+        assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        assertThat(result.getIntakeState().getRoutingReason()).isEqualTo("resume pending follow-up recommendation");
+        verify(graphRunner).run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                org.mockito.ArgumentMatchers.contains("产物策略：KEEP_EXISTING_CREATE_NEW"),
+                org.mockito.ArgumentMatchers.argThat(context -> context != null
+                        && context.getSourceArtifacts() != null
+                        && context.getSourceArtifacts().stream().anyMatch(ref -> "artifact-doc".equals(ref.getArtifactId()))),
+                eq(input));
+        verify(conversationTaskStateService).clearPendingFollowUpRecommendations("LARK:chat-1");
+        verify(taskBridgeService).ensureTask(replanned);
+        verify(taskRuntimeService).reconcilePlanReadyProjection(
+                eq(replanned),
+                eq(com.lark.imcollab.common.model.enums.TaskEventTypeEnum.PLAN_ADJUSTED)
+        );
+        verify(intakeService, never()).decide(any(), any(), any(), anyBoolean());
+    }
+
+    @Test
+    void explicitExecutionOnPlanReadyTaskDoesNotResumePendingFollowUpRecommendation() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                null,
+                null,
+                null,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .threadId("thread-1")
+                .inputSource("LARK_GROUP")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-ready")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        PlanTaskSession executing = PlanTaskSession.builder()
+                .taskId("task-ready")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .build();
+        PendingFollowUpRecommendation recommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("rec-ppt")
+                .targetTaskId("completed-task")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .sourceArtifactId("artifact-doc")
+                .sourceArtifactType(ArtifactTypeEnum.DOC)
+                .targetDeliverable(ArtifactTypeEnum.PPT)
+                .plannerInstruction("保留现有文档，基于该文档新增一份汇报PPT初稿。")
+                .artifactPolicy("KEEP_EXISTING_CREATE_NEW")
+                .suggestedUserInstruction("基于这份文档生成一版汇报PPT")
+                .priority(1)
+                .build();
+        ConversationTaskState state = ConversationTaskState.builder()
+                .conversationKey("LARK:chat-1")
+                .activeTaskId("task-ready")
+                .lastCompletedTaskId("completed-task")
+                .pendingFollowUpRecommendations(List.of(recommendation))
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-ready", true, "LARK:chat-1"));
+        when(sessionService.get("task-ready")).thenReturn(ready);
+        when(conversationTaskStateService.find("LARK:chat-1")).thenReturn(Optional.of(state));
+        when(intakeService.decide(ready, "开始执行", null, true))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.CONFIRM_ACTION, "开始执行", "explicit confirm", null));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-ready"), eq("开始执行"), eq(workspaceContext), eq(null)))
+                .thenReturn(executing);
+
+        PlanTaskSession result = service.handlePlanRequest("开始执行", workspaceContext, null, null);
+
+        assertThat(result).isSameAs(executing);
+        verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-ready"), eq("开始执行"), eq(workspaceContext), eq(null));
+        verify(matcher, never()).match(any(), any(), anyBoolean());
+    }
+
+    @Test
+    void confirmActionKeepsPreserveExistingArtifactsFlagForFollowUpContinuation() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .threadId("thread-1")
+                .inputSource("LARK_PRIVATE_CHAT")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession ready = PlanTaskSession.builder()
+                .taskId("task-ready")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .preserveExistingArtifactsOnExecution(true)
+                        .continuationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .build())
+                .build();
+        PlanTaskSession executing = PlanTaskSession.builder()
+                .taskId("task-ready")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-ready", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-ready")).thenReturn(ready);
+        when(intakeService.decide(ready, "开始执行", null, true))
+                .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.CONFIRM_ACTION, "开始执行", "explicit confirm", null));
+        when(graphRunner.run(any(PlannerSupervisorDecision.class), eq("task-ready"), eq("开始执行"), eq(workspaceContext), eq(null)))
+                .thenReturn(executing);
+
+        PlanTaskSession result = service.handlePlanRequest("开始执行", workspaceContext, null, null);
+
+        assertThat(result).isSameAs(executing);
+        assertThat(ready.getIntakeState().isPreserveExistingArtifactsOnExecution()).isTrue();
+    }
+
+    @Test
     void explicitTaskIdKeepsAsyncAcceptedTaskInsteadOfForkingNewOne() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
@@ -394,6 +790,10 @@ class PlannerConversationCancelTests {
                 com.lark.imcollab.common.model.enums.TaskEventTypeEnum.PLAN_ADJUSTED
         );
         verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("把第三页改一下并继续跑"), eq(workspaceContext), eq("把第三页改一下并继续跑"));
+        verify(taskRuntimeService).reconcilePlanReadyProjection(
+                eq(replanned),
+                eq(com.lark.imcollab.common.model.enums.TaskEventTypeEnum.PLAN_ADJUSTED)
+        );
         verify(executionTool, never()).confirmExecution(any());
     }
 
@@ -510,7 +910,7 @@ class PlannerConversationCancelTests {
         PlanTaskSession result = service.handlePlanRequest("把第三页改一下并继续跑", workspaceContext, null, null);
 
         assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
-        assertThat(result.getIntakeState().getAssistantReply()).contains("当前执行还没成功中断", "harness busy");
+        assertThat(result.getIntakeState().getAssistantReply()).contains("当前执行还没成功中断", "请稍后再试");
         verify(graphRunner, never()).run(any(), any(), any(), any(), any());
         verify(executionTool, never()).confirmExecution(any());
         verify(sessionService, never()).markAborted(any(), any());
@@ -751,5 +1151,66 @@ class PlannerConversationCancelTests {
         assertThat(result).isSameAs(stillAskUser);
         verify(graphRunner).run(any(PlannerSupervisorDecision.class), eq("task-1"), eq("1"), eq(workspaceContext), eq(null));
         verify(resolver, never()).resolveCompletedCandidates(workspaceContext);
+    }
+
+    @Test
+    void executingPlanAdjustmentClarificationCanResumeOriginalExecutionOnExplicitContinue() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_GROUP")
+                .build();
+        PlanTaskSession askUser = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .pendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT)
+                        .pendingAdjustmentInstruction("中断一下")
+                        .assistantReply("您是想暂停当前任务的执行流程，还是想修改计划内容？")
+                        .build())
+                .build();
+        PlannerExecutionTool executionTool = mock(PlannerExecutionTool.class);
+        when(executionTool.confirmExecution("task-1"))
+                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.EXECUTING, "execution confirmed", null));
+        PlanTaskSession resumed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.EXECUTING)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .build();
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
+        when(sessionService.get("task-1")).thenReturn(askUser, resumed);
+        when(intakeService.decide(askUser, "继续执行", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.CONFIRM_ACTION,
+                        "继续执行",
+                        "explicit confirm",
+                        null
+                ));
+
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                executionTool,
+                taskRuntimeService
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("继续执行", workspaceContext, null, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("继续按原执行流程推进");
+        assertThat(result.getIntakeState().getPendingInteractionType()).isNull();
+        assertThat(result.getIntakeState().getPendingAdjustmentInstruction()).isNull();
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+        verify(executionTool).confirmExecution("task-1");
     }
 }

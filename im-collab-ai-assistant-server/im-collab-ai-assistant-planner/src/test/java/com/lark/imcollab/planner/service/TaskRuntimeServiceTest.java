@@ -3,12 +3,16 @@ package com.lark.imcollab.planner.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.domain.Task;
 import com.lark.imcollab.common.domain.TaskStatus;
+import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.common.model.entity.TaskPlanGraph;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.StepTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
@@ -193,5 +197,66 @@ class TaskRuntimeServiceTest {
         assertThat(running.getEndedAt()).isNotNull();
         assertThat(ready.getEndedAt()).isNotNull();
         verify(stateStore, times(2)).saveStep(org.mockito.ArgumentMatchers.any(TaskStepRecord.class));
+    }
+
+    @Test
+    void reconcilePlanReadyProjectionReprojectsWhenRuntimeStillShowsOldExecutingPlan() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        TaskRepository taskRepository = mock(TaskRepository.class);
+        PlanGraphBuilder planGraphBuilder = mock(PlanGraphBuilder.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        TaskRecord staleTask = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.EXECUTING)
+                .currentStage(PlanningPhaseEnum.EXECUTING.name())
+                .planVersion(1)
+                .build();
+        TaskStepRecord staleStep = TaskStepRecord.builder()
+                .taskId("task-1")
+                .stepId("card-001")
+                .status(StepStatusEnum.RUNNING)
+                .build();
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .planVersion(2)
+                .planBlueprint(PlanBlueprint.builder()
+                        .planCards(List.of(
+                                UserPlanCard.builder().cardId("card-001").title("生成文档").type(PlanCardTypeEnum.DOC).status("COMPLETED").build(),
+                                UserPlanCard.builder().cardId("card-002").title("生成PPT").type(PlanCardTypeEnum.PPT).status("PENDING").build()
+                        ))
+                        .build())
+                .build();
+        TaskPlanGraph graph = TaskPlanGraph.builder()
+                .taskId("task-1")
+                .goal("生成文档和PPT")
+                .steps(List.of(
+                        TaskStepRecord.builder().stepId("card-001").status(StepStatusEnum.COMPLETED).build(),
+                        TaskStepRecord.builder().stepId("card-002").status(StepStatusEnum.READY).build()
+                ))
+                .build();
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(staleTask));
+        when(stateStore.findStepsByTaskId("task-1")).thenReturn(List.of(staleStep));
+        when(planGraphBuilder.build("task-1", session.getPlanBlueprint())).thenReturn(graph);
+        ExecutionContractFactory executionContractFactory = mock(ExecutionContractFactory.class);
+        when(executionContractFactory.build(session)).thenReturn(ExecutionContract.builder()
+                .rawInstruction("生成文档和PPT")
+                .clarifiedInstruction("生成文档和PPT")
+                .taskBrief("生成文档和PPT")
+                .allowedArtifacts(List.of("DOC", "PPT"))
+                .build());
+
+        TaskRuntimeService service = new TaskRuntimeService(
+                stateStore,
+                planGraphBuilder,
+                new ObjectMapper(),
+                taskRepository,
+                executionContractFactory,
+                projectionService
+        );
+
+        service.reconcilePlanReadyProjection(session, TaskEventTypeEnum.PLAN_ADJUSTED);
+
+        verify(projectionService).projectPlanGraph(session, graph, TaskEventTypeEnum.PLAN_ADJUSTED);
     }
 }

@@ -204,6 +204,23 @@ class DefaultImTaskCommandFacadeTest {
     }
 
     @Test
+    void confirmExecutionSkipsArtifactResetWhenFollowUpNeedsPreserveExistingArtifacts() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .preserveExistingArtifactsOnExecution(true)
+                        .build())
+                .build();
+        when(sessionService.get("task-1")).thenReturn(session);
+
+        facade.confirmExecution("task-1");
+
+        verify(taskArtifactResetService, never()).clearGeneratedArtifactsBeforeExecution("task-1");
+        assertThat(session.getIntakeState().isPreserveExistingArtifactsOnExecution()).isFalse();
+    }
+
+    @Test
     void retryExecutionKeepsNonFailedTaskUnchanged() {
         PlanTaskSession ready = PlanTaskSession.builder()
                 .taskId("task-1")

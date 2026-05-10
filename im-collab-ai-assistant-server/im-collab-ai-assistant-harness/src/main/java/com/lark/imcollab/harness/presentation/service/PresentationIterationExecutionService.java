@@ -6,6 +6,7 @@ import com.lark.imcollab.common.model.dto.PresentationIterationRequest;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
 import com.lark.imcollab.common.model.entity.PresentationEditOperation;
 import com.lark.imcollab.common.model.entity.PresentationSnapshot;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationStatus;
@@ -98,8 +99,11 @@ public class PresentationIterationExecutionService implements PresentationIterat
         requireValue(request == null ? null : request.getTaskId(), "taskId");
         String presentation = firstNonBlank(request.getPresentationId(), request.getPresentationUrl());
         requireValue(presentation, "presentationId/presentationUrl");
-        String instruction = firstNonBlank(request.getInstruction(), "补充用户修改说明");
-        PresentationEditIntent intent = intentFacade == null ? null : intentFacade.resolve(instruction);
+        String instruction = buildInstructionWithWorkspaceContext(
+                firstNonBlank(request.getInstruction(), "补充用户修改说明"),
+                request == null ? null : request.getWorkspaceContext()
+        );
+        PresentationEditIntent intent = intentFacade == null ? null : intentFacade.resolve(instruction, request == null ? null : request.getWorkspaceContext());
         if (intent != null && intent.isClarificationNeeded()) {
             throw new IllegalArgumentException(firstNonBlank(intent.getClarificationHint(), "请明确要改第几页和改成什么内容"));
         }
@@ -147,6 +151,33 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 .summary(joinSummary(summarySegments))
                 .modifiedSlides(new ArrayList<>(modifiedSlideIds))
                 .build();
+    }
+
+    private String buildInstructionWithWorkspaceContext(String instruction, WorkspaceContext workspaceContext) {
+        String base = firstNonBlank(instruction, "补充用户修改说明");
+        if (workspaceContext == null) {
+            return base;
+        }
+        List<String> selectedMessages = workspaceContext.getSelectedMessages();
+        boolean hasMessages = selectedMessages != null && !selectedMessages.isEmpty();
+        boolean hasTimeRange = hasText(workspaceContext.getTimeRange());
+        if (!hasMessages && !hasTimeRange) {
+            return base;
+        }
+        StringBuilder builder = new StringBuilder(base);
+        builder.append("\n\n已拉取的历史消息素材：");
+        if (hasTimeRange) {
+            builder.append("\n时间范围：").append(workspaceContext.getTimeRange());
+        }
+        if (hasMessages) {
+            builder.append("\n消息内容：\n");
+            for (String message : selectedMessages) {
+                if (hasText(message)) {
+                    builder.append("- ").append(message.trim()).append("\n");
+                }
+            }
+        }
+        return builder.toString().trim();
     }
 
     private OperationResult executeOperation(String presentationId, String presentationXml, PresentationEditOperation operation) {
@@ -373,6 +404,9 @@ public class PresentationIterationExecutionService implements PresentationIterat
     private SlideRef slideAtPage(Deck deck, Integer pageIndex) {
         if (pageIndex == null) {
             throw new IllegalArgumentException("请明确要操作第几页");
+        }
+        if (pageIndex < 0) {
+            return deck.slides().get(deck.slides().size() - 1);
         }
         if (pageIndex < 1 || pageIndex > deck.slides().size()) {
             throw new IllegalArgumentException("PPT 中不存在第 " + pageIndex + " 页");

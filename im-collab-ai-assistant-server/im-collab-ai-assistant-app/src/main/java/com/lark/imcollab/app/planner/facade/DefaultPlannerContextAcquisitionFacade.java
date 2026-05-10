@@ -109,7 +109,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             Set<String> sourceRefs
     ) {
         String chatId = firstNonBlank(source.getChatId(), workspaceContext == null ? null : workspaceContext.getChatId());
-        String query = firstNonBlank(source.getQuery(), extractKeywordFromSelection(source.getSelectionInstruction()));
+        String query = sanitizeSearchQuery(firstNonBlank(source.getQuery(), extractKeywordFromSelection(source.getSelectionInstruction())));
         if (chatId == null || chatId.isBlank()) {
             return;
         }
@@ -225,10 +225,11 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             return null;
         }
         String normalized = normalize(text);
-        Matcher pointMatcher = Pattern.compile("(\\d{1,4})\\s*(分钟|分|小时|时|天|日)前").matcher(text);
+        Matcher pointMatcher = Pattern.compile("(?:前\\s*(\\d{1,4})\\s*(分钟|分|小时|时|天|日)|(\\d{1,4})\\s*(分钟|分|小时|时|天|日)前)").matcher(text);
         if (pointMatcher.find()) {
-            long amount = Long.parseLong(pointMatcher.group(1));
-            long seconds = toSeconds(amount, pointMatcher.group(2));
+            long amount = Long.parseLong(firstNonBlank(pointMatcher.group(1), pointMatcher.group(3)));
+            String unit = firstNonBlank(pointMatcher.group(2), pointMatcher.group(4));
+            long seconds = toSeconds(amount, unit);
             Instant center = Instant.now().minusSeconds(seconds);
             long radius = Math.min(Math.max(300L, seconds / 10), 1800L);
             return new TimeRange(
@@ -277,7 +278,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         String normalized = normalize(text);
         return normalized.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论).*")
                 || Pattern.compile("(最近|近)\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)").matcher(text).find()
-                || Pattern.compile("\\d{1,4}\\s*(分钟|分|小时|时|天|日)前").matcher(text).find();
+                || Pattern.compile("(?:前\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)|\\d{1,4}\\s*(分钟|分|小时|时|天|日)前)").matcher(text).find();
     }
 
     private String extractKeywordFromSelection(String value) {
@@ -300,6 +301,21 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
             }
         }
         return "";
+    }
+
+    private String sanitizeSearchQuery(String value) {
+        if (!hasText(value)) {
+            return "";
+        }
+        String cleaned = value.trim()
+                .replaceAll("^(前\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)|\\d{1,4}\\s*(分钟|分|小时|时|天|日)前)+", "")
+                .replaceAll("^(消息|聊天|记录|消息总结|聊天总结|对话总结)+", "")
+                .replaceAll("(消息|聊天|记录|消息总结|聊天总结|对话总结)+$", "")
+                .trim();
+        if (cleaned.matches("^(前\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)|\\d{1,4}\\s*(分钟|分|小时|时|天|日)前)$")) {
+            return "";
+        }
+        return cleaned;
     }
 
     private String joinRange(String start, String end) {

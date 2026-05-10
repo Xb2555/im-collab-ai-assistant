@@ -100,7 +100,7 @@ export const imApi = {
   // 1. 获取群聊列表
 getJoinedChats: async (): Promise<GetChatsResponse> => {
     const response = await apiClient.get<ApiResponse<GetChatsResponse>>(
-      '/api/im/chats/joined',
+      '/im/chats/joined',
       {
         params: { 
           containsCurrentBot: true, 
@@ -116,7 +116,7 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
   // 2. 创建群聊
   createChat: async (data: CreateChatRequest): Promise<CreateChatResponse> => {
     const response = await apiClient.post<ApiResponse<CreateChatResponse>>(
-      '/api/im/chats/createChat', 
+      '/im/chats/createChat', 
       data
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
@@ -127,7 +127,7 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
   searchUsers: async (query: string): Promise<UserItem[]> => {
     if (!query) return [];
     const response = await apiClient.get<ApiResponse<{ items: UserItem[] }>>(
-      '/api/im/organization-users/search', 
+      '/im/organization-users/search', 
       { params: { query, pageSize: 10 } }
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
@@ -138,7 +138,7 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
   // 4. 发送群消息
   sendMessage: async (data: SendMessageRequest): Promise<any> => {
     const response = await apiClient.post<ApiResponse<any>>(
-      '/api/im/messages/send', 
+      '/im/messages/send', 
       data
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
@@ -148,7 +148,7 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
   //  5. 新增：邀请用户加入群聊
   invite: async (data: InviteChatRequest): Promise<InviteChatResponse> => {
     const response = await apiClient.post<ApiResponse<InviteChatResponse>>(
-      '/api/im/chats/invite',
+      '/im/chats/invite',
       data
     );
     if (response.data.code !== 0) throw new Error(response.data.message);
@@ -161,7 +161,7 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
     const { signal, ...restParams } = params; 
     
     const response = await apiClient.get<ApiResponse<LarkMessageHistoryResponse>>(
-      '/api/im/messages/history',
+      '/im/messages/history',
       { 
         params: restParams,
         signal // ✨ 新增：把取消信号传递给 Axios
@@ -174,7 +174,7 @@ getJoinedChats: async (): Promise<GetChatsResponse> => {
   //  7. 获取群分享链接
   createShareLink: async (data: CreateChatShareLinkRequest): Promise<ChatShareLinkData> => {
     const response = await apiClient.post<ApiResponse<ChatShareLinkData>>(
-      `/api/im/chats/${encodeURIComponent(data.chatId)}/link`,
+      `/im/chats/${encodeURIComponent(data.chatId)}/link`,
       { validityPeriod: data.validityPeriod || 'week' }
     );
     if (response.data.code !== 0) throw new Error(response.data.message);

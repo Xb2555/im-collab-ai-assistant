@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.facade;
 
 import com.lark.imcollab.common.facade.PlannerPlanFacade;
+import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
@@ -9,6 +10,8 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.intent.IntentRoutingResult;
 import com.lark.imcollab.planner.intent.LlmIntentClassifier;
+import com.lark.imcollab.planner.service.ConversationTaskStateService;
+import com.lark.imcollab.planner.service.PendingFollowUpRecommendationMatcher;
 import com.lark.imcollab.planner.service.PlannerConversationService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskSessionResolution;
@@ -16,6 +19,7 @@ import com.lark.imcollab.planner.service.TaskSessionResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -30,6 +34,8 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     private final TaskSessionResolver taskSessionResolver;
     private final PlannerSessionService plannerSessionService;
     private final LlmIntentClassifier llmIntentClassifier;
+    private final ConversationTaskStateService conversationTaskStateService;
+    private final PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher;
 
     @Override
     public String previewImmediateReply(
@@ -44,6 +50,10 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         }
         TaskSessionResolution resolution = taskSessionResolver.resolve(taskId, workspaceContext);
         PlanTaskSession session = resolution.existingSession() ? safeGet(resolution.taskId()) : null;
+        String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput);
+        if (!followUpPreview.isBlank()) {
+            return followUpPreview;
+        }
         Optional<IntentRoutingResult> result = llmIntentClassifier.classify(session, effectiveInput, resolution.existingSession());
         if (result.isEmpty()) {
             return "";
@@ -91,6 +101,49 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             case ANSWER_CLARIFICATION -> "🧩 你的补充我接上了，我会带着这条信息继续往下处理。";
             default -> "";
         };
+    }
+
+    private String previewPendingFollowUpImmediateReply(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            String effectiveInput
+    ) {
+        if (conversationTaskStateService == null
+                || pendingFollowUpRecommendationMatcher == null
+                || resolution == null
+                || resolution.continuationKey() == null
+                || effectiveInput == null
+                || effectiveInput.isBlank()) {
+            return "";
+        }
+        if (hasPendingSelection(session)) {
+            return "";
+        }
+        List<PendingFollowUpRecommendation> recommendations = conversationTaskStateService.find(resolution.continuationKey())
+                .map(state -> state.getPendingFollowUpRecommendations())
+                .orElse(List.of());
+        if (recommendations == null || recommendations.isEmpty()) {
+            return "";
+        }
+        PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
+                effectiveInput,
+                recommendations,
+                false
+        );
+        if (match.type() == PendingFollowUpRecommendationMatcher.Type.SELECTED) {
+            return "🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。";
+        }
+        if (match.type() == PendingFollowUpRecommendationMatcher.Type.ASK_SELECTION) {
+            return "🔢 我这边有多个后续动作，请直接回复编号。";
+        }
+        return "";
+    }
+
+    private boolean hasPendingSelection(PlanTaskSession session) {
+        return session != null
+                && session.getIntakeState() != null
+                && (session.getIntakeState().getPendingTaskSelection() != null
+                || session.getIntakeState().getPendingArtifactSelection() != null);
     }
 
     private PlanTaskSession safeGet(String taskId) {

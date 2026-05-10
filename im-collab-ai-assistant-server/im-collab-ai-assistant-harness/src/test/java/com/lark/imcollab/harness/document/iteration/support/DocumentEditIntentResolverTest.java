@@ -97,7 +97,7 @@ class DocumentEditIntentResolverTest {
     }
 
     @Test
-    void fencedJsonWithoutAnchorIsRejectedInsteadOfBeingPatchedLocally() {
+    void sectionInsertWithoutExplicitAnchorBlockIsNormalizedToSectionAnchor() {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn("""
                 ```json
@@ -112,8 +112,11 @@ class DocumentEditIntentResolverTest {
 
         DocumentEditIntent intent = resolver.resolve("在1.1 游客规模与收入中新增一段文字：介绍东方明珠");
 
-        assertThat(intent.isClarificationNeeded()).isTrue();
-        assertThat(intent.getClarificationHint()).contains("缺少明确锚点");
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR);
+        assertThat(intent.getAnchorSpec()).isNotNull();
+        assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
+        assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("1.1");
     }
 
     @Test
@@ -438,7 +441,6 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
         assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
         assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("2.3");
-        assertThat(intent.getAnchorSpec().getRelativePosition()).isEqualTo("AFTER");
     }
 
     @Test
@@ -466,7 +468,6 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getAnchorSpec().getAnchorKind()).isEqualTo(DocumentAnchorKind.SECTION);
         assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
         assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("2.3");
-        assertThat(intent.getAnchorSpec().getRelativePosition()).isEqualTo("BEFORE");
     }
 
     @Test
@@ -525,4 +526,26 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
         assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("1.3");
     }
+
+    @Test
+    void naturalAppendSectionInstructionIsNormalizedToDocumentEndAppend() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT",
+                  "semanticAction": "INSERT_INLINE_TEXT",
+                  "clarificationNeeded": true,
+                  "clarificationHint": "请说明插入到哪里"
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("再加一小节关于项目总结的内容，随意编造即可");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getIntentType()).isEqualTo(com.lark.imcollab.common.model.enums.DocumentIterationIntentType.INSERT);
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.APPEND_SECTION_TO_DOCUMENT_END);
+        assertThat(intent.getAnchorSpec()).isNull();
+    }
+
 }

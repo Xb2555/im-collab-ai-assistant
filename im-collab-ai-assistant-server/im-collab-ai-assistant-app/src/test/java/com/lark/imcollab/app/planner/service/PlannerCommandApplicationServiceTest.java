@@ -14,6 +14,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
+import com.lark.imcollab.planner.service.FollowUpRecommendationExecutionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
@@ -47,6 +48,7 @@ class PlannerCommandApplicationServiceTest {
     @Mock private ImTaskCommandFacade taskCommandFacade;
     @Mock private TaskRuntimeService taskRuntimeService;
     @Mock private PlannerSessionService sessionService;
+    @Mock private FollowUpRecommendationExecutionService followUpRecommendationExecutionService;
     @Mock private DocumentArtifactIterationFacade documentArtifactIterationFacade;
 
     private PlannerCommandApplicationService service;
@@ -60,8 +62,39 @@ class PlannerCommandApplicationServiceTest {
                 taskCommandFacade,
                 taskRuntimeService,
                 sessionService,
+                followUpRecommendationExecutionService,
                 provider(documentArtifactIterationFacade)
         );
+    }
+
+    @Test
+    void executeRecommendationUsesSharedFollowUpExecutor() {
+        PlanTaskSession updated = new PlanTaskSession();
+        updated.setTaskId("task-1");
+        updated.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .selectedMessages(java.util.List.of("补充上下文"))
+                .build();
+        when(followUpRecommendationExecutionService.executeGuiRecommendation(
+                "task-1",
+                "GENERATE_PPT_FROM_DOC",
+                workspaceContext
+        )).thenReturn(updated);
+
+        PlanTaskSession result = service.executeRecommendation(
+                "task-1",
+                "GENERATE_PPT_FROM_DOC",
+                workspaceContext
+        );
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(updated);
+        verify(followUpRecommendationExecutionService).executeGuiRecommendation(
+                "task-1",
+                "GENERATE_PPT_FROM_DOC",
+                workspaceContext
+        );
+        verify(taskBridgeService).ensureTask(updated);
+        verify(taskRuntimeService).reconcilePlanReadyProjection(updated, TaskEventTypeEnum.PLAN_ADJUSTED);
     }
 
     @Test

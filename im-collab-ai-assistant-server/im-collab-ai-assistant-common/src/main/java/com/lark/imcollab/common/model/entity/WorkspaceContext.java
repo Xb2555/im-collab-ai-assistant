@@ -34,6 +34,9 @@ public class WorkspaceContext implements Serializable {
     @Schema(description = "文档引用列表")
     private List<String> docRefs;
 
+    @Schema(description = "前序产物引用列表")
+    private List<SourceArtifactRef> sourceArtifacts;
+
     @Schema(description = "会话 ID")
     private String chatId;
 

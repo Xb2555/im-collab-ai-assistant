@@ -119,6 +119,23 @@ public class PlannerPromptFacade {
         return renderRoleAware("result-advice-instruction.md", session, variables == null ? Map.of() : variables);
     }
 
+    public String nextStepRecommendationPrompt(PlanTaskSession session) {
+        return renderComposedPrompt(
+                "next-step-recommendation-system.md",
+                "next-step-recommendation-examples.md",
+                session,
+                Map.of()
+        );
+    }
+
+    public String nextStepRecommendationInstruction(PlanTaskSession session, Map<String, String> variables) {
+        return renderRoleAware(
+                "next-step-recommendation-instruction.md",
+                session,
+                variables == null ? Map.of() : variables
+        );
+    }
+
     public String summarizationPrompt() {
         String promptPath = resolveTemplatePath(null, null, "summarization-prompt.md");
         return templateService.render(promptPath, Map.of());

@@ -310,6 +310,14 @@ public class ExecutionContractFactory {
         refs.addAll(defaultList(sourceScope.getDocRefs()));
         refs.addAll(defaultList(sourceScope.getAttachmentRefs()));
         refs.addAll(defaultList(sourceScope.getSelectedMessageIds()));
+        if (sourceScope.getSourceArtifacts() != null) {
+            refs.addAll(sourceScope.getSourceArtifacts().stream()
+                    .map(artifact -> firstNonBlank(
+                            artifact == null ? null : artifact.getUrl(),
+                            artifact == null ? null : artifact.getArtifactId()))
+                    .filter(value -> value != null && !value.isBlank())
+                    .toList());
+        }
         return refs;
     }
 

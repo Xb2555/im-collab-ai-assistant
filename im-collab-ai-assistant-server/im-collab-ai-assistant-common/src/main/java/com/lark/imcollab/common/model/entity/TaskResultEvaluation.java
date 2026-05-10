@@ -37,6 +37,9 @@ public class TaskResultEvaluation implements Serializable {
     @Schema(description = "建议列表")
     private List<String> suggestions;
 
+    @Schema(description = "任务完成后的下一步推荐")
+    private List<NextStepRecommendation> nextStepRecommendations;
+
     @Schema(description = "评估时间")
     @Builder.Default
     private Instant evaluatedAt = Instant.now();

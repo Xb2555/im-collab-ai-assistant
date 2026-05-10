@@ -37,6 +37,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
     private static final Pattern INSERT_AFTER_PATTERN = Pattern.compile("(后插入|后新增|后面插入|之后插入)");
     private static final Pattern INSERT_BEFORE_PATTERN = Pattern.compile("(前插入|前新增|前面插入|之前插入)");
     private static final Pattern INSERTED_SECTION_CANDIDATE_PATTERN = Pattern.compile("(插入|新增)\\s*(?:一章|一节|一部分|第[一二三四五六七八九十百千万0-9]+[章节部分]|\\d+(?:\\.\\d+)+)");
+    private static final Pattern APPEND_SECTION_TO_END_PATTERN = Pattern.compile("(再加|再补|新增|追加|补充|最后补|最后加|末尾补|末尾加).*(一节|一小节|一个小节|一个章节|小节|章节)");
     private static final Pattern DECIMAL_SECTION_HEADING_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)\\s*([^，。；,;\\n]+)");
     private static final Pattern DECIMAL_SECTION_PATH_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)+)");
     private static final Pattern CHAPTER_THEN_SECTION_PATTERN = Pattern.compile("第([一二三四五六七八九十百千万0-9]+)章第([一二三四五六七八九十百千万0-9]+)节");
@@ -53,7 +54,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
 
     public DocumentEditIntent resolve(String instruction, WorkspaceContext workspaceContext) {
         try {
-            String response = chatModel.call(buildPrompt(instruction));
+            String response = chatModel.call(buildPrompt(instruction, workspaceContext));
             Map<String, Object> payload = objectMapper.readValue(stripCodeFences(response), new TypeReference<>() {});
             DocumentEditIntent parsedIntent = fromPayload(instruction, payload);
             DocumentEditIntent validatedIntent = validate(parsedIntent);
@@ -172,6 +173,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
             log.info("DOC_ITER_INTENT validation_null_intent");
             return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
         }
+        intent = normalizeAppendSectionToDocumentEnd(intent);
         intent = normalizeSectionInsertIntent(intent);
         intent = normalizeSectionInlineInsertIntent(intent);
         intent = normalizeSectionAnchorIntent(intent);
@@ -246,7 +248,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         return intent;
     }
 
-    private String buildPrompt(String instruction) {
+    private String buildPrompt(String instruction, WorkspaceContext workspaceContext) {
         String intentTypes = Arrays.stream(DocumentIterationIntentType.values()).map(Enum::name).collect(Collectors.joining("|"));
         String semanticActions = Arrays.stream(DocumentSemanticActionType.values()).map(Enum::name).collect(Collectors.joining("|"));
         String anchorKinds = Arrays.stream(DocumentAnchorKind.values()).map(Enum::name).collect(Collectors.joining("|"));
@@ -312,10 +314,36 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
                    不允许把“总体复苏态势中的数据”“客源市场结构那部分内容”这类抽象概括写入 quotedText。
                 8. 如果用户已经给出章节号/章节标题，同时又描述该章节里的内容问题，应保留章节锚点，不要凭空构造 quotedText 锚点。
                 9. 如果既不能稳定识别章节，也没有真实可引用原文，返回 clarificationNeeded=true，不要编造 anchorSpec。
+                10. 如果用户明确要求“在文档里加/补/新增一个小节或章节”，即使没有给锚点，也应优先识别为 APPEND_SECTION_TO_DOCUMENT_END，而不是要求再次澄清。
+                11. 如果用户说“关于前10分钟的消息总结”“基于最近聊天记录补一节总结”之类，历史消息只是写作素材来源，不等于锚点缺失；只要新增位置默认是文末追加，就不要因为没有章节锚点而澄清。
+
+                已有上下文素材：
+                %s
 
                 用户指令：%s
-                """.formatted(intentTypes, semanticActions, riskLevels, anchorKinds, matchModes, assetTypes, sourceTypes, instruction);
+                """.formatted(intentTypes, semanticActions, riskLevels, anchorKinds, matchModes, assetTypes, sourceTypes,
+                summarizeWorkspaceContext(workspaceContext), instruction);
         return prompt;
+    }
+
+    private String summarizeWorkspaceContext(WorkspaceContext workspaceContext) {
+        if (workspaceContext == null) {
+            return "无";
+        }
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        if (hasText(workspaceContext.getTimeRange())) {
+            parts.add("timeRange=" + workspaceContext.getTimeRange());
+        }
+        if (workspaceContext.getSelectedMessages() != null && !workspaceContext.getSelectedMessages().isEmpty()) {
+            parts.add("selectedMessages=" + workspaceContext.getSelectedMessages().stream()
+                    .filter(this::hasText)
+                    .limit(6)
+                    .collect(Collectors.joining(" | ")));
+        }
+        if (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty()) {
+            parts.add("docRefs=" + String.join(",", workspaceContext.getDocRefs()));
+        }
+        return parts.isEmpty() ? "无" : String.join("\n", parts);
     }
 
     private String stripCodeFences(String response) {
@@ -422,6 +450,9 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         }
         DocumentSemanticActionType normalizedAction = normalizeInsertSemanticAction(intent.getUserInstruction(), intent.getSemanticAction());
         DocumentAnchorSpec normalizedAnchor = buildSectionAnchor(sectionReference);
+        if (!hasText(normalizedAnchor.getRelativePosition())) {
+            normalizedAnchor.setRelativePosition(detectRelativePosition(intent.getUserInstruction()));
+        }
         log.info("DOC_ITER_INTENT normalize_insert instruction='{}' fromAction={} toAction={} headingTitle='{}' headingNumber='{}' outlinePath='{}' ordinal={} ordinalScope={}",
                 intent.getUserInstruction(),
                 intent.getSemanticAction(),
@@ -434,6 +465,34 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         intent.setIntentType(DocumentIterationIntentType.INSERT);
         intent.setSemanticAction(normalizedAction);
         intent.setAnchorSpec(normalizedAnchor);
+        return intent;
+    }
+
+    private DocumentEditIntent normalizeAppendSectionToDocumentEnd(DocumentEditIntent intent) {
+        if (intent == null
+                || !hasText(intent.getUserInstruction())
+                || intent.getIntentType() != DocumentIterationIntentType.INSERT) {
+            return intent;
+        }
+        String instruction = intent.getUserInstruction();
+        if (!APPEND_SECTION_TO_END_PATTERN.matcher(instruction).find()) {
+            return intent;
+        }
+        if (INSERT_AFTER_PATTERN.matcher(instruction).find() || INSERT_BEFORE_PATTERN.matcher(instruction).find()) {
+            return intent;
+        }
+        if (mentionsSectionReference(instruction)) {
+            return intent;
+        }
+        log.info("DOC_ITER_INTENT normalize_append_section_to_end instruction='{}' fromAction={} toAction={}",
+                instruction,
+                intent.getSemanticAction(),
+                DocumentSemanticActionType.APPEND_SECTION_TO_DOCUMENT_END);
+        intent.setIntentType(DocumentIterationIntentType.INSERT);
+        intent.setSemanticAction(DocumentSemanticActionType.APPEND_SECTION_TO_DOCUMENT_END);
+        intent.setAnchorSpec(null);
+        intent.setClarificationNeeded(false);
+        intent.setClarificationHint(null);
         return intent;
     }
 
@@ -659,6 +718,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         if (!hasText(instruction)) {
             return null;
         }
+        String relativePosition = detectRelativePosition(instruction);
         String anchorSegment = instruction;
         java.util.regex.Matcher afterMatcher = INSERT_AFTER_PATTERN.matcher(instruction);
         java.util.regex.Matcher beforeMatcher = INSERT_BEFORE_PATTERN.matcher(instruction);
@@ -668,6 +728,19 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
             anchorSegment = instruction.substring(0, beforeMatcher.start()).trim();
         }
         SectionReference sectionReference = extractSectionReference(anchorSegment);
+        if (sectionReference != null && !hasText(sectionReference.relativePosition()) && hasText(relativePosition)) {
+            return new SectionReference(
+                    sectionReference.headingTitle(),
+                    sectionReference.headingNumber(),
+                    sectionReference.outlinePathText(),
+                    sectionReference.outlinePathNumbers(),
+                    sectionReference.structuralOrdinal(),
+                    sectionReference.structuralOrdinalScope(),
+                    relativePosition,
+                    sectionReference.scopeHint(),
+                    sectionReference.parentHeadingNumber()
+            );
+        }
         return sectionReference != null ? sectionReference : extractSectionReference(instruction);
     }
 

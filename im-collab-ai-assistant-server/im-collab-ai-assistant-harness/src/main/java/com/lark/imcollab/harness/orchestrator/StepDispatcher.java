@@ -31,23 +31,34 @@ public class StepDispatcher {
             return;
         }
         if (task.getType() == TaskType.WRITE_SLIDES) {
-            presentationExecutionService.execute(task.getTaskId());
-            dispatchSummaryIfReady(task);
-            return;
-        }
-        if (task.getType() == TaskType.MIXED) {
-            documentExecutionService.execute(task.getTaskId());
-            if (!isDocumentStepCompleted(task.getTaskId())) {
-                return;
+            if (!isPresentationStepCompleted(task.getTaskId())) {
+                presentationExecutionService.execute(task.getTaskId());
             }
-            presentationExecutionService.execute(task.getTaskId());
             if (!isPresentationStepCompleted(task.getTaskId())) {
                 return;
             }
             dispatchSummaryIfReady(task);
             return;
         }
-        documentExecutionService.execute(task.getTaskId());
+        if (task.getType() == TaskType.MIXED) {
+            if (!isDocumentStepCompleted(task.getTaskId())) {
+                documentExecutionService.execute(task.getTaskId());
+            }
+            if (!isDocumentStepCompleted(task.getTaskId())) {
+                return;
+            }
+            if (!isPresentationStepCompleted(task.getTaskId())) {
+                presentationExecutionService.execute(task.getTaskId());
+            }
+            if (!isPresentationStepCompleted(task.getTaskId())) {
+                return;
+            }
+            dispatchSummaryIfReady(task);
+            return;
+        }
+        if (!isDocumentStepCompleted(task.getTaskId())) {
+            documentExecutionService.execute(task.getTaskId());
+        }
         if (!isDocumentStepCompleted(task.getTaskId())) {
             return;
         }

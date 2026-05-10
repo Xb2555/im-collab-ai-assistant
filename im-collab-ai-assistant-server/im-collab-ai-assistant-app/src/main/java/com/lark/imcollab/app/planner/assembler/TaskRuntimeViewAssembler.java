@@ -3,18 +3,23 @@ package com.lark.imcollab.app.planner.assembler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.NextStepRecommendation;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskRecord;
+import com.lark.imcollab.common.model.entity.TaskResultEvaluation;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
+import com.lark.imcollab.common.model.vo.NextStepRecommendationVO;
 import com.lark.imcollab.common.model.vo.TaskActionVO;
 import com.lark.imcollab.common.model.vo.TaskArtifactVO;
 import com.lark.imcollab.common.model.vo.TaskDetailVO;
+import com.lark.imcollab.common.model.vo.TaskEvaluationVO;
 import com.lark.imcollab.common.model.vo.TaskEventVO;
 import com.lark.imcollab.common.model.vo.TaskStepVO;
 import com.lark.imcollab.common.model.vo.TaskSummaryVO;
+import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -22,9 +27,11 @@ import java.util.List;
 @Component
 public class TaskRuntimeViewAssembler {
 
+    private final PlannerStateStore stateStore;
     private final ObjectMapper objectMapper;
 
-    public TaskRuntimeViewAssembler(ObjectMapper objectMapper) {
+    public TaskRuntimeViewAssembler(PlannerStateStore stateStore, ObjectMapper objectMapper) {
+        this.stateStore = stateStore;
         this.objectMapper = objectMapper;
     }
 
@@ -37,7 +44,8 @@ public class TaskRuntimeViewAssembler {
                 activeSteps(snapshot.getSteps()).stream().map(this::toTaskStep).toList(),
                 defaultList(snapshot.getArtifacts()).stream().map(this::toTaskArtifact).toList(),
                 defaultList(snapshot.getEvents()).stream().map(this::toTaskEvent).toList(),
-                resolveActions(snapshot.getTask(), activeSteps(snapshot.getSteps()))
+                resolveActions(snapshot.getTask(), activeSteps(snapshot.getSteps())),
+                toTaskEvaluation(snapshot.getTask())
         );
     }
 
@@ -97,6 +105,73 @@ public class TaskRuntimeViewAssembler {
                 resolveEventMessage(event),
                 event.getCreatedAt()
         );
+    }
+
+    private TaskEvaluationVO toTaskEvaluation(TaskRecord task) {
+        if (task == null || stateStore == null || task.getTaskId() == null || task.getTaskId().isBlank()) {
+            return null;
+        }
+        if (task.getStatus() != TaskStatusEnum.COMPLETED) {
+            return null;
+        }
+        return stateStore.findLatestEvaluation(task.getTaskId())
+                .map(this::toTaskEvaluation)
+                .orElse(null);
+    }
+
+    private TaskEvaluationVO toTaskEvaluation(TaskResultEvaluation evaluation) {
+        return new TaskEvaluationVO(
+                enumName(evaluation.getVerdict()),
+                defaultList(evaluation.getSuggestions()),
+                defaultList(evaluation.getNextStepRecommendations()).stream()
+                        .map(recommendation -> toNextStepRecommendation(
+                                recommendation,
+                                evaluation.getVerdict() == com.lark.imcollab.common.model.enums.ResultVerdictEnum.PASS
+                        ))
+                        .toList()
+        );
+    }
+
+    private NextStepRecommendationVO toNextStepRecommendation(NextStepRecommendation recommendation, boolean executable) {
+        return new NextStepRecommendationVO(
+                enumName(recommendation.getCode()),
+                recommendation.getRecommendationId(),
+                recommendation.getTitle(),
+                recommendation.getReason(),
+                resolveActionLabel(recommendation),
+                executable && recommendation.getFollowUpMode() != null,
+                recommendation.getSuggestedUserInstruction(),
+                enumName(recommendation.getTargetDeliverable()),
+                enumName(recommendation.getFollowUpMode()),
+                recommendation.getTargetTaskId(),
+                recommendation.getSourceArtifactId(),
+                enumName(recommendation.getSourceArtifactType()),
+                recommendation.getPlannerInstruction(),
+                recommendation.getArtifactPolicy(),
+                recommendation.getPriority()
+        );
+    }
+
+    private String resolveActionLabel(NextStepRecommendation recommendation) {
+        if (recommendation == null) {
+            return "继续";
+        }
+        if (recommendation.getCode() != null) {
+            return switch (recommendation.getCode()) {
+                case GENERATE_PPT_FROM_DOC -> "生成 PPT";
+                case GENERATE_DOC_FROM_PPT -> "生成文档";
+                case GENERATE_SHAREABLE_SUMMARY -> "生成摘要";
+            };
+        }
+        if (recommendation.getTargetDeliverable() == null) {
+            return "继续";
+        }
+        return switch (recommendation.getTargetDeliverable()) {
+            case PPT -> "生成 PPT";
+            case DOC -> "生成文档";
+            case SUMMARY -> "生成摘要";
+            default -> "继续";
+        };
     }
 
     private TaskActionVO resolveActions(TaskRecord task, List<TaskStepRecord> steps) {

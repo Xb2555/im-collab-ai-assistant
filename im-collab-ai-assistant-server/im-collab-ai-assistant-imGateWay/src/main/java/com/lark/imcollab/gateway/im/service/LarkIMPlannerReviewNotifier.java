@@ -2,6 +2,7 @@ package com.lark.imcollab.gateway.im.service;
 
 import com.lark.imcollab.common.facade.TaskUserNotificationFacade;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.NextStepRecommendation;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
@@ -82,6 +83,7 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
             builder.append("我检查了一下，当前任务结果还需要处理。");
         }
         appendArtifacts(builder, snapshot == null ? List.of() : snapshot.getArtifacts());
+        appendNextStepRecommendations(builder, evaluation);
         String status = replyFormatter.status(shareableStatusSnapshot(snapshot));
         if (hasText(status)) {
             builder.append("\n\n").append(status);
@@ -186,8 +188,37 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
         if (!hasText(preview)) {
             return;
         }
-        builder.append("\n\n").append(firstNonBlank(summary.getTitle(), "SUMMARY 结果")).append("：\n")
+        String label = hasText(summary == null ? null : summary.getTitle())
+                ? "SUMMARY（" + summary.getTitle().trim() + "）"
+                : "SUMMARY";
+        builder.append("\n\n").append(label).append("：\n")
                 .append(truncateSummaryBody(stripMarkdownHeading(preview), MAX_SUMMARY_BODY_CHARS));
+    }
+
+    private void appendNextStepRecommendations(StringBuilder builder, TaskResultEvaluation evaluation) {
+        if (evaluation == null || evaluation.getVerdict() != ResultVerdictEnum.PASS) {
+            return;
+        }
+        List<NextStepRecommendation> recommendations = evaluation.getNextStepRecommendations();
+        if (recommendations == null || recommendations.isEmpty()) {
+            return;
+        }
+        builder.append("\n\n推荐下一步：");
+        int index = 1;
+        for (NextStepRecommendation recommendation : recommendations.stream().limit(2).toList()) {
+            if (recommendation == null) {
+                continue;
+            }
+            builder.append("\n").append(index++).append(". ")
+                    .append(firstNonBlank(recommendation.getTitle(), "继续推进下一步"));
+            if (hasText(recommendation.getReason())) {
+                builder.append("：").append(recommendation.getReason().trim());
+            }
+            if (hasText(recommendation.getSuggestedUserInstruction())) {
+                builder.append("\n  直接回复：")
+                        .append(recommendation.getSuggestedUserInstruction().trim());
+            }
+        }
     }
 
     private void appendFailureDetails(StringBuilder builder, TaskRuntimeSnapshot snapshot) {
@@ -278,9 +309,17 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
         return TaskRuntimeSnapshot.builder()
                 .task(snapshot.getTask())
                 .steps(snapshot.getSteps())
-                .artifacts(shareableArtifacts(snapshot.getArtifacts()))
+                .artifacts(statusVisibleArtifacts(snapshot.getArtifacts()))
                 .events(snapshot.getEvents())
                 .build();
+    }
+
+    private List<ArtifactRecord> statusVisibleArtifacts(List<ArtifactRecord> artifacts) {
+        return artifacts == null ? List.of() : artifacts.stream()
+                .filter(artifact -> artifact != null)
+                .filter(artifact -> hasText(artifact.getUrl())
+                        || artifact.getType() == ArtifactTypeEnum.SUMMARY && hasText(artifact.getPreview()))
+                .toList();
     }
 
     private String stripMarkdownHeading(String value) {

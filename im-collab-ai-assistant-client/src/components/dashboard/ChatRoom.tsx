@@ -102,25 +102,120 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);  
   const abortControllerRef = useRef<AbortController | null>(null);
+// ======== 新增：滚动控制相关的 Ref 和函数 ========
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 滚动到底部的函数，behavior: 'auto' 是瞬间跳转，'smooth' 是平滑滑动
+  const scrollToBottom = (behavior: 'smooth' | 'auto' = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  };
+
+  // 监听 messages 的变化，只要消息列表更新，就自动滚动到底部
+  useEffect(() => {
+    scrollToBottom('smooth');
+  }, [messages]);
+  //  ================================================
+//  ============ 在这里插入新增的 loadLatestHistory 方法 ============ 
+  const loadLatestHistory = async () => {
+    if (!activeChatId) return;
+    try {
+      const historyRes = await imApi.getChatHistory({
+        containerIdType: 'chat',
+        containerId: activeChatId,
+        sortType: 'ByCreateTimeDesc',
+        pageSize: 20,
+      });
+      
+      const formattedHistory = historyRes.items.reverse().map((item: any) => ({
+        eventId: item.messageId || crypto.randomUUID(), // 防御性缺省
+        senderOpenId: item.senderId,
+        senderType: item.senderType,
+        senderName: item.senderName,
+        senderAvatar: item.senderAvatar,
+        content: parseFeishuContent(item.content, item.msgType),
+        createTime: item.createTime,
+      }));
+
+      // 去重并合并到当前视图
+      setMessages(prev => {
+        const newMessages = [...prev];
+        formattedHistory.forEach((newItem: any) => {
+          if (!newMessages.some(m => m.eventId === newItem.eventId)) {
+            newMessages.push(newItem);
+          }
+        });
+        // 保证时间顺序正确
+        return newMessages.sort((a, b) => Number(a.createTime) - Number(b.createTime));
+      });
+// 👇 拉取完历史数据后，瞬间滚到底部（延迟一点点等待DOM渲染完成）
+      setTimeout(() => scrollToBottom('auto'), 100);
+
+    } catch (err) {
+      console.warn('手动拉取历史消息失败', err);
+    }
+  };
+  //  ========================================================= 
 
   // 1. 发送消息
+// 1. 发送消息 (替换为乐观更新版)
   const handleSendMessage = async () => {
     if (!inputText.trim() || !activeChatId) return;
-    try {
+    
+    const currentText = inputText.trim();
+    setInputText(''); // ✨ 立即清空输入框，响应用户操作
+
+    // ✨ 乐观更新：立刻在本地造一条假消息上屏
+    const tempEventId = `temp-${crypto.randomUUID()}`;
+    const optimisticMsg = {
+      eventId: tempEventId,
+      senderOpenId: (user as any)?.openId || 'me',
+      senderType: 'user',
+      senderName: user?.name || '我',
+      senderAvatar: user?.avatarUrl,
+      content: currentText,
+      createTime: Date.now().toString(),
+      isOptimistic: true // 可选标识，用来给后续做半透明UI等扩展
+    };
+    
+    setMessages(prev => [...prev, optimisticMsg]);
+
+try {
       setIsSending(true);
-      await imApi.sendMessage({
+      // ✨ 1. 接收发送接口的返回值
+      const sendResult = await imApi.sendMessage({
         chatId: activeChatId,
-        text: inputText.trim(),
+        text: currentText,
         idempotencyKey: crypto.randomUUID(),
       });
-      setInputText('');
+      
+      // ✨ 2. 核心修复：拿到真实的 messageId 后，立刻替换掉本地假消息的 tempEventId
+      // ✨ 核心修复：防止乐观更新与 SSE 竞态导致重复
+      if (sendResult?.messageId) {
+        setMessages(prev => {
+          // 检查 SSE 是否已经把这条真实消息推过来了
+          const alreadyExists = prev.some(m => m.eventId === sendResult.messageId && m.eventId !== tempEventId);
+          if (alreadyExists) {
+            // 如果 SSE 已经抢先，我们直接删掉本地假消息
+            return prev.filter(m => m.eventId !== tempEventId);
+          }
+          // 如果 SSE 还没来，就把假消息的 ID 换成真实的
+          return prev.map(m => m.eventId === tempEventId ? { ...m, eventId: sendResult.messageId } : m);
+        });
+      }
+
+      // 延时触发兜底拉取
+      setTimeout(() => {
+        loadLatestHistory();
+      }, 800);
+
     } catch (e: any) {
       alert('发送失败: ' + e.message);
+      // 发送失败：撤回刚才乐观更新的假消息
+      setMessages(prev => prev.filter(m => m.eventId !== tempEventId));
     } finally {
       setIsSending(false);
     }
   };
-
   // 2. 唤醒 Agent
   const handleStartAgentPlan = async () => {
     if (!inputText.trim() || !activeChatId) return;
@@ -209,7 +304,7 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
       if (ctrl.signal.aborted) return;
 
       try {
-        await fetchEventSource(`${getBaseUrl()}/api/im/chats/${activeChatId}/messages/stream`, {
+        await fetchEventSource(`${getBaseUrl()}/im/chats/${activeChatId}/messages/stream`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -222,12 +317,17 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
             }
           },
           onmessage(event) {
-            if (event.event === 'message') {
+            // ✨ 增加一条控制台日志，用来抓内鬼（验证Nginx是否卡了消息）
+            console.log('[SSE 接收消息]', event.event, event.data);
+            
+            // ✨ 放宽校验，兼容 event 为空或为 message 的情况
+            if (!event.event || event.event === 'message') {
               try {
                 const msgData = JSON.parse(event.data);
                 if (msgData.state === 'connected') return;
 
                 setMessages((prev) => {
+                  // 如果已经存在（比如被刚才的乐观更新补拉拿到了），直接忽略去重
                   if (prev.some((m) => m.eventId === msgData.eventId || m.messageId === msgData.messageId)) return prev;
 
                   const parsedMsg = {
@@ -369,6 +469,8 @@ export function ChatRoom({ onOpenHistory }: ChatRoomProps) {
             );
           })
         )}
+        {/* 👇 ============ 新增：埋在消息列表最底部的锚点 ============ 👇 */}
+        <div ref={messagesEndRef} className="h-px w-full shrink-0" />
       </div>
 
       <div className="z-10 border-t border-zinc-200 p-4 bg-zinc-50 shrink-0">

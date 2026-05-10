@@ -100,26 +100,131 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
   const [isAgentDrawerOpen, setIsAgentDrawerOpen] = useState(false);
   const [agentInstruction, setAgentInstruction] = useState('');
 
-  // 👇 将其替换为浏览器兼容的类型：
+  //  将其替换为浏览器兼容的类型：
   const abortControllerRef = useRef<AbortController | null>(null);
   // ✨ 修复：使用 ReturnType 让 TS 自动推导环境定时器类型，兼容性最好
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  //  ======== 新增 ======== 
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const scrollToBottom = (behavior: 'smooth' | 'auto' = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  };
+
+  useEffect(() => {
+    scrollToBottom('smooth');
+  }, [messages]);
+  //  ======================= 
+//  ============ 插入补拉方法 ============ 
+  const loadLatestHistory = async () => {
+    if (!activeChatId) return;
+    try {
+      const historyRes = await imApi.getChatHistory({
+        containerIdType: 'chat',
+        containerId: activeChatId,
+        sortType: 'ByCreateTimeDesc',
+        pageSize: 20,
+      });
+      const formattedHistory = historyRes.items.reverse().map((item: any) => ({
+        eventId: item.messageId || crypto.randomUUID(),
+        senderOpenId: item.senderId,
+        senderType: item.senderType,
+        senderName: item.senderName,
+        senderAvatar: item.senderAvatar,
+        content: parseFeishuContent(item.content, item.msgType),
+        createTime: item.createTime,
+      }));
+      setMessages(prev => {
+        const newMessages = [...prev];
+        formattedHistory.forEach((newItem: any) => {
+          if (!newMessages.some(m => m.eventId === newItem.eventId)) newMessages.push(newItem);
+        });
+        return newMessages.sort((a, b) => Number(a.createTime) - Number(b.createTime));
+      });
+    } catch (err) {
+      console.warn('手动拉取历史消息失败', err);
+    }
+  };
+  // 👆 ===================================== 👆
   // 1. 发送常规消息
+// 1. 发送常规消息
   const handleSendMessage = async () => {
     if (!inputText.trim() || !activeChatId) return;
-    try {
+    
+    const currentText = inputText.trim();
+    setInputText(''); 
+
+    const tempEventId = `temp-${crypto.randomUUID()}`;
+    const optimisticMsg = {
+      eventId: tempEventId,
+      senderOpenId: (user as any)?.openId || 'me',
+      senderType: 'user',
+      senderName: user?.name || '我',
+      senderAvatar: user?.avatarUrl,
+      content: currentText,
+      createTime: Date.now().toString(),
+    };
+    setMessages(prev => [...prev, optimisticMsg]);
+
+try {
       setIsSending(true);
-      await imApi.sendMessage({
+      // ✨ 1. 接收返回值
+      const sendResult = await imApi.sendMessage({
         chatId: activeChatId,
-        text: inputText.trim(),
+        text: currentText,
         idempotencyKey: crypto.randomUUID(),
       });
-      setInputText('');
+      
+      // ✨ 2. 狸猫换太子：把临时 ID 换成真实 ID
+      // ✨ 核心修复：防止乐观更新与 SSE 竞态导致重复
+      if (sendResult?.messageId) {
+        setMessages(prev => {
+          // 检查 SSE 是否已经把这条真实消息推过来了
+          const alreadyExists = prev.some(m => m.eventId === sendResult.messageId && m.eventId !== tempEventId);
+          if (alreadyExists) {
+            // 如果 SSE 已经抢先，我们直接删掉本地假消息
+            return prev.filter(m => m.eventId !== tempEventId);
+          }
+          // 如果 SSE 还没来，就把假消息的 ID 换成真实的
+          return prev.map(m => m.eventId === tempEventId ? { ...m, eventId: sendResult.messageId } : m);
+        });
+      }
+
+      // 延时触发兜底拉取
+      setTimeout(() => {
+        loadLatestHistory();
+      }, 800);
+
     } catch (e: any) {
       alert('发送失败: ' + e.message);
+      setMessages(prev => prev.filter(m => m.eventId !== tempEventId));
     } finally {
       setIsSending(false);
+    }
+  };
+
+// ✨ 新增：不弹抽屉，直接把输入框文字发给 Agent 并跳转工作台
+  const handleDirectAgentPlan = async () => {
+    if (!inputText.trim() || !activeChatId) return;
+    try {
+      setIsPlanning(true);
+      const preview = await plannerApi.createPlan({
+        rawInstruction: inputText.trim(),
+        workspaceContext: { chatId: activeChatId },
+      });
+
+      if (preview.transientReply || !preview.runtimeAvailable) {
+        if (preview.assistantReply) alert(`🤖 Agent 回复: ${preview.assistantReply}`);
+      } else {
+        setActiveTaskId(preview.taskId || null);
+        setPlanPreview(preview);
+        onSwitchToWorkspace?.(); // 直接跳转工作台
+      }
+      setInputText('');
+    } catch (e: any) {
+      alert('唤醒 Agent 失败: ' + e.message);
+    } finally {
+      setIsPlanning(false);
     }
   };
 
@@ -227,7 +332,7 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
       if (ctrl.signal.aborted) return;
 
       try {
-        await fetchEventSource(`${getBaseUrl()}/api/im/chats/${activeChatId}/messages/stream`, {
+        await fetchEventSource(`${getBaseUrl()}/im/chats/${activeChatId}/messages/stream`, {
           method: 'GET',
           headers: { Authorization: `Bearer ${accessToken}`, Accept: 'text/event-stream' },
           signal: ctrl.signal,
@@ -239,17 +344,21 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
           },
 
           onmessage(event) {
-            if (event.event === 'message') {
+            console.log('[Mobile SSE 接收消息]', event.event, event.data);
+            if (!event.event || event.event === 'message') {
               try {
                 const msgData = JSON.parse(event.data);
                 if (msgData.state === 'connected') return;
                 setMessages((prev) => {
-                  if (prev.some((m) => m.eventId === msgData.eventId)) return prev;
-                  return [...prev, { ...msgData, content: parseFeishuContent(msgData.content, msgData.messageType) }];
+                  if (prev.some((m) => m.eventId === msgData.eventId || m.messageId === msgData.messageId)) return prev;
+                  return [...prev, { ...msgData, content: parseFeishuContent(msgData.content, msgData.messageType || msgData.msgType) }];
                 });
-              } catch (e) {}
+              } catch (e) {
+                console.debug('JSON解析失败:', e);
+              }
             }
           },
+
           onerror(err) {
             if (err.message === 'UNAUTHORIZED') {
               console.error('IM SSE 鉴权失败，停止重试');
@@ -285,10 +394,16 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
             return (
               <div 
                 key={msg.eventId} 
-                className="flex items-start gap-2 relative"
+                className="flex items-start gap-2 relative select-none" // ✨ 加了 select-none 防止长按时选中文字
+                // 移动端触摸事件
                 onTouchStart={() => handleTouchStart(msg.eventId)}
                 onTouchEnd={handleTouchEnd}
-                onTouchMove={handleTouchEnd} // 防止滑动时触发长按
+                onTouchMove={handleTouchEnd}
+                // ✨ 桌面端鼠标兼容事件（方便你在电脑上测试长按）
+                onMouseDown={() => handleTouchStart(msg.eventId)}
+                onMouseUp={handleTouchEnd}
+                onMouseLeave={handleTouchEnd} // 鼠标移出消息区域也算中断
+                
                 onClick={() => isSelectionMode && toggleMessageSelection(msg.eventId)}
               >
                 {/* 选择框 (仅在多选模式下显示) */}
@@ -318,6 +433,8 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
             );
           })
         )}
+        {/* 👇 ============ 新增：移动端底部锚点 ============ 👇 */}
+        <div ref={messagesEndRef} className="h-4 w-full shrink-0" />
       </div>
 
       {/* 底部输入区 / 悬浮操作栏 */}
@@ -341,18 +458,32 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               className="flex-1 max-h-24 min-h-[40px] resize-none rounded-xl bg-zinc-100 border-transparent focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 px-3 py-2 text-sm outline-none transition-colors"
-              placeholder="长按消息多选，或直接输入..."
+              placeholder="长按多选，或输入..."
               rows={1}
             />
-            {inputText.trim() ? (
-              <Button onClick={handleSendMessage} disabled={isSending} size="icon" className="h-10 w-10 shrink-0 rounded-full bg-blue-600 shadow-sm">
+            <div className="flex gap-1.5 shrink-0 items-end mb-0.5">
+              <Button 
+                onClick={handleSendMessage} 
+                disabled={!inputText.trim() || isSending} 
+                size="icon" 
+                className="h-9 w-9 rounded-full bg-blue-600 shadow-sm disabled:opacity-40 transition-opacity"
+              >
                 <Send className="h-4 w-4 ml-0.5 text-white" />
               </Button>
-            ) : (
-              <Button onClick={() => setIsAgentDrawerOpen(true)} variant="outline" size="icon" className="h-10 w-10 shrink-0 rounded-full border-blue-200 text-blue-600 bg-blue-50">
-                <Bot className="h-5 w-5" />
+              <Button 
+                onClick={() => inputText.trim() ? handleDirectAgentPlan() : setIsAgentDrawerOpen(true)} 
+                disabled={isSending || isPlanning} 
+                variant={inputText.trim() ? "default" : "outline"}
+                size="icon" 
+                className={`h-9 w-9 rounded-full shadow-sm transition-all ${
+                  inputText.trim() 
+                    ? 'bg-indigo-600 hover:bg-indigo-700 text-white' 
+                    : 'border-blue-200 text-blue-600 bg-blue-50 hover:bg-blue-100'
+                }`}
+              >
+                {isPlanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4.5 w-4.5" />}
               </Button>
-            )}
+            </div>
           </div>
         )}
       </div>
