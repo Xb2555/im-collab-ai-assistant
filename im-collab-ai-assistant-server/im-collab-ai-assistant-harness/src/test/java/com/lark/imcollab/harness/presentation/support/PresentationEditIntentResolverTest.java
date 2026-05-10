@@ -357,6 +357,7 @@ class PresentationEditIntentResolverTest {
         assertThat(intent.getOperations().get(0).getTargetElementType()).isEqualTo(PresentationTargetElementType.BODY);
         assertThat(intent.getOperations().get(0).getAnchorMode()).isEqualTo(PresentationAnchorMode.BY_QUOTED_TEXT);
         assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("历史文化遗产");
+        assertThat(intent.getOperations().get(0).getReplacementText()).isNull();
     }
 
     @Test
@@ -377,5 +378,6 @@ class PresentationEditIntentResolverTest {
         assertThat(intent.getOperations()).hasSize(1);
         assertThat(intent.getOperations().get(0).getPageIndex()).isEqualTo(1);
         assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("历史文化遗产");
+        assertThat(intent.getOperations().get(0).getReplacementText()).isNull();
     }
 }

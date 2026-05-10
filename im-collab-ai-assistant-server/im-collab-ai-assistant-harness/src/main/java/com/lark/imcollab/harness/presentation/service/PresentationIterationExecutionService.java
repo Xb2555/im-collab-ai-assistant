@@ -16,6 +16,7 @@ import com.lark.imcollab.common.model.vo.PresentationIterationVO;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesFetchResult;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesReplaceResult;
 import com.lark.imcollab.skills.lark.slides.LarkSlidesTool;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -45,13 +46,24 @@ public class PresentationIterationExecutionService implements PresentationIterat
 
     private final LarkSlidesTool larkSlidesTool;
     private final PresentationEditIntentFacade intentFacade;
+    private final PresentationBodyRewriteService bodyRewriteService;
+
+    @Autowired
+    public PresentationIterationExecutionService(
+            LarkSlidesTool larkSlidesTool,
+            PresentationEditIntentFacade intentFacade,
+            PresentationBodyRewriteService bodyRewriteService
+    ) {
+        this.larkSlidesTool = larkSlidesTool;
+        this.intentFacade = intentFacade;
+        this.bodyRewriteService = bodyRewriteService;
+    }
 
     public PresentationIterationExecutionService(
             LarkSlidesTool larkSlidesTool,
             PresentationEditIntentFacade intentFacade
     ) {
-        this.larkSlidesTool = larkSlidesTool;
-        this.intentFacade = intentFacade;
+        this(larkSlidesTool, intentFacade, null);
     }
 
     @Override
@@ -103,12 +115,13 @@ public class PresentationIterationExecutionService implements PresentationIterat
             return moveSlide(presentation, xml, operation);
         }
         SlideTarget target = resolveTarget(xml, operation);
-        Map<String, Object> part = buildPart(target, operation);
+        PresentationEditOperation executableOperation = materializeOperation(target, operation);
+        Map<String, Object> part = buildPart(target, executableOperation);
         larkSlidesTool.replaceSlide(presentation, target.slideId(), List.of(part));
         return new OperationResult(
                 List.of(target.slideId()),
-                verificationTexts(operation),
-                buildSummarySegment(target.pageIndex(), operation)
+                verificationTexts(executableOperation),
+                buildSummarySegment(target.pageIndex(), executableOperation)
         );
     }
 
@@ -647,6 +660,45 @@ public class PresentationIterationExecutionService implements PresentationIterat
             return insertPart(newText, textType);
         }
         return replacePart(target.blockId(), newText, target.shape(), textType);
+    }
+
+    private PresentationEditOperation materializeOperation(SlideTarget target, PresentationEditOperation operation) {
+        if (!needsGeneratedReplacement(operation)) {
+            return operation;
+        }
+        if (bodyRewriteService == null) {
+            throw new IllegalStateException("PPT 正文改写生成器未配置，无法自动改写正文");
+        }
+        String generated = bodyRewriteService.rewrite(textContent(target.shape()), operation);
+        return PresentationEditOperation.builder()
+                .actionType(operation.getActionType())
+                .targetElementType(operation.getTargetElementType())
+                .pageIndex(operation.getPageIndex())
+                .targetSlideId(operation.getTargetSlideId())
+                .insertAfterPageIndex(operation.getInsertAfterPageIndex())
+                .slideTitle(operation.getSlideTitle())
+                .slideBody(operation.getSlideBody())
+                .replacementText(generated)
+                .anchorMode(operation.getAnchorMode())
+                .quotedText(operation.getQuotedText())
+                .elementRole(operation.getElementRole())
+                .expectedMatchCount(operation.getExpectedMatchCount())
+                .contentInstruction(operation.getContentInstruction())
+                .targetElementId(operation.getTargetElementId())
+                .targetBlockId(operation.getTargetBlockId())
+                .build();
+    }
+
+    private boolean needsGeneratedReplacement(PresentationEditOperation operation) {
+        if (operation == null || hasText(operation.getReplacementText())) {
+            return false;
+        }
+        if (operation.getTargetElementType() != PresentationTargetElementType.BODY) {
+            return false;
+        }
+        return operation.getActionType() == PresentationEditActionType.REWRITE_ELEMENT
+                || operation.getActionType() == PresentationEditActionType.EXPAND_ELEMENT
+                || operation.getActionType() == PresentationEditActionType.SHORTEN_ELEMENT;
     }
 
     private Map<String, Object> replaceImagePart(SlideTarget target, PresentationEditOperation operation) {

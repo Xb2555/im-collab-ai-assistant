@@ -76,6 +76,9 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         }
         if (intent.isClarificationNeeded()) {
             PresentationEditIntent fallback = heuristicFallback(intent.getUserInstruction());
+            if (fallback.getOperations() != null && !fallback.getOperations().isEmpty()) {
+                return ensureHint(fallback);
+            }
             return fallback.isClarificationNeeded() ? ensureHint(intent) : fallback;
         }
         if (intent.getIntentType() == null || intent.getActionType() == null) {
@@ -146,10 +149,14 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
 
     private PresentationEditIntent heuristicFallback(String instruction) {
         PresentationEditIntent expanded = anchorRewriteFallback(instruction, EXPAND_ANCHOR_PATTERN, PresentationEditActionType.EXPAND_ELEMENT);
-        if (!expanded.isClarificationNeeded()) {
+        if (expanded.getOperations() != null && !expanded.getOperations().isEmpty()) {
             return expanded;
         }
-        return anchorRewriteFallback(instruction, SHORTEN_ANCHOR_PATTERN, PresentationEditActionType.SHORTEN_ELEMENT);
+        PresentationEditIntent shortened = anchorRewriteFallback(instruction, SHORTEN_ANCHOR_PATTERN, PresentationEditActionType.SHORTEN_ELEMENT);
+        if (shortened.getOperations() != null && !shortened.getOperations().isEmpty()) {
+            return shortened;
+        }
+        return shortened;
     }
 
     private PresentationEditIntent anchorRewriteFallback(
@@ -176,7 +183,6 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 .pageIndex(pageAnchor.pageIndex())
                 .quotedText(pageAnchor.anchorText())
                 .contentInstruction(instruction.trim())
-                .replacementText(pageAnchor.anchorText())
                 .expectedMatchCount(1)
                 .build();
         return PresentationEditIntent.builder()
@@ -188,7 +194,6 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 .pageIndex(pageAnchor.pageIndex())
                 .quotedText(pageAnchor.anchorText())
                 .contentInstruction(instruction.trim())
-                .replacementText(pageAnchor.anchorText())
                 .operations(List.of(operation))
                 .clarificationNeeded(false)
                 .build();
@@ -446,9 +451,6 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
     private boolean requiresReplacement(PresentationEditActionType actionType) {
         return actionType == PresentationEditActionType.REPLACE_SLIDE_TITLE
                 || actionType == PresentationEditActionType.REPLACE_SLIDE_BODY
-                || actionType == PresentationEditActionType.REWRITE_ELEMENT
-                || actionType == PresentationEditActionType.EXPAND_ELEMENT
-                || actionType == PresentationEditActionType.SHORTEN_ELEMENT
                 || actionType == PresentationEditActionType.REPLACE_ELEMENT
                 || actionType == PresentationEditActionType.REPLACE_IMAGE
                 || actionType == PresentationEditActionType.REPLACE_CHART;

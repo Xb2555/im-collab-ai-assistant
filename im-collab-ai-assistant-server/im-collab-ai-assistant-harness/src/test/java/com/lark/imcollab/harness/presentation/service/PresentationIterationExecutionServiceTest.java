@@ -565,11 +565,14 @@ class PresentationIterationExecutionServiceTest {
                         .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
                         .pageIndex(1)
                         .quotedText("文旅融合创新")
-                        .replacementText("文旅融合创新，消费场景丰富多元，带动区域体验升级")
+                        .contentInstruction("第一页这段“文旅融合创新”写详细一些")
                         .build()))
                 .clarificationNeeded(false)
                 .build());
-        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(
+                slidesTool,
+                intentFacade,
+                new StubPresentationBodyRewriteService("文旅融合创新，消费场景丰富多元，带动区域体验升级"));
 
         service.edit(PresentationIterationRequest.builder()
                 .taskId("task-1")
@@ -644,11 +647,14 @@ class PresentationIterationExecutionServiceTest {
                         .targetElementType(PresentationTargetElementType.BODY)
                         .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
                         .quotedText("历史文化遗产")
-                        .replacementText("历史文化遗产，形成了上海旅游的重要文化吸引力与国际传播名片。")
+                        .contentInstruction("历史文化遗产这一段写的详细一些")
                         .build()))
                 .clarificationNeeded(false)
                 .build());
-        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(
+                slidesTool,
+                intentFacade,
+                new StubPresentationBodyRewriteService("历史文化遗产，形成了上海旅游的重要文化吸引力与国际传播名片。"));
 
         service.edit(PresentationIterationRequest.builder()
                 .taskId("task-1")
