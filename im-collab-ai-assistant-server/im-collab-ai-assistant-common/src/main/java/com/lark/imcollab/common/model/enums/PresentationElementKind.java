@@ -1,11 +1,12 @@
 package com.lark.imcollab.common.model.enums;
 
-public enum PresentationTargetElementType {
+public enum PresentationElementKind {
     TITLE,
     BODY,
     IMAGE,
     CHART,
     TABLE,
-    CAPTION,
-    SHAPE
+    ICON,
+    SHAPE,
+    NOTE
 }

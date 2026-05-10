@@ -14,6 +14,11 @@ import java.util.List;
 @AllArgsConstructor
 public class PresentationSlidePlan implements Serializable {
 
+    private String pageType;
+    private String pageSubType;
+    private String sectionId;
+    private String sectionTitle;
+    private Integer sectionOrder;
     private String slideId;
     private int index;
     private String title;

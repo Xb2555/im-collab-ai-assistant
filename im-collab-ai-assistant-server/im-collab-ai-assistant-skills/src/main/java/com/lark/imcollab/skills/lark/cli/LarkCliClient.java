@@ -17,6 +17,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 @Slf4j
 @Component
@@ -196,12 +197,32 @@ public class LarkCliClient {
         if (!isWindows()) {
             return new ResolvedCliCommand(normalizedExecutable, normalizedArgs);
         }
+        if (isWindowsCmdShim(normalizedExecutable)) {
+            Path runJs = runJsSibling(normalizedExecutable);
+            if (Files.exists(runJs)) {
+                String nodeExecutable = resolveNodeExecutable(normalizedExecutable);
+                List<String> directArgs = new ArrayList<>();
+                directArgs.add(runJs.toString());
+                directArgs.addAll(normalizedArgs);
+                log.info("Rewriting Lark CLI invocation from cmd shim to direct node runner: cmd='{}', node='{}', runJs='{}'",
+                        normalizedExecutable, nodeExecutable, runJs);
+                return new ResolvedCliCommand(nodeExecutable, directArgs);
+            }
+        }
         if (isPowerShellWrapper(normalizedExecutable, normalizedArgs)) {
             String scriptPath = normalizedArgs.get(normalizedArgs.size() - 1).trim();
             Path cmdPath = cmdSibling(scriptPath);
             if (Files.exists(cmdPath)) {
                 log.info("Rewriting Lark CLI invocation from PowerShell wrapper to cmd shim: ps1='{}', cmd='{}'", scriptPath, cmdPath);
                 return new ResolvedCliCommand(cmdPath.toString(), List.of());
+            }
+        }
+        if (shouldUsePowerShellShim(normalizedExecutable, normalizedArgs)) {
+            Path ps1Path = ps1Sibling(normalizedExecutable);
+            if (Files.exists(ps1Path)) {
+                log.info("Rewriting Lark CLI invocation from cmd shim to PowerShell wrapper for special characters: cmd='{}', ps1='{}'",
+                        normalizedExecutable, ps1Path);
+                return new ResolvedCliCommand("powershell.exe", buildPowerShellFileArgs(ps1Path.toString(), normalizedArgs));
             }
         }
         return new ResolvedCliCommand(normalizedExecutable, normalizedArgs);
@@ -228,6 +249,84 @@ public class LarkCliClient {
         String fileName = ps1.getFileName() == null ? ps1Path : ps1.getFileName().toString();
         String cmdName = fileName.substring(0, fileName.length() - 4) + ".cmd";
         return ps1.resolveSibling(cmdName);
+    }
+
+    private Path ps1Sibling(String cmdPath) {
+        Path cmd = Paths.get(cmdPath);
+        String fileName = cmd.getFileName() == null ? cmdPath : cmd.getFileName().toString();
+        String ps1Name = fileName.substring(0, fileName.length() - 4) + ".ps1";
+        return cmd.resolveSibling(ps1Name);
+    }
+
+    private Path runJsSibling(String cmdPath) {
+        Path cmd = Paths.get(cmdPath).toAbsolutePath().normalize();
+        return cmd.getParent()
+                .resolve("node_modules")
+                .resolve("@larksuite")
+                .resolve("cli")
+                .resolve("scripts")
+                .resolve("run.js");
+    }
+
+    private boolean isWindowsCmdShim(String executable) {
+        if (executable == null) {
+            return false;
+        }
+        String lower = executable.toLowerCase(Locale.ROOT);
+        return lower.endsWith("lark-cli.cmd");
+    }
+
+    private String resolveNodeExecutable(String cmdPath) {
+        Path cmd = Paths.get(cmdPath).toAbsolutePath().normalize();
+        Path bundledNode = cmd.getParent().resolve("node.exe");
+        if (Files.exists(bundledNode)) {
+            return bundledNode.toString();
+        }
+        return resolveNodeFromPath().orElse("node.exe");
+    }
+
+    private Optional<String> resolveNodeFromPath() {
+        String pathEnv = System.getenv("PATH");
+        if (pathEnv == null || pathEnv.isBlank()) {
+            return Optional.empty();
+        }
+        String[] segments = pathEnv.split(java.io.File.pathSeparator);
+        for (String segment : segments) {
+            if (segment == null || segment.isBlank()) {
+                continue;
+            }
+            Path candidate = Paths.get(segment.trim()).resolve("node.exe");
+            if (Files.exists(candidate)) {
+                return Optional.of(candidate.toAbsolutePath().normalize().toString());
+            }
+        }
+        return Optional.empty();
+    }
+
+    private boolean shouldUsePowerShellShim(String executable, List<String> args) {
+        if (executable == null || args == null) {
+            return false;
+        }
+        String lowerExecutable = executable.toLowerCase(Locale.ROOT);
+        if (!lowerExecutable.endsWith(".cmd")) {
+            return false;
+        }
+        return args.stream().filter(arg -> arg != null).anyMatch(arg ->
+                arg.contains("<")
+                        || arg.contains(">")
+                        || arg.contains("\n")
+                        || arg.contains("\r"));
+    }
+
+    private List<String> buildPowerShellFileArgs(String scriptPath, List<String> args) {
+        List<String> command = new ArrayList<>();
+        command.add("-NoProfile");
+        command.add("-ExecutionPolicy");
+        command.add("Bypass");
+        command.add("-File");
+        command.add(scriptPath);
+        command.addAll(args == null ? List.of() : args);
+        return command;
     }
 
     private List<String> summarizeArgs(List<String> args) {

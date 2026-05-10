@@ -2,8 +2,10 @@ package com.lark.imcollab.harness.presentation.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
+import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
+import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
 
@@ -272,5 +274,67 @@ class PresentationEditIntentResolverTest {
 
         assertThat(intent.isClarificationNeeded()).isTrue();
         assertThat(intent.getClarificationHint()).isNotBlank();
+    }
+
+    @Test
+    void resolvesQuotedBodyAnchorInstruction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "operations": [
+                    {
+                      "actionType": "EXPAND_ELEMENT",
+                      "targetElementType": "BODY",
+                      "anchorMode": "BY_QUOTED_TEXT",
+                      "pageIndex": 1,
+                      "quotedText": "文旅融合创新",
+                      "contentInstruction": "写详细一些",
+                      "replacementText": "文旅融合创新，消费场景丰富多元，带动区域体验升级"
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("第一页这段“文旅融合创新”写详细一些");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getOperations()).hasSize(1);
+        assertThat(intent.getOperations().get(0).getAnchorMode()).isEqualTo(PresentationAnchorMode.BY_QUOTED_TEXT);
+        assertThat(intent.getOperations().get(0).getTargetElementType()).isEqualTo(PresentationTargetElementType.BODY);
+        assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("文旅融合创新");
+    }
+
+    @Test
+    void resolvesImageReplacementInstruction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "operations": [
+                    {
+                      "actionType": "REPLACE_IMAGE",
+                      "targetElementType": "IMAGE",
+                      "anchorMode": "BY_ELEMENT_ROLE",
+                      "pageIndex": 2,
+                      "elementRole": "right-image",
+                      "replacementText": "门店实景图"
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("把第2页右侧图片换成门店实景图");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getOperations()).hasSize(1);
+        assertThat(intent.getOperations().get(0).getActionType()).isEqualTo(PresentationEditActionType.REPLACE_IMAGE);
+        assertThat(intent.getOperations().get(0).getTargetElementType()).isEqualTo(PresentationTargetElementType.IMAGE);
+        assertThat(intent.getOperations().get(0).getAnchorMode()).isEqualTo(PresentationAnchorMode.BY_ELEMENT_ROLE);
+        assertThat(intent.getOperations().get(0).getElementRole()).isEqualTo("right-image");
     }
 }
