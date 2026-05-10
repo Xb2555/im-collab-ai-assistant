@@ -337,4 +337,45 @@ class PresentationEditIntentResolverTest {
         assertThat(intent.getOperations().get(0).getAnchorMode()).isEqualTo(PresentationAnchorMode.BY_ELEMENT_ROLE);
         assertThat(intent.getOperations().get(0).getElementRole()).isEqualTo("right-image");
     }
+
+    @Test
+    void fallsBackToQuotedBodyAnchorWhenModelCannotResolvePageIndex() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "clarificationNeeded": true
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("历史文化遗产这一段写的详细一些");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getOperations()).hasSize(1);
+        assertThat(intent.getOperations().get(0).getActionType()).isEqualTo(PresentationEditActionType.EXPAND_ELEMENT);
+        assertThat(intent.getOperations().get(0).getTargetElementType()).isEqualTo(PresentationTargetElementType.BODY);
+        assertThat(intent.getOperations().get(0).getAnchorMode()).isEqualTo(PresentationAnchorMode.BY_QUOTED_TEXT);
+        assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("历史文化遗产");
+    }
+
+    @Test
+    void fallbackSeparatesPagePrefixFromQuotedBodyAnchor() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "clarificationNeeded": true
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("第一页历史文化遗产这一段写的详细一些");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getPageIndex()).isEqualTo(1);
+        assertThat(intent.getOperations()).hasSize(1);
+        assertThat(intent.getOperations().get(0).getPageIndex()).isEqualTo(1);
+        assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("历史文化遗产");
+    }
 }

@@ -16,6 +16,7 @@ import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
+import com.lark.imcollab.common.model.entity.PresentationEditOperation;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
@@ -29,8 +30,10 @@ import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
+import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.DocumentArtifactApprovalPayload;
@@ -281,6 +284,45 @@ class ReplanNodeServiceTest {
         verify(stateStore).saveArtifact(artifact);
         verify(planningNodeService, never()).plan(anyString(), anyString(), any(), any());
         verify(sessionService).publishEvent("task-1", "COMPLETED");
+    }
+
+    @Test
+    void completedQuotedPptEditWithoutPageIndexStillUpdatesExistingArtifact() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve("历史文化遗产这一段写的详细一些")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.EXPAND_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                        .quotedText("历史文化遗产")
+                        .replacementText("历史文化遗产，形成了上海旅游的重要文化吸引力与国际传播名片。")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .summary("已将“历史文化遗产”这一段扩写")
+                .modifiedSlides(List.of("s2"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "历史文化遗产这一段写的详细一些", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已将“历史文化遗产”这一段扩写");
+        verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
+        verify(questionTool, never()).askUser(any(), any());
     }
 
     @Test

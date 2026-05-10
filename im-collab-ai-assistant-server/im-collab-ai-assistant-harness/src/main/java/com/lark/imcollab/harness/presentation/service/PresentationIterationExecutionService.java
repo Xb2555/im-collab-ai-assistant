@@ -192,6 +192,12 @@ public class PresentationIterationExecutionService implements PresentationIterat
     }
 
     private SlideTarget resolveTarget(String xml, PresentationEditOperation operation) {
+        if (operation != null
+                && operation.getPageIndex() == null
+                && operation.getAnchorMode() == PresentationAnchorMode.BY_QUOTED_TEXT
+                && hasText(operation.getQuotedText())) {
+            return resolveDeckWideQuotedTarget(xml, operation);
+        }
         Document document = parseXml(xml);
         NodeList slides = document.getElementsByTagName("slide");
         if (slides.getLength() == 0) {
@@ -219,6 +225,39 @@ public class PresentationIterationExecutionService implements PresentationIterat
                 slideIndex + 1,
                 snapshot == null ? (shape == null ? null : shape.getAttribute("id")) : snapshot.getBlockId(),
                 shape);
+    }
+
+    private SlideTarget resolveDeckWideQuotedTarget(String xml, PresentationEditOperation operation) {
+        Deck deck = parseDeck(xml);
+        List<SlideTarget> matches = new ArrayList<>();
+        for (SlideInfo slideInfo : deck.slides()) {
+            List<PresentationSnapshot> snapshots = buildSnapshots(slideInfo.element(), slideInfo.pageIndex());
+            PresentationSnapshot snapshot;
+            try {
+                snapshot = resolveSnapshotTarget(snapshots, operation);
+            } catch (IllegalArgumentException ignored) {
+                continue;
+            }
+            if (snapshot == null) {
+                continue;
+            }
+            Element shape = findShapeById(slideInfo.element(), snapshot.getBlockId());
+            if (shape == null) {
+                continue;
+            }
+            matches.add(new SlideTarget(
+                    slideInfo.slideId(),
+                    slideInfo.pageIndex(),
+                    snapshot.getBlockId(),
+                    shape));
+        }
+        if (matches.isEmpty()) {
+            throw new IllegalArgumentException("无法根据引用文本定位到要修改的 PPT 元素，请补充页码或更完整的原文");
+        }
+        if (matches.size() > 1) {
+            throw new IllegalArgumentException("引用文本在多页中重复出现，请补充页码后再修改");
+        }
+        return matches.get(0);
     }
 
     private Deck parseDeck(String xml) {

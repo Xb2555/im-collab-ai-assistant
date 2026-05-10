@@ -621,4 +621,46 @@ class PresentationIterationExecutionServiceTest {
 
         verify(slidesTool, never()).replaceSlide(eq("slides-1"), anyString(), anyList());
     }
+
+    @Test
+    void resolvesQuotedBodyAcrossDeckWhenPageIndexIsOmitted() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(slidesTool.fetchPresentation("slides-1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="body-1" type="text" topLeftX="80" topLeftY="220" width="380" height="180"><content textType="body"><p>发展现状</p></content></shape></data></slide><slide id="s2"><data><shape id="body-2" type="text" topLeftX="80" topLeftY="220" width="380" height="180"><content textType="body"><p>历史文化遗产</p></content></shape></data></slide></presentation>
+                                """)
+                        .build())
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("<presentation><slide id=\"s2\"><data><shape id=\"body-2\"><content><p>历史文化遗产，形成了上海旅游的重要文化吸引力与国际传播名片。</p></content></shape></data></slide></presentation>")
+                        .build());
+        when(intentFacade.resolve("历史文化遗产这一段写的详细一些")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.EXPAND_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                        .quotedText("历史文化遗产")
+                        .replacementText("历史文化遗产，形成了上海旅游的重要文化吸引力与国际传播名片。")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+
+        service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("历史文化遗产这一段写的详细一些")
+                .build());
+
+        ArgumentCaptor<List<Map<String, Object>>> partsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(slidesTool).replaceSlide(eq("slides-1"), eq("s2"), partsCaptor.capture());
+        assertThat(partsCaptor.getValue().get(0))
+                .containsEntry("action", "block_replace")
+                .containsEntry("block_id", "body-2");
+    }
 }

@@ -14,9 +14,17 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class PresentationEditIntentResolver implements PresentationEditIntentFacade {
+    private static final Pattern PAGE_PREFIX_PATTERN = Pattern.compile(
+            "^(?:(?:第\\s*(?<cn>[一二三四五六七八九十两\\d]+)\\s*页)|(?:(?<named>封面页|目录页|首页|最后一页|末页|尾页)))");
+    private static final Pattern EXPAND_ANCHOR_PATTERN = Pattern.compile(
+            "(?<anchor>.+?)(?:这一段|这段|这一部分|这部分)(?<action>写得|写的|展开|补充|丰富)?(?<degree>详细一些|更详细一些|详细点|展开一些|补充一些|丰富一些)?$");
+    private static final Pattern SHORTEN_ANCHOR_PATTERN = Pattern.compile(
+            "(?<anchor>.+?)(?:这一段|这段|这一部分|这部分)(?<action>精简|缩短|压缩|简化)(?<degree>一些|一点)?$");
 
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
@@ -64,26 +72,27 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
 
     private PresentationEditIntent validate(PresentationEditIntent intent) {
         if (intent == null) {
-            return clarification(null);
+            return heuristicFallback(null);
         }
         if (intent.isClarificationNeeded()) {
-            return ensureHint(intent);
+            PresentationEditIntent fallback = heuristicFallback(intent.getUserInstruction());
+            return fallback.isClarificationNeeded() ? ensureHint(intent) : fallback;
         }
         if (intent.getIntentType() == null || intent.getActionType() == null) {
             List<PresentationEditOperation> operations = intent.getOperations();
             if (operations != null && !operations.isEmpty()) {
                 intent.setActionType(operations.get(0).getActionType());
             } else {
-                return clarification(intent.getUserInstruction());
+                return heuristicFallback(intent.getUserInstruction());
             }
         }
         List<PresentationEditOperation> operations = normalizeOperations(intent);
         if (operations.isEmpty()) {
-            return clarification(intent.getUserInstruction());
+            return heuristicFallback(intent.getUserInstruction());
         }
         for (PresentationEditOperation operation : operations) {
             if (operation.getActionType() == null) {
-                return clarification(intent.getUserInstruction());
+                return heuristicFallback(intent.getUserInstruction());
             }
             if (operation.getActionType() == PresentationEditActionType.INSERT_SLIDE
                     && operation.getInsertAfterPageIndex() == null
@@ -91,20 +100,20 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 operation.setInsertAfterPageIndex(operation.getPageIndex());
             }
             if (requiresPageIndex(operation.getActionType()) && operation.getPageIndex() == null) {
-                return clarification(intent.getUserInstruction());
+                return heuristicFallback(intent.getUserInstruction());
             }
             if (operation.getActionType() == PresentationEditActionType.MOVE_SLIDE
                     && operation.getInsertAfterPageIndex() == null) {
-                return clarification(intent.getUserInstruction());
+                return heuristicFallback(intent.getUserInstruction());
             }
             if (operation.getActionType() == PresentationEditActionType.INSERT_SLIDE
                     && !hasText(operation.getSlideTitle())
                     && !hasText(operation.getSlideBody())
                     && !hasText(operation.getReplacementText())) {
-                return clarification(intent.getUserInstruction());
+                return heuristicFallback(intent.getUserInstruction());
             }
             if (requiresReplacement(operation.getActionType()) && !hasText(operation.getReplacementText())) {
-                return clarification(intent.getUserInstruction());
+                return heuristicFallback(intent.getUserInstruction());
             }
             if (operation.getTargetElementType() == null && operation.getActionType() == PresentationEditActionType.REPLACE_SLIDE_BODY) {
                 operation.setTargetElementType(PresentationTargetElementType.BODY);
@@ -133,6 +142,121 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 .clarificationNeeded(true)
                 .clarificationHint("请明确要改第几页、修改哪个元素，以及改成什么内容。")
                 .build();
+    }
+
+    private PresentationEditIntent heuristicFallback(String instruction) {
+        PresentationEditIntent expanded = anchorRewriteFallback(instruction, EXPAND_ANCHOR_PATTERN, PresentationEditActionType.EXPAND_ELEMENT);
+        if (!expanded.isClarificationNeeded()) {
+            return expanded;
+        }
+        return anchorRewriteFallback(instruction, SHORTEN_ANCHOR_PATTERN, PresentationEditActionType.SHORTEN_ELEMENT);
+    }
+
+    private PresentationEditIntent anchorRewriteFallback(
+            String instruction,
+            Pattern pattern,
+            PresentationEditActionType actionType
+    ) {
+        if (!hasText(instruction) || pattern == null || actionType == null) {
+            return clarification(instruction);
+        }
+        Matcher matcher = pattern.matcher(instruction.trim());
+        if (!matcher.find()) {
+            return clarification(instruction);
+        }
+        String anchor = cleanAnchor(matcher.group("anchor"));
+        if (!hasText(anchor)) {
+            return clarification(instruction);
+        }
+        PageAnchor pageAnchor = extractPageAnchor(anchor);
+        PresentationEditOperation operation = PresentationEditOperation.builder()
+                .actionType(actionType)
+                .targetElementType(PresentationTargetElementType.BODY)
+                .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                .pageIndex(pageAnchor.pageIndex())
+                .quotedText(pageAnchor.anchorText())
+                .contentInstruction(instruction.trim())
+                .replacementText(pageAnchor.anchorText())
+                .expectedMatchCount(1)
+                .build();
+        return PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .actionType(actionType)
+                .userInstruction(instruction)
+                .targetElementType(PresentationTargetElementType.BODY)
+                .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                .pageIndex(pageAnchor.pageIndex())
+                .quotedText(pageAnchor.anchorText())
+                .contentInstruction(instruction.trim())
+                .replacementText(pageAnchor.anchorText())
+                .operations(List.of(operation))
+                .clarificationNeeded(false)
+                .build();
+    }
+
+    private String cleanAnchor(String anchor) {
+        if (!hasText(anchor)) {
+            return null;
+        }
+        String normalized = anchor.trim()
+                .replaceAll("^(把|将|把这|将这)", "")
+                .replaceAll("(给我|帮我|麻烦你)$", "")
+                .trim();
+        return hasText(normalized) ? normalized : null;
+    }
+
+    private PageAnchor extractPageAnchor(String anchor) {
+        if (!hasText(anchor)) {
+            return new PageAnchor(null, null);
+        }
+        Matcher matcher = PAGE_PREFIX_PATTERN.matcher(anchor.trim());
+        if (!matcher.find()) {
+            return new PageAnchor(null, anchor.trim());
+        }
+        Integer pageIndex = parsePageIndex(matcher.group("cn"), matcher.group("named"));
+        String remainder = anchor.trim().substring(matcher.end()).trim();
+        remainder = remainder.replaceFirst("^(的|上|里|中)", "").trim();
+        return new PageAnchor(pageIndex, hasText(remainder) ? remainder : anchor.trim());
+    }
+
+    private Integer parsePageIndex(String pageToken, String namedToken) {
+        if (hasText(namedToken)) {
+            return switch (namedToken.trim()) {
+                case "封面页", "首页" -> 1;
+                default -> null;
+            };
+        }
+        if (!hasText(pageToken)) {
+            return null;
+        }
+        String normalized = pageToken.trim();
+        if (normalized.chars().allMatch(Character::isDigit)) {
+            try {
+                return Integer.parseInt(normalized);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return chineseNumberToInt(normalized);
+    }
+
+    private Integer chineseNumberToInt(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        return switch (value.trim()) {
+            case "一" -> 1;
+            case "二", "两" -> 2;
+            case "三" -> 3;
+            case "四" -> 4;
+            case "五" -> 5;
+            case "六" -> 6;
+            case "七" -> 7;
+            case "八" -> 8;
+            case "九" -> 9;
+            case "十" -> 10;
+            default -> null;
+        };
     }
 
     private PresentationEditIntent ensureHint(PresentationEditIntent intent) {
@@ -361,5 +485,8 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private record PageAnchor(Integer pageIndex, String anchorText) {
     }
 }
