@@ -1279,7 +1279,7 @@ public class PresentationWorkflowNodes {
                 : headlineContent(title, resolveTitleColor(pageType, layout, profile), resolveTitleFontSize(pageType, layout, emphasis)));
         placeholders.put("{{NOTE}}", note);
         placeholders.put("{{BACKGROUND_IMAGE}}", "{{BACKGROUND_IMAGE}}");
-        placeholders.put("{{PAGE_NUMBER}}", requiresPageNumber(pageType, layout) ? pageNumber(index, total, profile) : "");
+        placeholders.put("{{PAGE_NUMBER}}", "");
         placeholders.put("{{PRESENTER_LABEL}}", plainContent("汇报人", "rgb(255,255,255)", 14, true, "center"));
         placeholders.put("{{PRESENTER_VALUE}}", plainContent(coverMeta.presenter(), titleValueColor(layout), 14, false, "center"));
         placeholders.put("{{DATE_LABEL}}", plainContent("汇报时间", "rgb(255,255,255)", 14, true, "center"));

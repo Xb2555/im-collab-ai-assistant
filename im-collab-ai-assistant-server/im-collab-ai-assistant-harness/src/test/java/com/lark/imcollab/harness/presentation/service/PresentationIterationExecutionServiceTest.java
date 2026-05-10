@@ -669,4 +669,107 @@ class PresentationIterationExecutionServiceTest {
                 .containsEntry("action", "block_replace")
                 .containsEntry("block_id", "body-2");
     }
+
+    @Test
+    void insertsGeneratedBodyContentAfterQuotedAnchor() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(slidesTool.fetchPresentation("slides-1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="body-1" type="text" topLeftX="80" topLeftY="220" width="380" height="180"><content textType="body"><p>文旅融合创新，消费场景丰富多元</p></content></shape></data></slide></presentation>
+                                """)
+                        .build())
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("<presentation><slide id=\"s1\"><data><shape id=\"body-1\"><content><p>文旅融合创新，消费场景丰富多元</p></content></shape><shape><content><p>并持续带动商旅文体展联动升级。</p></content></shape></data></slide></presentation>")
+                        .build());
+        when(intentFacade.resolve("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.INSERT_AFTER_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                        .pageIndex(1)
+                        .quotedText("文旅融合创新，消费场景丰富多元")
+                        .contentInstruction("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(
+                slidesTool,
+                intentFacade,
+                new StubPresentationBodyRewriteService("并持续带动商旅文体展联动升级。"));
+
+        service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点")
+                .build());
+
+        ArgumentCaptor<String> slideXmlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(slidesTool).replaceWholeSlide(eq("slides-1"), eq("s1"), slideXmlCaptor.capture());
+        verify(slidesTool, never()).createSlide(anyString(), anyString(), anyString());
+        String replacedXml = slideXmlCaptor.getValue();
+        assertThat(replacedXml).contains("文旅融合创新，消费场景丰富多元");
+        assertThat(replacedXml).contains("并持续带动商旅文体展联动升级。");
+        assertThat(replacedXml.indexOf("文旅融合创新，消费场景丰富多元"))
+                .isLessThan(replacedXml.indexOf("并持续带动商旅文体展联动升级。"));
+    }
+
+    @Test
+    void replacesOnlyTargetListItemOnSingleFetchedSlide() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(slidesTool.fetchPresentation("slides-1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="body-1" type="text" topLeftX="80" topLeftY="220" width="500" height="220"><content textType="body"><ul><li><p>第一条</p></li><li><p>第二条</p></li><li><p>第三条</p></li></ul></content></shape></data></slide></presentation>
+                                """)
+                        .build());
+        when(slidesTool.fetchSlide("slides-1", "s1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <slide id="s1"><data><shape id="body-1" type="text" topLeftX="80" topLeftY="220" width="500" height="220"><content textType="body"><ul><li><p>第一条</p></li><li><p>第二条</p></li><li><p>第三条</p></li></ul></content></shape></data></slide>
+                                """)
+                        .build())
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <slide id="s1"><data><shape id="body-1" type="text" topLeftX="80" topLeftY="220" width="500" height="220"><content textType="body"><ul><li><p>第一条</p></li><li><p>第二条</p></li><li><p>更短的第三条</p></li></ul></content></shape></data></slide>
+                                """)
+                        .build());
+        when(intentFacade.resolve("把第一页第3个bullet改成更短的第三条")).thenReturn(PresentationEditIntent.builder()
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.REPLACE_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .pageIndex(1)
+                        .targetListItemIndex(3)
+                        .replacementText("更短的第三条")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+
+        service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("把第一页第3个bullet改成更短的第三条")
+                .build());
+
+        InOrder inOrder = inOrder(slidesTool);
+        inOrder.verify(slidesTool).fetchPresentation("slides-1");
+        inOrder.verify(slidesTool).fetchSlide("slides-1", "s1");
+        ArgumentCaptor<List<Map<String, Object>>> partsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(slidesTool).replaceSlide(eq("slides-1"), eq("s1"), partsCaptor.capture());
+        inOrder.verify(slidesTool).fetchSlide("slides-1", "s1");
+        String replacement = (String) partsCaptor.getValue().get(0).get("replacement");
+        assertThat(replacement).contains("第一条").contains("第二条").contains("更短的第三条");
+        assertThat(replacement).doesNotContain(">第三条<");
+    }
 }

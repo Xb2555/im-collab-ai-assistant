@@ -326,6 +326,46 @@ class ReplanNodeServiceTest {
     }
 
     @Test
+    void completedInsertAfterQuotedPptEditUpdatesExistingArtifact() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.INSERT_AFTER_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                        .pageIndex(1)
+                        .quotedText("文旅融合创新，消费场景丰富多元")
+                        .contentInstruction("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .summary("已在第 1 页目标段落后插入内容")
+                .modifiedSlides(List.of("s1"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", "在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点", null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已在第 1 页目标段落后插入内容");
+        verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
+        verify(questionTool, never()).askUser(any(), any());
+    }
+
+    @Test
     void completedConcretePptEditWithMultiplePptsAsksArtifactSelection() {
         PlanTaskSession session = completedSession();
         ArtifactRecord first = pptArtifact("artifact-ppt-1", "旧版 PPT", Instant.parse("2026-05-04T09:00:00Z"));

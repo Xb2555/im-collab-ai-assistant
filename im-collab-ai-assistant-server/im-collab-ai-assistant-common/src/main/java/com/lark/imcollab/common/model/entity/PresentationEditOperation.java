@@ -31,4 +31,8 @@ public class PresentationEditOperation implements Serializable {
     private String contentInstruction;
     private String targetElementId;
     private String targetBlockId;
+    private String targetPageTitle;
+    private Integer targetParagraphIndex;
+    private Integer targetListItemIndex;
+    private String targetNodePath;
 }

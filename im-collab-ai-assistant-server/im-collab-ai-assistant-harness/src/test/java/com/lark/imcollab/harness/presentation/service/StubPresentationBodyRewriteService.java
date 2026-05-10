@@ -21,6 +21,11 @@ class StubPresentationBodyRewriteService extends PresentationBodyRewriteService 
         return rewrittenText;
     }
 
+    @Override
+    public String generateInsertion(String originalText, PresentationEditOperation operation) {
+        return rewrittenText;
+    }
+
     private static ChatModel mockChatModel(String rewrittenText) {
         ChatModel chatModel = mock(ChatModel.class);
         when(chatModel.call(anyString())).thenReturn(rewrittenText);

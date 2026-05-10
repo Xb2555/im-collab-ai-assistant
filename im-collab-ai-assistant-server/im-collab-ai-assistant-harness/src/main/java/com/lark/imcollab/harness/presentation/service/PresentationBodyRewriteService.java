@@ -42,6 +42,28 @@ public class PresentationBodyRewriteService {
         return generated;
     }
 
+    public String generateInsertion(String originalText, PresentationEditOperation operation) {
+        String source = trim(originalText);
+        String instruction = trim(operation == null ? null : operation.getContentInstruction());
+        String quotedText = trim(operation == null ? null : operation.getQuotedText());
+        String generated = trim(chatModel.call("""
+                你是企业 PPT 正文补写助手。输出可直接插入到当前段落后面的纯文本，不要解释，不要标题，不要代码块。
+                规则：
+                1. 只生成新增内容本身，不要重复整段原文。
+                2. 与前文衔接自然，语义保持同主题。
+                3. 可以适度补强，但不要引入原文无法支撑的具体数据、年份、机构结论或外部事实。
+                4. 如果用户说“插入一小点/补一句”，输出就保持短小。
+
+                用户指令：%s
+                命中锚点：%s
+                当前段落：%s
+                """.formatted(safe(instruction), safe(quotedText), safe(source))));
+        if (!hasText(generated)) {
+            throw new IllegalStateException("PPT 正文插入内容为空");
+        }
+        return generated;
+    }
+
     private void validateGeneratedText(
             String originalText,
             String quotedText,

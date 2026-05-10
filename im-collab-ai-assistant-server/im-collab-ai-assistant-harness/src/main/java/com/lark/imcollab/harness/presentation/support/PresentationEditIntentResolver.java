@@ -25,6 +25,8 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
             "(?<anchor>.+?)(?:这一段|这段|这一部分|这部分)(?<action>写得|写的|展开|补充|丰富)?(?<degree>详细一些|更详细一些|详细点|展开一些|补充一些|丰富一些)?$");
     private static final Pattern SHORTEN_ANCHOR_PATTERN = Pattern.compile(
             "(?<anchor>.+?)(?:这一段|这段|这一部分|这部分)(?<action>精简|缩短|压缩|简化)(?<degree>一些|一点)?$");
+    private static final Pattern INSERT_AFTER_ANCHOR_PATTERN = Pattern.compile(
+            "(?:在)?(?<anchor>.+?)(?:后|后面)(?<action>插入|补充|加上|增加)(?<degree>新的一小点|一小点|一点|一句|一条|一段|内容.*)?$");
 
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
@@ -56,6 +58,10 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                     .contentInstruction(text(root, "contentInstruction"))
                     .targetElementId(text(root, "targetElementId"))
                     .targetBlockId(text(root, "targetBlockId"))
+                    .targetPageTitle(text(root, "targetPageTitle"))
+                    .targetParagraphIndex(optionalInt(root.path("targetParagraphIndex")))
+                    .targetListItemIndex(optionalInt(root.path("targetListItemIndex")))
+                    .targetNodePath(text(root, "targetNodePath"))
                     .operations(parseOperations(root.path("operations")))
                     .clarificationNeeded(root.path("clarificationNeeded").asBoolean(false))
                     .clarificationHint(text(root, "clarificationHint"))
@@ -148,6 +154,10 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
     }
 
     private PresentationEditIntent heuristicFallback(String instruction) {
+        PresentationEditIntent inserted = anchorInsertFallback(instruction);
+        if (inserted.getOperations() != null && !inserted.getOperations().isEmpty()) {
+            return inserted;
+        }
         PresentationEditIntent expanded = anchorRewriteFallback(instruction, EXPAND_ANCHOR_PATTERN, PresentationEditActionType.EXPAND_ELEMENT);
         if (expanded.getOperations() != null && !expanded.getOperations().isEmpty()) {
             return expanded;
@@ -157,6 +167,44 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
             return shortened;
         }
         return shortened;
+    }
+
+    private PresentationEditIntent anchorInsertFallback(String instruction) {
+        if (!hasText(instruction)) {
+            return clarification(instruction);
+        }
+        Matcher matcher = INSERT_AFTER_ANCHOR_PATTERN.matcher(instruction.trim());
+        if (!matcher.find()) {
+            return clarification(instruction);
+        }
+        String anchor = cleanAnchor(matcher.group("anchor"));
+        if (!hasText(anchor)) {
+            return clarification(instruction);
+        }
+        PageAnchor pageAnchor = extractPageAnchor(anchor);
+        PresentationEditOperation operation = PresentationEditOperation.builder()
+                .actionType(PresentationEditActionType.INSERT_AFTER_ELEMENT)
+                .targetElementType(PresentationTargetElementType.BODY)
+                .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                .pageIndex(pageAnchor.pageIndex())
+                .quotedText(pageAnchor.anchorText())
+                .contentInstruction(instruction.trim())
+                .expectedMatchCount(1)
+                .targetParagraphIndex(inferParagraphIndex(instruction))
+                .targetListItemIndex(inferListItemIndex(instruction))
+                .build();
+        return PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .actionType(PresentationEditActionType.INSERT_AFTER_ELEMENT)
+                .userInstruction(instruction)
+                .targetElementType(PresentationTargetElementType.BODY)
+                .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                .pageIndex(pageAnchor.pageIndex())
+                .quotedText(pageAnchor.anchorText())
+                .contentInstruction(instruction.trim())
+                .operations(List.of(operation))
+                .clarificationNeeded(false)
+                .build();
     }
 
     private PresentationEditIntent anchorRewriteFallback(
@@ -184,6 +232,8 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 .quotedText(pageAnchor.anchorText())
                 .contentInstruction(instruction.trim())
                 .expectedMatchCount(1)
+                .targetParagraphIndex(inferParagraphIndex(instruction))
+                .targetListItemIndex(inferListItemIndex(instruction))
                 .build();
         return PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
@@ -206,6 +256,8 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
         String normalized = anchor.trim()
                 .replaceAll("^(把|将|把这|将这)", "")
                 .replaceAll("(给我|帮我|麻烦你)$", "")
+                .replaceAll("^[“”\"'‘’]+", "")
+                .replaceAll("[“”\"'‘’]+$", "")
                 .trim();
         return hasText(normalized) ? normalized : null;
     }
@@ -290,6 +342,10 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                   "contentInstruction": "写详细一些",
                   "targetElementId": "element-1",
                   "targetBlockId": "block-1",
+                  "targetPageTitle": "实施路径",
+                  "targetParagraphIndex": 2,
+                  "targetListItemIndex": 3,
+                  "targetNodePath": "slide/data/shape[2]/content[1]/p[2]",
                   "slideTitle": "新增页标题",
                   "slideBody": "新增页正文或要点",
                   "replacementText": "新的标题或内容",
@@ -306,6 +362,10 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                       "contentInstruction": "写详细一些",
                       "targetElementId": "element-1",
                       "targetBlockId": "block-1",
+                      "targetPageTitle": "实施路径",
+                      "targetParagraphIndex": 2,
+                      "targetListItemIndex": 3,
+                      "targetNodePath": "slide/data/shape[2]/content[1]/p[2]",
                       "slideTitle": "新增页标题",
                       "slideBody": "新增页正文或要点",
                       "replacementText": "新的标题或内容"
@@ -323,6 +383,7 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 5. 如果用户说“第一页这段 xxx 写详细一些”，优先使用 targetElementType=BODY、anchorMode=BY_QUOTED_TEXT、quotedText=xxx、actionType=EXPAND_ELEMENT。
                 6. 如果用户说“第2页右侧图片换成门店实景图”，使用 targetElementType=IMAGE、anchorMode=BY_ELEMENT_ROLE、elementRole=right-image、actionType=REPLACE_IMAGE。
                 7. 如果用户说“第3页流程图改成采购->评审->执行”，使用 targetElementType=CHART、actionType=REPLACE_CHART。
+                7.1 如果用户明确说“第2页第三个 bullet”“第二段”“第1页第2条”，优先填 targetListItemIndex 或 targetParagraphIndex。
                 5. “在第2页后插入一页，标题为风险应对，正文为预算、排期、依赖”应解析为 INSERT_SLIDE，insertAfterPageIndex=2，slideTitle/slideBody 填入新增内容；插到最前 insertAfterPageIndex=0；插到末尾 insertAfterPageIndex 可为 null。
                 6. “删除第3页”应解析为 DELETE_SLIDE，pageIndex=3。
                 7. “把第4页移到第2页后”应解析为 MOVE_SLIDE，pageIndex=4，insertAfterPageIndex=2；移到最前 insertAfterPageIndex=0；移到最后/末尾 insertAfterPageIndex=-1。
@@ -415,6 +476,10 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                     .contentInstruction(text(node, "contentInstruction"))
                     .targetElementId(text(node, "targetElementId"))
                     .targetBlockId(text(node, "targetBlockId"))
+                    .targetPageTitle(text(node, "targetPageTitle"))
+                    .targetParagraphIndex(optionalInt(node.path("targetParagraphIndex")))
+                    .targetListItemIndex(optionalInt(node.path("targetListItemIndex")))
+                    .targetNodePath(text(node, "targetNodePath"))
                     .build();
             operations.add(operation);
         }
@@ -444,8 +509,42 @@ public class PresentationEditIntentResolver implements PresentationEditIntentFac
                 .contentInstruction(intent.getContentInstruction())
                 .targetElementId(intent.getTargetElementId())
                 .targetBlockId(intent.getTargetBlockId())
+                .targetPageTitle(intent.getTargetPageTitle())
+                .targetParagraphIndex(intent.getTargetParagraphIndex())
+                .targetListItemIndex(intent.getTargetListItemIndex())
+                .targetNodePath(intent.getTargetNodePath())
                 .build();
         return new ArrayList<>(List.of(operation));
+    }
+
+    private Integer inferParagraphIndex(String instruction) {
+        if (!hasText(instruction)) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("第\\s*(\\d+)\\s*段").matcher(instruction);
+        if (matcher.find()) {
+            return parseNumericToken(matcher.group(1));
+        }
+        return null;
+    }
+
+    private Integer inferListItemIndex(String instruction) {
+        if (!hasText(instruction)) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("第\\s*(\\d+)\\s*(?:个|条)?\\s*(?:bullet|要点|点)").matcher(instruction.toLowerCase());
+        if (matcher.find()) {
+            return parseNumericToken(matcher.group(1));
+        }
+        return null;
+    }
+
+    private Integer parseNumericToken(String token) {
+        try {
+            return Integer.parseInt(token);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private boolean requiresReplacement(PresentationEditActionType actionType) {

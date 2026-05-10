@@ -380,4 +380,73 @@ class PresentationEditIntentResolverTest {
         assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("历史文化遗产");
         assertThat(intent.getOperations().get(0).getReplacementText()).isNull();
     }
+
+    @Test
+    void fallsBackToInsertAfterQuotedBodyAnchor() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "clarificationNeeded": true
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getOperations()).hasSize(1);
+        assertThat(intent.getOperations().get(0).getActionType()).isEqualTo(PresentationEditActionType.INSERT_AFTER_ELEMENT);
+        assertThat(intent.getOperations().get(0).getPageIndex()).isEqualTo(1);
+        assertThat(intent.getOperations().get(0).getAnchorMode()).isEqualTo(PresentationAnchorMode.BY_QUOTED_TEXT);
+        assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("文旅融合创新，消费场景丰富多元");
+        assertThat(intent.getOperations().get(0).getReplacementText()).isNull();
+    }
+
+    @Test
+    void fallbackStripsChineseQuotesFromQuotedBodyAnchor() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "clarificationNeeded": true
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("第一页的“文旅融合创新，消费场景丰富多元”后插入新的一小点");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getOperations()).hasSize(1);
+        assertThat(intent.getOperations().get(0).getQuotedText()).isEqualTo("文旅融合创新，消费场景丰富多元");
+    }
+
+    @Test
+    void infersParagraphAndListItemIndexFromNaturalLanguage() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "UPDATE_CONTENT",
+                  "operations": [
+                    {
+                      "actionType": "REWRITE_ELEMENT",
+                      "targetElementType": "BODY",
+                      "pageIndex": 1,
+                      "targetParagraphIndex": 2,
+                      "targetListItemIndex": 3,
+                      "contentInstruction": "改短一点"
+                    }
+                  ],
+                  "clarificationNeeded": false
+                }
+                """);
+        PresentationEditIntentResolver resolver = new PresentationEditIntentResolver(chatModel, new ObjectMapper());
+
+        PresentationEditIntent intent = resolver.resolve("把第一页第3个bullet的第2段改短一点");
+
+        assertThat(intent.isClarificationNeeded()).isFalse();
+        assertThat(intent.getOperations()).hasSize(1);
+        assertThat(intent.getOperations().get(0).getTargetParagraphIndex()).isEqualTo(2);
+        assertThat(intent.getOperations().get(0).getTargetListItemIndex()).isEqualTo(3);
+    }
 }
