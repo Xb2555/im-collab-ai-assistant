@@ -541,4 +541,84 @@ class PresentationIterationExecutionServiceTest {
         verify(slidesTool).replaceSlide(eq("slides-1"), eq("s1"), anyList());
         assertThat(result.getModifiedSlides()).containsExactly("s1");
     }
+
+    @Test
+    void rewritesQuotedBodyAnchorInsteadOfFallingBackToTitle() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(slidesTool.fetchPresentation("slides-1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="title-1" type="text" topLeftX="80" topLeftY="80" width="800" height="120"><content textType="title"><p>文旅融合创新</p></content></shape><shape id="body-1" type="text" topLeftX="80" topLeftY="220" width="380" height="180"><content textType="body"><p>文旅融合创新</p></content></shape></data></slide></presentation>
+                                """)
+                        .build())
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("<presentation><slide id=\"s1\"><data><shape id=\"body-1\"><content><p>文旅融合创新，消费场景丰富多元，带动区域体验升级</p></content></shape></data></slide></presentation>")
+                        .build());
+        when(intentFacade.resolve("第一页这段“文旅融合创新”写详细一些")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.EXPAND_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .anchorMode(PresentationAnchorMode.BY_QUOTED_TEXT)
+                        .pageIndex(1)
+                        .quotedText("文旅融合创新")
+                        .replacementText("文旅融合创新，消费场景丰富多元，带动区域体验升级")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+
+        service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("第一页这段“文旅融合创新”写详细一些")
+                .build());
+
+        ArgumentCaptor<List<Map<String, Object>>> partsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(slidesTool).replaceSlide(eq("slides-1"), eq("s1"), partsCaptor.capture());
+        assertThat(partsCaptor.getValue().get(0))
+                .containsEntry("action", "block_replace")
+                .containsEntry("block_id", "body-1");
+    }
+
+    @Test
+    void rejectsAmbiguousElementRoleInsteadOfPickingFirstBody() {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        PresentationEditIntentFacade intentFacade = mock(PresentationEditIntentFacade.class);
+        when(slidesTool.fetchPresentation("slides-1"))
+                .thenReturn(LarkSlidesFetchResult.builder()
+                        .presentationId("slides-1")
+                        .xml("""
+                                <presentation><slide id="s1"><data><shape id="left-top" type="text" topLeftX="80" topLeftY="160" width="300" height="100"><content textType="body"><p>第一段</p></content></shape><shape id="left-bottom" type="text" topLeftX="80" topLeftY="320" width="300" height="100"><content textType="body"><p>第二段</p></content></shape></data></slide></presentation>
+                                """)
+                        .build());
+        when(intentFacade.resolve("把第一页左边正文改详细一些")).thenReturn(PresentationEditIntent.builder()
+                .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
+                .operations(List.of(PresentationEditOperation.builder()
+                        .actionType(PresentationEditActionType.EXPAND_ELEMENT)
+                        .targetElementType(PresentationTargetElementType.BODY)
+                        .anchorMode(PresentationAnchorMode.BY_ELEMENT_ROLE)
+                        .pageIndex(1)
+                        .elementRole("left-body")
+                        .replacementText("更详细的正文")
+                        .build()))
+                .clarificationNeeded(false)
+                .build());
+        PresentationIterationExecutionService service = new PresentationIterationExecutionService(slidesTool, intentFacade);
+
+        assertThatThrownBy(() -> service.edit(PresentationIterationRequest.builder()
+                .taskId("task-1")
+                .artifactId("artifact-1")
+                .presentationId("slides-1")
+                .instruction("把第一页左边正文改详细一些")
+                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("命中不唯一");
+
+        verify(slidesTool, never()).replaceSlide(eq("slides-1"), anyString(), anyList());
+    }
 }

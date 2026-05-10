@@ -34,6 +34,7 @@ import javax.xml.transform.stream.StreamResult;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -206,7 +207,13 @@ public class PresentationIterationExecutionService implements PresentationIterat
         requireValue(slideId, "slide id");
         List<PresentationSnapshot> snapshots = buildSnapshots(slide, slideIndex + 1);
         PresentationSnapshot snapshot = resolveSnapshotTarget(snapshots, operation);
+        if (snapshot == null && operation.getAnchorMode() != null && operation.getAnchorMode() != PresentationAnchorMode.BY_PAGE_INDEX) {
+            throw new IllegalArgumentException("无法唯一定位到要修改的 PPT 元素，请补充更具体的页内锚点");
+        }
         Element shape = snapshot == null ? findTargetShape(slide, operation.getTargetElementType()) : findShapeById(slide, snapshot.getBlockId());
+        if (shape == null) {
+            throw new IllegalArgumentException("无法定位到要修改的 PPT 元素，请补充更具体的修改位置");
+        }
         return new SlideTarget(
                 slideId,
                 slideIndex + 1,
@@ -665,9 +672,22 @@ public class PresentationIterationExecutionService implements PresentationIterat
     private List<PresentationSnapshot> buildSnapshots(Element slide, int pageIndex) {
         List<PresentationSnapshot> snapshots = new ArrayList<>();
         NodeList shapes = slide.getElementsByTagName("shape");
+        List<Element> bodyShapes = new ArrayList<>();
+        List<Element> titleShapes = new ArrayList<>();
         for (int i = 0; i < shapes.getLength(); i++) {
             Element shape = (Element) shapes.item(i);
             PresentationTargetElementType targetType = detectTargetType(shape);
+            if (targetType == PresentationTargetElementType.TITLE) {
+                titleShapes.add(shape);
+            } else {
+                bodyShapes.add(shape);
+            }
+        }
+        for (int i = 0; i < shapes.getLength(); i++) {
+            Element shape = (Element) shapes.item(i);
+            PresentationTargetElementType targetType = detectTargetType(shape);
+            String semanticRole = resolveTextSemanticRole(shape, targetType, titleShapes, bodyShapes);
+            String textContent = cleanText(shape.getTextContent());
             snapshots.add(PresentationSnapshot.builder()
                     .slideId(firstNonBlank(slide.getAttribute("id")))
                     .pageIndex(pageIndex)
@@ -675,21 +695,26 @@ public class PresentationIterationExecutionService implements PresentationIterat
                     .blockId(firstNonBlank(shape.getAttribute("id"), "shape-" + i))
                     .elementKind(targetType == PresentationTargetElementType.TITLE ? PresentationElementKind.TITLE : PresentationElementKind.BODY)
                     .textType(targetType == PresentationTargetElementType.TITLE ? "title" : "body")
-                    .textContent(normalizeText(shape.getTextContent()))
-                    .normalizedText(normalizeText(shape.getTextContent()))
+                    .textContent(textContent)
+                    .normalizedText(normalizeText(textContent))
                     .boundingBox(PresentationLayoutSpec.builder()
                             .topLeftX(parseInteger(shape.getAttribute("topLeftX")))
                             .topLeftY(parseInteger(shape.getAttribute("topLeftY")))
                             .width(parseInteger(shape.getAttribute("width")))
                             .height(parseInteger(shape.getAttribute("height")))
                             .build())
-                    .semanticRole(targetType == PresentationTargetElementType.TITLE ? "title" : "body")
+                    .semanticRole(semanticRole)
                     .editability(PresentationEditability.NATIVE_EDITABLE)
                     .build());
         }
         NodeList images = slide.getElementsByTagName("img");
+        List<Element> imageElements = new ArrayList<>();
+        for (int i = 0; i < images.getLength(); i++) {
+            imageElements.add((Element) images.item(i));
+        }
         for (int i = 0; i < images.getLength(); i++) {
             Element image = (Element) images.item(i);
+            String imageText = firstNonBlank(image.getAttribute("alt"), image.getAttribute("src"));
             snapshots.add(PresentationSnapshot.builder()
                     .slideId(firstNonBlank(slide.getAttribute("id")))
                     .pageIndex(pageIndex)
@@ -697,15 +722,15 @@ public class PresentationIterationExecutionService implements PresentationIterat
                     .blockId(firstNonBlank(image.getAttribute("id"), "img-" + i))
                     .elementKind(PresentationElementKind.IMAGE)
                     .textType("image")
-                    .textContent(firstNonBlank(image.getAttribute("alt"), image.getAttribute("src")))
-                    .normalizedText(normalizeText(firstNonBlank(image.getAttribute("alt"), image.getAttribute("src"))))
+                    .textContent(imageText)
+                    .normalizedText(normalizeText(imageText))
                     .boundingBox(PresentationLayoutSpec.builder()
                             .topLeftX(parseInteger(image.getAttribute("topLeftX")))
                             .topLeftY(parseInteger(image.getAttribute("topLeftY")))
                             .width(parseInteger(image.getAttribute("width")))
                             .height(parseInteger(image.getAttribute("height")))
                             .build())
-                    .semanticRole(imageRole(image))
+                    .semanticRole(resolveImageSemanticRole(image, imageElements))
                     .editability(PresentationEditability.HYBRID_EDITABLE)
                     .build());
         }
@@ -716,30 +741,37 @@ public class PresentationIterationExecutionService implements PresentationIterat
         if (snapshots == null || snapshots.isEmpty()) {
             return null;
         }
+        List<PresentationSnapshot> typedCandidates = snapshots.stream()
+                .filter(snapshot -> matchesTargetType(snapshot, operation.getTargetElementType()))
+                .toList();
+        if (typedCandidates.isEmpty()) {
+            return null;
+        }
         PresentationAnchorMode anchorMode = operation.getAnchorMode();
         if (anchorMode == PresentationAnchorMode.BY_QUOTED_TEXT && hasText(operation.getQuotedText())) {
             String quoted = normalizeText(operation.getQuotedText());
-            return snapshots.stream()
+            return resolveSingleCandidate(typedCandidates.stream()
                     .filter(snapshot -> snapshot.getNormalizedText() != null && snapshot.getNormalizedText().contains(quoted))
-                    .findFirst()
-                    .orElse(null);
+                    .sorted(Comparator
+                            .comparingInt((PresentationSnapshot snapshot) -> normalizedMatchDistance(snapshot.getNormalizedText(), quoted))
+                            .thenComparingInt(snapshot -> snapshot.getBoundingBox() == null ? Integer.MAX_VALUE : snapshot.getBoundingBox().getTopLeftY()))
+                    .toList(), operation, "引用文本");
         }
         if (anchorMode == PresentationAnchorMode.BY_ELEMENT_ROLE && hasText(operation.getElementRole())) {
-            return snapshots.stream()
-                    .filter(snapshot -> Objects.equals(snapshot.getSemanticRole(), operation.getElementRole()))
-                    .findFirst()
-                    .orElse(null);
+            String expectedRole = normalizeText(operation.getElementRole()).toLowerCase();
+            return resolveSingleCandidate(typedCandidates.stream()
+                    .filter(snapshot -> roleMatches(snapshot.getSemanticRole(), expectedRole))
+                    .sorted(Comparator
+                            .comparingInt((PresentationSnapshot snapshot) -> roleSpecificityScore(snapshot.getSemanticRole(), expectedRole))
+                            .thenComparingInt(snapshot -> snapshot.getBoundingBox() == null ? Integer.MAX_VALUE : snapshot.getBoundingBox().getTopLeftY()))
+                    .toList(), operation, "元素角色");
         }
         if (anchorMode == PresentationAnchorMode.BY_BLOCK_ID && hasText(operation.getTargetBlockId())) {
-            return snapshots.stream()
+            return resolveSingleCandidate(typedCandidates.stream()
                     .filter(snapshot -> Objects.equals(snapshot.getBlockId(), operation.getTargetBlockId()))
-                    .findFirst()
-                    .orElse(null);
+                    .toList(), operation, "blockId");
         }
-        return snapshots.stream()
-                .filter(snapshot -> matchesTargetType(snapshot, operation.getTargetElementType()))
-                .findFirst()
-                .orElse(null);
+        return resolveSingleCandidate(typedCandidates, operation, "页内元素类型");
     }
 
     private boolean matchesTargetType(PresentationSnapshot snapshot, PresentationTargetElementType targetElementType) {
@@ -783,9 +815,97 @@ public class PresentationIterationExecutionService implements PresentationIterat
         return PresentationTargetElementType.BODY;
     }
 
-    private String imageRole(Element image) {
-        int x = parseInteger(image.getAttribute("topLeftX"));
-        return x >= 480 ? "right-image" : "left-image";
+    private String resolveTextSemanticRole(
+            Element shape,
+            PresentationTargetElementType targetType,
+            List<Element> titleShapes,
+            List<Element> bodyShapes
+    ) {
+        if (targetType == PresentationTargetElementType.TITLE) {
+            return "title";
+        }
+        int ordinal = ordinalOf(bodyShapes, shape, Comparator
+                .comparingInt((Element element) -> parseInteger(element.getAttribute("topLeftX")))
+                .thenComparingInt(element -> parseInteger(element.getAttribute("topLeftY"))));
+        return axisRole(shape, "body", ordinal);
+    }
+
+    private String resolveImageSemanticRole(Element image, List<Element> images) {
+        int ordinal = ordinalOf(images, image, Comparator
+                .comparingInt((Element element) -> parseInteger(element.getAttribute("topLeftX")))
+                .thenComparingInt(element -> parseInteger(element.getAttribute("topLeftY"))));
+        return axisRole(image, "image", ordinal);
+    }
+
+    private int ordinalOf(List<Element> elements, Element target, Comparator<Element> comparator) {
+        if (elements == null || elements.isEmpty() || target == null) {
+            return 1;
+        }
+        List<Element> ordered = new ArrayList<>(elements);
+        ordered.sort(comparator);
+        for (int i = 0; i < ordered.size(); i++) {
+            if (ordered.get(i) == target) {
+                return i + 1;
+            }
+        }
+        return 1;
+    }
+
+    private String axisRole(Element element, String baseRole, int ordinal) {
+        int x = parseInteger(element.getAttribute("topLeftX"));
+        int y = parseInteger(element.getAttribute("topLeftY"));
+        String horizontal = x >= 480 ? "right" : "left";
+        String vertical = y >= 270 ? "bottom" : "top";
+        return horizontal + "-" + baseRole + "-" + ordinal + "|" + horizontal + "-" + baseRole + "|" + vertical + "-" + baseRole + "|" + baseRole + "-" + ordinal + "|" + baseRole;
+    }
+
+    private PresentationSnapshot resolveSingleCandidate(
+            List<PresentationSnapshot> candidates,
+            PresentationEditOperation operation,
+            String anchorLabel
+    ) {
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        int expected = operation == null || operation.getExpectedMatchCount() == null ? 1 : operation.getExpectedMatchCount();
+        if (candidates.size() > expected) {
+            throw new IllegalArgumentException("PPT 页内" + anchorLabel + "命中不唯一，请补充更具体的修改位置");
+        }
+        return candidates.get(0);
+    }
+
+    private int normalizedMatchDistance(String source, String quoted) {
+        if (!hasText(source) || !hasText(quoted)) {
+            return Integer.MAX_VALUE;
+        }
+        int index = source.indexOf(quoted);
+        return index < 0 ? Integer.MAX_VALUE : index;
+    }
+
+    private boolean roleMatches(String actualRole, String expectedRole) {
+        if (!hasText(actualRole) || !hasText(expectedRole)) {
+            return false;
+        }
+        String[] aliases = actualRole.toLowerCase().split("\\|");
+        for (String alias : aliases) {
+            if (expectedRole.equals(alias.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int roleSpecificityScore(String actualRole, String expectedRole) {
+        if (!hasText(actualRole) || !hasText(expectedRole)) {
+            return Integer.MAX_VALUE;
+        }
+        String[] aliases = actualRole.toLowerCase().split("\\|");
+        for (int i = 0; i < aliases.length; i++) {
+            if (expectedRole.equals(aliases[i].trim())) {
+                return i;
+            }
+        }
+        return Integer.MAX_VALUE;
     }
 
     private int parseInteger(String value) {
@@ -800,6 +920,10 @@ public class PresentationIterationExecutionService implements PresentationIterat
         return value == null ? "" : value.replaceAll("\\s+", "");
     }
 
+    private String cleanText(String value) {
+        return hasText(value) ? value.trim() : "";
+    }
+
     private List<PresentationEditOperation> resolveOperations(String instruction, PresentationEditIntent intent) {
         if (intent != null && intent.getOperations() != null && !intent.getOperations().isEmpty()) {
             return intent.getOperations();
@@ -809,10 +933,18 @@ public class PresentationIterationExecutionService implements PresentationIterat
                     .actionType(intent.getActionType())
                     .targetElementType(intent.getTargetElementType())
                     .pageIndex(intent.getPageIndex())
+                    .targetSlideId(intent.getTargetSlideId())
                     .insertAfterPageIndex(intent.getInsertAfterPageIndex())
                     .slideTitle(intent.getSlideTitle())
                     .slideBody(intent.getSlideBody())
                     .replacementText(intent.getReplacementText())
+                    .anchorMode(intent.getAnchorMode())
+                    .quotedText(intent.getQuotedText())
+                    .elementRole(intent.getElementRole())
+                    .expectedMatchCount(intent.getExpectedMatchCount())
+                    .contentInstruction(intent.getContentInstruction())
+                    .targetElementId(intent.getTargetElementId())
+                    .targetBlockId(intent.getTargetBlockId())
                     .build());
         }
         return List.of();
