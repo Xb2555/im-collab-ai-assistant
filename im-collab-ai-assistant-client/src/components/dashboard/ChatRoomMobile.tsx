@@ -394,10 +394,16 @@ try {
             return (
               <div 
                 key={msg.eventId} 
-                className="flex items-start gap-2 relative"
+                className="flex items-start gap-2 relative select-none" // ✨ 加了 select-none 防止长按时选中文字
+                // 移动端触摸事件
                 onTouchStart={() => handleTouchStart(msg.eventId)}
                 onTouchEnd={handleTouchEnd}
-                onTouchMove={handleTouchEnd} // 防止滑动时触发长按
+                onTouchMove={handleTouchEnd}
+                // ✨ 桌面端鼠标兼容事件（方便你在电脑上测试长按）
+                onMouseDown={() => handleTouchStart(msg.eventId)}
+                onMouseUp={handleTouchEnd}
+                onMouseLeave={handleTouchEnd} // 鼠标移出消息区域也算中断
+                
                 onClick={() => isSelectionMode && toggleMessageSelection(msg.eventId)}
               >
                 {/* 选择框 (仅在多选模式下显示) */}

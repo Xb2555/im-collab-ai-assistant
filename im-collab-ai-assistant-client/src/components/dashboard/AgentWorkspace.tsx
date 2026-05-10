@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Bot, Loader2, X, AlertCircle, RefreshCw, CheckCircle2, Play,
-  CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle, Wand2
+  CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle, Wand2, Sparkles
 } from 'lucide-react';
 import { toast } from 'sonner';
 import confetti from 'canvas-confetti';
@@ -15,6 +15,15 @@ import { DocPreviewCard } from '@/components/chat/DocPreviewCard';
 import { PptPreviewCard } from '@/components/chat/PptPreviewCard';
 import type { RuntimeArtifactVO, RuntimeStepVO } from '@/types/api';
 import { motion } from 'framer-motion';
+
+const getGreeting = () => {
+  const hour = new Date().getHours();
+  if (hour >= 6 && hour < 12) return { text: "早上好！Agent Pilot 已就绪，今天我们要搞定哪些大项目？", icon: "🌞" };
+  if (hour >= 12 && hour < 14) return { text: "中午好！先去吃个好饭歇一歇，繁琐的任务随时交给我。", icon: "🍱" };
+  if (hour >= 14 && hour < 18) return { text: "下午好！把枯燥的排版和梳理交给我，您可以喝杯咖啡啦~", icon: "☕" };
+  if (hour >= 18 && hour < 24) return { text: "晚上好！还在忙碌吗？夜深了，让我来帮你加速收尾吧！", icon: "🌙" };
+  return { text: "夜深了！哇，深夜还在奋斗，Agent 陪您一起随时待命。", icon: "🦉" };
+};
 
 const isRuntimeStepRunning = (status?: string) =>
   status === 'IN_PROGRESS' || status === 'EXECUTING' || status === 'RUNNING';
@@ -48,6 +57,7 @@ export function AgentWorkspace() {
   const { activeChatId } = useChatStore();
   const {
     activeTaskId,
+    setActiveTaskId, // ✨ 新增这一行：用于点击卡片切换任务
     planPreview,
     taskRuntime,
     setPlanPreview,
@@ -67,14 +77,26 @@ export function AgentWorkspace() {
   const [isInterruptingMode, setIsInterruptingMode] = useState(false);
   const [interruptFeedback, setInterruptFeedback] = useState('');
   
-  const [isActionLoading, setIsActionLoading] = useState(false);
+const [isActionLoading, setIsActionLoading] = useState(false);
   const [isDelivering, setIsDelivering] = useState(false);
   
+  // ✨ 新增：记录最后交付的时间戳
+  const [lastDeliveredTime, setLastDeliveredTime] = useState<string | null>(null);
+  const [prevTaskId, setPrevTaskId] = useState(activeTaskId);
 
-const [lastDeliveredTime, setLastDeliveredTime] = useState<string | null>(null);
-  const [prevTaskId, setPrevTaskId] = useState(activeTaskId); // 记录上一个任务ID
+  // ✨ 核心逻辑 1：存放近期真实的 2 条历史任务
+  const [recentTasks, setRecentTasks] = useState<any[]>([]);
 
-  // ✨ 遵循 React 最佳实践：在渲染期间直接拦截并重置状态，避免引发额外的重复渲染
+  useEffect(() => {
+    // 只有在空闲（待命大厅）状态下才拉取历史记录
+    if (!activeTaskId && !isPlanning) {
+      plannerApi.getTasks(undefined, 2).then(res => {
+        setRecentTasks(res.tasks || []);
+      }).catch(err => console.error("获取最近任务失败", err));
+    }
+  }, [activeTaskId, isPlanning]);
+
+  // ✨ 修复 ESLint 报错：在渲染期直接重置，避免 useEffect 导致重复渲染
   if (activeTaskId !== prevTaskId) {
     setPrevTaskId(activeTaskId);
     setLastDeliveredTime(null);
@@ -181,12 +203,68 @@ const handleDeliver = async () => {
             </div>
             <div className="h-32 w-full bg-zinc-100 rounded-xl"></div>
           </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full space-y-3 text-center text-zinc-400 mt-32">
-            <Bot className="h-8 w-8 opacity-50" />
-            <p className="text-sm">在左侧输入指令，唤醒 Agent</p>
-          </div>
-        )
+        ) : (() => {
+          const { text: greetingText, icon: greetingIcon } = getGreeting();
+          const [title, subtitle] = greetingText.split('！');
+          return (
+            <div className="flex flex-col items-center justify-center h-full w-full animate-in fade-in zoom-in-95 duration-700">
+              {/* 呼吸发光的核心动效 */}
+              <div className="relative flex items-center justify-center mb-8 mt-10">
+                <div className="absolute w-40 h-40 bg-blue-500/20 rounded-full blur-3xl animate-pulse" />
+                <div className="absolute w-24 h-24 bg-indigo-400/20 rounded-full blur-2xl animate-pulse" style={{ animationDelay: '150ms' }} />
+                <motion.div animate={{ y: [-10, 10, -10] }} transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }} className="relative z-10 bg-gradient-to-b from-white to-blue-50 p-6 rounded-[2rem] shadow-[0_8px_30px_rgb(0,0,0,0.08)] border border-white/60">
+                  <Bot className="h-16 w-16 text-blue-600" />
+                  <motion.div animate={{ rotate: 360, scale: [1, 1.2, 1] }} transition={{ duration: 3, repeat: Infinity, ease: "linear" }} className="absolute -top-3 -right-3 text-amber-400">
+                     <Sparkles className="h-8 w-8 fill-amber-400 drop-shadow-sm" />
+                  </motion.div>
+                </motion.div>
+              </div>
+
+              {/* 问候语 */}
+              <div className="text-center space-y-3 mb-10">
+                <h2 className="text-2xl font-bold text-zinc-800 tracking-tight flex items-center justify-center gap-2">
+                  <span className="text-3xl">{greetingIcon}</span> <span>{title}！</span>
+                </h2>
+                <p className="text-sm text-zinc-500 font-medium">{subtitle}</p>
+              </div>
+
+              {/* 操作引导 */}
+              <div className="flex items-center gap-2 text-sm font-medium text-blue-600 bg-blue-50/80 px-6 py-3 rounded-full border border-blue-100 shadow-sm mb-12 animate-bounce">
+                👉 点击左侧任意群聊，或直接在输入框唤醒我开始工作吧！
+              </div>
+
+              {/* 快捷卡片占位 (Mock) */}
+              <div className="w-full max-w-lg">
+                 <div className="flex items-center justify-between mb-4 px-1">
+                   <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest">近期任务历史 (Preview)</span>
+                 </div>
+                 <div className="grid grid-cols-2 gap-4">
+                    {recentTasks.length > 0 ? (
+                      recentTasks.map(task => (
+                        <div 
+                          key={task.taskId}
+                          onClick={() => setActiveTaskId(task.taskId)}
+                          className="bg-white p-4 rounded-2xl border border-zinc-100 shadow-sm hover:shadow-md hover:border-blue-200 transition-all cursor-pointer group"
+                        >
+                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center mb-3 group-hover:scale-110 transition-transform ${task.status === 'COMPLETED' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
+                            <History className="h-5 w-5" />
+                          </div>
+                          <h4 className="text-sm font-bold text-zinc-800 mb-1 line-clamp-1" title={task.title}>{task.title}</h4>
+                          <p className="text-[10px] text-zinc-400">
+                            {new Date(task.updatedAt).toLocaleDateString()} • {getStatusDisplay(task.status).label}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="col-span-2 py-8 text-center border-2 border-dashed border-zinc-100 rounded-2xl text-zinc-300 text-xs">
+                        暂无近期执行记录
+                      </div>
+                    )}
+                 </div>
+              </div>
+            </div>
+          );
+        })()
       ) : (
         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex flex-col gap-4">
           <div className="bg-white border border-zinc-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
@@ -206,12 +284,18 @@ const handleDeliver = async () => {
                     const { label, style } = getStatusDisplay(runtimeTask.status || runtimeTask.currentStage);
                     return <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${style}`}>{label}</span>;
                   })()}
-                  {(runtimeActions?.canCancel || ['PLANNING', 'CLARIFYING', 'WAITING_APPROVAL'].includes(runtimeTask.status)) && (
-                    <Button variant="ghost" size="icon" className="h-6 w-6 text-zinc-400 hover:text-red-600 hover:bg-red-50 rounded-full ml-1" 
-                      onClick={() => runtimeActions?.canCancel ? handleCommand('CANCEL') : (clearTask(), toast.info('任务已强制关闭'))} disabled={isCancelling} >
-                      {isCancelling ? <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" /> : <X className="w-4 h-4" />}
-                    </Button>
-                  )}
+                  {/* 现在的逻辑：无论什么状态，右上角永远有一个清爽的“退出工作台”按钮 */}
+<Button 
+  variant="ghost" 
+  size="icon" 
+  className="h-6 w-6 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-full ml-1" 
+  onClick={() => {
+    clearTask();
+    toast.info('已回到待命大厅');
+  }}
+>
+  <X className="w-4 h-4" />
+</Button>
                 </div>
                 <span className="text-[9px] font-mono text-zinc-400">{runtimeTask.updatedAt ? new Date(runtimeTask.updatedAt).toLocaleTimeString() : new Date().toLocaleTimeString()}</span>
               </div>

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import {
   Bot, Loader2, X, AlertCircle, RefreshCw, CheckCircle2, Play,
   CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle,
-  FileText, Presentation, ChevronRight, UserCircle, Wand2
+  FileText, Presentation, ChevronRight, UserCircle, Wand2, Sparkles
 } from 'lucide-react';
 import { toast } from 'sonner';
 import confetti from 'canvas-confetti';
@@ -16,6 +16,15 @@ import { DocPreviewCard } from '@/components/chat/DocPreviewCard';
 import { PptPreviewCard } from '@/components/chat/PptPreviewCard';
 import type { RuntimeArtifactVO, RuntimeStepVO } from '@/types/api';
 import { motion, AnimatePresence } from 'framer-motion';
+
+const getGreeting = () => {
+  const hour = new Date().getHours();
+  if (hour >= 6 && hour < 12) return { text: "早上好！Agent Pilot 已就绪，今天我们要搞定哪些大项目？", icon: "🌞" };
+  if (hour >= 12 && hour < 14) return { text: "中午好！先去吃个好饭歇一歇，繁琐的任务随时交给我。", icon: "🍱" };
+  if (hour >= 14 && hour < 18) return { text: "下午好！把枯燥的排版和梳理交给我，您可以喝杯咖啡啦~", icon: "☕" };
+  if (hour >= 18 && hour < 24) return { text: "晚上好！还在忙碌吗？夜深了，让我来帮你加速收尾吧！", icon: "🌙" };
+  return { text: "夜深了！哇，深夜还在奋斗，Agent 陪您一起随时待命。", icon: "🦉" };
+};
 
 const isRuntimeStepRunning = (status?: string) => ['IN_PROGRESS', 'EXECUTING', 'RUNNING'].includes(status || '');
 
@@ -140,22 +149,57 @@ export function AgentWorkspaceMobile() {
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#FAFAFC] relative h-full flex flex-col p-4 gap-4">
-      {(!activeTaskId || isPlanning || !runtimeTask) ? (
-        <div className="flex flex-col items-center justify-center h-full gap-4 py-20">
-          <Bot className={`h-12 w-12 ${isPlanning ? 'text-blue-500 animate-bounce' : 'text-zinc-300'}`} />
-          <p className="text-sm text-zinc-500">{isPlanning ? 'Agent 正在为您理解意图并生成规划...' : '暂无活跃任务'}</p>
-          {isPlanning && (
+      {(!activeTaskId || !runtimeTask) ? (
+        isPlanning ? (
+          <div className="flex flex-col items-center justify-center h-full gap-4 py-20">
+            <Bot className="h-12 w-12 text-blue-500 animate-bounce" />
+            <p className="text-sm text-zinc-500">Agent 正在为您理解意图并生成规划...</p>
             <div className="w-48 h-1.5 bg-blue-100 rounded-full overflow-hidden mt-2 shadow-inner">
               <motion.div initial={{ x: '-100%' }} animate={{ x: '100%' }} transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }} className="w-1/2 h-full bg-blue-500 rounded-full" />
             </div>
-          )}
-        </div>
+          </div>
+        ) : (() => {
+          const { text: greetingText, icon: greetingIcon } = getGreeting();
+          const [title, subtitle] = greetingText.split('！');
+          return (
+            <div className="flex flex-col items-center justify-center h-full w-full px-6 animate-in fade-in zoom-in-95 duration-700 pb-20">
+              <div className="relative flex items-center justify-center mb-8">
+                <div className="absolute w-32 h-32 bg-blue-500/20 rounded-full blur-2xl animate-pulse" />
+                <motion.div animate={{ y: [-8, 8, -8] }} transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }} className="relative z-10 bg-white p-5 rounded-3xl shadow-lg border border-zinc-100">
+                  <Bot className="h-10 w-10 text-blue-600" />
+                  <motion.div animate={{ rotate: 360, scale: [1, 1.2, 1] }} transition={{ duration: 3, repeat: Infinity, ease: "linear" }} className="absolute -top-2 -right-2 text-amber-400">
+                     <Sparkles className="h-6 w-6 fill-amber-400" />
+                  </motion.div>
+                </motion.div>
+              </div>
+              <div className="text-center space-y-2 mb-8">
+                <h2 className="text-lg font-bold text-zinc-800">{greetingIcon} {title}！</h2>
+                <p className="text-xs text-zinc-500 leading-relaxed">{subtitle}</p>
+              </div>
+              <div className="text-[11px] font-medium text-blue-600 bg-blue-50 px-5 py-2.5 rounded-full border border-blue-100 animate-bounce">
+                👉 随时在下方输入指令唤醒我
+              </div>
+            </div>
+          );
+        })()
       ) : (
         <div className="flex flex-col gap-4 pb-20">
           <div className="bg-white rounded-2xl p-4 border border-zinc-200 shadow-sm relative overflow-hidden">
             <div className="flex justify-between items-start mb-3">
               <h3 className="text-base font-bold text-zinc-900 leading-tight flex-1 pr-4">{runtimeTask.title}</h3>
-              {(() => { const { label, style } = getStatusDisplay(runtimeTask.status); return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${style} shrink-0`}>{label}</span>; })()}
+              
+              {/* ✨ 修改点：把状态标签和新的退出按钮(X)组合在一起 */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {(() => { const { label, style } = getStatusDisplay(runtimeTask.status); return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${style}`}>{label}</span>; })()}
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="h-6 w-6 text-zinc-400 bg-zinc-100/50 hover:bg-zinc-200 hover:text-zinc-600 rounded-full transition-colors" 
+                  onClick={() => clearTask()}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             </div>
             <p className="text-sm text-zinc-500 leading-relaxed mb-4">{runtimeTask.goal}</p>
             

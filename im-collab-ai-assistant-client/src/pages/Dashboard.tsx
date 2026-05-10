@@ -12,6 +12,7 @@ import { ChatListSidebar } from '@/components/dashboard/ChatListSidebar';
 import { ChatRoom } from '@/components/dashboard/ChatRoom';
 import { AgentWorkspace } from '@/components/dashboard/AgentWorkspace'; // 👈 引入最后一块积木
 import { useAgentStream } from '@/hooks/useAgentStream';
+import { useChatStore } from '@/store/useChatStore';
 
 // 提取共用方法
 const getStatusDisplay = (status?: string) => {
@@ -29,7 +30,7 @@ const getStatusDisplay = (status?: string) => {
 export default function Dashboard() {
   const { user, accessToken, clearAuth } = useAuthStore();
   const { activeTaskId, setActiveTaskId } = useTaskStore();
-  
+  const { activeChatId } = useChatStore(); // ✨ 加上这一行，错误就会消失
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [historyTasks, setHistoryTasks] = useState<any[]>([]);
   const [isLoadingHistoryTasks, setIsLoadingHistoryTasks] = useState(false);
@@ -145,20 +146,30 @@ export default function Dashboard() {
       </header>
 
       <main className="flex flex-1 overflow-hidden">
-        {/* 左侧积木：群聊列表 */}
-        <aside className="w-72 shrink-0 border-r border-zinc-200 hidden md:block">
+        {/* 左侧积木：群聊列表 (始终保留) */}
+        <aside className="w-72 shrink-0 border-r border-zinc-200 hidden md:block z-20 bg-white">
           <ChatListSidebar />
         </aside>
 
-        {/* 中间积木：聊天室 */}
-        <div className="hidden lg:flex flex-col flex-1 xl:max-w-[400px] border-r border-zinc-200 relative h-full">
-          <ChatRoom onOpenHistory={loadHistoryTasks} />
-        </div>
+        {/* ✨ 核心动态布局逻辑 ✨ */}
+        {activeChatId ? (
+          <>
+            {/* 中间积木：聊天室 (选中群聊时显示) */}
+            <div className="hidden lg:flex flex-col flex-1 xl:max-w-[400px] border-r border-zinc-200 relative h-full z-10">
+              <ChatRoom onOpenHistory={loadHistoryTasks} />
+            </div>
 
-        {/* 右侧积木：智能工作台 */}
-        <aside className="flex flex-1 lg:w-[360px] flex-col bg-zinc-50 shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.02)] relative z-10 border-l border-zinc-200">
-          <AgentWorkspace />
-        </aside>
+            {/* 右侧积木：智能工作台 (标准宽度) */}
+            <aside className="flex flex-1 lg:w-[360px] flex-col bg-zinc-50 shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.02)] relative z-10 border-l border-zinc-200">
+              <AgentWorkspace />
+            </aside>
+          </>
+        ) : (
+          /* 无群聊时：隐藏聊天室，让待命大厅(工作台)占满全部剩余的 flex-1 空间 */
+          <div className="flex flex-1 flex-col bg-white relative z-10">
+            <AgentWorkspace />
+          </div>
+        )}
       </main>
 
       {/* 悬浮积木：历史抽屉 */}
