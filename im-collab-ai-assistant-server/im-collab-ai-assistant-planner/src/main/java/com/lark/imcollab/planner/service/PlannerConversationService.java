@@ -778,6 +778,9 @@ public class PlannerConversationService {
                 intakeState.getIntakeType(),
                 intakeState.getReadOnlyView(),
                 resolution == null ? null : resolution.continuationKey());
+        if (conversationTaskStateService != null) {
+            conversationTaskStateService.syncFromSession(selected);
+        }
         return selected;
     }
 

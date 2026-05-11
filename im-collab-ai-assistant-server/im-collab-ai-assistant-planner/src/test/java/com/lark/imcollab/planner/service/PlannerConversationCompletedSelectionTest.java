@@ -1270,6 +1270,61 @@ class PlannerConversationCompletedSelectionTest {
         verify(taskBridgeService, never()).ensureTask(any());
     }
 
+    @Test
+    void selectingCompletedTaskFromListSyncsConversationActiveTask() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession pending = PlanTaskSession.builder()
+                .taskId("selector-task")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.UNKNOWN)
+                        .pendingTaskSelection(PendingTaskSelection.builder()
+                                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                                .originalInstruction("我想看看这个会话里已完成的任务")
+                                .selectionPurpose("COMPLETED_TASK_LIST")
+                                .candidates(List.of(candidate("task-1", "采购评审 PPT")))
+                                .expiresAt(Instant.now().plusSeconds(60))
+                                .build())
+                        .build())
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("selector-task", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("selector-task")).thenReturn(pending);
+        when(sessionService.get("task-1")).thenReturn(completed);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner,
+                null,
+                null,
+                null,
+                conversationTaskStateService,
+                null
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("1", context, null, null);
+
+        assertThat(result.getTaskId()).isEqualTo("task-1");
+        verify(conversationTaskStateService).syncFromSession(completed);
+    }
+
     private PendingTaskCandidate candidate(String taskId, String title) {
         return PendingTaskCandidate.builder()
                 .taskId(taskId)
