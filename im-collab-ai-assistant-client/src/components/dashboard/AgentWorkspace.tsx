@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Bot, Loader2, X, AlertCircle, RefreshCw, CheckCircle2, Play,
-  CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle, Wand2, Sparkles
+  CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle, Wand2, Sparkles,Lightbulb, ArrowRight
 } from 'lucide-react';
 import { toast } from 'sonner';
 import confetti from 'canvas-confetti';
@@ -87,6 +87,38 @@ const [isActionLoading, setIsActionLoading] = useState(false);
   // ✨ 核心逻辑 1：存放近期真实的 2 条历史任务
   const [recentTasks, setRecentTasks] = useState<any[]>([]);
 
+// ✨ 新增：推荐执行状态
+  const [executingRecId, setExecutingRecId] = useState<string | null>(null);
+
+  // ✨ 新增：处理推荐点击的专门函数
+  const handleExecuteRecommendation = async (recId: string) => {
+    if (!activeTaskId || !runtimeTask?.version) return;
+    setExecutingRecId(recId);
+    try {
+      const newPreview = await plannerApi.executeRecommendation(activeTaskId, recId, { version: runtimeTask.version });
+      setPlanPreview(newPreview); // 切换状态
+      
+      // 隐式刷新底层数据
+      try {
+        const freshRuntime = await plannerApi.getTaskRuntime(activeTaskId);
+        setTaskRuntime(freshRuntime);
+      } catch (_e) {}
+    } catch (e: any) {
+      // 按契约处理特定错误码
+      if (e.code === 40900) {
+        toast.warning('任务已被更新', { description: '正在为您刷新最新状态' });
+      } else if (e.code === 50001) {
+        toast.warning('该推荐已失效', { description: '正在为您刷新当前任务' });
+      } else {
+        toast.error('执行失败', { description: e.message || '未知错误' });
+      }
+      // 出错时兜底刷新一次
+      plannerApi.getTaskRuntime(activeTaskId).then(setTaskRuntime).catch(console.error);
+    } finally {
+      setExecutingRecId(null);
+    }
+  };
+
   useEffect(() => {
     // 只有在空闲（待命大厅）状态下才拉取历史记录
     if (!activeTaskId && !isPlanning) {
@@ -162,18 +194,37 @@ const handleDeliver = async () => {
     if (!activeTaskId || !activeChatId || !taskRuntime?.artifacts || isDelivering) return;
     setIsDelivering(true);
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#6353AC', '#9F9DF3', '#C9EBCA', '#D5D6F2'], zIndex: 9999 });
-    try {
-      const docLink = taskRuntime.artifacts.find(a => a.type === 'DOC')?.url || '';
-      const pptLink = taskRuntime.artifacts.find(a => a.type === 'PPT')?.url || '';
-      // ✨ 修复文案：采用纯前端妥协版的第一人称视角
-      const deliverText = `🎉 我已经让 Agent 完成了本次任务，这是最新的成果：\n\n📝 项目文档：${docLink || '暂无'}\n📊 汇报演示：${pptLink || '暂无'}\n\n💡 请大家查阅。如果有需要修改的地方，可以直接在群里@我，或者直接回复本条消息。`;
-      await imApi.sendMessage({ chatId: activeChatId, text: deliverText, idempotencyKey: crypto.randomUUID() });
-      toast.success('🎉 总结与交付成功！', { description: '成果已同步至飞书协作群。' });
-      // ✨ 核心修复：不清除任务，而是记录当前任务的最后更新时间戳
-      setLastDeliveredTime(runtimeTask?.updatedAt || null);
+try {
+      // 1. 提取各个产物
+      const docLink = taskRuntime?.artifacts.find(a => a.type === 'DOC')?.url;
+      const pptLink = taskRuntime?.artifacts.find(a => a.type === 'PPT')?.url;
+      const summaryContent = taskRuntime?.artifacts.find(a => a.type === 'SUMMARY')?.preview;
+      
+      // 2. 组装文案（分段式拼接）
+      let deliverText = `🎉 本次任务已由 Agent 顺利完成，成果如下：\n\n`;
+      
+      if (summaryContent) {
+        deliverText += `💡 【核心摘要】\n${summaryContent.trim()}\n\n`;
+      }
+      
+      deliverText += `🔗 【产物链接】\n`;
+      deliverText += `📝 项目文档：${docLink || '暂无'}\n`;
+      deliverText += `📊 汇报演示：${pptLink || '暂无'}\n\n`;
+      deliverText += `💡 温馨提示：您可以直接查阅以上内容。如需微调，请随时@我或在群内回复。`;
+
+      // 3. 发送
+      await imApi.sendMessage({ 
+        chatId: activeChatId, 
+        text: deliverText, 
+        idempotencyKey: crypto.randomUUID() 
+      });
+      
+      toast.success('🎉 总结与交付成功！');
+      setLastDeliveredTime(runtimeTask?.updatedAt || null); 
     } catch (e: any) {
       toast.error('交付推送失败', { description: e.message });
     } finally {
+      setIsActionLoading(false); // 确保状态重置
       setIsDelivering(false);
     }
   };
@@ -482,23 +533,86 @@ const handleDeliver = async () => {
               {runtimeArtifacts.map((artifact: RuntimeArtifactVO) => {
                 if (artifact.type === 'DOC') return <DocPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'GENERATING'} docUrl={artifact.url} docTitle={artifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading} onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })} />;
                 if (artifact.type === 'PPT') return <PptPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'EXECUTING'} pptUrl={artifact.url} pptTitle={artifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading} onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })} onInterrupt={() => handleCommand('CANCEL')} />;
+                // ✨ 新增：展示摘要产物卡片
+  if (artifact.type === 'SUMMARY') {
+    return (
+      <div key={artifact.artifactId} className="bg-amber-50/30 border border-amber-200/50 rounded-xl p-4 shadow-sm animate-in fade-in zoom-in-95">
+        <div className="flex items-center gap-2 mb-2 text-amber-700">
+          <div className="p-1.5 bg-amber-100 rounded-md">
+            <Sparkles className="h-4 w-4" />
+          </div>
+          <span className="text-sm font-bold">任务执行摘要</span>
+        </div>
+        <div className="text-xs text-zinc-600 leading-relaxed whitespace-pre-wrap bg-white/50 p-3 rounded-lg border border-amber-100/50">
+          {artifact.preview || "摘要内容生成中..."}
+        </div>
+      </div>
+    );
+  }
                 return null;
               })}
             </div>
           )}
 
           {runtimeTask.status === 'COMPLETED' && (() => {
-            // ✨ 核心逻辑：如果记录的交付时间与当前任务更新时间一致，说明没做过新修改
             const isDelivered = lastDeliveredTime === runtimeTask.updatedAt;
+            
+            // ✨ 提取推荐数据并判断是否展示
+            const evaluation = taskRuntime?.evaluation;
+            const showRecommendations = evaluation?.verdict === 'PASS' && (evaluation.nextStepRecommendations?.length || 0) > 0;
+            const sortedRecs = [...(evaluation?.nextStepRecommendations || [])].sort((a, b) => a.priority - b.priority);
+
             return (
-              <Button 
-                className={`w-full h-10 font-bold text-white shadow-md transition-all duration-300 animate-in zoom-in ${isDelivered ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-zinc-900 hover:bg-zinc-800'} disabled:opacity-60 disabled:cursor-not-allowed`}
-                onClick={handleDeliver}
-                disabled={isDelivering || isDelivered}
-              >
-                {isDelivering ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : (isDelivered ? <CheckCircle2 className="h-4 w-4 mr-2" /> : <Send className="h-4 w-4 mr-2" />)} 
-                {isDelivering ? '正在同步...' : isDelivered ? '✅ 已同步至群聊' : lastDeliveredTime ? '重新同步最新版本' : '总结与交付群聊'}
-              </Button>
+              <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-2">
+                {/* ✨ 新增：下一步推荐区域 */}
+                {showRecommendations && (
+                  <div className="bg-indigo-50/50 border border-indigo-100 rounded-2xl p-4 shadow-sm">
+                    <h4 className="text-[11px] font-bold text-indigo-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                      <Lightbulb className="w-3.5 h-3.5" /> 智能连击 (Smart Follow-up)
+                    </h4>
+                    <div className="flex flex-col gap-2.5">
+                      {sortedRecs.map((rec) => (
+                        <div key={rec.recommendationId} className="bg-white border border-indigo-50 rounded-xl p-3 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all group flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs font-bold text-zinc-800">{rec.title}</span>
+                              {rec.targetDeliverable && (
+                                <span className="text-[9px] font-bold bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded tracking-wider">
+                                  {rec.targetDeliverable}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-zinc-500 leading-relaxed">{rec.reason}</p>
+                          </div>
+                          <Button 
+                            size="sm" 
+                            disabled={!rec.executable || executingRecId !== null}
+                            onClick={() => handleExecuteRecommendation(rec.recommendationId)}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm shrink-0 h-8"
+                          >
+                            {executingRecId === rec.recommendationId ? (
+                              <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                            ) : (
+                              <ArrowRight className="w-3.5 h-3.5 mr-1" />
+                            )}
+                            {rec.actionLabel}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 你的原有 Deliver 按钮 (保持原样) */}
+                <Button 
+                  className={`w-full h-10 font-bold text-white shadow-md transition-all duration-300 animate-in zoom-in ${isDelivered ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-zinc-900 hover:bg-zinc-800'} disabled:opacity-60 disabled:cursor-not-allowed`}
+                  onClick={handleDeliver}
+                  disabled={isDelivering || isDelivered}
+                >
+                  {isDelivering ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : (isDelivered ? <CheckCircle2 className="h-4 w-4 mr-2" /> : <Send className="h-4 w-4 mr-2" />)} 
+                  {isDelivering ? '正在同步...' : isDelivered ? '✅ 已同步至群聊' : lastDeliveredTime ? '重新同步最新版本' : '总结与交付群聊'}
+                </Button>
+              </div>
             );
           })()}
 

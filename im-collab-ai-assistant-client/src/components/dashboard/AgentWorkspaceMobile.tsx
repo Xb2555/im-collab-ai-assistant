@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import {
   Bot, Loader2, X, AlertCircle, RefreshCw, CheckCircle2, Play,
   CircleDashed, Check, History, Send, TerminalSquare, ChevronDown, ChevronUp, StopCircle,
-  FileText, Presentation, ChevronRight, UserCircle, Wand2, Sparkles
+  FileText, Presentation, ChevronRight, UserCircle, Wand2, Sparkles,Lightbulb, ArrowRight
 } from 'lucide-react';
 import { toast } from 'sonner';
 import confetti from 'canvas-confetti';
@@ -82,7 +82,37 @@ export function AgentWorkspaceMobile() {
   const runtimeSteps = taskRuntime?.steps ?? [];
   const runtimeArtifacts = taskRuntime?.artifacts ?? [];
   const runtimeEvents = taskRuntime?.events ?? [];
+// ✨ 新增：推荐执行状态
+  const [executingRecId, setExecutingRecId] = useState<string | null>(null);
 
+  // ✨ 新增：处理推荐点击的专门函数
+  const handleExecuteRecommendation = async (recId: string) => {
+    if (!activeTaskId || !runtimeTask?.version) return;
+    setExecutingRecId(recId);
+    try {
+      const newPreview = await plannerApi.executeRecommendation(activeTaskId, recId, { version: runtimeTask.version });
+      setPlanPreview(newPreview); // 切换状态
+      
+      // 隐式刷新底层数据
+      try {
+        const freshRuntime = await plannerApi.getTaskRuntime(activeTaskId);
+        setTaskRuntime(freshRuntime);
+      } catch (_e) {}
+    } catch (e: any) {
+      // 按契约处理特定错误码
+      if (e.code === 40900) {
+        toast.warning('任务已被更新', { description: '正在为您刷新最新状态' });
+      } else if (e.code === 50001) {
+        toast.warning('该推荐已失效', { description: '正在为您刷新当前任务' });
+      } else {
+        toast.error('执行失败', { description: e.message || '未知错误' });
+      }
+      // 出错时兜底刷新一次
+      plannerApi.getTaskRuntime(activeTaskId).then(setTaskRuntime).catch(console.error);
+    } finally {
+      setExecutingRecId(null);
+    }
+  };
   // ✨ 更新 handleCommand 以支持 INTERRUPT_REPLAN
   const handleCommand = async (action: 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL' | 'RETRY_FAILED' | 'RESUME' | 'INTERRUPT_REPLAN', customFeedback?: string, extraPayload?: any) => {
     if (!activeTaskId || isActionLoading) return;
@@ -122,19 +152,36 @@ export function AgentWorkspaceMobile() {
     setIsDelivering(true);
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
     try {
-      const docLink = taskRuntime?.artifacts.find(a => a.type === 'DOC')?.url || '';
-      const pptLink = taskRuntime?.artifacts.find(a => a.type === 'PPT')?.url || '';
+      // 1. 提取各个产物
+      const docLink = taskRuntime?.artifacts.find(a => a.type === 'DOC')?.url;
+      const pptLink = taskRuntime?.artifacts.find(a => a.type === 'PPT')?.url;
+      const summaryContent = taskRuntime?.artifacts.find(a => a.type === 'SUMMARY')?.preview;
+      
+      // 2. 组装文案（分段式拼接）
+      let deliverText = `🎉 本次任务已由 Agent 顺利完成，成果如下：\n\n`;
+      
+      if (summaryContent) {
+        deliverText += `💡 【核心摘要】\n${summaryContent.trim()}\n\n`;
+      }
+      
+      deliverText += `🔗 【产物链接】\n`;
+      deliverText += `📝 项目文档：${docLink || '暂无'}\n`;
+      deliverText += `📊 汇报演示：${pptLink || '暂无'}\n\n`;
+      deliverText += `💡 温馨提示：您可以直接查阅以上内容。如需微调，请随时@我或在群内回复。`;
+
+      // 3. 发送
       await imApi.sendMessage({ 
         chatId: activeChatId, 
-        text: `🎉 我已经让 Agent 完成了本次任务，这是最新的成果：\n📄 文档：${docLink || '无'}\n📊 PPT：${pptLink || '无'}\n💡 请大家查阅，有修改需求随时回复本消息。`, 
+        text: deliverText, 
         idempotencyKey: crypto.randomUUID() 
       });
-      toast.success('已成功推送至群聊');
-      // ✨ 核心修复：记录时间戳，且彻底删掉 clearTask()
-      setLastDeliveredTime(runtimeTask?.updatedAt || null);
-    } catch (e: any) { 
-      toast.error('发送失败'); 
+      
+      toast.success('🎉 总结与交付成功！');
+      setLastDeliveredTime(runtimeTask?.updatedAt || null); 
+    } catch (e: any) {
+      toast.error('交付推送失败', { description: e.message });
     } finally {
+      setIsActionLoading(false); // 确保状态重置
       setIsDelivering(false);
     }
   };
@@ -275,20 +322,38 @@ export function AgentWorkspaceMobile() {
           {runtimeArtifacts.length > 0 && (
             <div className="flex flex-col gap-2">
               <h4 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest pl-1">产物预览</h4>
-              {runtimeArtifacts.map(a => (
-                <div key={a.artifactId} onClick={() => setPreviewArtifactId(a.artifactId)} className="bg-white p-3 rounded-xl border border-zinc-200 flex items-center justify-between active:bg-zinc-50">
-                  <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg ${a.type === 'PPT' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
-                      {a.type === 'PPT' ? <Presentation className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
+              {runtimeArtifacts.map(a => {
+                // ✨ 新增：针对 SUMMARY 的特殊移动端渲染（直接展示纯文本，不需要弹窗）
+                if (a.type === 'SUMMARY') {
+                  return (
+                    <div key={a.artifactId} className="bg-amber-50/40 border border-amber-200/60 rounded-xl p-3 shadow-sm mb-1 animate-in fade-in">
+                      <div className="flex items-center gap-1.5 mb-2 text-amber-700">
+                        <Sparkles className="h-3.5 w-3.5" />
+                        <span className="text-[11px] font-bold">任务执行摘要</span>
+                      </div>
+                      <div className="text-[11px] text-zinc-600 leading-relaxed whitespace-pre-wrap bg-white/60 p-2.5 rounded-lg border border-amber-100/30">
+                        {a.preview || "摘要内容生成中..."}
+                      </div>
                     </div>
-                    <div className="flex flex-col overflow-hidden">
-                      <span className="text-sm font-bold text-zinc-800 truncate">{a.title}</span>
-                      <span className="text-[10px] text-zinc-400">状态: {a.status === 'CREATED' ? '已生成' : '处理中'}</span>
+                  );
+                }
+
+                // 👇 原有逻辑：DOC 和 PPT 保持原来的紧凑列表样式，点击后弹窗预览
+                return (
+                  <div key={a.artifactId} onClick={() => setPreviewArtifactId(a.artifactId)} className="bg-white p-3 rounded-xl border border-zinc-200 flex items-center justify-between active:bg-zinc-50">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-2 rounded-lg ${a.type === 'PPT' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
+                        {a.type === 'PPT' ? <Presentation className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
+                      </div>
+                      <div className="flex flex-col overflow-hidden">
+                        <span className="text-sm font-bold text-zinc-800 truncate">{a.title}</span>
+                        <span className="text-[10px] text-zinc-400">状态: {a.status === 'CREATED' ? '已生成' : '处理中'}</span>
+                      </div>
                     </div>
+                    <ChevronRight className="h-4 w-4 text-zinc-300" />
                   </div>
-                  <ChevronRight className="h-4 w-4 text-zinc-300" />
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -424,15 +489,60 @@ export function AgentWorkspaceMobile() {
 
           {runtimeTask.status === 'COMPLETED' && (() => {
             const isDelivered = lastDeliveredTime === runtimeTask.updatedAt;
+            
+            const evaluation = taskRuntime?.evaluation;
+            const showRecommendations = evaluation?.verdict === 'PASS' && (evaluation.nextStepRecommendations?.length || 0) > 0;
+            const sortedRecs = [...(evaluation?.nextStepRecommendations || [])].sort((a, b) => a.priority - b.priority);
+
             return (
-              <Button 
-                disabled={isDelivering || isDelivered} 
-                className={`w-full h-12 text-white rounded-2xl font-bold shadow-lg transition-all ${isDelivered ? 'bg-emerald-500' : 'bg-zinc-900'} disabled:opacity-60 disabled:cursor-not-allowed`} 
-                onClick={handleDeliver}
-              >
-                {isDelivering ? <Loader2 className="h-5 w-5 mr-2 animate-spin" /> : (isDelivered ? <CheckCircle2 className="h-5 w-5 mr-2" /> : <Send className="h-5 w-5 mr-2" />)} 
-                {isDelivering ? '正在同步...' : isDelivered ? '✅ 已同步至群聊' : lastDeliveredTime ? '重新同步最新版本' : '确认并同步交付成果'}
-              </Button>
+              <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-2">
+                {showRecommendations && (
+                  <div className="bg-indigo-50/50 border border-indigo-100 rounded-2xl p-3 shadow-sm">
+                    <h4 className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                      <Lightbulb className="w-3.5 h-3.5" /> 智能连击推荐
+                    </h4>
+                    <div className="flex flex-col gap-2">
+                      {sortedRecs.map((rec) => (
+                        <div key={rec.recommendationId} className="bg-white border border-indigo-100/60 rounded-xl p-3 flex flex-col gap-2.5">
+                          <div>
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <span className="text-xs font-bold text-zinc-800">{rec.title}</span>
+                              {rec.targetDeliverable && (
+                                <span className="text-[9px] font-bold bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded tracking-wider shrink-0">
+                                  {rec.targetDeliverable}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-zinc-500 leading-relaxed">{rec.reason}</p>
+                          </div>
+                          <Button 
+                            size="sm" 
+                            disabled={!rec.executable || executingRecId !== null}
+                            onClick={() => handleExecuteRecommendation(rec.recommendationId)}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white w-full h-8"
+                          >
+                            {executingRecId === rec.recommendationId ? (
+                              <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                            ) : (
+                              <ArrowRight className="w-3.5 h-3.5 mr-1" />
+                            )}
+                            {rec.actionLabel}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <Button 
+                  disabled={isDelivering || isDelivered} 
+                  className={`w-full h-12 text-white rounded-2xl font-bold shadow-lg transition-all ${isDelivered ? 'bg-emerald-500' : 'bg-zinc-900'} disabled:opacity-60 disabled:cursor-not-allowed`} 
+                  onClick={handleDeliver}
+                >
+                  {isDelivering ? <Loader2 className="h-5 w-5 mr-2 animate-spin" /> : (isDelivered ? <CheckCircle2 className="h-5 w-5 mr-2" /> : <Send className="h-5 w-5 mr-2" />)} 
+                  {isDelivering ? '正在同步...' : isDelivered ? '✅ 已同步至群聊' : lastDeliveredTime ? '重新同步最新版本' : '确认并同步交付成果'}
+                </Button>
+              </div>
             );
           })()}
 
