@@ -505,6 +505,7 @@ class DefaultPlannerPlanFacadeTest {
                 .type(ArtifactTypeEnum.DOC)
                 .url("https://doc.example/1")
                 .build()));
+        when(resolver.isTaskCurrentInConversation("task-doc", context)).thenReturn(true);
         when(documentEditIntentFacade.resolve(eq("加一小节关于ggbond的内容，随意编造即可"), eq(context)))
                 .thenReturn(DocumentEditIntent.builder().clarificationNeeded(false).build());
         when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.empty());
@@ -517,6 +518,86 @@ class DefaultPlannerPlanFacadeTest {
         );
 
         assertThat(reply).isEqualTo("🔄 这条调整我收到了，我先顺着当前任务梳理一下，再把更新结果回给你。");
+        verify(matcher, never()).match(anyString(), any(), anyBoolean(), anyBoolean());
+    }
+
+    @Test
+    void previewImmediateReplyBypassesPendingFollowUpForCurrentCompletedPptEdit() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                recoveryService
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation recommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_DOC_FROM_PPT")
+                .targetTaskId("task-ppt")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.DOC)
+                .suggestedUserInstruction("基于这份PPT补一份配套文档")
+                .plannerInstruction("保留现有PPT，基于该PPT新增一份配套文档。")
+                .build();
+        String input = "改PPT，第二页的内容概览多加一小点";
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-ppt")).thenReturn(completed);
+        when(classifier.classify(completed, input, true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.ADJUST_PLAN,
+                        0.95d,
+                        "ppt edit",
+                        input,
+                        false
+                )));
+        when(resolver.isTaskCurrentInConversation("task-ppt", context)).thenReturn(true);
+        when(resolver.resolveEditableArtifacts("task-ppt")).thenReturn(List.of(com.lark.imcollab.common.model.entity.ArtifactRecord.builder()
+                .artifactId("artifact-ppt-1")
+                .taskId("task-ppt")
+                .type(ArtifactTypeEnum.PPT)
+                .url("https://slides.example/1")
+                .build()));
+        when(presentationEditIntentFacade.resolve(eq(input), eq(context)))
+                .thenReturn(com.lark.imcollab.common.model.entity.PresentationEditIntent.builder()
+                        .clarificationNeeded(false)
+                        .build());
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-ppt")
+                        .lastCompletedTaskId("task-ppt")
+                        .pendingFollowUpRecommendations(List.of(recommendation))
+                        .build()
+        ));
+
+        String reply = facade.previewImmediateReply(input, context, null, null);
+
+        assertThat(reply).isEqualTo("🔄 这条调整我收到了，我先顺着当前任务梳理一下，再把更新结果回给你。");
+        verify(matcher, never()).classifyCarryForwardCandidate(anyString(), any());
         verify(matcher, never()).match(anyString(), any(), anyBoolean(), anyBoolean());
     }
 

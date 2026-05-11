@@ -290,6 +290,34 @@ public class PlannerConversationService {
         if (earlyCompletedArtifactAdjustment != null) {
             return earlyCompletedArtifactAdjustment;
         }
+        CompletedArtifactIntentRecoveryService.DirectRouteEvaluation directRouteEvaluation =
+                completedArtifactIntentRecoveryService == null
+                        ? CompletedArtifactIntentRecoveryService.DirectRouteEvaluation.none("recovery service unavailable")
+                        : completedArtifactIntentRecoveryService.evaluateCurrentCompletedArtifactRoute(
+                                session,
+                                resolution,
+                                workspaceContext,
+                                graphInstruction
+                        );
+        if (intakeDecision != null
+                && intakeDecision.intakeType() == TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
+            if (directRouteEvaluation.type() == CompletedArtifactIntentRecoveryService.DirectRouteType.SELECTION_REQUIRED) {
+                return startRecoveredArtifactSelection(session, graphInstruction, workspaceContext, directRouteEvaluation.candidates());
+            }
+            if (directRouteEvaluation.type() == CompletedArtifactIntentRecoveryService.DirectRouteType.DIRECT_ROUTE) {
+                PlanTaskSession directCompletedArtifactAdjustment = tryRouteCurrentCompletedArtifactAdjustment(
+                        taskId,
+                        resolution,
+                        session,
+                        intakeDecision,
+                        workspaceContext,
+                        graphInstruction
+                );
+                if (directCompletedArtifactAdjustment != null) {
+                    return directCompletedArtifactAdjustment;
+                }
+            }
+        }
         PlanTaskSession followUpResult = tryResumePendingFollowUpRecommendation(
                 session,
                 resolution,
@@ -1148,28 +1176,19 @@ public class PlannerConversationService {
         }
         if (intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
             if (resolution != null && resolution.existingSession() && isCompleted(session)) {
-                boolean currentCompletedTaskIsActive = conversationState
-                        .map(ConversationTaskState::getActiveTaskId)
-                        .filter(this::hasText)
-                        .map(activeTaskId -> activeTaskId.equals(session.getTaskId()))
-                        .orElse(false);
-                if (currentCompletedTaskIsActive) {
+                if (sessionResolver.isTaskCurrentInConversation(session.getTaskId(), workspaceContext)) {
                     return false;
                 }
             }
             return !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
         }
-        if (resolution != null
-                && resolution.existingSession()
-                && isCompleted(session)
-                && conversationState
-                .map(ConversationTaskState::getActiveTaskId)
-                .filter(this::hasText)
-                .map(activeTaskId -> activeTaskId.equals(session.getTaskId()))
-                .orElse(false)) {
-            return false;
+        if (resolution != null && resolution.existingSession() && isCompleted(session)) {
+            if (sessionResolver.isTaskCurrentInConversation(session.getTaskId(), workspaceContext)) {
+                return false;
+            }
+            return !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
         }
-        if (resolution == null || !resolution.existingSession() || isCompleted(session)) {
+        if (resolution == null || !resolution.existingSession()) {
             return !sessionResolver.resolveCompletedCandidates(workspaceContext).isEmpty();
         }
         return false;
@@ -1191,13 +1210,7 @@ public class PlannerConversationService {
                 || isForcedNewTask(intakeDecision)) {
             return null;
         }
-        Optional<ConversationTaskState> conversationState = sessionResolver.conversationState(workspaceContext);
-        boolean currentCompletedTaskIsActive = conversationState
-                .map(ConversationTaskState::getActiveTaskId)
-                .filter(this::hasText)
-                .map(activeTaskId -> activeTaskId.equals(session.getTaskId()))
-                .orElse(false);
-        if (!currentCompletedTaskIsActive) {
+        if (!sessionResolver.isTaskCurrentInConversation(session.getTaskId(), workspaceContext)) {
             return null;
         }
         if (!shouldDirectCurrentCompletedArtifactAdjustment(session, intakeDecision, instruction)) {

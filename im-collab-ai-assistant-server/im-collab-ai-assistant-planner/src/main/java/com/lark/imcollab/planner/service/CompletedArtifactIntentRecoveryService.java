@@ -3,7 +3,6 @@ package com.lark.imcollab.planner.service;
 import com.lark.imcollab.common.facade.DocumentEditIntentFacade;
 import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
-import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.PresentationEditIntent;
@@ -100,6 +99,30 @@ public class CompletedArtifactIntentRecoveryService {
         );
     }
 
+    public DirectRouteEvaluation evaluateCurrentCompletedArtifactRoute(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            WorkspaceContext workspaceContext,
+            String instruction
+    ) {
+        if (session == null
+                || resolution == null
+                || !resolution.existingSession()
+                || session.getPlanningPhase() != com.lark.imcollab.common.model.enums.PlanningPhaseEnum.COMPLETED) {
+            return DirectRouteEvaluation.none("session is not current completed task");
+        }
+        if (!isCurrentCompletedTaskActive(session, workspaceContext)) {
+            return DirectRouteEvaluation.none("current completed task is not active");
+        }
+        if (looksLikeExplicitFreshTaskRequest(instruction)) {
+            return DirectRouteEvaluation.none("explicit fresh-task request");
+        }
+        if (looksLikeNewCompletedDeliverableRequest(instruction)) {
+            return DirectRouteEvaluation.none("looks like new deliverable request");
+        }
+        return directRouteEvaluation(session, workspaceContext, instruction);
+    }
+
     private RecoveryEvaluation evaluate(
             PlanTaskSession session,
             TaskSessionResolution resolution,
@@ -122,9 +145,28 @@ public class CompletedArtifactIntentRecoveryService {
         if (looksLikeNewCompletedDeliverableRequest(instruction)) {
             return RecoveryEvaluation.none("looks like new deliverable request");
         }
+        DirectRouteEvaluation directRouteEvaluation = directRouteEvaluation(session, workspaceContext, instruction);
+        if (directRouteEvaluation.type() == DirectRouteType.NONE) {
+            return RecoveryEvaluation.none(directRouteEvaluation.reason());
+        }
+        return new RecoveryEvaluation(
+                directRouteEvaluation.type() == DirectRouteType.DIRECT_ROUTE
+                        ? RecoveryType.RECOVERED
+                        : RecoveryType.SELECTION_REQUIRED,
+                directRouteEvaluation.candidates(),
+                directRouteEvaluation.recoveredArtifactType(),
+                directRouteEvaluation.reason()
+        );
+    }
+
+    private DirectRouteEvaluation directRouteEvaluation(
+            PlanTaskSession session,
+            WorkspaceContext workspaceContext,
+            String instruction
+    ) {
         List<ArtifactRecord> editableArtifacts = sessionResolver.resolveEditableArtifacts(session.getTaskId());
         if (editableArtifacts.isEmpty()) {
-            return RecoveryEvaluation.none("no editable artifacts");
+            return DirectRouteEvaluation.none("no editable artifacts");
         }
         ArtifactTypeEnum explicitType = explicitArtifactType(instruction);
         List<ArtifactRecord> docCandidates = editableArtifacts.stream().filter(artifact -> artifact.getType() == ArtifactTypeEnum.DOC).toList();
@@ -134,44 +176,40 @@ public class CompletedArtifactIntentRecoveryService {
         boolean pptRecoverable = explicitType != ArtifactTypeEnum.DOC && hasConcretePptEditIntent(instruction, workspaceContext) && !pptCandidates.isEmpty();
 
         if (explicitType == ArtifactTypeEnum.DOC) {
-            return resolveByType(ArtifactTypeEnum.DOC, docRecoverable, docCandidates, "explicit DOC edit");
+            return resolveDirectRouteByType(ArtifactTypeEnum.DOC, docRecoverable, docCandidates, "explicit DOC edit");
         }
         if (explicitType == ArtifactTypeEnum.PPT) {
-            return resolveByType(ArtifactTypeEnum.PPT, pptRecoverable, pptCandidates, "explicit PPT edit");
+            return resolveDirectRouteByType(ArtifactTypeEnum.PPT, pptRecoverable, pptCandidates, "explicit PPT edit");
         }
         if (docRecoverable == pptRecoverable) {
-            return RecoveryEvaluation.none(docRecoverable ? "both DOC and PPT semantics matched" : "no concrete edit semantics matched");
+            return DirectRouteEvaluation.none(docRecoverable ? "both DOC and PPT semantics matched" : "no concrete edit semantics matched");
         }
         if (docRecoverable) {
-            return resolveByType(ArtifactTypeEnum.DOC, true, docCandidates, "implicit DOC edit");
+            return resolveDirectRouteByType(ArtifactTypeEnum.DOC, true, docCandidates, "implicit DOC edit");
         }
-        return resolveByType(ArtifactTypeEnum.PPT, true, pptCandidates, "implicit PPT edit");
+        return resolveDirectRouteByType(ArtifactTypeEnum.PPT, true, pptCandidates, "implicit PPT edit");
     }
 
-    private RecoveryEvaluation resolveByType(
+    private DirectRouteEvaluation resolveDirectRouteByType(
             ArtifactTypeEnum artifactType,
             boolean recoverable,
             List<ArtifactRecord> candidates,
             String reason
     ) {
         if (!recoverable || candidates == null || candidates.isEmpty()) {
-            return RecoveryEvaluation.none(reason + ": not recoverable");
+            return DirectRouteEvaluation.none(reason + ": not recoverable");
         }
         if (candidates.size() == 1) {
-            return new RecoveryEvaluation(RecoveryType.RECOVERED, candidates, artifactType, reason);
+            return new DirectRouteEvaluation(DirectRouteType.DIRECT_ROUTE, candidates, artifactType, reason);
         }
-        return new RecoveryEvaluation(RecoveryType.SELECTION_REQUIRED, candidates, artifactType, reason + ": multiple candidates");
+        return new DirectRouteEvaluation(DirectRouteType.SELECTION_REQUIRED, candidates, artifactType, reason + ": multiple candidates");
     }
 
     private boolean isCurrentCompletedTaskActive(PlanTaskSession session, WorkspaceContext workspaceContext) {
         if (session == null || workspaceContext == null) {
             return false;
         }
-        Optional<ConversationTaskState> state = sessionResolver.conversationState(workspaceContext);
-        return state.map(ConversationTaskState::getActiveTaskId)
-                .filter(this::hasText)
-                .map(activeTaskId -> activeTaskId.equals(session.getTaskId()))
-                .orElse(false);
+        return sessionResolver.isTaskCurrentInConversation(session.getTaskId(), workspaceContext);
     }
 
     private boolean hasConcreteDocEditIntent(String instruction, WorkspaceContext workspaceContext) {
@@ -247,6 +285,12 @@ public class CompletedArtifactIntentRecoveryService {
         SELECTION_REQUIRED
     }
 
+    public enum DirectRouteType {
+        NONE,
+        DIRECT_ROUTE,
+        SELECTION_REQUIRED
+    }
+
     public record RecoveryResult(
             RecoveryType type,
             TaskIntakeDecision recoveredDecision,
@@ -268,6 +312,17 @@ public class CompletedArtifactIntentRecoveryService {
     ) {
         private static RecoveryEvaluation none(String reason) {
             return new RecoveryEvaluation(RecoveryType.NONE, List.of(), null, reason);
+        }
+    }
+
+    public record DirectRouteEvaluation(
+            DirectRouteType type,
+            List<ArtifactRecord> candidates,
+            ArtifactTypeEnum recoveredArtifactType,
+            String reason
+    ) {
+        public static DirectRouteEvaluation none(String reason) {
+            return new DirectRouteEvaluation(DirectRouteType.NONE, List.of(), null, reason);
         }
     }
 }

@@ -104,6 +104,19 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (recoveryResult.recoveredIntent() != null) {
             routingResult = recoveryResult.recoveredIntent();
         }
+        CompletedArtifactIntentRecoveryService.DirectRouteEvaluation directRouteEvaluation =
+                completedArtifactIntentRecoveryService == null
+                        ? CompletedArtifactIntentRecoveryService.DirectRouteEvaluation.none("recovery service unavailable")
+                        : completedArtifactIntentRecoveryService.evaluateCurrentCompletedArtifactRoute(
+                                session,
+                                resolution,
+                                workspaceContext,
+                                effectiveInput
+                        );
+        if (routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
+                && directRouteEvaluation.type() != CompletedArtifactIntentRecoveryService.DirectRouteType.NONE) {
+            return immediateReceipt(TaskCommandTypeEnum.ADJUST_PLAN, AdjustmentTargetEnum.COMPLETED_ARTIFACT, session, workspaceContext);
+        }
         String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput, routingResult);
         if (!followUpPreview.isBlank()) {
             return followUpPreview;

@@ -202,6 +202,25 @@ public class TaskSessionResolver {
         return stateStore.findConversationTaskState(key);
     }
 
+    public boolean isTaskCurrentInConversation(String taskId, WorkspaceContext workspaceContext) {
+        if (!hasText(taskId)) {
+            return false;
+        }
+        String key = buildConversationKey(workspaceContext);
+        if (!hasText(key)) {
+            return false;
+        }
+        Optional<String> boundTaskId = stateStore.findConversationTaskId(key);
+        if (boundTaskId.filter(this::hasText).filter(bound -> sameText(bound, taskId)).isPresent()) {
+            return true;
+        }
+        return stateStore.findConversationTaskState(key)
+                .map(ConversationTaskState::getActiveTaskId)
+                .filter(this::hasText)
+                .map(activeTaskId -> sameText(activeTaskId, taskId))
+                .orElse(false);
+    }
+
     private PendingTaskCandidate toCandidate(TaskRecord task) {
         List<ArtifactRecord> artifacts = stateStore.findArtifactsByTaskId(task.getTaskId());
         List<ArtifactTypeEnum> artifactTypes = artifacts.stream()
