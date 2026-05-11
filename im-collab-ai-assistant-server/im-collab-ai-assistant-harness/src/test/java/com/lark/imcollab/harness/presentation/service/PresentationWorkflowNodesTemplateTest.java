@@ -822,7 +822,7 @@ class PresentationWorkflowNodesTemplateTest {
                     .build());
 
             assertThat(timelineWithImage).isEqualTo(1);
-            assertThat(timelineWithoutImage).isEqualTo(0);
+            assertThat(timelineWithoutImage).isEqualTo(1);
             assertThat(tocSlots).isEqualTo(1);
         }
 

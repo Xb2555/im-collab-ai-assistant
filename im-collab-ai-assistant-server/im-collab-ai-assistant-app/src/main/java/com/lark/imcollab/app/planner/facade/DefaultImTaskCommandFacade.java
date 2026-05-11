@@ -17,6 +17,7 @@ import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
+import java.io.IOException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -177,11 +178,11 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
                 return null;
             });
             ScheduledFuture<?> timeoutFuture = executionTimeoutScheduler.schedule(
-                    () -> handleExecutionTimeout(taskId),
+                    () -> handleExecutionTimeout(taskId, executionAttemptId),
                     Math.max(1, executionProperties.getTimeoutSeconds()),
                     TimeUnit.SECONDS
             );
-            ActiveExecution execution = new ActiveExecution(future, timeoutFuture, started, executionAttemptId);
+            ActiveExecution execution = new ActiveExecution(future, timeoutFuture, started, executionAttemptId, new AtomicBoolean(false));
             ActiveExecution previous = activeExecutions.putIfAbsent(taskId, execution);
             if (previous != null) {
                 timeoutFuture.cancel(false);
@@ -220,8 +221,9 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             try (ExecutionAttemptContext.Scope ignored = ExecutionAttemptContext.open(taskId, executionAttemptId)) {
                 harnessFacade.startExecution(taskId);
             }
+            completeExecutionAttempt(taskId, executionAttemptId);
             printTiming("im.harness_start.seconds", taskId, startedAt, null);
-            if (!cancellationRegistry.isCancelled(taskId) && activeExecutions.containsKey(taskId)) {
+            if (!cancellationRegistry.isCancelled(taskId)) {
                 reviewService.reviewAndNotify(taskId);
             } else {
                 log.warn("Skip execution review because task already timed out or finalized: taskId={}", taskId);
@@ -242,7 +244,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             printTiming("im.harness_start.seconds", taskId, startedAt, exception);
             markExecutionFailed(taskId, "Harness execution failed after IM confirmation", exception);
         } finally {
-            clearActiveExecution(taskId);
+            clearActiveExecution(taskId, executionAttemptId);
         }
     }
 
@@ -256,7 +258,11 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
 
     private void markExecutionFailed(String taskId, String message, RuntimeException exception) {
         clearActiveExecution(taskId);
-        log.warn("{}: taskId={}, error={}", message, taskId, exception.getMessage(), exception);
+        if (isClientConnectionClosed(exception)) {
+            log.info("{}: taskId={}, error={}", message, taskId, exception.getMessage());
+        } else {
+            log.warn("{}: taskId={}, error={}", message, taskId, exception.getMessage(), exception);
+        }
         markFailedState(taskId, message + ": " + exception.getMessage());
     }
 
@@ -304,11 +310,24 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         return false;
     }
 
-    private void handleExecutionTimeout(String taskId) {
-        ActiveExecution execution = activeExecutions.remove(taskId);
+    private void handleExecutionTimeout(String taskId, String executionAttemptId) {
+        ActiveExecution execution = activeExecutions.get(taskId);
         if (execution == null) {
             return;
         }
+        if (!execution.matchesAttempt(executionAttemptId)) {
+            log.info("Skip stale execution timeout: taskId={}, timeoutAttempt={}, activeAttempt={}",
+                    taskId, executionAttemptId, execution.executionAttemptId());
+            return;
+        }
+        if (execution.isCompletedExecution()) {
+            return;
+        }
+        if (isTaskFinalized(taskId, executionAttemptId)) {
+            clearActiveExecution(taskId, executionAttemptId);
+            return;
+        }
+        activeExecutions.remove(taskId, execution);
         execution.future.cancel(true);
         execution.timeoutFuture.cancel(false);
         String reason = "Execution timed out after " + Math.max(1, executionProperties.getTimeoutSeconds()) + " seconds";
@@ -339,6 +358,44 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             return;
         }
         execution.timeoutFuture.cancel(false);
+        execution.markCompleted();
+    }
+
+    private void clearActiveExecution(String taskId, String executionAttemptId) {
+        ActiveExecution execution = activeExecutions.get(taskId);
+        if (execution == null || !execution.matchesAttempt(executionAttemptId)) {
+            return;
+        }
+        activeExecutions.remove(taskId, execution);
+        execution.timeoutFuture.cancel(false);
+        execution.markCompleted();
+    }
+
+    private void completeExecutionAttempt(String taskId, String executionAttemptId) {
+        ActiveExecution execution = activeExecutions.get(taskId);
+        if (execution == null || !execution.matchesAttempt(executionAttemptId)) {
+            return;
+        }
+        execution.markCompleted();
+        execution.timeoutFuture.cancel(false);
+    }
+
+    private boolean isTaskFinalized(String taskId, String executionAttemptId) {
+        try {
+            PlanTaskSession session = sessionService.get(taskId);
+            if (session == null) {
+                return true;
+            }
+            if (executionAttemptId != null && !executionAttemptId.equals(session.getActiveExecutionAttemptId())) {
+                return true;
+            }
+            PlanningPhaseEnum phase = session.getPlanningPhase();
+            return phase != PlanningPhaseEnum.EXECUTING;
+        } catch (RuntimeException exception) {
+            log.warn("Failed to inspect execution timeout state: taskId={}, attempt={}",
+                    taskId, executionAttemptId, exception);
+            return false;
+        }
     }
 
     private boolean shouldPreserveExistingArtifacts(PlanTaskSession session) {
@@ -407,15 +464,53 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
                 && snapshot.getTask().getStatus() == TaskStatusEnum.FAILED;
     }
 
+    private boolean isClientConnectionClosed(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof IOException ioException && hasClientConnectionClosedMessage(ioException.getMessage())) {
+                return true;
+            }
+            if (hasClientConnectionClosedMessage(current.getMessage())) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private boolean hasClientConnectionClosedMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        String normalized = message.toLowerCase();
+        return normalized.contains("broken pipe")
+                || normalized.contains("connection reset by peer")
+                || normalized.contains("an established connection was aborted")
+                || normalized.contains("你的主机中的软件中止了一个已建立的连接");
+    }
+
     private record ActiveExecution(
             Future<?> future,
             ScheduledFuture<?> timeoutFuture,
             AtomicBoolean started,
-            String executionAttemptId
+            String executionAttemptId,
+            AtomicBoolean completed
     ) {
 
         private boolean hasStarted() {
             return started.get();
+        }
+
+        private boolean matchesAttempt(String attemptId) {
+            return executionAttemptId != null && executionAttemptId.equals(attemptId);
+        }
+
+        private void markCompleted() {
+            completed.set(true);
+        }
+
+        private boolean isCompletedExecution() {
+            return completed.get();
         }
     }
 }

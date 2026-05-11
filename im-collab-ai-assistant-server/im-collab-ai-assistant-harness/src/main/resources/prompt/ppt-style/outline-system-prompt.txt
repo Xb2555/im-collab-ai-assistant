@@ -5,8 +5,8 @@
 - style: 风格
 - slides: 页面数组，每页包含 slideId、index、title、keyPoints、layout、templateVariant、visualEmphasis、speakerNotes、pageType、pageSubType、sectionId、sectionTitle、sectionOrder
 规则：
-1. slides 页数必须等于叙事主线 pageCount，且 1 <= 页数 <= 12。
-2. 根据 density 控制信息密度：concise 每页 2-3 条，standard 每页 3-4 条，detailed 每页 4-5 条；每条不超过 42 个中文字符；技术枚举、接口名、状态名必须完整保留。
+1. slides 页数必须等于叙事主线 pageCount，且 3 <= 页数 <= 16。
+2. 根据 density 控制信息密度：concise 每页 2-3 条，standard 每页 3-5 条，detailed 每页 4-5 条；每条不超过 80 个中文字符；技术枚举、接口名、状态名必须完整保留。
 3. 页面类型优先使用：COVER、TOC、TRANSITION、BACKGROUND、CONTENT、CHART、TIMELINE、COMPARISON、THANKS。
 4. layout 只能使用稳定布局：cover、section、two-column、summary、timeline、risk-list、metric-cards、comparison。
 5. templateVariant 必须从以下稳定集合中选择：
