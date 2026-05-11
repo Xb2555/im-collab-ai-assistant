@@ -21,6 +21,7 @@ import com.lark.imcollab.common.service.ExecutionAttemptContext;
 import com.lark.imcollab.common.model.entity.ExecutionContract;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.harness.presentation.config.PresentationConcurrencySettings;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetPlan;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetResources;
 import com.lark.imcollab.harness.presentation.model.PresentationGenerationOptions;
@@ -70,8 +71,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -122,6 +128,8 @@ public class PresentationWorkflowNodes {
     private final HttpClient httpClient;
     private final Path assetWorkspaceDirectory;
     private final String pexelsApiKey;
+    private final ExecutorService presentationIoExecutor;
+    private final PresentationConcurrencySettings concurrencySettings;
 
     public PresentationWorkflowNodes(
             PresentationExecutionSupport support,
@@ -133,6 +141,8 @@ public class PresentationWorkflowNodes {
             @Qualifier("presentationReviewAgent") ReactAgent reviewAgent,
             LarkSlidesTool larkSlidesTool,
             ObjectMapper objectMapper,
+            ExecutorService presentationIoExecutor,
+            PresentationConcurrencySettings concurrencySettings,
             @Value("${pexels.api-key:}") String pexelsApiKey) {
         this.support = support;
         this.storylineAgent = storylineAgent;
@@ -145,6 +155,10 @@ public class PresentationWorkflowNodes {
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
         this.assetWorkspaceDirectory = Path.of("").toAbsolutePath().normalize().resolve(".ppt-generated-assets");
+        this.presentationIoExecutor = presentationIoExecutor;
+        this.concurrencySettings = concurrencySettings == null
+                ? new PresentationConcurrencySettings(8, 4, 6, 3)
+                : concurrencySettings;
         this.pexelsApiKey = blankToDefault(pexelsApiKey, "");
     }
 
@@ -349,10 +363,13 @@ public class PresentationWorkflowNodes {
         support.ensureExecutionCanContinue(taskId);
         PresentationOutline outline = requireValue(state, PresentationStateKeys.SLIDE_OUTLINE, PresentationOutline.class);
         PresentationIR ir = requireValue(state, PresentationStateKeys.PRESENTATION_IR, PresentationIR.class);
-        List<PresentationSlideXml> slideXmlList = new ArrayList<>();
+        List<PresentationSlidePlan> slides = safeSlides(outline);
         List<PresentationSlideIR> irSlides = ir.getSlides() == null ? List.of() : ir.getSlides();
-        for (int index = 0; index < safeSlides(outline).size(); index++) {
-            PresentationSlidePlan slide = safeSlides(outline).get(index);
+        List<PresentationSlideXml> slideXmlList = parallelMapOrdered(
+                slides,
+                concurrencySettings.slideXmlConcurrency(),
+                slide -> {
+                    int index = slides.indexOf(slide);
             String prompt = """
                     请为下面这页生成飞书 Slides XML。
                     PPT 标题：%s
@@ -363,16 +380,16 @@ public class PresentationWorkflowNodes {
                     %s
                     你必须遵守页面计划中的 layout、templateVariant、visualEmphasis，生成与该模板变体一致的结构。
                     """.formatted(blankToDefault(outline.getTitle(), "汇报 PPT"), effectiveThemeFamily(generationOptions(state)), support.writeJson(generationOptions(state)), support.writeJson(slide));
-            PresentationSlideXml generated = invokeSlideXml(prompt, slide, taskId);
-            String compiledXml = index < irSlides.size() ? compileSlideXml(irSlides.get(index), safeSlides(outline).size(), generationOptions(state)) : null;
-            generated.setXml(hasText(compiledXml) ? compiledXml : generated.getXml());
-            log.info("slide xml generated: taskId={}, slideId={}, hasCompiledXml={}, containsImg={}",
-                    taskId,
-                    generated.getSlideId(),
-                    hasText(compiledXml),
-                    hasText(generated.getXml()) && generated.getXml().contains("<img "));
-            slideXmlList.add(generated);
-        }
+                    PresentationSlideXml generated = invokeSlideXml(prompt, slide, taskId);
+                    String compiledXml = index < irSlides.size() ? compileSlideXml(irSlides.get(index), slides.size(), generationOptions(state)) : null;
+                    generated.setXml(hasText(compiledXml) ? compiledXml : generated.getXml());
+                    log.info("slide xml generated: taskId={}, slideId={}, hasCompiledXml={}, containsImg={}",
+                            taskId,
+                            generated.getSlideId(),
+                            hasText(compiledXml),
+                            hasText(generated.getXml()) && generated.getXml().contains("<img "));
+                    return generated;
+                });
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.SLIDE_XML_LIST, slideXmlList,
                 PresentationStateKeys.DONE_XML, true
@@ -444,12 +461,15 @@ public class PresentationWorkflowNodes {
 
     public CompletableFuture<Map<String, Object>> writeSlidesAndSync(OverAllState state, RunnableConfig config) {
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
+        long totalStartedAt = System.nanoTime();
         try (ExecutionAttemptContext.Scope ignored = bindExecutionAttempt(state, taskId)) {
-            return doWriteSlidesAndSync(state, taskId);
+            CompletableFuture<Map<String, Object>> result = doWriteSlidesAndSync(state, taskId, totalStartedAt);
+            result.whenComplete((ignoredResult, throwable) -> printPptTotalTiming(taskId, totalStartedAt, throwable));
+            return result;
         }
     }
 
-    private CompletableFuture<Map<String, Object>> doWriteSlidesAndSync(OverAllState state, String taskId) {
+    private CompletableFuture<Map<String, Object>> doWriteSlidesAndSync(OverAllState state, String taskId, long totalStartedAt) {
         if (Boolean.TRUE.equals(state.value(PresentationStateKeys.DONE_WRITE, Boolean.FALSE))) {
             return CompletableFuture.completedFuture(Map.of());
         }
@@ -459,58 +479,108 @@ public class PresentationWorkflowNodes {
         PresentationAssetResources resources = requireValue(state, PresentationStateKeys.ASSET_RESOURCES, PresentationAssetResources.class);
         PresentationGenerationOptions options = generationOptions(state);
         support.ensureExecutionCanContinue(taskId);
-        LarkSlidesCreateResult result = larkSlidesTool.createPresentation(title, List.of());
-        log.info("empty presentation created before media upload: taskId={}, presentationId={}, presentationUrl={}",
-                taskId, result.getPresentationId(), result.getPresentationUrl());
-        PresentationAssetResources uploadedResources = uploadResolvedAssets(result.getPresentationId(), resources);
-        PresentationIR finalIr = PresentationIR.builder()
-                .title(title)
-                .themeFamily(effectiveThemeFamily(options))
-                .styleMode(blankToDefault(options.getStyle(), "minimal-professional"))
-                .width(960)
-                .height(540)
-                .slides(safeSlides(outline).stream()
-                        .map(slide -> buildSlideIr(slide, options, uploadedResources))
-                        .toList())
-                .build();
-        List<String> xmlPages = finalIr.getSlides() == null ? List.of() : finalIr.getSlides().stream()
-                .map(slide -> compileSlideXml(slide, finalIr.getSlides().size(), options))
-                .filter(this::hasText)
-                .toList();
-        log.info("presentation xml compiled for create: taskId={}, slideCount={}, imgSlideCount={}",
-                taskId,
-                xmlPages.size(),
-                xmlPages.stream().filter(xml -> xml.contains("<img ")).count());
-        if (xmlPages.isEmpty()) {
-            throw new IllegalStateException("No valid slide XML pages to create");
+        long slidesApiStartedAt = System.nanoTime();
+        LarkSlidesCreateResult result = null;
+        try {
+            result = larkSlidesTool.createPresentation(title, List.of());
+            log.info("empty presentation created before media upload: taskId={}, presentationId={}, presentationUrl={}",
+                    taskId, result.getPresentationId(), result.getPresentationUrl());
+            PresentationAssetResources uploadedResources = uploadResolvedAssets(result.getPresentationId(), resources);
+            PresentationIR finalIr = PresentationIR.builder()
+                    .title(title)
+                    .themeFamily(effectiveThemeFamily(options))
+                    .styleMode(blankToDefault(options.getStyle(), "minimal-professional"))
+                    .width(960)
+                    .height(540)
+                    .slides(safeSlides(outline).stream()
+                            .map(slide -> buildSlideIr(slide, options, uploadedResources))
+                            .toList())
+                    .build();
+            List<String> xmlPages = compileFinalSlideXmlPages(finalIr, options);
+            log.info("presentation xml compiled for create: taskId={}, slideCount={}, imgSlideCount={}",
+                    taskId,
+                    xmlPages.size(),
+                    xmlPages.stream().filter(xml -> xml.contains("<img ")).count());
+            if (xmlPages.isEmpty()) {
+                throw new IllegalStateException("No valid slide XML pages to create");
+            }
+            support.ensureExecutionCanContinue(taskId);
+            createSlidesSequentially(result.getPresentationId(), xmlPages);
+            log.info("presentation slides written: taskId={}, presentationId={}, slideCount={}",
+                    taskId, result.getPresentationId(), xmlPages.size());
+            printSlidesApiTiming(taskId, result.getPresentationId(), slidesApiStartedAt, null);
+            support.ensureExecutionCanContinue(taskId);
+            String stepId = support.findPptStep(taskId).map(com.lark.imcollab.common.model.entity.TaskStepRecord::getStepId).orElse(null);
+            support.saveArtifact(taskId, stepId, title, state.value(PresentationStateKeys.UPSTREAM_ARTIFACT_SUMMARY, ""), result.getPresentationId(), result.getPresentationUrl());
+            support.publishEvent(taskId, stepId, TaskEventType.ARTIFACT_CREATED, support.writeJson(result));
+            support.publishEvent(taskId, stepId, TaskEventType.STEP_COMPLETED, "PPT 已生成：" + blankToDefault(result.getPresentationUrl(), result.getPresentationId()));
+            return CompletableFuture.completedFuture(Map.of(
+                    PresentationStateKeys.PRESENTATION_ID, blankToDefault(result.getPresentationId(), ""),
+                    PresentationStateKeys.PRESENTATION_URL, blankToDefault(result.getPresentationUrl(), ""),
+                    PresentationStateKeys.ASSET_RESOURCES, uploadedResources,
+                    PresentationStateKeys.PRESENTATION_IR, finalIr,
+                    PresentationStateKeys.SLIDE_XML_LIST, finalIr.getSlides() == null ? List.of() : finalIr.getSlides().stream()
+                            .map(slide -> PresentationSlideXml.builder()
+                                    .slideId(slide.getSlideId())
+                                    .index(slide.getPageIndex() == null ? 0 : slide.getPageIndex())
+                                    .title(slide.getTitle())
+                                    .xml(compileSlideXml(slide, finalIr.getSlides().size(), options))
+                                    .speakerNotes(slide.getMessage())
+                                    .build())
+                            .toList(),
+                    PresentationStateKeys.DONE_WRITE, true
+            ));
+        } catch (RuntimeException exception) {
+            printSlidesApiTiming(taskId, result == null ? null : result.getPresentationId(), slidesApiStartedAt, exception);
+            throw exception;
         }
-        support.ensureExecutionCanContinue(taskId);
-        for (String xmlPage : xmlPages) {
-            larkSlidesTool.createSlide(result.getPresentationId(), xmlPage, null);
+    }
+
+    private List<String> compileFinalSlideXmlPages(PresentationIR finalIr, PresentationGenerationOptions options) {
+        if (finalIr == null || finalIr.getSlides() == null) {
+            return List.of();
         }
-        log.info("presentation slides written: taskId={}, presentationId={}, slideCount={}",
-                taskId, result.getPresentationId(), xmlPages.size());
-        support.ensureExecutionCanContinue(taskId);
-        String stepId = support.findPptStep(taskId).map(com.lark.imcollab.common.model.entity.TaskStepRecord::getStepId).orElse(null);
-        support.saveArtifact(taskId, stepId, title, state.value(PresentationStateKeys.UPSTREAM_ARTIFACT_SUMMARY, ""), result.getPresentationId(), result.getPresentationUrl());
-        support.publishEvent(taskId, stepId, TaskEventType.ARTIFACT_CREATED, support.writeJson(result));
-        support.publishEvent(taskId, stepId, TaskEventType.STEP_COMPLETED, "PPT 已生成：" + blankToDefault(result.getPresentationUrl(), result.getPresentationId()));
-        return CompletableFuture.completedFuture(Map.of(
-                PresentationStateKeys.PRESENTATION_ID, blankToDefault(result.getPresentationId(), ""),
-                PresentationStateKeys.PRESENTATION_URL, blankToDefault(result.getPresentationUrl(), ""),
-                PresentationStateKeys.ASSET_RESOURCES, uploadedResources,
-                PresentationStateKeys.PRESENTATION_IR, finalIr,
-                PresentationStateKeys.SLIDE_XML_LIST, finalIr.getSlides() == null ? List.of() : finalIr.getSlides().stream()
-                        .map(slide -> PresentationSlideXml.builder()
-                                .slideId(slide.getSlideId())
-                                .index(slide.getPageIndex() == null ? 0 : slide.getPageIndex())
-                                .title(slide.getTitle())
-                                .xml(compileSlideXml(slide, finalIr.getSlides().size(), options))
-                                .speakerNotes(slide.getMessage())
-                                .build())
-                        .toList(),
-                PresentationStateKeys.DONE_WRITE, true
-        ));
+        List<String> pages = parallelMapOrdered(
+                finalIr.getSlides(),
+                concurrencySettings.slideXmlConcurrency(),
+                slide -> compileSlideXml(slide, finalIr.getSlides().size(), options));
+        return pages.stream().filter(this::hasText).toList();
+    }
+
+    private void createSlidesSequentially(String presentationId, List<String> xmlPages) {
+        if (!hasText(presentationId) || xmlPages == null || xmlPages.isEmpty()) {
+            return;
+        }
+        for (int index = 0; index < xmlPages.size(); index++) {
+            String xmlPage = xmlPages.get(index);
+            int pageNumber = index + 1;
+            try {
+                larkSlidesTool.createSlide(presentationId, xmlPage, null);
+            } catch (Exception exception) {
+                throw new IllegalStateException("Failed to create slide page " + pageNumber, exception);
+            }
+        }
+    }
+
+    private void printPptTotalTiming(String taskId, long startedAt, Throwable throwable) {
+        System.err.println("ppt.total.seconds"
+                + " taskId=" + blankToDefault(taskId, "unknown")
+                + " status=" + (throwable == null ? "success" : "failed")
+                + " seconds=" + formatElapsedSeconds(startedAt)
+                + (throwable == null ? "" : " error=" + truncate(throwable.getMessage(), 160)));
+    }
+
+    private void printSlidesApiTiming(String taskId, String presentationId, long startedAt, Throwable throwable) {
+        System.err.println("ppt.slides-api.seconds"
+                + " taskId=" + blankToDefault(taskId, "unknown")
+                + " presentationId=" + blankToDefault(presentationId, "unknown")
+                + " status=" + (throwable == null ? "success" : "failed")
+                + " seconds=" + formatElapsedSeconds(startedAt)
+                + (throwable == null ? "" : " error=" + truncate(throwable.getMessage(), 160)));
+    }
+
+    private String formatElapsedSeconds(long startedAt) {
+        return String.format(java.util.Locale.ROOT, "%.3f", (System.nanoTime() - startedAt) / 1_000_000_000.0d);
     }
 
     private ExecutionAttemptContext.Scope bindExecutionAttempt(OverAllState state, String taskId) {
@@ -2175,49 +2245,88 @@ public class PresentationWorkflowNodes {
         if (items == null || items.isEmpty()) {
             return List.of();
         }
-        List<PresentationAssetResources.AssetResource> resources = new ArrayList<>();
-        int ordinal = 0;
-        for (PresentationImageResources.ResourceItem item : items) {
-            List<String> candidateUrls = sanitizeCandidateUrls(item, assetType);
+        AtomicInteger ordinal = new AtomicInteger();
+        List<PresentationImageResources.ResourceItem> validItems = items.stream()
+                .filter(Objects::nonNull)
+                .toList();
+        return parallelMapOrdered(
+                validItems,
+                concurrencySettings.imageResolveConcurrency(),
+                item -> {
+                    List<String> candidateUrls = sanitizeCandidateUrls(item, assetType);
+                    if (candidateUrls.isEmpty()) {
+                        log.warn("presentation asset skipped: slideId={}, assetType={}, sourceUrl={}, reason=no_safe_candidate_url",
+                                slideId, assetType, item.getSourceUrl());
+                        return null;
+                    }
+                    int currentOrdinal = ordinal.incrementAndGet();
+                    String localTempPath = "";
+                    String selectedUrl = "";
+                    String mimeType = blankToDefault(item.getMimeType(), "");
+                    String downloadStatus = "SKIPPED";
+                    try {
+                        DownloadedAsset downloaded = downloadAsset(candidateUrls, slideId + "-" + assetType + "-" + currentOrdinal);
+                        localTempPath = downloaded.path().toString();
+                        selectedUrl = downloaded.sourceUrl();
+                        mimeType = blankToDefault(downloaded.mimeType(), mimeType);
+                        downloadStatus = hasText(localTempPath) ? "DOWNLOADED" : "DOWNLOAD_FAILED";
+                    } catch (Exception exception) {
+                        downloadStatus = "FAILED";
+                    }
+                    if (!hasText(localTempPath)) {
+                        return null;
+                    }
+                    return PresentationAssetResources.AssetResource.builder()
+                            .assetId(assetType + "-" + slideId + "-" + currentOrdinal)
+                            .sourceRef(item.getSourceUrl())
+                            .candidateUrls(candidateUrls)
+                            .sourceUrl(hasText(selectedUrl) ? selectedUrl : item.getSourceUrl())
+                            .sourceSite(item.getSourceSite())
+                            .assetType(assetType)
+                            .localTempPath(localTempPath)
+                            .downloadStatus(downloadStatus)
+                            .fileToken("")
+                            .purpose(item.getPurpose())
+                            .mimeType(mimeType)
+                            .fallbackSource(item.getFallbackSource())
+                            .build();
+                }).stream().filter(Objects::nonNull).toList();
+    }
 
-            if (item == null || candidateUrls.isEmpty()) {
-                log.warn("presentation asset skipped: slideId={}, assetType={}, sourceUrl={}, reason=no_safe_candidate_url",
-                        slideId, assetType, item == null ? null : item.getSourceUrl());
-                continue;
-            }
-            ordinal++;
-            String localTempPath = "";
-            String selectedUrl = "";
-            String mimeType = blankToDefault(item.getMimeType(), "");
-            String downloadStatus = "SKIPPED";
-            try {
-                DownloadedAsset downloaded = downloadAsset(candidateUrls, slideId + "-" + assetType + "-" + ordinal);
-                localTempPath = downloaded.path().toString();
-                selectedUrl = downloaded.sourceUrl();
-                mimeType = blankToDefault(downloaded.mimeType(), mimeType);
-                downloadStatus = hasText(localTempPath) ? "DOWNLOADED" : "DOWNLOAD_FAILED";
-            } catch (Exception exception) {
-                downloadStatus = "FAILED";
-            }
-            if (!hasText(localTempPath)) {
-                continue;
-            }
-            resources.add(PresentationAssetResources.AssetResource.builder()
-                    .assetId(assetType + "-" + slideId + "-" + ordinal)
-                    .sourceRef(item.getSourceUrl())
-                    .candidateUrls(candidateUrls)
-                    .sourceUrl(hasText(selectedUrl) ? selectedUrl : item.getSourceUrl())
-                    .sourceSite(item.getSourceSite())
-                    .assetType(assetType)
-                    .localTempPath(localTempPath)
-                    .downloadStatus(downloadStatus)
-                    .fileToken("")
-                    .purpose(item.getPurpose())
-                    .mimeType(mimeType)
-                    .fallbackSource(item.getFallbackSource())
-                    .build());
+    private <I, O> List<O> parallelMapOrdered(List<I> inputs, int concurrency, Function<I, O> mapper) {
+        if (inputs == null || inputs.isEmpty()) {
+            return List.of();
         }
-        return resources;
+        Semaphore semaphore = new Semaphore(Math.max(1, concurrency));
+        List<Future<IndexedResult<O>>> futures = new ArrayList<>();
+        for (int index = 0; index < inputs.size(); index++) {
+            int currentIndex = index;
+            I input = inputs.get(index);
+            futures.add(presentationIoExecutor.submit(() -> withPermit(semaphore, () -> new IndexedResult<>(currentIndex, mapper.apply(input)))));
+        }
+        return awaitAll(futures).stream().map(IndexedResult::value).toList();
+    }
+
+    private <T> T withPermit(Semaphore semaphore, Callable<T> task) throws Exception {
+        semaphore.acquire();
+        try {
+            return task.call();
+        } finally {
+            semaphore.release();
+        }
+    }
+
+    private <T> List<IndexedResult<T>> awaitAll(List<Future<IndexedResult<T>>> futures) {
+        List<IndexedResult<T>> results = new ArrayList<>();
+        for (Future<IndexedResult<T>> future : futures) {
+            try {
+                results.add(future.get());
+            } catch (Exception exception) {
+                throw new IllegalStateException("Parallel presentation task failed", exception);
+            }
+        }
+        results.sort(Comparator.comparingInt(IndexedResult::index));
+        return results;
     }
 
     private PresentationAssetResources uploadResolvedAssets(String presentationId, PresentationAssetResources resources) {
@@ -2226,16 +2335,19 @@ public class PresentationWorkflowNodes {
                     presentationId, resources != null && resources.getSlides() != null);
             return resources;
         }
-        List<PresentationAssetResources.SlideAssetResource> uploadedSlides = resources.getSlides().stream()
+        List<PresentationAssetResources.SlideAssetResource> slides = resources.getSlides().stream()
                 .filter(Objects::nonNull)
-                .map(slide -> PresentationAssetResources.SlideAssetResource.builder()
+                .toList();
+        List<PresentationAssetResources.SlideAssetResource> uploadedSlides = parallelMapOrdered(
+                slides,
+                concurrencySettings.imageUploadConcurrency(),
+                slide -> PresentationAssetResources.SlideAssetResource.builder()
                         .slideId(slide.getSlideId())
                         .images(uploadAssetList(presentationId, slide.getImages()))
                         .illustrations(uploadAssetList(presentationId, slide.getIllustrations()))
                         .diagrams(slide.getDiagrams() == null ? List.of() : slide.getDiagrams())
                         .charts(slide.getCharts() == null ? List.of() : slide.getCharts())
-                        .build())
-                .toList();
+                        .build());
         return PresentationAssetResources.builder().slides(uploadedSlides).build();
     }
 
@@ -2245,38 +2357,39 @@ public class PresentationWorkflowNodes {
         if (assets == null || assets.isEmpty()) {
             return List.of();
         }
-        List<PresentationAssetResources.AssetResource> uploaded = new ArrayList<>();
-        for (PresentationAssetResources.AssetResource asset : assets) {
-            if (asset == null) {
-                continue;
-            }
-            String fileToken = blankToDefault(asset.getFileToken(), "");
-            String downloadStatus = blankToDefault(asset.getDownloadStatus(), "SKIPPED");
-            if (hasText(asset.getLocalTempPath())) {
-                try {
-                    LarkSlidesMediaUploadResult uploadResult = larkSlidesTool.uploadMedia(presentationId, asset.getLocalTempPath());
-                    fileToken = blankToDefault(uploadResult.getFileToken(), "");
-                    downloadStatus = hasText(fileToken) ? "UPLOADED" : "UPLOAD_FAILED";
-                } catch (Exception exception) {
-                    downloadStatus = "UPLOAD_FAILED";
-                }
-            }
-            uploaded.add(PresentationAssetResources.AssetResource.builder()
-                    .assetId(asset.getAssetId())
-                    .sourceRef(asset.getSourceRef())
-                    .candidateUrls(asset.getCandidateUrls())
-                    .sourceUrl(asset.getSourceUrl())
-                    .sourceSite(asset.getSourceSite())
-                    .assetType(asset.getAssetType())
-                    .localTempPath(asset.getLocalTempPath())
-                    .downloadStatus(downloadStatus)
-                    .fileToken(fileToken)
-                    .purpose(asset.getPurpose())
-                    .mimeType(asset.getMimeType())
-                    .fallbackSource(asset.getFallbackSource())
-                    .build());
-        }
-        return uploaded;
+        List<PresentationAssetResources.AssetResource> validAssets = assets.stream()
+                .filter(Objects::nonNull)
+                .toList();
+        return parallelMapOrdered(
+                validAssets,
+                concurrencySettings.imageUploadConcurrency(),
+                asset -> {
+                    String fileToken = blankToDefault(asset.getFileToken(), "");
+                    String downloadStatus = blankToDefault(asset.getDownloadStatus(), "SKIPPED");
+                    if (hasText(asset.getLocalTempPath())) {
+                        try {
+                            LarkSlidesMediaUploadResult uploadResult = larkSlidesTool.uploadMedia(presentationId, asset.getLocalTempPath());
+                            fileToken = blankToDefault(uploadResult.getFileToken(), "");
+                            downloadStatus = hasText(fileToken) ? "UPLOADED" : "UPLOAD_FAILED";
+                        } catch (Exception exception) {
+                            downloadStatus = "UPLOAD_FAILED";
+                        }
+                    }
+                    return PresentationAssetResources.AssetResource.builder()
+                            .assetId(asset.getAssetId())
+                            .sourceRef(asset.getSourceRef())
+                            .candidateUrls(asset.getCandidateUrls())
+                            .sourceUrl(asset.getSourceUrl())
+                            .sourceSite(asset.getSourceSite())
+                            .assetType(asset.getAssetType())
+                            .localTempPath(asset.getLocalTempPath())
+                            .downloadStatus(downloadStatus)
+                            .fileToken(fileToken)
+                            .purpose(asset.getPurpose())
+                            .mimeType(asset.getMimeType())
+                            .fallbackSource(asset.getFallbackSource())
+                            .build();
+                });
     }
 
     private List<PresentationAssetResources.AssetResource> resolveDiagramAssets(
@@ -2381,16 +2494,18 @@ public class PresentationWorkflowNodes {
         if (assetPlan == null || assetPlan.getSlides() == null) {
             return PresentationImageResources.builder().resources(List.of()).build();
         }
-
-        List<PresentationImageResources.PageImageResource> pages = assetPlan.getSlides().stream()
+        List<PresentationAssetPlan.SlideAssetPlan> slides = assetPlan.getSlides().stream()
                 .filter(Objects::nonNull)
-                .map(slide -> PresentationImageResources.PageImageResource.builder()
+                .toList();
+        List<PresentationImageResources.PageImageResource> pages = parallelMapOrdered(
+                slides,
+                concurrencySettings.imageResolveConcurrency(),
+                slide -> PresentationImageResources.PageImageResource.builder()
                         .slideId(slide.getSlideId())
                         .contentImages(resolveTaskResources(slide.getContentImageTasks(), "image"))
                         .illustrations(resolveIllustrationResources(slide.getIllustrationTasks()))
                         .diagrams(resolveDiagramResourceItems(slide.getDiagramTasks()))
-                        .build())
-                .toList();
+                        .build());
         return PresentationImageResources.builder().resources(reuseCoverImageForThanksPage(pages)).build();
     }
 
@@ -2431,25 +2546,22 @@ public class PresentationWorkflowNodes {
         if (tasks == null || tasks.isEmpty()) {
             return List.of();
         }
-        List<PresentationImageResources.ResourceItem> results = new ArrayList<>();
-        for (PresentationAssetPlan.AssetTask task : tasks) {
-            if (task == null || !hasText(task.getQuery())) {
-                continue;
-            }
-            List<String> candidates = searchPexelsCandidates(task.getQuery());
-
-            results.add(PresentationImageResources.ResourceItem.builder()
-                    .candidateUrls(candidates)
-                    .selectedUrl(candidates.isEmpty() ? "" : candidates.get(0))
-                    .sourceUrl(candidates.isEmpty() ? "" : candidates.get(0))
-                    .sourceSite("pexels.com")
-                    .assetType(assetType)
-                    .purpose(task.getPurpose())
-                    .mimeType("")
-                    .fallbackSource("")
-                    .build());
-        }
-        return results;
+        return parallelMapOrdered(
+                tasks.stream().filter(Objects::nonNull).filter(task -> hasText(task.getQuery())).toList(),
+                concurrencySettings.imageResolveConcurrency(),
+                task -> {
+                    List<String> candidates = searchPexelsCandidates(task.getQuery());
+                    return PresentationImageResources.ResourceItem.builder()
+                            .candidateUrls(candidates)
+                            .selectedUrl(candidates.isEmpty() ? "" : candidates.get(0))
+                            .sourceUrl(candidates.isEmpty() ? "" : candidates.get(0))
+                            .sourceSite("pexels.com")
+                            .assetType(assetType)
+                            .purpose(task.getPurpose())
+                            .mimeType("")
+                            .fallbackSource("")
+                            .build();
+                });
     }
 
     private List<PresentationImageResources.ResourceItem> resolveIllustrationResources(
@@ -2457,40 +2569,35 @@ public class PresentationWorkflowNodes {
         if (tasks == null || tasks.isEmpty()) {
             return List.of();
         }
-        List<PresentationImageResources.ResourceItem> results = new ArrayList<>();
-        for (PresentationAssetPlan.AssetTask task : tasks) {
-            if (task == null || !hasText(task.getQuery())) {
-                continue;
-            }
-            List<String> svgCandidates = resolveDirectSvgCandidates(task);
-            if (!svgCandidates.isEmpty()) {
-
-                results.add(PresentationImageResources.ResourceItem.builder()
-                        .candidateUrls(svgCandidates)
-                        .selectedUrl(svgCandidates.get(0))
-                        .sourceUrl(svgCandidates.get(0))
-                        .sourceSite(extractSourceSite(svgCandidates.get(0)))
-                        .assetType("illustration")
-                        .purpose(task.getPurpose())
-                        .mimeType("image/svg+xml")
-                        .fallbackSource("")
-                        .build());
-                continue;
-            }
-            List<String> fallbackCandidates = searchPexelsCandidates(task.getQuery());
-
-            results.add(PresentationImageResources.ResourceItem.builder()
-                    .candidateUrls(fallbackCandidates)
-                    .selectedUrl(fallbackCandidates.isEmpty() ? "" : fallbackCandidates.get(0))
-                    .sourceUrl(fallbackCandidates.isEmpty() ? "" : fallbackCandidates.get(0))
-                    .sourceSite("pexels.com")
-                    .assetType("illustration")
-                    .purpose(task.getPurpose())
-                    .mimeType("")
-                    .fallbackSource("pexels-image-fallback")
-                    .build());
-        }
-        return results;
+        return parallelMapOrdered(
+                tasks.stream().filter(Objects::nonNull).filter(task -> hasText(task.getQuery())).toList(),
+                concurrencySettings.imageResolveConcurrency(),
+                task -> {
+                    List<String> svgCandidates = resolveDirectSvgCandidates(task);
+                    if (!svgCandidates.isEmpty()) {
+                        return PresentationImageResources.ResourceItem.builder()
+                                .candidateUrls(svgCandidates)
+                                .selectedUrl(svgCandidates.get(0))
+                                .sourceUrl(svgCandidates.get(0))
+                                .sourceSite(extractSourceSite(svgCandidates.get(0)))
+                                .assetType("illustration")
+                                .purpose(task.getPurpose())
+                                .mimeType("image/svg+xml")
+                                .fallbackSource("")
+                                .build();
+                    }
+                    List<String> fallbackCandidates = searchPexelsCandidates(task.getQuery());
+                    return PresentationImageResources.ResourceItem.builder()
+                            .candidateUrls(fallbackCandidates)
+                            .selectedUrl(fallbackCandidates.isEmpty() ? "" : fallbackCandidates.get(0))
+                            .sourceUrl(fallbackCandidates.isEmpty() ? "" : fallbackCandidates.get(0))
+                            .sourceSite("pexels.com")
+                            .assetType("illustration")
+                            .purpose(task.getPurpose())
+                            .mimeType("")
+                            .fallbackSource("pexels-image-fallback")
+                            .build();
+                });
     }
 
     private List<PresentationImageResources.ResourceItem> resolveDiagramResourceItems(
@@ -3144,5 +3251,8 @@ public class PresentationWorkflowNodes {
             String presenter,
             String reportDate
     ) {
+    }
+
+    private record IndexedResult<T>(int index, T value) {
     }
 }

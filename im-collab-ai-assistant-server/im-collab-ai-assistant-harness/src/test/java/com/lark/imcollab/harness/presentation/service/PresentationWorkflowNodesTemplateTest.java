@@ -9,6 +9,7 @@ import com.lark.imcollab.common.model.entity.PresentationLayoutSpec;
 import com.lark.imcollab.common.model.entity.PresentationSlideIR;
 import com.lark.imcollab.common.model.enums.PresentationElementKind;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.harness.presentation.config.PresentationConcurrencySettings;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetPlan;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetResources;
 import com.lark.imcollab.harness.presentation.model.PresentationOutline;
@@ -21,6 +22,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -32,9 +35,12 @@ import static org.mockito.Mockito.when;
 class PresentationWorkflowNodesTemplateTest {
 
     private static final ReactAgent AGENT = mock(ReactAgent.class);
+    private static final ExecutorService EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
+    private static final PresentationConcurrencySettings CONCURRENCY_SETTINGS =
+            new PresentationConcurrencySettings(8, 4, 6, 3);
 
     private final PresentationWorkflowNodes nodes = new PresentationWorkflowNodes(
-            null, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+            null, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
     @Test
     void deepTechTimelineUsesGradientAndTimelineShapes() {
@@ -103,7 +109,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成一份5页浅色商务风中文PPT，详细版，不要演讲备注，面向产品和工程团队做方案评审")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-1",
@@ -128,7 +134,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成一份2页简约专业风中文PPT，第一页说明测试目标，第二页说明生成链路和风险，无演讲备注。")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-2",
@@ -150,7 +156,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成8页深色科技风中文PPT，面向比赛评委和管理层，详细版，无演讲备注。")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-3",
@@ -241,7 +247,7 @@ class PresentationWorkflowNodesTemplateTest {
     @Test
     void fallbackOutlineKeepsTransitionPageWhenPageBudgetIsTight() throws Exception {
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         var method = PresentationWorkflowNodes.class.getDeclaredMethod("fallbackOutline", com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
         method.setAccessible(true);
@@ -261,7 +267,7 @@ class PresentationWorkflowNodesTemplateTest {
     @Test
     void fallbackOutlineRotatesTemplateVariants() throws Exception {
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         var method = PresentationWorkflowNodes.class.getDeclaredMethod("fallbackOutline", com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
         method.setAccessible(true);
@@ -287,7 +293,7 @@ class PresentationWorkflowNodesTemplateTest {
     @Test
     void validateSlideXmlPreservesImgBlock() {
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
         String xml = """
                 <slide xmlns="http://www.larkoffice.com/sml/2.0">
                   <data>
