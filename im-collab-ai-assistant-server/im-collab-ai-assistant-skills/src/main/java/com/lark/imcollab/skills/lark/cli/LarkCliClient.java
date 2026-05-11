@@ -51,7 +51,6 @@ public class LarkCliClient {
             fullArgs.addAll(args);
             ResolvedCliCommand resolvedCommand = resolveCommand(properties.getExecutable(), fullArgs);
 
-            long startedAt = System.nanoTime();
             CliCommandResult result = cliCommandExecutor.execute(new CliCommand(
                     resolvedCommand.executable(),
                     resolvedCommand.args(),
@@ -59,13 +58,7 @@ public class LarkCliClient {
                     stdin,
                     timeoutMillis
             ));
-            log.info(
-                    "Lark CLI execute finished: resolvedExecutable='{}', exitCode={}, elapsedMs={}, outputBytes={}",
-                    resolvedCommand.executable(),
-                    result.exitCode(),
-                    (System.nanoTime() - startedAt) / 1_000_000L,
-                    result.output() == null ? 0 : result.output().length()
-            );
+
             return result;
         } catch (IOException exception) {
             throw new UncheckedIOException(exception);
@@ -196,8 +189,7 @@ public class LarkCliClient {
                 List<String> directArgs = new ArrayList<>();
                 directArgs.add(runJs.toString());
                 directArgs.addAll(normalizedArgs);
-                log.info("Rewriting Lark CLI invocation from cmd shim to direct node runner: cmd='{}', node='{}', runJs='{}'",
-                        normalizedExecutable, nodeExecutable, runJs);
+
                 return new ResolvedCliCommand(nodeExecutable, directArgs);
             }
         }

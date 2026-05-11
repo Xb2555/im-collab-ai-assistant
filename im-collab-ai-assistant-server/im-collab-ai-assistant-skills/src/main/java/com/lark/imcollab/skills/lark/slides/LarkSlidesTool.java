@@ -72,8 +72,7 @@ public class LarkSlidesTool {
             args.add(presentationId.trim());
             JsonNode root = executeJson(args);
             JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
-            log.info("Lark slides media uploaded: presentationId={}, filePath={}, timeoutMs={}, elapsedMs={}",
-                    presentationId.trim(), filePath, commandTimeoutMillis(), elapsedMs(startedAt));
+
             return LarkSlidesMediaUploadResult.builder()
                     .presentationId(firstNonBlank(
                             text(data, "xml_presentation_id"),
@@ -170,8 +169,7 @@ public class LarkSlidesTool {
                 JsonNode root = executeJson(args);
                 JsonNode dataNode = root.path("data").isMissingNode() ? root : root.path("data");
                 JsonNode slide = dataNode.path("slide").isMissingNode() ? dataNode : dataNode.path("slide");
-                log.info("Lark slides page created: presentationId={}, beforeSlideId={}, attempt={}, xmlChars={}, timeoutMs={}, elapsedMs={}",
-                        presentationId.trim(), beforeSlideId, attempt, slideXml.length(), commandTimeoutMillis(), elapsedMs(startedAt));
+
                 return LarkSlidesReplaceResult.builder()
                         .presentationId(firstNonBlank(
                                 text(dataNode, "xml_presentation_id"),

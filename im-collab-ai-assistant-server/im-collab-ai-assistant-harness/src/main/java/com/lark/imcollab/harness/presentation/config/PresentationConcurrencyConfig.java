@@ -17,8 +17,8 @@ public class PresentationConcurrencyConfig {
 
     @Bean
     public PresentationConcurrencySettings presentationConcurrencySettings(
-            @Value("${presentation.concurrency.image-resolve:8}") int imageResolveConcurrency,
-            @Value("${presentation.concurrency.image-upload:4}") int imageUploadConcurrency,
+            @Value("${presentation.concurrency.image-resolve:12}") int imageResolveConcurrency,
+            @Value("${presentation.concurrency.image-upload:6}") int imageUploadConcurrency,
             @Value("${presentation.concurrency.slide-xml:6}") int slideXmlConcurrency,
             @Value("${presentation.concurrency.slide-write:3}") int slideWriteConcurrency) {
         return new PresentationConcurrencySettings(

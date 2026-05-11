@@ -23,6 +23,8 @@ import com.lark.imcollab.harness.presentation.model.PresentationSlidePlan;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -418,6 +420,55 @@ class PresentationWorkflowNodesTemplateTest {
 
         assertThat(xml).contains("src=\"boxcnSharedBackground\"");
         assertThat(xml).contains("src=\"boxcnContentImage\"");
+    }
+
+    @Test
+    void compileSlideXmlDoesNotUseHeroImageAsBackgroundForContentPage() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-3")
+                .pageIndex(3)
+                .slideRole("two-column")
+                .pageType("CONTENT")
+                .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                .title("核心方案")
+                .visualIntent("balance")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("headline-panel").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("要点一；要点二")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnContentImage").altText("正文配图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnContentImage\"");
+        assertThat(xml).doesNotContain("alt=\"统一正文背景图\"");
     }
 
     @Test
@@ -893,6 +944,56 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void compileSlideXmlLogsTimelineMissingWhenHorizontalMilestonesHasNoRenderableNodeImages() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-5")
+                .pageIndex(5)
+                .slideRole("timeline")
+                .pageType("TIMELINE")
+                .pageSubType("TIMELINE.HORIZONTAL")
+                .title("推进路线")
+                .visualIntent("action")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("horizontal-milestones").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("阶段一；阶段二；阶段三")
+                                .build()))
+                .build();
+
+        PrintStream originalErr = System.err;
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        System.setErr(new PrintStream(err));
+        try {
+            method.invoke(nodes, slideIr, 7, PresentationGenerationOptions.builder()
+                    .style("business-light")
+                    .themeFamily("business-light")
+                    .density("standard")
+                    .speakerNotes(false)
+                    .templateDiversity("balanced")
+                    .allowVariantMixing(true)
+                    .build());
+        } finally {
+            System.setErr(originalErr);
+        }
+
+        assertThat(err.toString()).contains("ppt.timeline.image.missing");
+        assertThat(err.toString()).contains("slideId=slide-5");
+    }
+
+    @Test
     void contentSectionWithoutRenderableImageDowngradesToExplicitNoImageTemplate() throws Exception {
         Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "compileSlideXml",
@@ -1155,5 +1256,50 @@ class PresentationWorkflowNodesTemplateTest {
             assertThat(slide.getImages()).isEmpty();
             assertThat(slide.getTimelineNodeImages()).hasSize(1);
         }
+    }
+
+    @Test
+    void normalizeOutlineBuildsTocFromBusinessSectionSlides() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "normalizeOutline",
+                PresentationOutline.class,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationOutline outline = PresentationOutline.builder()
+                .title("方案汇报")
+                .slides(List.of(
+                        PresentationSlidePlan.builder().slideId("slide-1").index(1).title("封面").layout("cover").pageType("COVER").build(),
+                        PresentationSlidePlan.builder().slideId("slide-2").index(2).title("目录").layout("section").pageType("TOC").keyPoints(List.of("旧目录1", "旧目录2")).build(),
+                        PresentationSlidePlan.builder().slideId("slide-3").index(3).title("背景分析").layout("two-column").pageType("CONTENT").build(),
+                        PresentationSlidePlan.builder().slideId("slide-4").index(4).title("实施路径").layout("timeline").pageType("TIMELINE").build(),
+                        PresentationSlidePlan.builder().slideId("slide-5").index(5).title("方案对比").layout("comparison").pageType("COMPARISON").build(),
+                        PresentationSlidePlan.builder().slideId("slide-6").index(6).title("指标跟踪").layout("metric-cards").pageType("CHART").build(),
+                        PresentationSlidePlan.builder().slideId("slide-7").index(7).title("感谢聆听").layout("summary").pageType("THANKS").build()))
+                .build();
+
+        com.lark.imcollab.harness.presentation.model.PresentationStoryline storyline =
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                        .title("方案汇报")
+                        .goal("统一方案")
+                        .audience("团队")
+                        .style("business-light")
+                        .keyMessages(List.of("旧目录A", "旧目录B", "旧目录C", "旧目录D"))
+                        .pageCount(7)
+                        .build();
+
+        method.invoke(nodes, outline, storyline, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        PresentationSlidePlan tocSlide = outline.getSlides().get(1);
+        assertThat(tocSlide.getKeyPoints())
+                .containsExactly("背景分析", "实施路径", "方案对比", "指标跟踪");
     }
 }
