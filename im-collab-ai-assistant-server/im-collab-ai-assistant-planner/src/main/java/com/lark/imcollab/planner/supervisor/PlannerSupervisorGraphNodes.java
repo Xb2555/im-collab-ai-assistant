@@ -340,6 +340,7 @@ public class PlannerSupervisorGraphNodes {
 
     private CompletableFuture<Map<String, Object>> completed(PlanTaskSession session, String message) {
         return CompletableFuture.completedFuture(Map.of(
+                PlannerSupervisorStateKeys.RESULT_SESSION, session,
                 PlannerSupervisorStateKeys.RESULT_PHASE, session.getPlanningPhase() == null ? "" : session.getPlanningPhase().name(),
                 PlannerSupervisorStateKeys.MESSAGE, message
         ));

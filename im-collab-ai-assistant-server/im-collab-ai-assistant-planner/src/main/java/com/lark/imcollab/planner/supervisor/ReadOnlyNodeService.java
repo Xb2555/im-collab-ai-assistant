@@ -45,17 +45,20 @@ public class ReadOnlyNodeService {
 
     public PlanTaskSession readOnly(String taskId, String userInput, PlannerSupervisorDecisionResult decision) {
         PlanTaskSession session = sessionService.get(taskId);
+        return readOnly(session, userInput, decision);
+    }
+
+    public PlanTaskSession readOnly(PlanTaskSession session, String userInput, PlannerSupervisorDecisionResult decision) {
         if (session == null) {
             return null;
         }
-        if (!hasUsablePlan(session) && isStatusQuery(session)) {
+        if (shouldShortCircuitEmptyPlanReply(session)) {
             String reply = emptyTaskReply(session);
             TaskIntakeState intakeState = session.getIntakeState();
             if (intakeState != null) {
                 intakeState.setAssistantReply(reply);
             }
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         if (decision != null && decision.action() == PlannerSupervisorAction.UNKNOWN && decision.needsClarification()) {
@@ -71,7 +74,6 @@ public class ReadOnlyNodeService {
                 intakeState.setAssistantReply(clarification);
             }
             memoryService.appendAssistantTurn(session, clarification);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         if (session.getIntakeState() != null && "PLAN".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
@@ -79,7 +81,6 @@ public class ReadOnlyNodeService {
             TaskIntakeState intakeState = session.getIntakeState();
             intakeState.setAssistantReply(reply);
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         if (session.getIntakeState() != null && "STATUS".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
@@ -87,7 +88,6 @@ public class ReadOnlyNodeService {
             TaskIntakeState intakeState = session.getIntakeState();
             intakeState.setAssistantReply(reply);
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         if (session.getIntakeState() != null && "ARTIFACTS".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
@@ -95,7 +95,6 @@ public class ReadOnlyNodeService {
             TaskIntakeState intakeState = session.getIntakeState();
             intakeState.setAssistantReply(reply);
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         String reply = firstNonBlank(
@@ -108,7 +107,6 @@ public class ReadOnlyNodeService {
                 intakeState.setAssistantReply(reply);
             }
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
         }
         return session;
     }
@@ -199,7 +197,7 @@ public class ReadOnlyNodeService {
     private String fullPlanReply(PlanTaskSession session) {
         List<UserPlanCard> cards = cards(session);
         if (cards.isEmpty()) {
-            return "当前还没有生成完整计划。";
+            return fullPlanReplyFromRuntime(session);
         }
         StringBuilder builder = new StringBuilder("完整计划如下：");
         for (int index = 0; index < cards.size(); index++) {
@@ -219,10 +217,36 @@ public class ReadOnlyNodeService {
         return builder.toString();
     }
 
+    private String fullPlanReplyFromRuntime(PlanTaskSession session) {
+        TaskRuntimeSnapshot snapshot = runtimeSnapshot(session);
+        List<TaskStepRecord> steps = snapshot == null || snapshot.getSteps() == null
+                ? List.of()
+                : snapshot.getSteps().stream()
+                .filter(step -> step != null && step.getStatus() != StepStatusEnum.SUPERSEDED)
+                .toList();
+        if (steps.isEmpty()) {
+            return "当前还没有生成完整计划。";
+        }
+        StringBuilder builder = new StringBuilder("这个已完成任务没有保留原始计划卡片，我先按执行步骤给你展开：");
+        for (int index = 0; index < steps.size(); index++) {
+            TaskStepRecord step = steps.get(index);
+            builder.append("\n").append(index + 1).append(". ");
+            if (step.getType() != null) {
+                builder.append("[").append(step.getType().name()).append("] ");
+            }
+            builder.append(firstNonBlank(step.getName(), step.getStepId(), "未命名步骤"));
+            if (step.getStatus() != null) {
+                builder.append(" - 状态：").append(step.getStatus().name());
+            }
+            if (hasText(step.getOutputSummary())) {
+                builder.append(" - ").append(step.getOutputSummary().trim());
+            }
+        }
+        return builder.toString();
+    }
+
     private String statusReply(PlanTaskSession session) {
-        TaskRuntimeSnapshot snapshot = runtimeTool == null || session == null
-                ? null
-                : runtimeTool.getSnapshot(session.getTaskId());
+        TaskRuntimeSnapshot snapshot = runtimeSnapshot(session);
         if (snapshot == null || snapshot.getTask() == null) {
             return "我这边暂时还没查到这个会话里的任务进度。你可以直接给我一个新任务。";
         }
@@ -283,9 +307,7 @@ public class ReadOnlyNodeService {
     }
 
     private String artifactsReply(PlanTaskSession session) {
-        TaskRuntimeSnapshot snapshot = runtimeTool == null || session == null
-                ? null
-                : runtimeTool.getSnapshot(session.getTaskId());
+        TaskRuntimeSnapshot snapshot = runtimeSnapshot(session);
         List<ArtifactRecord> artifacts = snapshot == null || snapshot.getArtifacts() == null
                 ? List.of()
                 : snapshot.getArtifacts().stream()
@@ -319,8 +341,28 @@ public class ReadOnlyNodeService {
                 && "STATUS_QUERY".equals(session.getIntakeState().getIntakeType().name());
     }
 
+    private boolean shouldShortCircuitEmptyPlanReply(PlanTaskSession session) {
+        if (!isStatusQuery(session)) {
+            return false;
+        }
+        String view = session == null || session.getIntakeState() == null ? null : session.getIntakeState().getReadOnlyView();
+        return "PLAN".equalsIgnoreCase(view) && !hasUsablePlan(session) && !hasRuntimeSteps(session);
+    }
+
     private boolean hasUsablePlan(PlanTaskSession session) {
         return !cards(session).isEmpty();
+    }
+
+    private boolean hasRuntimeSteps(PlanTaskSession session) {
+        TaskRuntimeSnapshot snapshot = runtimeSnapshot(session);
+        return snapshot != null && snapshot.getSteps() != null
+                && snapshot.getSteps().stream().anyMatch(step -> step != null && step.getStatus() != StepStatusEnum.SUPERSEDED);
+    }
+
+    private TaskRuntimeSnapshot runtimeSnapshot(PlanTaskSession session) {
+        return runtimeTool == null || session == null
+                ? null
+                : runtimeTool.getSnapshot(session.getTaskId());
     }
 
     private String emptyTaskReply(PlanTaskSession session) {

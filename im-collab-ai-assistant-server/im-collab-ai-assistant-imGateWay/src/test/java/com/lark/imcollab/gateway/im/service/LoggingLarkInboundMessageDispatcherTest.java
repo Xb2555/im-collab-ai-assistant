@@ -340,6 +340,25 @@ class LoggingLarkInboundMessageDispatcherTest {
     }
 
     @Test
+    void versionConflictDuringPlanDispatchRecoversAsCompletedArtifactSuccess() {
+        PlanTaskSession latest = session(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, PlanningPhaseEnum.COMPLETED);
+        latest.getIntakeState().setAssistantReply("已修改文档 2.2 节：补充验证结论");
+        when(plannerPlanFacade.plan(anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenThrow(new RuntimeException("Session state conflict: taskId=task-1, expectedStateRevision=78, actualStateRevision=81"));
+        when(plannerPlanFacade.getLatestSession("task-1")).thenReturn(latest);
+        when(taskCommandFacade.getRuntimeSnapshot("task-1")).thenReturn(snapshotWithArtifact());
+
+        dispatcher.dispatch(message("帮我加一小节关于lfy66的内容"));
+
+        assertThat(sentPrivateTexts(replyTool)).singleElement()
+                .satisfies(reply -> assertThat(reply)
+                        .contains("当前上一轮任务已完成")
+                        .contains("按现有文档修改处理")
+                        .contains("已修改文档 2.2 节：补充验证结论")
+                        .doesNotContain("这次处理没有成功"));
+    }
+
+    @Test
     void unknownIntentDoesNotRepeatPlanReadyAsIfUpdated() {
         PlanTaskSession unknown = session(TaskIntakeTypeEnum.UNKNOWN, PlanningPhaseEnum.PLAN_READY);
         unknown.getIntakeState().setAssistantReply("我有点没对上你的意思。你是想看计划，还是要改其中一步？");

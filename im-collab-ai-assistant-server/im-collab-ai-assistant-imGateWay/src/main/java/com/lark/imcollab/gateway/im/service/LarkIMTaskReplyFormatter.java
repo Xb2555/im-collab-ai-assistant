@@ -11,6 +11,8 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.util.PlanCapabilityHints;
+import com.lark.imcollab.common.util.TriggerGuidanceResolver;
+import com.lark.imcollab.common.model.vo.TriggerGuidanceVO;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -23,12 +25,14 @@ public class LarkIMTaskReplyFormatter {
     private static final int MAX_IM_ARTIFACTS = 5;
     private static final int MAX_CLARIFICATION_QUESTIONS = 2;
     private static final int MAX_FAILURE_DETAIL_CHARS = 180;
+    private final TriggerGuidanceResolver triggerGuidanceResolver = new TriggerGuidanceResolver();
 
     public String planReady(PlanTaskSession session) {
         List<UserPlanCard> cards = cards(session);
         StringBuilder builder = new StringBuilder("🧭 我准备这样推进：");
         appendCardSummary(builder, cards);
         appendCapabilityHints(builder, cards);
+        appendInteractionGuidance(builder, session);
         builder.append("\n\n🚀 你确认没问题我就开工。要改的话直接说");
         appendEditHint(builder, cards);
         builder.append("。");
@@ -40,6 +44,7 @@ public class LarkIMTaskReplyFormatter {
         List<UserPlanCard> cards = cards(session);
         appendCardSummary(builder, cards);
         appendCapabilityHints(builder, cards);
+        appendInteractionGuidance(builder, session);
         builder.append("\n\n🚀 你确认没问题我就继续推进。要继续改的话也可以直接说");
         appendEditHint(builder, cards);
         builder.append("。");
@@ -92,6 +97,12 @@ public class LarkIMTaskReplyFormatter {
         }
         TaskRecord task = snapshot.getTask();
         List<TaskStepRecord> steps = activeSteps(snapshot.getSteps());
+        List<ArtifactRecord> primaryArtifacts = defaultList(snapshot.getArtifacts()).stream()
+                .filter(this::visiblePrimaryArtifact)
+                .toList();
+        long iterationRecordCount = defaultList(snapshot.getArtifacts()).stream()
+                .filter(this::visibleIterationRecordArtifact)
+                .count();
         long completed = steps.stream()
                 .filter(step -> step != null && step.getStatus() == StepStatusEnum.COMPLETED)
                 .count();
@@ -117,17 +128,20 @@ public class LarkIMTaskReplyFormatter {
                 builder.append("\n📊 步骤进度：").append(completed).append("/").append(steps.size());
             }
         }
-        int artifactCount = defaultList(snapshot.getArtifacts()).size();
+        int artifactCount = primaryArtifacts.size();
         if (artifactCount > 0) {
             builder.append("\n📎 已有产物：").append(artifactCount).append(" 个");
-            appendArtifactList(builder, defaultList(snapshot.getArtifacts()));
+            appendArtifactList(builder, primaryArtifacts);
+        }
+        if (iterationRecordCount > 0) {
+            builder.append("\n📝 迭代记录：").append(iterationRecordCount).append(" 条");
         }
         return builder.toString();
     }
 
     private void appendArtifactList(StringBuilder builder, List<ArtifactRecord> artifacts) {
         int index = 1;
-        for (ArtifactRecord artifact : artifacts.stream().filter(this::visibleArtifact).limit(MAX_IM_ARTIFACTS).toList()) {
+        for (ArtifactRecord artifact : artifacts.stream().filter(this::visiblePrimaryArtifact).limit(MAX_IM_ARTIFACTS).toList()) {
             builder.append("\n").append(index++).append(". 📄 ");
             if (artifact.getType() != null) {
                 builder.append("[").append(artifact.getType().name()).append("] ");
@@ -137,10 +151,22 @@ public class LarkIMTaskReplyFormatter {
                 builder.append("\n   ").append(artifact.getUrl().trim());
             }
         }
-        long remaining = artifacts.stream().filter(this::visibleArtifact).count() - MAX_IM_ARTIFACTS;
+        long remaining = artifacts.stream().filter(this::visiblePrimaryArtifact).count() - MAX_IM_ARTIFACTS;
         if (remaining > 0) {
             builder.append("\n📦 还有 ").append(remaining).append(" 个产物可在任务工作台查看。");
         }
+    }
+
+    private boolean visiblePrimaryArtifact(ArtifactRecord artifact) {
+        return visibleArtifact(artifact) && !visibleIterationRecordArtifact(artifact);
+    }
+
+    private boolean visibleIterationRecordArtifact(ArtifactRecord artifact) {
+        if (!visibleArtifact(artifact) || artifact.getType() != com.lark.imcollab.common.model.enums.ArtifactTypeEnum.SUMMARY) {
+            return false;
+        }
+        String title = firstNonBlank(artifact.getTitle(), artifact.getPreview(), "");
+        return title.startsWith("文档迭代结果") || title.startsWith("文档迭代待审批计划");
     }
 
     private boolean visibleArtifact(ArtifactRecord artifact) {
@@ -268,6 +294,23 @@ public class LarkIMTaskReplyFormatter {
         }
         if (cards.size() > limit) {
             builder.append("\n").append(limit + 1).append(". 还有 ").append(cards.size() - limit).append(" 个后续步骤会继续串起来");
+        }
+    }
+
+    private void appendInteractionGuidance(StringBuilder builder, PlanTaskSession session) {
+        List<TriggerGuidanceVO> guidance = triggerGuidanceResolver.resolve(session);
+        if (guidance.isEmpty()) {
+            return;
+        }
+        builder.append("\n\n💡 你也可以直接这样说：");
+        for (TriggerGuidanceVO item : guidance) {
+            if (item == null || !item.visible()) {
+                continue;
+            }
+            builder.append("\n- ")
+                    .append(firstNonBlank(item.label(), "继续修改"))
+                    .append("：")
+                    .append(firstNonBlank(item.description(), "直接说你想改哪一步、改成什么"));
         }
     }
 

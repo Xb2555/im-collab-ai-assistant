@@ -14,8 +14,10 @@ import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.planner.service.FollowUpRecommendationExecutionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
+import com.lark.imcollab.planner.service.ReplanScopeService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
@@ -40,6 +42,7 @@ public class PlannerCommandApplicationService {
     private final TaskRuntimeService taskRuntimeService;
     private final PlannerSessionService sessionService;
     private final FollowUpRecommendationExecutionService followUpRecommendationExecutionService;
+    private final ReplanScopeService replanScopeService;
     private final ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider;
 
     @Autowired
@@ -51,6 +54,7 @@ public class PlannerCommandApplicationService {
             TaskRuntimeService taskRuntimeService,
             PlannerSessionService sessionService,
             FollowUpRecommendationExecutionService followUpRecommendationExecutionService,
+            ReplanScopeService replanScopeService,
             ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider
     ) {
         this.graphRunner = graphRunner;
@@ -60,7 +64,22 @@ public class PlannerCommandApplicationService {
         this.taskRuntimeService = taskRuntimeService;
         this.sessionService = sessionService;
         this.followUpRecommendationExecutionService = followUpRecommendationExecutionService;
+        this.replanScopeService = replanScopeService;
         this.documentArtifactIterationFacadeProvider = documentArtifactIterationFacadeProvider;
+    }
+
+    public PlannerCommandApplicationService(
+            PlannerSupervisorGraphRunner graphRunner,
+            TaskBridgeService taskBridgeService,
+            PlannerRetryService plannerRetryService,
+            ImTaskCommandFacade taskCommandFacade,
+            TaskRuntimeService taskRuntimeService,
+            PlannerSessionService sessionService,
+            FollowUpRecommendationExecutionService followUpRecommendationExecutionService,
+            ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider
+    ) {
+        this(graphRunner, taskBridgeService, plannerRetryService, taskCommandFacade, taskRuntimeService,
+                sessionService, followUpRecommendationExecutionService, new ReplanScopeService(taskRuntimeService), documentArtifactIterationFacadeProvider);
     }
 
     public PlanTaskSession resume(String taskId, String feedback, boolean replanFromRoot) {
@@ -137,6 +156,16 @@ public class PlannerCommandApplicationService {
             return replan(taskId, feedback, null, null, workspaceContext);
         }
         taskRuntimeService.appendUserIntervention(taskId, feedback);
+        ReplanScopeService.ReplanScopeDecision scopeDecision = replanScopeService == null
+                ? null
+                : replanScopeService.inferForInterruptedExecution(current, feedback, false);
+        if (scopeDecision != null) {
+            replanScopeService.apply(
+                    current,
+                    scopeDecision,
+                    scopeDecision.scope() != com.lark.imcollab.common.model.enums.ReplanScopeEnum.FULL_TASK_RESET
+            );
+        }
         current.setPlanningPhase(PlanningPhaseEnum.INTERRUPTING);
         current.setTransitionReason("Interrupt current execution for plan adjustment");
         sessionService.save(current);
@@ -159,7 +188,10 @@ public class PlannerCommandApplicationService {
         }
 
         PlanTaskSession replanning = sessionService.get(taskId);
-        resetExecutionSemanticsForFullReplan(replanning);
+        if (scopeDecision != null
+                && scopeDecision.scope() == com.lark.imcollab.common.model.enums.ReplanScopeEnum.FULL_TASK_RESET) {
+            resetExecutionSemanticsForFullReplan(replanning);
+        }
         replanning.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
         replanning.setActiveExecutionAttemptId(null);
         replanning.setTransitionReason("Replanning after execution interrupt");
@@ -301,9 +333,7 @@ public class PlannerCommandApplicationService {
             intakeState.setPendingAdjustmentInstruction(null);
             current.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
             current.setTransitionReason("Completed DOC adjustment approval executed");
-            sessionService.saveWithoutVersionChange(current);
-            sessionService.publishEvent(taskId, "COMPLETED");
-            return current;
+            return finalizeDocumentApprovalSession(current, "doc_approval_completed", "文档修改已执行，状态同步稍后刷新。");
         }
         if (status == DocumentArtifactIterationStatus.WAITING_APPROVAL) {
             intakeState.setAssistantReply(result.getSummary());
@@ -313,17 +343,87 @@ public class PlannerCommandApplicationService {
             intakeState.setPendingDocumentApprovalSummary(result.getSummary());
             current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
             current.setTransitionReason("Completed DOC adjustment approval still waiting");
-            sessionService.saveWithoutVersionChange(current);
-            sessionService.publishEvent(taskId, "ASK_USER");
-            return current;
+            return finalizeDocumentApprovalSession(current, "doc_approval_waiting", "已进入待确认状态，状态同步稍后刷新。");
         }
         clearPendingDocumentApproval(intakeState);
         current.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
         intakeState.setAssistantReply(result == null ? feedback : result.getSummary());
         current.setTransitionReason("Completed DOC adjustment approval failed");
-        sessionService.saveWithoutVersionChange(current);
-        sessionService.publishEvent(taskId, "COMPLETED");
-        return current;
+        return finalizeDocumentApprovalSession(current, "doc_approval_failed",
+                result == null ? feedback : result.getSummary());
+    }
+
+    private PlanTaskSession finalizeDocumentApprovalSession(
+            PlanTaskSession session,
+            String finalizeOutcome,
+            String degradedAssistantReply
+    ) {
+        if (session == null) {
+            return null;
+        }
+        try {
+            sessionService.saveWithoutVersionChange(session);
+            sessionService.publishEvent(session.getTaskId(), session.getPlanningPhase().name());
+            return session;
+        } catch (VersionConflictException conflict) {
+            log.warn(
+                    "completed_artifact_finalize_conflict_retry taskId={} planningPhase={} intakeType={} stateRevision_expected={} finalizeOutcome={}",
+                    session.getTaskId(),
+                    session.getPlanningPhase(),
+                    session.getIntakeState() == null ? null : session.getIntakeState().getIntakeType(),
+                    session.getStateRevision(),
+                    finalizeOutcome,
+                    conflict
+            );
+            PlanTaskSession latest = sessionService.get(session.getTaskId());
+            copyApprovalFinalizeFields(session, latest, degradedAssistantReply);
+            try {
+                sessionService.saveWithoutVersionChange(latest);
+                sessionService.publishEvent(latest.getTaskId(), latest.getPlanningPhase().name());
+                return latest;
+            } catch (VersionConflictException retryConflict) {
+                log.warn(
+                        "completed_artifact_finalize_conflict_degraded_success taskId={} planningPhase={} intakeType={} stateRevision_expected={} stateRevision_actual={} finalizeOutcome={}",
+                        latest.getTaskId(),
+                        latest.getPlanningPhase(),
+                        latest.getIntakeState() == null ? null : latest.getIntakeState().getIntakeType(),
+                        session.getStateRevision(),
+                        latest.getStateRevision(),
+                        finalizeOutcome,
+                        retryConflict
+                );
+                copyApprovalFinalizeFields(session, latest, degradedAssistantReply);
+                return latest;
+            }
+        }
+    }
+
+    private void copyApprovalFinalizeFields(
+            PlanTaskSession source,
+            PlanTaskSession target,
+            String degradedAssistantReply
+    ) {
+        if (source == null || target == null) {
+            return;
+        }
+        target.setPlanningPhase(source.getPlanningPhase());
+        target.setTransitionReason(source.getTransitionReason());
+        TaskIntakeState sourceIntake = source.getIntakeState();
+        TaskIntakeState targetIntake = target.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : target.getIntakeState();
+        if (sourceIntake != null) {
+            targetIntake.setAssistantReply(hasText(sourceIntake.getAssistantReply()) ? sourceIntake.getAssistantReply() : degradedAssistantReply);
+            targetIntake.setPendingAdjustmentInstruction(sourceIntake.getPendingAdjustmentInstruction());
+            targetIntake.setPendingDocumentIterationTaskId(sourceIntake.getPendingDocumentIterationTaskId());
+            targetIntake.setPendingDocumentArtifactId(sourceIntake.getPendingDocumentArtifactId());
+            targetIntake.setPendingDocumentDocUrl(sourceIntake.getPendingDocumentDocUrl());
+            targetIntake.setPendingDocumentApprovalSummary(sourceIntake.getPendingDocumentApprovalSummary());
+            targetIntake.setPendingDocumentApprovalMode(sourceIntake.getPendingDocumentApprovalMode());
+        } else if (hasText(degradedAssistantReply)) {
+            targetIntake.setAssistantReply(degradedAssistantReply);
+        }
+        target.setIntakeState(targetIntake);
     }
 
     private String resolveApprovalAction(String feedback, boolean confirmed) {

@@ -2,7 +2,9 @@ package com.lark.imcollab.app.planner.assembler;
 
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import org.junit.jupiter.api.Test;
@@ -43,6 +45,12 @@ class PlannerViewAssemblerTest {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
                 .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .planCards(java.util.List.of(UserPlanCard.builder()
+                        .cardId("card-001")
+                        .title("生成技术方案文档")
+                        .type(PlanCardTypeEnum.DOC)
+                        .status("PENDING")
+                        .build()))
                 .build();
 
         PlanPreviewVO preview = assembler.toPlanPreview(session);
@@ -52,6 +60,13 @@ class PlannerViewAssemblerTest {
         assertThat(preview.transientReply()).isFalse();
         assertThat(preview.actions().canConfirm()).isTrue();
         assertThat(preview.actions().canReplan()).isTrue();
+        assertThat(preview.interactionGuidance())
+                .extracting(item -> item.code() + ":" + item.description())
+                .containsExactly(
+                        "EXECUTE_PLAN:按当前计划继续",
+                        "FULL_RESET:放弃当前方案，重新规划并重跑整个任务",
+                        "EDIT_CURRENT_PLAN:直接说你想改哪一步、改成什么"
+                );
     }
 
     @Test
@@ -99,5 +114,46 @@ class PlannerViewAssemblerTest {
         assertThat(preview.actions().canConfirm()).isFalse();
         assertThat(preview.actions().canReplan()).isTrue();
         assertThat(preview.actions().canCancel()).isFalse();
+    }
+
+    @Test
+    void planReadyPreviewWithCompletedPrefixShowsFullResetDropArtifactsGuidance() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .planCards(java.util.List.of(
+                        UserPlanCard.builder()
+                                .cardId("card-001")
+                                .title("生成技术方案文档")
+                                .type(PlanCardTypeEnum.DOC)
+                                .status("COMPLETED")
+                                .artifactRefs(java.util.List.of("artifact-doc-1"))
+                                .build(),
+                        UserPlanCard.builder()
+                                .cardId("card-002")
+                                .title("生成汇报 PPT")
+                                .type(PlanCardTypeEnum.PPT)
+                                .status("PENDING")
+                                .build()
+                ))
+                .build();
+
+        PlanPreviewVO preview = assembler.toPlanPreview(session);
+
+        assertThat(preview.interactionGuidance())
+                .extracting(item -> item.code() + ":" + item.description())
+                .contains("FULL_RESET:整任务重跑，并丢弃当前已完成产物");
+    }
+
+    @Test
+    void askUserPreviewDoesNotExposeTriggerGuidance() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .build();
+
+        PlanPreviewVO preview = assembler.toPlanPreview(session);
+
+        assertThat(preview.interactionGuidance()).isEmpty();
     }
 }

@@ -8,28 +8,18 @@ export interface LarkLoginUrlData {
 }
 
 export type LarkLoginUrlResponse = ApiResponse<LarkLoginUrlData>;
+export type OAuthClientType = 'web' | 'desktop';
 
 export const authApi = {
-  /**
-   * Web 端直跳后端登录入口（后端 302 到飞书授权页）
-   */
-  getLoginUrlRedirectPath: (): string => {
-    return 'https://api.yiiie.cn/api/auth/lark/login';
-  },
-
   /**
    * 获取飞书授权 URL（JSON，不重定向）
    */
  
-  getLoginUrl: async (): Promise<LarkLoginUrlData> => {
-    // ✨ 使用兼容 Tauri 2.0 的判断
-// ✨ 加上 (window as any) 强制绕过 TypeScript 检查
-const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__ !== undefined;
-    const clientType = isTauri ? 'desktop' : 'web'; 
-    
-    // 发送请求，这次一定会带上 ?client=desktop
-    const response = await apiClient.get<LarkLoginUrlResponse>(`/auth/login-url?client=${clientType}`);
-    
+  getLoginUrl: async (client: OAuthClientType = 'web'): Promise<LarkLoginUrlData> => {
+    const response = await apiClient.get<LarkLoginUrlResponse>('/auth/login-url', {
+      params: { client },
+    });
+
     if (response.data.code !== 0) {
       throw new Error(response.data.message || '获取登录授权链接失败');
     }

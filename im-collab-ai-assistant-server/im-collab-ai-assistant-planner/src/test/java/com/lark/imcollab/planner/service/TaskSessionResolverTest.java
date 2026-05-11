@@ -159,6 +159,69 @@ class TaskSessionResolverTest {
     }
 
     @Test
+    void explicitConversationBindingWinsOverStaleConversationStateAfterCompletedTaskSelection() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .build();
+        when(stateStore.findConversationTaskId("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of("task-selected"));
+        when(stateStore.findSession("task-selected")).thenReturn(Optional.of(PlanTaskSession.builder()
+                .taskId("task-selected")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build()));
+        when(stateStore.findConversationTaskState("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of(ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("selector-task")
+                        .lastCompletedTaskId("task-selected")
+                        .build()));
+        when(stateStore.findSession("selector-task")).thenReturn(Optional.of(PlanTaskSession.builder()
+                .taskId("selector-task")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build()));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        TaskSessionResolution resolution = resolver.resolve(null, context);
+
+        assertThat(resolution.taskId()).isEqualTo("task-selected");
+        assertThat(resolution.existingSession()).isTrue();
+    }
+
+    @Test
+    void stalePendingSelectionDoesNotOverrideNewCompletedTaskBinding() {
+        PlannerStateStore stateStore = mock(PlannerStateStore.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .build();
+        when(stateStore.findConversationTaskId("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of("task-selected"));
+        when(stateStore.findPendingSelectionSession("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of(PlanTaskSession.builder()
+                        .taskId("selector-task")
+                        .planningPhase(PlanningPhaseEnum.INTAKE)
+                        .build()));
+        when(stateStore.findSession("task-selected")).thenReturn(Optional.of(PlanTaskSession.builder()
+                .taskId("task-selected")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build()));
+        when(stateStore.findConversationTaskState("LARK_PRIVATE_CHAT:chat-1:chat-root"))
+                .thenReturn(Optional.of(ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("selector-task")
+                        .lastCompletedTaskId("task-selected")
+                        .build()));
+        TaskSessionResolver resolver = new TaskSessionResolver(stateStore);
+
+        TaskSessionResolution resolution = resolver.resolve(null, context);
+
+        assertThat(resolution.taskId()).isEqualTo("task-selected");
+        assertThat(resolution.existingSession()).isTrue();
+    }
+
+    @Test
     void completedCandidatesAreScopedToCurrentConversationAndOwner() {
         PlannerStateStore stateStore = mock(PlannerStateStore.class);
         WorkspaceContext context = WorkspaceContext.builder()

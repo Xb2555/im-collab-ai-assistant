@@ -14,6 +14,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.facade.ImTaskCommandFacade;
 import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.planner.service.FollowUpRecommendationExecutionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
@@ -38,6 +39,7 @@ import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
 
 @ExtendWith(MockitoExtension.class)
 class PlannerCommandApplicationServiceTest {
@@ -482,6 +484,57 @@ class PlannerCommandApplicationServiceTest {
                 any(),
                 eq("ou-user"));
         verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void confirmExecutionRetriesDocumentApprovalFinalizeAfterVersionConflict() {
+        PlanTaskSession current = new PlanTaskSession();
+        current.setTaskId("task-1");
+        current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        current.setStateRevision(12L);
+        current.setIntakeState(TaskIntakeState.builder()
+                .pendingDocumentIterationTaskId("doc-iter-1")
+                .pendingDocumentArtifactId("artifact-doc-1")
+                .pendingDocumentDocUrl("https://example.feishu.cn/docx/doc-token")
+                .pendingDocumentApprovalMode("COMPLETED_TASK_DOC_APPROVAL")
+                .pendingAdjustmentInstruction("修改文档")
+                .build());
+        PlanTaskSession latest = new PlanTaskSession();
+        latest.setTaskId("task-1");
+        latest.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        latest.setStateRevision(15L);
+        latest.setIntakeState(TaskIntakeState.builder()
+                .pendingDocumentIterationTaskId("doc-iter-1")
+                .pendingDocumentArtifactId("artifact-doc-1")
+                .pendingDocumentDocUrl("https://example.feishu.cn/docx/doc-token")
+                .pendingDocumentApprovalMode("COMPLETED_TASK_DOC_APPROVAL")
+                .pendingAdjustmentInstruction("修改文档")
+                .build());
+        when(sessionService.get("task-1")).thenReturn(latest);
+        when(documentArtifactIterationFacade.decide(
+                eq("doc-iter-1"),
+                eq("artifact-doc-1"),
+                eq("https://example.feishu.cn/docx/doc-token"),
+                any(),
+                eq(null)))
+                .thenReturn(DocumentArtifactIterationResult.builder()
+                        .taskId("doc-iter-1")
+                        .artifactId("artifact-doc-1")
+                        .docUrl("https://example.feishu.cn/docx/doc-token")
+                        .status(DocumentArtifactIterationStatus.COMPLETED)
+                        .summary("文档修改已执行")
+                        .build());
+        doThrow(new VersionConflictException("Session state conflict: taskId=task-1, expectedStateRevision=12, actualStateRevision=15"))
+                .doAnswer(invocation -> invocation.getArgument(0))
+                .when(sessionService).saveWithoutVersionChange(any(PlanTaskSession.class));
+
+        PlanTaskSession result = service.confirmExecution("task-1", current);
+
+        org.assertj.core.api.Assertions.assertThat(result).isSameAs(latest);
+        org.assertj.core.api.Assertions.assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        org.assertj.core.api.Assertions.assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("文档修改已执行");
+        org.assertj.core.api.Assertions.assertThat(result.getIntakeState().getPendingDocumentIterationTaskId()).isNull();
+        verify(sessionService).publishEvent("task-1", "COMPLETED");
     }
 
     private static <T> ObjectProvider<T> provider(T facade) {
