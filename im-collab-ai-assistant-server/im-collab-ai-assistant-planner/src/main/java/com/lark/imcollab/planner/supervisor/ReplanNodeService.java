@@ -23,6 +23,8 @@ import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
@@ -116,6 +118,7 @@ public class ReplanNodeService {
 
     public PlanTaskSession replan(String taskId, String adjustmentInstruction, WorkspaceContext workspaceContext) {
         PlanTaskSession session = sessionService.getOrCreate(taskId);
+        syncPlanCardsFromRuntimeSnapshot(session);
         taskRuntimeService.appendUserIntervention(taskId, adjustmentInstruction);
         PlanTaskSession artifactSelectionResume = resumePendingArtifactSelectionIfNeeded(
                 session,
@@ -369,6 +372,7 @@ public class ReplanNodeService {
             String instruction,
             WorkspaceContext workspaceContext
     ) {
+        syncPlanCardsFromRuntimeSnapshot(session);
         PlanPatchIntent patchIntent = adjustmentInterpreter.interpret(session, instruction, workspaceContext);
         if (patchIntent == null || patchIntent.getOperation() == null
                 || patchIntent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED) {
@@ -394,6 +398,81 @@ public class ReplanNodeService {
         qualityService.applyMergedPlanAdjustment(session, merged, firstNonBlank(patchIntent.getReason(), "Completed task follow-up adjusted"));
         sessionService.saveWithoutVersionChange(session);
         return session;
+    }
+
+    private void syncPlanCardsFromRuntimeSnapshot(PlanTaskSession session) {
+        if (session == null || taskRuntimeService == null) {
+            return;
+        }
+        TaskRuntimeSnapshot snapshot = taskRuntimeService.getSnapshot(session.getTaskId());
+        if (snapshot == null || snapshot.getSteps() == null || snapshot.getSteps().isEmpty()) {
+            return;
+        }
+        java.util.Map<String, TaskStepRecord> stepsById = new java.util.LinkedHashMap<>();
+        for (TaskStepRecord step : snapshot.getSteps()) {
+            if (step == null || !hasText(step.getStepId())) {
+                continue;
+            }
+            stepsById.put(step.getStepId(), step);
+        }
+        if (stepsById.isEmpty()) {
+            return;
+        }
+        java.util.Map<ArtifactTypeEnum, List<String>> artifactIdsByType = new java.util.EnumMap<>(ArtifactTypeEnum.class);
+        if (snapshot.getArtifacts() != null) {
+            for (ArtifactRecord artifact : snapshot.getArtifacts()) {
+                if (artifact == null || artifact.getType() == null || !hasText(artifact.getArtifactId())) {
+                    continue;
+                }
+                artifactIdsByType.computeIfAbsent(artifact.getType(), ignored -> new java.util.ArrayList<>())
+                        .add(artifact.getArtifactId());
+            }
+        }
+        syncPlanCardsFromRuntime(session.getPlanCards(), stepsById, artifactIdsByType);
+        if (session.getPlanBlueprint() != null) {
+            syncPlanCardsFromRuntime(session.getPlanBlueprint().getPlanCards(), stepsById, artifactIdsByType);
+        }
+    }
+
+    private void syncPlanCardsFromRuntime(
+            List<UserPlanCard> cards,
+            java.util.Map<String, TaskStepRecord> stepsById,
+            java.util.Map<ArtifactTypeEnum, List<String>> artifactIdsByType
+    ) {
+        if (cards == null || cards.isEmpty() || stepsById == null || stepsById.isEmpty()) {
+            return;
+        }
+        for (UserPlanCard card : cards) {
+            if (card == null || !hasText(card.getCardId())) {
+                continue;
+            }
+            TaskStepRecord step = stepsById.get(card.getCardId());
+            if (step == null || step.getStatus() == null) {
+                continue;
+            }
+            card.setStatus(step.getStatus().name());
+            card.setProgress(step.getProgress());
+            ArtifactTypeEnum artifactType = toArtifactType(card.getType());
+            if ((card.getArtifactRefs() == null || card.getArtifactRefs().isEmpty())
+                    && artifactType != null
+                    && step.getStatus() == com.lark.imcollab.common.model.enums.StepStatusEnum.COMPLETED) {
+                List<String> refs = artifactIdsByType.get(artifactType);
+                if (refs != null && !refs.isEmpty()) {
+                    card.setArtifactRefs(List.copyOf(refs));
+                }
+            }
+        }
+    }
+
+    private ArtifactTypeEnum toArtifactType(com.lark.imcollab.common.model.enums.PlanCardTypeEnum cardType) {
+        if (cardType == null) {
+            return null;
+        }
+        return switch (cardType) {
+            case DOC -> ArtifactTypeEnum.DOC;
+            case PPT -> ArtifactTypeEnum.PPT;
+            case SUMMARY -> ArtifactTypeEnum.SUMMARY;
+        };
     }
 
     private String extractArtifactPolicy(String instruction) {

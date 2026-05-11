@@ -27,6 +27,15 @@ public class PendingFollowUpRecommendationMatcher {
             List<PendingFollowUpRecommendation> recommendations,
             boolean awaitingSelection
     ) {
+        return match(userInput, recommendations, awaitingSelection, false);
+    }
+
+    public MatchResult match(
+            String userInput,
+            List<PendingFollowUpRecommendation> recommendations,
+            boolean awaitingSelection,
+            boolean upstreamSuggestsStandaloneTask
+    ) {
         if (!hasText(userInput) || recommendations == null || recommendations.isEmpty()) {
             return MatchResult.none();
         }
@@ -40,14 +49,16 @@ public class PendingFollowUpRecommendationMatcher {
                 return MatchResult.selected(recommendation);
             }
         }
-        if (recommendations.size() == 1 && ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
+        if (!upstreamSuggestsStandaloneTask
+                && recommendations.size() == 1
+                && ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
             return MatchResult.selected(recommendations.get(0));
         }
         if (recommendations.size() > 1 && ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
             return MatchResult.askSelection();
         }
         String choice = llmChoiceResolver.chooseOne(
-                buildInstruction(userInput, recommendations, awaitingSelection),
+                buildInstruction(userInput, recommendations, awaitingSelection, upstreamSuggestsStandaloneTask),
                 allowedChoices(recommendations),
                 """
                 你负责判断用户这句回复，是否在承接“上一轮任务完成后的推荐下一步动作”。
@@ -59,7 +70,10 @@ public class PendingFollowUpRecommendationMatcher {
                 2. 如果用户是在开启一个全新任务、忽略之前推荐、或表达内容与所有推荐都不相干，选 NONE。
                 3. 如果有多条推荐，而用户只说“开始/继续/就这个”这类无法区分具体哪一条的确认语，选 NONE。
                 4. 不要因为用户消息里提到“文档/PPT/摘要”就随便匹配；要看整体语义是否在承接某条推荐。
-                5. 只返回一个可选值本身，不要解释。
+                5. 如果用户这句回复是在复述某条推荐语，并补充了字数、页数、风格、受众、详略、标题等执行约束，仍然视为承接该推荐，不要误判为新任务。
+                6. 只有当用户明确表达“新建一个任务 / 新开一个任务 / 另起一个任务 / 再开一个任务”等意思时，才优先按新任务理解并选 NONE。
+                7. 如果上游意图分类已经偏向 START_TASK，把它当成一个重要提示；但如果用户明显是在承接推荐并补充要求，仍然可以选择 recommendationId。
+                8. 只返回一个可选值本身，不要解释。
                 """
         );
         if (!hasText(choice) || "NONE".equalsIgnoreCase(choice.trim())) {
@@ -85,11 +99,13 @@ public class PendingFollowUpRecommendationMatcher {
     private String buildInstruction(
             String userInput,
             List<PendingFollowUpRecommendation> recommendations,
-            boolean awaitingSelection
+            boolean awaitingSelection,
+            boolean upstreamSuggestsStandaloneTask
     ) {
         StringBuilder builder = new StringBuilder();
         builder.append("用户回复：").append(userInput.trim()).append("\n");
         builder.append("当前是否正在等待用户按编号选择推荐：").append(awaitingSelection).append("\n");
+        builder.append("上游意图分类是否偏向 START_TASK：").append(upstreamSuggestsStandaloneTask).append("\n");
         builder.append("可承接推荐：\n");
         for (int index = 0; index < recommendations.size(); index++) {
             PendingFollowUpRecommendation recommendation = recommendations.get(index);
