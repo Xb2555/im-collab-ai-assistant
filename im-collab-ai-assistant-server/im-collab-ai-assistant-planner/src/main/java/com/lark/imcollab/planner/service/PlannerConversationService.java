@@ -148,15 +148,6 @@ public class PlannerConversationService {
         PlanTaskSession session = resolution.existingSession()
                 ? sessionService.get(resolution.taskId())
                 : transientSession(resolution.taskId(), workspaceContext);
-        PlanTaskSession followUpResult = tryResumePendingFollowUpRecommendation(
-                session,
-                resolution,
-                firstText(userFeedback, rawInstruction),
-                workspaceContext
-        );
-        if (followUpResult != null) {
-            return finalizePlanAdjustmentResult(followUpResult);
-        }
         TaskIntakeDecision preliminaryIntakeDecision = intakeService.decide(
                 session,
                 rawInstruction,
@@ -215,6 +206,16 @@ public class PlannerConversationService {
         );
         if (earlyCompletedArtifactAdjustment != null) {
             return earlyCompletedArtifactAdjustment;
+        }
+        PlanTaskSession followUpResult = tryResumePendingFollowUpRecommendation(
+                session,
+                resolution,
+                userInput,
+                workspaceContext,
+                intakeDecision
+        );
+        if (followUpResult != null) {
+            return finalizePlanAdjustmentResult(followUpResult);
         }
         if (shouldStartFreshTask(taskId, resolution, intakeDecision)) {
             workspaceContext = carryForwardCompletedArtifactContext(session, workspaceContext, intakeDecision, graphInstruction);
@@ -1062,8 +1063,7 @@ public class PlannerConversationService {
         if (intakeDecision == null) {
             return false;
         }
-        if (intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT
-                && intakeDecision.intakeType() != TaskIntakeTypeEnum.NEW_TASK) {
+        if (intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
             return false;
         }
         if (intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
@@ -1291,7 +1291,8 @@ public class PlannerConversationService {
             PlanTaskSession currentSession,
             TaskSessionResolution resolution,
             String userInput,
-            WorkspaceContext workspaceContext
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision intakeDecision
     ) {
         if (conversationTaskStateService == null
                 || pendingFollowUpRecommendationMatcher == null
@@ -1312,6 +1313,9 @@ public class PlannerConversationService {
             return null;
         }
         ConversationTaskState state = stateOptional.get();
+        if (!shouldAttemptPendingFollowUpRecommendation(intakeDecision, state.isPendingFollowUpAwaitingSelection())) {
+            return null;
+        }
         List<PendingFollowUpRecommendation> recommendations = defaultList(state.getPendingFollowUpRecommendations());
         PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
                 userInput,
@@ -1359,6 +1363,24 @@ public class PlannerConversationService {
         normalizeFollowUpContinuationResult(result, resolution, userInput);
         markPreserveExistingArtifactsOnExecution(result);
         return result;
+    }
+
+    private boolean shouldAttemptPendingFollowUpRecommendation(
+            TaskIntakeDecision intakeDecision,
+            boolean awaitingSelection
+    ) {
+        if (intakeDecision == null) {
+            return awaitingSelection;
+        }
+        if (isForcedNewTask(intakeDecision) || intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK) {
+            return false;
+        }
+        if (awaitingSelection) {
+            return intakeDecision.intakeType() != TaskIntakeTypeEnum.CANCEL_TASK
+                    && intakeDecision.intakeType() != TaskIntakeTypeEnum.STATUS_QUERY;
+        }
+        return intakeDecision.intakeType() == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                || intakeDecision.intakeType() == TaskIntakeTypeEnum.CONFIRM_ACTION;
     }
 
     private PlanTaskSession followUpSelectionReply(

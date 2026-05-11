@@ -10,6 +10,7 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.service.TaskCancellationRegistry;
+import com.lark.imcollab.harness.support.HarnessExecutionLockRecoveryService;
 import com.lark.imcollab.planner.config.PlannerExecutionProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
@@ -61,6 +62,7 @@ class DefaultImTaskCommandFacadeTest {
     private final HoldingScheduledExecutor timeoutScheduler = new HoldingScheduledExecutor();
     private final PlannerExecutionProperties executionProperties = executionProperties();
     private final TaskCancellationRegistry cancellationRegistry = new TaskCancellationRegistry();
+    private final HarnessExecutionLockRecoveryService lockRecoveryService = mock(HarnessExecutionLockRecoveryService.class);
     private final DefaultImTaskCommandFacade facade = new DefaultImTaskCommandFacade(
             sessionService,
             taskBridgeService,
@@ -73,7 +75,8 @@ class DefaultImTaskCommandFacadeTest {
             executor,
             timeoutScheduler,
             executionProperties,
-            cancellationRegistry
+            cancellationRegistry,
+            lockRecoveryService
     );
 
     @Test
@@ -87,6 +90,7 @@ class DefaultImTaskCommandFacadeTest {
         PlanTaskSession returned = facade.confirmExecution("task-1");
 
         assertThat(returned.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        verify(lockRecoveryService).clearStaleTaskLocks("task-1");
         verify(taskArtifactResetService).clearGeneratedArtifactsBeforeExecution("task-1");
         verify(taskBridgeService).ensureTask(session);
         verify(sessionService).save(session);
@@ -323,7 +327,8 @@ class DefaultImTaskCommandFacadeTest {
                 directExecutor,
                 scheduledExecutor,
                 properties,
-                registry
+                registry,
+                lockRecoveryService
         );
         PlanTaskSession first = PlanTaskSession.builder()
                 .taskId("task-1")

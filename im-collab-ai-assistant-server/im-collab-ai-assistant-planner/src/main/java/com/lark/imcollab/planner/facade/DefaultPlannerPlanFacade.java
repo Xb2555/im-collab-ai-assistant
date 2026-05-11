@@ -50,13 +50,13 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         }
         TaskSessionResolution resolution = taskSessionResolver.resolve(taskId, workspaceContext);
         PlanTaskSession session = resolution.existingSession() ? safeGet(resolution.taskId()) : null;
-        String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput);
-        if (!followUpPreview.isBlank()) {
-            return followUpPreview;
-        }
         Optional<IntentRoutingResult> result = llmIntentClassifier.classify(session, effectiveInput, resolution.existingSession());
         if (result.isEmpty()) {
             return "";
+        }
+        String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput, result.get());
+        if (!followUpPreview.isBlank()) {
+            return followUpPreview;
         }
         return immediateReceipt(result.get().type(), result.get().adjustmentTarget(), session, workspaceContext);
     }
@@ -106,7 +106,8 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     private String previewPendingFollowUpImmediateReply(
             PlanTaskSession session,
             TaskSessionResolution resolution,
-            String effectiveInput
+            String effectiveInput,
+            IntentRoutingResult routingResult
     ) {
         if (conversationTaskStateService == null
                 || pendingFollowUpRecommendationMatcher == null
@@ -119,7 +120,14 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (hasPendingSelection(session)) {
             return "";
         }
-        List<PendingFollowUpRecommendation> recommendations = conversationTaskStateService.find(resolution.continuationKey())
+        Optional<com.lark.imcollab.common.model.entity.ConversationTaskState> stateOptional =
+                conversationTaskStateService.find(resolution.continuationKey());
+        boolean awaitingSelection = stateOptional.map(com.lark.imcollab.common.model.entity.ConversationTaskState::isPendingFollowUpAwaitingSelection)
+                .orElse(false);
+        if (!shouldPreviewPendingFollowUpImmediateReply(routingResult, awaitingSelection)) {
+            return "";
+        }
+        List<PendingFollowUpRecommendation> recommendations = stateOptional
                 .map(state -> state.getPendingFollowUpRecommendations())
                 .orElse(List.of());
         if (recommendations == null || recommendations.isEmpty()) {
@@ -128,7 +136,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
                 effectiveInput,
                 recommendations,
-                false
+                awaitingSelection
         );
         if (match.type() == PendingFollowUpRecommendationMatcher.Type.SELECTED) {
             return "🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。";
@@ -137,6 +145,24 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             return "🔢 我这边有多个后续动作，请直接回复编号。";
         }
         return "";
+    }
+
+    private boolean shouldPreviewPendingFollowUpImmediateReply(
+            IntentRoutingResult routingResult,
+            boolean awaitingSelection
+    ) {
+        if (routingResult == null || routingResult.type() == null) {
+            return awaitingSelection;
+        }
+        if (routingResult.type() == TaskCommandTypeEnum.START_TASK) {
+            return false;
+        }
+        if (awaitingSelection) {
+            return routingResult.type() != TaskCommandTypeEnum.QUERY_STATUS
+                    && routingResult.type() != TaskCommandTypeEnum.CANCEL_TASK;
+        }
+        return routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
+                || routingResult.type() == TaskCommandTypeEnum.CONFIRM_ACTION;
     }
 
     private boolean hasPendingSelection(PlanTaskSession session) {

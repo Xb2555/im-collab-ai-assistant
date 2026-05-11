@@ -477,6 +477,10 @@ class PlannerConversationCompletedSelectionTest {
                 .taskId("task-doc")
                 .planningPhase(PlanningPhaseEnum.COMPLETED)
                 .build();
+        PlanTaskSession freshTask = PlanTaskSession.builder()
+                .taskId("task-new")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .build();
         when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-doc", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
         when(resolver.conversationState(context)).thenReturn(java.util.Optional.of(ConversationTaskState.builder()
                 .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
@@ -836,7 +840,7 @@ class PlannerConversationCompletedSelectionTest {
     }
 
     @Test
-    void completedCurrentTaskArtifactEditStillRoutesWhenClassifierSaysNewTask() {
+    void completedCurrentTaskDoesNotRouteArtifactEditWhenClassifierSaysNewTask() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
@@ -854,6 +858,10 @@ class PlannerConversationCompletedSelectionTest {
                 .build();
         when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-doc", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
         when(sessionService.get("task-doc")).thenReturn(completed);
+        when(sessionService.getOrCreate(anyString())).thenAnswer(invocation -> PlanTaskSession.builder()
+                .taskId(invocation.getArgument(0, String.class))
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .build());
         when(intakeService.decide(completed, "帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结", null, true))
                 .thenReturn(new TaskIntakeDecision(
                         TaskIntakeTypeEnum.NEW_TASK,
@@ -868,15 +876,15 @@ class PlannerConversationCompletedSelectionTest {
                         .build()
         ));
         when(resolver.hasEditableArtifacts("task-doc")).thenReturn(true);
-        when(resolver.inferEditableArtifact("task-doc", "帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结"))
-                .thenReturn(java.util.Optional.of(ArtifactRecord.builder()
-                        .artifactId("artifact-doc-1")
-                        .type(ArtifactTypeEnum.DOC)
-                        .build()));
-        when(graphRunner.run(any(), eq("task-doc"),
-                eq("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结\n目标产物ID：artifact-doc-1"),
+        ArgumentCaptor<String> taskIdCaptor = ArgumentCaptor.forClass(String.class);
+        PlanTaskSession freshTask = PlanTaskSession.builder()
+                .taskId("task-new")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .build();
+        when(graphRunner.run(any(), taskIdCaptor.capture(),
+                eq("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结"),
                 eq(context), isNull()))
-                .thenReturn(completed);
+                .thenReturn(freshTask);
         PlannerConversationService service = new PlannerConversationService(
                 resolver,
                 intakeService,
@@ -888,11 +896,13 @@ class PlannerConversationCompletedSelectionTest {
 
         PlanTaskSession result = service.handlePlanRequest("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结", context, null, null);
 
-        assertThat(result).isSameAs(completed);
-        verify(graphRunner).run(any(), eq("task-doc"),
-                eq("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结\n目标产物ID：artifact-doc-1"),
+        assertThat(result).isSameAs(freshTask);
+        assertThat(taskIdCaptor.getValue()).isNotEqualTo("task-doc");
+        verify(graphRunner).run(any(), anyString(),
+                eq("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结"),
                 eq(context), isNull());
-        verify(taskBridgeService).ensureTask(completed);
+        verify(taskBridgeService).ensureTask(freshTask);
+        verify(resolver, never()).inferEditableArtifact(anyString(), anyString());
     }
 
     @Test
