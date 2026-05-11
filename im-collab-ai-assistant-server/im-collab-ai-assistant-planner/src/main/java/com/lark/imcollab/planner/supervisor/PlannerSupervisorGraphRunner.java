@@ -28,6 +28,7 @@ public class PlannerSupervisorGraphRunner {
             WorkspaceContext workspaceContext,
             String userFeedback
     ) {
+        long startedAt = System.nanoTime();
         String resolvedTaskId = taskId == null || taskId.isBlank()
                 ? UUID.randomUUID().toString()
                 : taskId;
@@ -45,9 +46,16 @@ public class PlannerSupervisorGraphRunner {
         RunnableConfig config = RunnableConfig.builder()
                 .threadId(resolvedTaskId + ":planner-supervisor:" + UUID.randomUUID())
                 .build();
-        return plannerSupervisorGraph.invoke(input, config)
-                .map(this::extractSession)
-                .orElseThrow(() -> new IllegalStateException("Planner supervisor graph returned empty state"));
+        try {
+            PlanTaskSession session = plannerSupervisorGraph.invoke(input, config)
+                    .map(this::extractSession)
+                    .orElseThrow(() -> new IllegalStateException("Planner supervisor graph returned empty state"));
+            printTiming("planner.graph.seconds", resolvedTaskId, startedAt, null);
+            return session;
+        } catch (RuntimeException exception) {
+            printTiming("planner.graph.seconds", resolvedTaskId, startedAt, exception);
+            throw exception;
+        }
     }
 
     private PlanTaskSession extractSession(OverAllState state) {
@@ -56,5 +64,13 @@ public class PlannerSupervisorGraphRunner {
             return sessionService.get(value);
         }
         throw new IllegalStateException("Planner supervisor graph did not return a task id");
+    }
+
+    private void printTiming(String metric, String taskId, long startedAt, Throwable throwable) {
+        System.err.println(metric
+                + " taskId=" + (taskId == null ? "" : taskId)
+                + " status=" + (throwable == null ? "success" : "failed")
+                + " seconds=" + String.format(java.util.Locale.ROOT, "%.3f", (System.nanoTime() - startedAt) / 1_000_000_000.0d)
+                + (throwable == null ? "" : " error=" + (throwable.getMessage() == null ? "" : throwable.getMessage())));
     }
 }

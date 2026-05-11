@@ -303,13 +303,17 @@ public class PresentationWorkflowNodes {
         }
         String taskId = state.value(PresentationStateKeys.TASK_ID, "");
         PresentationAssetPlan assetPlan = requireValue(state, PresentationStateKeys.ASSET_PLAN, PresentationAssetPlan.class);
+        long imageResolveStartedAt = System.nanoTime();
         PresentationImageResources imageResources = resolveImageResources(assetPlan);
+        printPptStageTiming("ppt.asset_resolve.seconds", taskId, imageResolveStartedAt, null, null);
         log.info("presentation asset resources fetched: taskId={}, resourcePageCount={}",
                 taskId,
                 imageResources == null || imageResources.getResources() == null ? 0 : imageResources.getResources().size());
+        long assetDownloadStartedAt = System.nanoTime();
         List<PresentationAssetResources.SlideAssetResource> slides = toResolvedSlideResources(
                 assetPlan,
                 imageResources);
+        printPptStageTiming("ppt.asset_download.seconds", taskId, assetDownloadStartedAt, null, null);
         log.info("presentation asset resources resolved: taskId={}, resolvedSlides={}, downloadedImageCount={}, downloadedIllustrationCount={}",
                 taskId,
                 slides.size(),
@@ -365,7 +369,9 @@ public class PresentationWorkflowNodes {
         PresentationIR ir = requireValue(state, PresentationStateKeys.PRESENTATION_IR, PresentationIR.class);
         List<PresentationSlidePlan> slides = safeSlides(outline);
         List<PresentationSlideIR> irSlides = ir.getSlides() == null ? List.of() : ir.getSlides();
+        long slideXmlStartedAt = System.nanoTime();
         List<PresentationSlideXml> slideXmlList = parallelMapOrdered(
+                "generate-slide-xml",
                 slides,
                 concurrencySettings.slideXmlConcurrency(),
                 slide -> {
@@ -390,6 +396,7 @@ public class PresentationWorkflowNodes {
                             hasText(generated.getXml()) && generated.getXml().contains("<img "));
                     return generated;
                 });
+        printPptStageTiming("ppt.slide_xml.seconds", taskId, slideXmlStartedAt, null, null);
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.SLIDE_XML_LIST, slideXmlList,
                 PresentationStateKeys.DONE_XML, true
@@ -485,7 +492,9 @@ public class PresentationWorkflowNodes {
             result = larkSlidesTool.createPresentation(title, List.of());
             log.info("empty presentation created before media upload: taskId={}, presentationId={}, presentationUrl={}",
                     taskId, result.getPresentationId(), result.getPresentationUrl());
+            long assetUploadStartedAt = System.nanoTime();
             PresentationAssetResources uploadedResources = uploadResolvedAssets(result.getPresentationId(), resources);
+            printPptStageTiming("ppt.asset_upload.seconds", taskId, assetUploadStartedAt, result.getPresentationId(), null);
             PresentationIR finalIr = PresentationIR.builder()
                     .title(title)
                     .themeFamily(effectiveThemeFamily(options))
@@ -496,7 +505,9 @@ public class PresentationWorkflowNodes {
                             .map(slide -> buildSlideIr(slide, options, uploadedResources))
                             .toList())
                     .build();
+            long finalXmlStartedAt = System.nanoTime();
             List<String> xmlPages = compileFinalSlideXmlPages(finalIr, options);
+            printPptStageTiming("ppt.final_xml.seconds", taskId, finalXmlStartedAt, result.getPresentationId(), null);
             log.info("presentation xml compiled for create: taskId={}, slideCount={}, imgSlideCount={}",
                     taskId,
                     xmlPages.size(),
@@ -505,7 +516,9 @@ public class PresentationWorkflowNodes {
                 throw new IllegalStateException("No valid slide XML pages to create");
             }
             support.ensureExecutionCanContinue(taskId);
+            long slideWriteStartedAt = System.nanoTime();
             createSlidesSequentially(result.getPresentationId(), xmlPages);
+            printPptStageTiming("ppt.slide_write.seconds", taskId, slideWriteStartedAt, result.getPresentationId(), null);
             log.info("presentation slides written: taskId={}, presentationId={}, slideCount={}",
                     taskId, result.getPresentationId(), xmlPages.size());
             printSlidesApiTiming(taskId, result.getPresentationId(), slidesApiStartedAt, null);
@@ -541,6 +554,7 @@ public class PresentationWorkflowNodes {
             return List.of();
         }
         List<String> pages = parallelMapOrdered(
+                "compile-final-slide-xml",
                 finalIr.getSlides(),
                 concurrencySettings.slideXmlConcurrency(),
                 slide -> compileSlideXml(slide, finalIr.getSlides().size(), options));
@@ -577,6 +591,43 @@ public class PresentationWorkflowNodes {
                 + " status=" + (throwable == null ? "success" : "failed")
                 + " seconds=" + formatElapsedSeconds(startedAt)
                 + (throwable == null ? "" : " error=" + truncate(throwable.getMessage(), 160)));
+    }
+
+    private void printPptStageTiming(String metricName, String taskId, long startedAt, String presentationId, Throwable throwable) {
+        System.err.println(blankToDefault(metricName, "ppt.stage.seconds")
+                + " taskId=" + blankToDefault(taskId, "unknown")
+                + (hasText(presentationId) ? " presentationId=" + presentationId : "")
+                + " status=" + (throwable == null ? "success" : "failed")
+                + " seconds=" + formatElapsedSeconds(startedAt)
+                + (throwable == null ? "" : " error=" + truncate(throwable.getMessage(), 160)));
+    }
+
+    private String describeParallelInput(Object input) {
+        if (input == null) {
+            return "null";
+        }
+        if (input instanceof PresentationAssetPlan.SlideAssetPlan slidePlan) {
+            return "SlideAssetPlan(slideId=" + slidePlan.getSlideId() + ")";
+        }
+        if (input instanceof PresentationSlidePlan slidePlan) {
+            return "PresentationSlidePlan(slideId=" + slidePlan.getSlideId() + ", title=" + blankToDefault(slidePlan.getTitle(), "") + ")";
+        }
+        if (input instanceof PresentationSlideIR slideIr) {
+            return "PresentationSlideIR(slideId=" + slideIr.getSlideId() + ", title=" + blankToDefault(slideIr.getTitle(), "") + ")";
+        }
+        if (input instanceof PresentationImageResources.ResourceItem resourceItem) {
+            return "ResourceItem(sourceUrl=" + blankToDefault(resourceItem.getSourceUrl(), "") + ", purpose=" + blankToDefault(resourceItem.getPurpose(), "") + ")";
+        }
+        if (input instanceof PresentationAssetResources.SlideAssetResource slideAssetResource) {
+            return "SlideAssetResource(slideId=" + slideAssetResource.getSlideId() + ")";
+        }
+        if (input instanceof PresentationAssetResources.AssetResource assetResource) {
+            return "AssetResource(assetId=" + blankToDefault(assetResource.getAssetId(), "") + ", sourceUrl=" + blankToDefault(assetResource.getSourceUrl(), "") + ")";
+        }
+        if (input instanceof PresentationAssetPlan.AssetTask assetTask) {
+            return "AssetTask(query=" + blankToDefault(assetTask.getQuery(), "") + ")";
+        }
+        return String.valueOf(input);
     }
 
     private String formatElapsedSeconds(long startedAt) {
@@ -2250,6 +2301,7 @@ public class PresentationWorkflowNodes {
                 .filter(Objects::nonNull)
                 .toList();
         return parallelMapOrdered(
+                "resolve-real-assets-" + assetType,
                 validItems,
                 concurrencySettings.imageResolveConcurrency(),
                 item -> {
@@ -2294,6 +2346,10 @@ public class PresentationWorkflowNodes {
     }
 
     private <I, O> List<O> parallelMapOrdered(List<I> inputs, int concurrency, Function<I, O> mapper) {
+        return parallelMapOrdered("presentation-parallel", inputs, concurrency, mapper);
+    }
+
+    private <I, O> List<O> parallelMapOrdered(String stageName, List<I> inputs, int concurrency, Function<I, O> mapper) {
         if (inputs == null || inputs.isEmpty()) {
             return List.of();
         }
@@ -2302,9 +2358,18 @@ public class PresentationWorkflowNodes {
         for (int index = 0; index < inputs.size(); index++) {
             int currentIndex = index;
             I input = inputs.get(index);
-            futures.add(presentationIoExecutor.submit(() -> withPermit(semaphore, () -> new IndexedResult<>(currentIndex, mapper.apply(input)))));
+            futures.add(presentationIoExecutor.submit(() -> withPermit(semaphore, () -> {
+                try {
+                    return new IndexedResult<>(currentIndex, mapper.apply(input));
+                } catch (Exception exception) {
+                    String message = "Parallel stage failed: stage=%s, index=%d, input=%s"
+                            .formatted(blankToDefault(stageName, "unknown"), currentIndex, truncate(describeParallelInput(input), 200));
+                    System.err.println("ppt.parallel.error " + message + " error=" + truncate(exception.getMessage(), 200));
+                    throw new IllegalStateException(message, exception);
+                }
+            })));
         }
-        return awaitAll(futures).stream().map(IndexedResult::value).toList();
+        return awaitAll(stageName, futures).stream().map(IndexedResult::value).toList();
     }
 
     private <T> T withPermit(Semaphore semaphore, Callable<T> task) throws Exception {
@@ -2316,13 +2381,17 @@ public class PresentationWorkflowNodes {
         }
     }
 
-    private <T> List<IndexedResult<T>> awaitAll(List<Future<IndexedResult<T>>> futures) {
+    private <T> List<IndexedResult<T>> awaitAll(String stageName, List<Future<IndexedResult<T>>> futures) {
         List<IndexedResult<T>> results = new ArrayList<>();
-        for (Future<IndexedResult<T>> future : futures) {
+        for (int index = 0; index < futures.size(); index++) {
+            Future<IndexedResult<T>> future = futures.get(index);
             try {
                 results.add(future.get());
             } catch (Exception exception) {
-                throw new IllegalStateException("Parallel presentation task failed", exception);
+                String message = "Parallel presentation task failed: stage=%s, futureIndex=%d"
+                        .formatted(blankToDefault(stageName, "unknown"), index);
+                System.err.println("ppt.parallel.await.error " + message + " error=" + truncate(exception.getMessage(), 200));
+                throw new IllegalStateException(message, exception);
             }
         }
         results.sort(Comparator.comparingInt(IndexedResult::index));
@@ -2339,6 +2408,7 @@ public class PresentationWorkflowNodes {
                 .filter(Objects::nonNull)
                 .toList();
         List<PresentationAssetResources.SlideAssetResource> uploadedSlides = parallelMapOrdered(
+                "upload-resolved-assets",
                 slides,
                 concurrencySettings.imageUploadConcurrency(),
                 slide -> PresentationAssetResources.SlideAssetResource.builder()
@@ -2361,6 +2431,7 @@ public class PresentationWorkflowNodes {
                 .filter(Objects::nonNull)
                 .toList();
         return parallelMapOrdered(
+                "upload-asset-list",
                 validAssets,
                 concurrencySettings.imageUploadConcurrency(),
                 asset -> {
@@ -2498,6 +2569,7 @@ public class PresentationWorkflowNodes {
                 .filter(Objects::nonNull)
                 .toList();
         List<PresentationImageResources.PageImageResource> pages = parallelMapOrdered(
+                "resolve-image-resources",
                 slides,
                 concurrencySettings.imageResolveConcurrency(),
                 slide -> PresentationImageResources.PageImageResource.builder()
@@ -2547,6 +2619,7 @@ public class PresentationWorkflowNodes {
             return List.of();
         }
         return parallelMapOrdered(
+                "resolve-task-resources-" + assetType,
                 tasks.stream().filter(Objects::nonNull).filter(task -> hasText(task.getQuery())).toList(),
                 concurrencySettings.imageResolveConcurrency(),
                 task -> {
@@ -2570,6 +2643,7 @@ public class PresentationWorkflowNodes {
             return List.of();
         }
         return parallelMapOrdered(
+                "resolve-illustration-resources",
                 tasks.stream().filter(Objects::nonNull).filter(task -> hasText(task.getQuery())).toList(),
                 concurrencySettings.imageResolveConcurrency(),
                 task -> {
