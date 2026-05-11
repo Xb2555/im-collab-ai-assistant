@@ -13,6 +13,7 @@ import com.lark.imcollab.harness.presentation.config.PresentationConcurrencySett
 import com.lark.imcollab.harness.presentation.model.PresentationAssetPlan;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetResources;
 import com.lark.imcollab.harness.presentation.model.PresentationImageResources;
+import com.lark.imcollab.harness.presentation.model.PresentationImagePlan;
 import com.lark.imcollab.harness.presentation.model.PresentationOutline;
 import com.lark.imcollab.harness.presentation.model.PresentationSlideXml;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionSupport;
@@ -246,7 +247,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void fallbackOutlineKeepsTransitionPageWhenPageBudgetIsTight() throws Exception {
+    void fallbackOutlineDoesNotForceTransitionPageWhenPageBudgetIsTight() throws Exception {
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
                 mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
@@ -262,7 +263,7 @@ class PresentationWorkflowNodesTemplateTest {
                         .keyMessages(List.of("背景", "方案", "风险", "下一步"))
                         .build());
 
-        assertThat(outline.getSlides().stream().anyMatch(slide -> "TRANSITION".equals(slide.getPageType()))).isTrue();
+        assertThat(outline.getSlides().stream().anyMatch(slide -> "TRANSITION".equals(slide.getPageType()))).isFalse();
     }
 
     @Test
@@ -285,10 +286,22 @@ class PresentationWorkflowNodesTemplateTest {
         assertThat(outline.getSlides()).hasSize(6);
         assertThat(outline.getSlides().get(0).getTemplateVariant()).isEqualTo("hero-band");
         assertThat(outline.getSlides().get(1).getPageType()).isEqualTo("TOC");
-        assertThat(outline.getSlides().get(2).getPageType()).isEqualTo("TRANSITION");
-        assertThat(outline.getSlides().get(3).getPageType()).isEqualTo("CONTENT");
+        assertThat(outline.getSlides().get(2).getPageType()).isEqualTo("CONTENT");
+        assertThat(outline.getSlides().get(3).getPageType()).isEqualTo("TIMELINE");
         assertThat(outline.getSlides().get(5).getPageType()).isEqualTo("THANKS");
         assertThat(outline.getSlides().get(5).getTemplateVariant()).isEqualTo("next-step-board");
+    }
+
+    @Test
+    void tocNormalizationAllowsUpToSixAgendaPoints() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod("normalizeTocPoints", List.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<String> points = (List<String>) method.invoke(nodes,
+                List.of("1. 景点", "2. 美食", "3. 行程", "4. 文化", "5. 历史", "6. 住宿", "7. 预算"));
+
+        assertThat(points).containsExactly("景点", "美食", "行程", "文化", "历史", "住宿");
     }
 
     @Test
@@ -942,6 +955,37 @@ class PresentationWorkflowNodesTemplateTest {
             assertThat(timelineWithImage).isEqualTo(2);
             assertThat(timelineWithoutImage).isEqualTo(1);
             assertThat(tocSlots).isEqualTo(1);
+        }
+
+        @Test
+        void selectTimelineImageTasksBuildsThreeDistinctNodeTasks() throws Exception {
+            Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                    "selectTimelineImageTasks",
+                    PresentationImagePlan.PageImagePlan.class,
+                    PresentationSlidePlan.class);
+            method.setAccessible(true);
+
+            @SuppressWarnings("unchecked")
+            List<PresentationAssetPlan.TimelineImageTask> tasks =
+                    (List<PresentationAssetPlan.TimelineImageTask>) method.invoke(nodes, PresentationImagePlan.PageImagePlan.builder()
+                            .contentImageTasks(List.of(PresentationAssetPlan.AssetTask.builder()
+                                    .query("杭州 行程")
+                                    .purpose("时间轴节点配图")
+                                    .build()))
+                            .build(), PresentationSlidePlan.builder()
+                            .slideId("slide-6")
+                            .title("杭州三日行程")
+                            .pageType("TIMELINE")
+                            .layout("timeline")
+                            .templateVariant("horizontal-milestones")
+                            .keyPoints(List.of("西湖漫步", "灵隐探访", "河坊街收尾"))
+                            .build());
+
+            assertThat(tasks).hasSize(3);
+            assertThat(tasks).extracting(PresentationAssetPlan.TimelineImageTask::getNodeText)
+                    .containsExactly("西湖漫步", "灵隐探访", "河坊街收尾");
+            assertThat(tasks).extracting(task -> task.getAssetTask().getQuery())
+                    .allMatch(query -> query.contains("杭州 行程"));
         }
 
         @Test

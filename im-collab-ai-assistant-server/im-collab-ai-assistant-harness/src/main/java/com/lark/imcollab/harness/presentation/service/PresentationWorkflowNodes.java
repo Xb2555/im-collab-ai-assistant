@@ -991,7 +991,7 @@ public class PresentationWorkflowNodes {
                 .slideId("slide-2")
                 .index(2)
                 .title("目录")
-                .keyPoints(keyMessages.stream().limit(Math.min(4, keyMessages.size())).toList())
+                .keyPoints(keyMessages.stream().limit(Math.min(6, keyMessages.size())).toList())
                 .layout("section")
                 .pageType("TOC")
                 .pageSubType("TOC.AGENDA")
@@ -1000,31 +1000,11 @@ public class PresentationWorkflowNodes {
                 .speakerNotes("说明本次汇报的章节结构。")
                 .build());
         int remainingSlides = Math.max(1, requested - slides.size() - 1);
-        int transitionBudget = Math.max(0, remainingSlides / 3);
         int contentBudget = remainingSlides;
         for (int i = 0; i < keyMessages.size() && contentBudget > 0; i++) {
             int sectionOrder = i + 1;
             String sectionId = "section-" + sectionOrder;
             String sectionTitle = compactSlidePoint(keyMessages.get(Math.min(i, keyMessages.size() - 1)), 14);
-            if (transitionBudget > 0 && contentBudget >= 2) {
-                slides.add(PresentationSlidePlan.builder()
-                        .slideId("slide-" + (slides.size() + 1))
-                        .index(slides.size() + 1)
-                        .title(sectionTitle)
-                        .keyPoints(List.of(""))
-                        .layout("section")
-                        .pageType("TRANSITION")
-                        .pageSubType("TRANSITION.SECTION_BREAK")
-                        .sectionId(sectionId)
-                        .sectionTitle(sectionTitle)
-                        .sectionOrder(sectionOrder)
-                        .templateVariant("rail-notes")
-                        .visualEmphasis("title")
-                        .speakerNotes("做章节过渡。")
-                        .build());
-                transitionBudget--;
-                contentBudget--;
-            }
             slides.add(PresentationSlidePlan.builder()
                     .slideId("slide-" + (slides.size() + 1))
                     .index(slides.size() + 1)
@@ -1081,8 +1061,7 @@ public class PresentationWorkflowNodes {
         }
         boolean hasToc = slides.stream().anyMatch(slide -> "TOC".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
         boolean hasThanks = slides.stream().anyMatch(slide -> "THANKS".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
-        boolean hasTransition = slides.stream().anyMatch(slide -> "TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
-        return !hasToc || !hasThanks || !hasTransition;
+        return !hasToc || !hasThanks;
     }
 
     private PresentationSlidePlan defaultSlide(int index, int total, List<String> keyMessages, PresentationGenerationOptions options) {
@@ -1714,7 +1693,7 @@ public class PresentationWorkflowNodes {
                 .map(this::summarizeAgendaPoint)
                 .filter(this::hasText)
                 .distinct()
-                .limit(5)
+                .limit(6)
                 .toList();
     }
 
@@ -1762,16 +1741,6 @@ public class PresentationWorkflowNodes {
                         .visualEmphasis("balance")
                         .speakerNotes("围绕章节重点展开。")
                         .build());
-            }
-        }
-        if (repaired.stream().noneMatch(slide -> "TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")))) {
-            List<PresentationSlidePlan> fallback = buildStructuredFallbackSlides(storyline, normalizeKeyPoints(storyline.getKeyMessages(), List.of(storyline.getGoal())));
-            PresentationSlidePlan transition = fallback.stream()
-                    .filter(slide -> "TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")))
-                    .findFirst()
-                    .orElse(null);
-            if (transition != null && repaired.size() < targetCount) {
-                repaired.add(Math.min(2, repaired.size()), transition);
             }
         }
         if (repaired.size() > targetCount && targetCount > 0) {
@@ -2473,13 +2442,24 @@ public class PresentationWorkflowNodes {
         if (tasks.isEmpty()) {
             return List.of();
         }
-        PresentationAssetPlan.AssetTask task = tasks.get(0);
-        return List.of(PresentationAssetPlan.TimelineImageTask.builder()
-                .nodeId(slide.getSlideId() + "-timeline-image")
-                .nodeIndex(0)
-                .nodeText(blankToDefault(slide.getTitle(), "时间轴配图"))
-                .assetTask(task)
-                .build());
+        List<String> nodeTexts = normalizeTimelineNodeTexts(slide);
+        List<PresentationAssetPlan.TimelineImageTask> results = new ArrayList<>();
+        for (int i = 0; i < Math.min(3, nodeTexts.size()); i++) {
+            PresentationAssetPlan.AssetTask baseTask = tasks.get(Math.min(i, tasks.size() - 1));
+            String nodeText = nodeTexts.get(i);
+            results.add(PresentationAssetPlan.TimelineImageTask.builder()
+                    .nodeId(slide.getSlideId() + "-timeline-node-" + (i + 1))
+                    .nodeIndex(i)
+                    .nodeText(nodeText)
+                    .assetTask(PresentationAssetPlan.AssetTask.builder()
+                            .query(firstNonBlank(baseTask.getQuery(), blankToDefault(slide.getTitle(), "时间轴")) + " " + nodeText)
+                            .purpose(firstNonBlank(baseTask.getPurpose(), "时间轴节点配图") + " " + nodeText)
+                            .preferredSourceType(baseTask.getPreferredSourceType())
+                            .preferredDomains(baseTask.getPreferredDomains())
+                            .build())
+                    .build());
+        }
+        return results;
     }
 
     private int allowedAssetTaskCount(PresentationSlidePlan slide, String assetKind) {
@@ -3155,8 +3135,9 @@ public class PresentationWorkflowNodes {
                 .filter(slide -> coverGroup ? isCoverGroupPage(slide) : usesSharedBackground(slide))
                 .findFirst()
                 .orElse(slides.get(0));
+        String deckTopic = resolveDeckTopic(slides);
         PresentationAssetPlan.AssetTask task = PresentationAssetPlan.AssetTask.builder()
-                .query(blankToDefault(anchor.getTitle(), "旅游演示稿"))
+                .query(deckTopic)
                 .purpose(coverGroup ? "封面目录感谢共享图" : "统一正文背景图")
                 .preferredSourceType(coverGroup ? "DECK_SHARED_COVER_GROUP" : "DECK_SHARED_BACKGROUND")
                 .preferredDomains(List.of())
@@ -3394,6 +3375,34 @@ public class PresentationWorkflowNodes {
         String searchSubject = stableSearchSubject(slide, task, assetType);
         String queryKey = normalizeSearchQuery(joinQueryTerms(topic, slideRole, searchCategory, searchSubject));
         return new SearchQuerySpec(queryKey, searchCategory, searchSubject, queryKey);
+    }
+
+    private List<String> normalizeTimelineNodeTexts(PresentationSlidePlan slide) {
+        List<String> points = slide == null || slide.getKeyPoints() == null ? List.of() : slide.getKeyPoints().stream()
+                .filter(this::hasText)
+                .map(this::stripAgendaNumberPrefix)
+                .map(this::summarizeAgendaPoint)
+                .filter(this::hasText)
+                .limit(3)
+                .toList();
+        if (!points.isEmpty()) {
+            return points;
+        }
+        return List.of("阶段一", "阶段二", "阶段三");
+    }
+
+    private String resolveDeckTopic(List<PresentationAssetPlan.SlideAssetPlan> slides) {
+        if (slides == null || slides.isEmpty()) {
+            return "travel presentation";
+        }
+        return slides.stream()
+                .filter(Objects::nonNull)
+                .map(PresentationAssetPlan.SlideAssetPlan::getTitle)
+                .filter(this::hasText)
+                .map(this::stableTopicToken)
+                .filter(this::hasText)
+                .findFirst()
+                .orElse("travel presentation");
     }
 
     private String stableTopicToken(String rawQuery) {
