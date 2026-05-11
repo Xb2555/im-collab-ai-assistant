@@ -17,6 +17,8 @@ import com.lark.imcollab.planner.service.PlannerConversationService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskSessionResolution;
 import com.lark.imcollab.planner.service.TaskSessionResolver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -27,6 +29,7 @@ import java.util.regex.Pattern;
 @Service
 public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
 
+    private static final Logger log = LoggerFactory.getLogger(DefaultPlannerPlanFacade.class);
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
 
@@ -182,14 +185,68 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (recommendations == null || recommendations.isEmpty()) {
             return "";
         }
-        if (!shouldPreviewPendingFollowUpImmediateReply(routingResult, awaitingSelection, effectiveInput, recommendations)) {
+        PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint =
+                pendingFollowUpRecommendationMatcher == null
+                        ? PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED
+                        : pendingFollowUpRecommendationMatcher.classifyCarryForwardCandidate(effectiveInput, recommendations);
+        if (carryForwardHint == null) {
+            carryForwardHint = PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED;
+        }
+        log.info(
+                "pending_followup_preview_hint taskId={} userInput='{}' routingType={} carryForwardHint={} recommendationCount={} upstreamSuggestsStandaloneTask={}",
+                session == null ? null : session.getTaskId(),
+                effectiveInput,
+                routingResult == null ? null : routingResult.type(),
+                carryForwardHint,
+                recommendations.size(),
+                routingResult != null && routingResult.type() == TaskCommandTypeEnum.START_TASK
+        );
+        if (!shouldPreviewPendingFollowUpImmediateReply(
+                routingResult,
+                awaitingSelection,
+                effectiveInput,
+                recommendations,
+                carryForwardHint
+        )) {
+            if (routingResult != null
+                    && routingResult.type() == TaskCommandTypeEnum.START_TASK
+                    && carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.EXPLICIT_NEW_TASK) {
+                log.info(
+                        "pending_followup_explicit_new_task_bypass taskId={} userInput='{}' routingType={} recommendationCount={}",
+                        session == null ? null : session.getTaskId(),
+                        effectiveInput,
+                        routingResult.type(),
+                        recommendations.size()
+                );
+            }
             return "";
+        }
+        if (routingResult != null
+                && routingResult.type() == TaskCommandTypeEnum.START_TASK
+                && carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM) {
+            log.info(
+                    "pending_followup_llm_attempt taskId={} userInput='{}' routingType={} recommendationCount={} upstreamSuggestsStandaloneTask=true",
+                    session == null ? null : session.getTaskId(),
+                    effectiveInput,
+                    routingResult.type(),
+                    recommendations.size()
+            );
         }
         PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
                 effectiveInput,
                 recommendations,
                 awaitingSelection,
                 routingResult.type() == TaskCommandTypeEnum.START_TASK
+        );
+        log.info(
+                "pending_followup_preview_hint taskId={} userInput='{}' routingType={} carryForwardHint={} recommendationCount={} upstreamSuggestsStandaloneTask={} selectedRecommendationId={}",
+                session == null ? null : session.getTaskId(),
+                effectiveInput,
+                routingResult == null ? null : routingResult.type(),
+                carryForwardHint,
+                recommendations.size(),
+                routingResult != null && routingResult.type() == TaskCommandTypeEnum.START_TASK,
+                match == null || match.recommendation() == null ? null : match.recommendation().getRecommendationId()
         );
         if (match == null) {
             return "";
@@ -207,7 +264,8 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             IntentRoutingResult routingResult,
             boolean awaitingSelection,
             String userInput,
-            List<PendingFollowUpRecommendation> recommendations
+            List<PendingFollowUpRecommendation> recommendations,
+            PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint
     ) {
         if (routingResult == null || routingResult.type() == null) {
             return awaitingSelection;
@@ -217,8 +275,8 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
                     && routingResult.type() != TaskCommandTypeEnum.CANCEL_TASK;
         }
         if (routingResult.type() == TaskCommandTypeEnum.START_TASK) {
-            return pendingFollowUpRecommendationMatcher != null
-                    && pendingFollowUpRecommendationMatcher.isExplicitCarryForwardCandidate(userInput, recommendations);
+            return carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.EXACT_OR_PREFIX_MATCH
+                    || carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM;
         }
         return routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
                 || routingResult.type() == TaskCommandTypeEnum.CONFIRM_ACTION;

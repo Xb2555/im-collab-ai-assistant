@@ -742,7 +742,10 @@ class PlannerConversationCancelTests {
                         .pendingFollowUpRecommendations(List.of(recommendation))
                         .build()
         ));
-        when(matcher.isExplicitCarryForwardCandidate(input, List.of(recommendation))).thenReturn(false);
+        when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        when(matcher.match(input, List.of(recommendation), false, true))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.none());
         when(sessionService.getOrCreate(org.mockito.ArgumentMatchers.argThat(taskId -> !"old-task".equals(taskId))))
                 .thenAnswer(invocation -> PlanTaskSession.builder()
                         .taskId(invocation.getArgument(0))
@@ -762,8 +765,8 @@ class PlannerConversationCancelTests {
 
         assertThat(result.getTaskId()).isNotEqualTo("old-task");
         assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
-        verify(matcher).isExplicitCarryForwardCandidate(input, List.of(recommendation));
-        verify(matcher, never()).match(anyString(), any(), anyBoolean(), anyBoolean());
+        verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
+        verify(matcher).match(input, List.of(recommendation), false, true);
         verify(graphRunner).run(any(PlannerSupervisorDecision.class),
                 eq(result.getTaskId()),
                 eq(input),
@@ -837,7 +840,8 @@ class PlannerConversationCancelTests {
                         null
                 ));
         when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(conversationState));
-        when(matcher.isExplicitCarryForwardCandidate(input, List.of(recommendation))).thenReturn(true);
+        when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.EXACT_OR_PREFIX_MATCH);
         when(matcher.match(input, List.of(recommendation), false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
         when(graphRunner.run(
@@ -854,11 +858,303 @@ class PlannerConversationCancelTests {
         assertThat(result.getTaskId()).isEqualTo("task-1");
         assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         assertThat(result.getIntakeState().getRoutingReason()).isEqualTo("resume pending follow-up recommendation");
-        verify(matcher).isExplicitCarryForwardCandidate(input, List.of(recommendation));
+        verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
         verify(graphRunner).run(
                 any(PlannerSupervisorDecision.class),
                 eq("task-1"),
                 eq("保留现有产物，新增一段可直接发送的任务摘要。"),
+                eq(workspaceContext),
+                eq(input));
+        verify(conversationTaskStateService).clearPendingFollowUpRecommendations("LARK_PRIVATE_CHAT:chat-1:chat-root");
+        verify(taskBridgeService).ensureTask(replanned);
+    }
+
+    @Test
+    void startTaskClassificationCanStillResumeSemanticPendingFollowUpRecommendation() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                null,
+                null,
+                null,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_PRIVATE_CHAT")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation recommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_PPT")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .sourceArtifactType(ArtifactTypeEnum.DOC)
+                .targetDeliverable(ArtifactTypeEnum.PPT)
+                .plannerInstruction("保留现有文档，基于该文档新增一份汇报PPT初稿。")
+                .suggestedUserInstruction("基于这份文档生成一版汇报PPT")
+                .priority(1)
+                .build();
+        ConversationTaskState conversationState = ConversationTaskState.builder()
+                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                .activeTaskId("task-1")
+                .lastCompletedTaskId("task-1")
+                .pendingFollowUpRecommendations(List.of(recommendation))
+                .build();
+        PlanTaskSession replanned = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .build())
+                .build();
+        String input = "帮我再根据当前文档生成汇报ppt，要求4页，每页60字";
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(intakeService.decide(completed, input, null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.NEW_TASK,
+                        input,
+                        "llm classified standalone task",
+                        null
+                ));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(conversationState));
+        when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        when(matcher.match(input, List.of(recommendation), false, true))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
+        when(graphRunner.run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                org.mockito.ArgumentMatchers.contains("保留现有文档"),
+                eq(workspaceContext),
+                eq(input)))
+                .thenReturn(replanned);
+
+        PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
+
+        assertThat(result).isSameAs(replanned);
+        assertThat(result.getTaskId()).isEqualTo("task-1");
+        verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
+        verify(matcher).match(input, List.of(recommendation), false, true);
+        verify(graphRunner).run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                eq("保留现有文档，基于该文档新增一份汇报PPT初稿。\n用户补充：帮我再根据当前文档生成汇报ppt，要求4页，每页60字"),
+                eq(workspaceContext),
+                eq(input));
+        verify(conversationTaskStateService).clearPendingFollowUpRecommendations("LARK_PRIVATE_CHAT:chat-1:chat-root");
+        verify(taskBridgeService).ensureTask(replanned);
+    }
+
+    @Test
+    void startTaskClassificationCanStillResumeSemanticPendingFollowUpRecommendationWhenMultipleRecommendationsExist() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                null,
+                null,
+                null,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_PRIVATE_CHAT")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation pptRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_PPT")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .sourceArtifactType(ArtifactTypeEnum.DOC)
+                .targetDeliverable(ArtifactTypeEnum.PPT)
+                .plannerInstruction("保留现有文档，基于该文档新增一份汇报PPT初稿。")
+                .suggestedUserInstruction("基于这份文档生成一版汇报PPT")
+                .priority(1)
+                .build();
+        PendingFollowUpRecommendation summaryRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_SHAREABLE_SUMMARY")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.SUMMARY)
+                .plannerInstruction("保留现有产物，新增一段可直接发送的任务摘要。")
+                .suggestedUserInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .priority(2)
+                .build();
+        List<PendingFollowUpRecommendation> recommendations = List.of(pptRecommendation, summaryRecommendation);
+        ConversationTaskState conversationState = ConversationTaskState.builder()
+                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                .activeTaskId("task-1")
+                .lastCompletedTaskId("task-1")
+                .pendingFollowUpRecommendations(recommendations)
+                .build();
+        PlanTaskSession replanned = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .build())
+                .build();
+        String input = "帮我根据这个文档生成一个ppt，要求能够概括文档重点，汇报给老板的";
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(intakeService.decide(completed, input, null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.NEW_TASK,
+                        input,
+                        "llm classified standalone task",
+                        null
+                ));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(conversationState));
+        when(matcher.classifyCarryForwardCandidate(input, recommendations))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        when(matcher.match(input, recommendations, false, true))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(pptRecommendation));
+        when(graphRunner.run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                org.mockito.ArgumentMatchers.contains("保留现有文档"),
+                eq(workspaceContext),
+                eq(input)))
+                .thenReturn(replanned);
+
+        PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
+
+        assertThat(result).isSameAs(replanned);
+        verify(matcher).classifyCarryForwardCandidate(input, recommendations);
+        verify(matcher).match(input, recommendations, false, true);
+        verify(graphRunner).run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                eq("保留现有文档，基于该文档新增一份汇报PPT初稿。\n用户补充：帮我根据这个文档生成一个ppt，要求能够概括文档重点，汇报给老板的"),
+                eq(workspaceContext),
+                eq(input));
+        verify(conversationTaskStateService).clearPendingFollowUpRecommendations("LARK_PRIVATE_CHAT:chat-1:chat-root");
+        verify(taskBridgeService).ensureTask(replanned);
+    }
+
+    @Test
+    void startTaskClassificationCanStillResumeImplicitCurrentTaskSummaryRecommendation() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                null,
+                null,
+                null,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_PRIVATE_CHAT")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation recommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_SHAREABLE_SUMMARY")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.SUMMARY)
+                .plannerInstruction("保留现有产物，新增一段可直接发送的任务摘要。")
+                .suggestedUserInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .priority(1)
+                .build();
+        ConversationTaskState conversationState = ConversationTaskState.builder()
+                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                .activeTaskId("task-1")
+                .lastCompletedTaskId("task-1")
+                .pendingFollowUpRecommendations(List.of(recommendation))
+                .build();
+        PlanTaskSession replanned = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .build())
+                .build();
+        String input = "帮我生成一下摘要，要能直接发在群里的";
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(intakeService.decide(completed, input, null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.NEW_TASK,
+                        input,
+                        "llm classified standalone task",
+                        null
+                ));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(conversationState));
+        when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        when(matcher.match(input, List.of(recommendation), false, true))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
+        when(graphRunner.run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                org.mockito.ArgumentMatchers.contains("保留现有产物"),
+                eq(workspaceContext),
+                eq(input)))
+                .thenReturn(replanned);
+
+        PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
+
+        assertThat(result).isSameAs(replanned);
+        verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
+        verify(matcher).match(input, List.of(recommendation), false, true);
+        verify(graphRunner).run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                eq("保留现有产物，新增一段可直接发送的任务摘要。\n用户补充：帮我生成一下摘要，要能直接发在群里的"),
                 eq(workspaceContext),
                 eq(input));
         verify(conversationTaskStateService).clearPendingFollowUpRecommendations("LARK_PRIVATE_CHAT:chat-1:chat-root");

@@ -1607,19 +1607,68 @@ public class PlannerConversationService {
         }
         ConversationTaskState state = stateOptional.get();
         List<PendingFollowUpRecommendation> recommendations = defaultList(state.getPendingFollowUpRecommendations());
+        PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint =
+                pendingFollowUpRecommendationMatcher == null
+                        ? PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED
+                        : pendingFollowUpRecommendationMatcher.classifyCarryForwardCandidate(userInput, recommendations);
+        if (carryForwardHint == null) {
+            carryForwardHint = PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED;
+        }
+        log.info(
+                "pending_followup_execution_hint taskId={} userInput='{}' routingType={} carryForwardHint={} recommendationCount={} upstreamSuggestsStandaloneTask={}",
+                currentSession == null ? null : currentSession.getTaskId(),
+                userInput,
+                intakeDecision == null ? null : intakeDecision.intakeType(),
+                carryForwardHint,
+                recommendations.size(),
+                intakeDecision != null && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
+        );
         if (!shouldAttemptPendingFollowUpRecommendation(
                 intakeDecision,
                 state.isPendingFollowUpAwaitingSelection(),
                 userInput,
-                recommendations
+                recommendations,
+                carryForwardHint
         )) {
+            if (intakeDecision != null
+                    && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
+                    && carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.EXPLICIT_NEW_TASK) {
+                log.info(
+                        "pending_followup_explicit_new_task_bypass taskId={} userInput='{}' routingType={} recommendationCount={}",
+                        currentSession == null ? null : currentSession.getTaskId(),
+                        userInput,
+                        intakeDecision.intakeType(),
+                        recommendations.size()
+                );
+            }
             return null;
+        }
+        if (intakeDecision != null
+                && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
+                && carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM) {
+            log.info(
+                    "pending_followup_llm_attempt taskId={} userInput='{}' routingType={} recommendationCount={} upstreamSuggestsStandaloneTask=true",
+                    currentSession == null ? null : currentSession.getTaskId(),
+                    userInput,
+                    intakeDecision.intakeType(),
+                    recommendations.size()
+            );
         }
         PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
                 userInput,
                 recommendations,
                 state.isPendingFollowUpAwaitingSelection(),
                 intakeDecision != null && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
+        );
+        log.info(
+                "pending_followup_execution_hint taskId={} userInput='{}' routingType={} carryForwardHint={} recommendationCount={} upstreamSuggestsStandaloneTask={} selectedRecommendationId={}",
+                currentSession == null ? null : currentSession.getTaskId(),
+                userInput,
+                intakeDecision == null ? null : intakeDecision.intakeType(),
+                carryForwardHint,
+                recommendations.size(),
+                intakeDecision != null && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK,
+                match == null || match.recommendation() == null ? null : match.recommendation().getRecommendationId()
         );
         if (match == null) {
             return null;
@@ -1671,7 +1720,8 @@ public class PlannerConversationService {
             TaskIntakeDecision intakeDecision,
             boolean awaitingSelection,
             String userInput,
-            List<PendingFollowUpRecommendation> recommendations
+            List<PendingFollowUpRecommendation> recommendations,
+            PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint
     ) {
         if (intakeDecision == null) {
             return awaitingSelection;
@@ -1684,8 +1734,8 @@ public class PlannerConversationService {
                     && intakeDecision.intakeType() != TaskIntakeTypeEnum.STATUS_QUERY;
         }
         if (intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK) {
-            return pendingFollowUpRecommendationMatcher != null
-                    && pendingFollowUpRecommendationMatcher.isExplicitCarryForwardCandidate(userInput, recommendations);
+            return carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.EXACT_OR_PREFIX_MATCH
+                    || carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM;
         }
         return intakeDecision.intakeType() == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
                 || intakeDecision.intakeType() == TaskIntakeTypeEnum.CONFIRM_ACTION;
