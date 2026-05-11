@@ -436,6 +436,102 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void compileSlideXmlUsesBackgroundImageForCoverPage() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-1")
+                .pageIndex(1)
+                .slideRole("cover")
+                .pageType("COVER")
+                .pageSubType("COVER.HERO")
+                .title("封面")
+                .visualIntent("title")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-1-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("hero-band").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-1-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("副标题；汇报人：张三；汇报时间：2026年05月10日")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-1-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnCoverBackground").altText("封面背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnCoverBackground\"");
+    }
+
+    @Test
+    void compileSlideXmlAllowsBackgroundImageForTocPage() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-2")
+                .pageIndex(2)
+                .slideRole("section")
+                .pageType("TOC")
+                .pageSubType("TOC.AGENDA")
+                .title("目录")
+                .visualIntent("balance")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-2-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("headline-panel").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-2-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("章节一；章节二；章节三")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-2-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnTocBackground").altText("目录背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnTocBackground\"");
+    }
+
+    @Test
     void timelineWithoutImageDoesNotRenderWhitePlaceholderRectangles() {
         String xml = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
                         .index(3)
@@ -727,7 +823,7 @@ class PresentationWorkflowNodesTemplateTest {
 
             assertThat(timelineWithImage).isEqualTo(1);
             assertThat(timelineWithoutImage).isEqualTo(0);
-            assertThat(tocSlots).isEqualTo(0);
+            assertThat(tocSlots).isEqualTo(1);
         }
 
         @Test

@@ -2528,11 +2528,14 @@ public class PresentationWorkflowNodes {
             return 0;
         }
         String pageType = blankToDefault(slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
-        if ("TOC".equals(pageType) || "CHART".equals(pageType)) {
+        if ("CHART".equals(pageType)) {
             return 0;
         }
         if ("THANKS".equals(pageType)) {
             return 0;
+        }
+        if ("TOC".equals(pageType)) {
+            return Math.max(1, Math.min(1, policy.backgroundSlots()));
         }
         if ("COVER".equals(pageType)) {
             return Math.max(1, assetSettings.coverMaxImageTasks());
@@ -2561,10 +2564,13 @@ public class PresentationWorkflowNodes {
         String pageType = blankToDefault(slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
         String layout = blankToDefault(slide.getLayout(), "").toLowerCase(java.util.Locale.ROOT);
         String templateVariant = blankToDefault(slide.getTemplateVariant(), "").toLowerCase(java.util.Locale.ROOT);
-        if ("TOC".equals(pageType) || "CHART".equals(pageType) || "BACKGROUND".equals(pageType)) {
+        if ("CHART".equals(pageType) || "BACKGROUND".equals(pageType)) {
             return TemplateImagePolicy.none();
         }
         if ("COVER".equals(pageType) || "cover".equals(layout)) {
+            return TemplateImagePolicy.background();
+        }
+        if ("TOC".equals(pageType)) {
             return TemplateImagePolicy.background();
         }
         if ("THANKS".equals(pageType)) {
@@ -4043,6 +4049,13 @@ public class PresentationWorkflowNodes {
         if ("THANKS".equalsIgnoreCase(blankToDefault(slide.getPageType(), ""))) {
             return resolveFirstImage("slide-1", resources).filter(this::isRenderableAsset);
         }
+        if ("TOC".equalsIgnoreCase(blankToDefault(slide.getPageType(), ""))) {
+            java.util.Optional<PresentationAssetResources.AssetResource> coverImage = resolveFirstImage("slide-1", resources)
+                    .filter(this::isRenderableAsset);
+            if (coverImage.isPresent()) {
+                return coverImage;
+            }
+        }
         if ("TIMELINE".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")) && timelineTemplateUsesImage(slide)) {
             java.util.Optional<PresentationAssetResources.AssetResource> sectionFallback = resolveSectionNeighborImage(slide, resources);
             if (sectionFallback.isPresent()) {
@@ -4284,7 +4297,9 @@ public class PresentationWorkflowNodes {
         if (image != null && image.getAssetRef() != null) {
             String src = resolveRenderableImageSrc(image);
             if (hasText(src)) {
-                if ("cover".equals(layout) || "TRANSITION".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
+                if ("cover".equals(layout)
+                        || "TRANSITION".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))
+                        || "TOC".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
                     backgroundImage = """
                             <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
                             """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "背景图")));
@@ -4406,9 +4421,11 @@ public class PresentationWorkflowNodes {
                 .filter(element -> !"timeline-node-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
                 .filter(element -> hasText(resolveRenderableImageSrc(element)))
                 .count();
+        boolean backgroundSatisfied = backgroundCount >= policy.backgroundSlots()
+                || (policy.backgroundSlots() > 0 && contentCount > 0);
         boolean timelineSatisfied = timelineNodeCount >= policy.timelineNodeSlots()
                 || (policy.timelineNodeSlots() > 0 && contentCount > 0);
-        return backgroundCount >= policy.backgroundSlots()
+        return backgroundSatisfied
                 && contentCount >= policy.contentSlots()
                 && timelineSatisfied;
     }
