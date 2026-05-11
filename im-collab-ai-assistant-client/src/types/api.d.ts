@@ -162,6 +162,8 @@ export interface TaskRuntimeVO {
   artifacts: RuntimeArtifactVO[];
   events: RuntimeEventVO[];
   actions: TaskActionVO;
+  // ✨ 在这里追加新增字段：
+  evaluation?: TaskEvaluationVO;
 }
 
 /**
@@ -232,4 +234,22 @@ export interface DocumentIterationApprovalRequest {
 export interface ResumeRequest {
   feedback?: string;
   replanFromRoot?: boolean;
+}
+
+/**
+ * ✨ 新增：下一步推荐相关契约
+ */
+export interface NextStepRecommendationVO {
+  recommendationId: string;
+  title: string;
+  reason: string;
+  actionLabel: string;
+  executable: boolean;
+  targetDeliverable: string;
+  priority: number;
+}
+
+export interface TaskEvaluationVO {
+  verdict: string;
+  nextStepRecommendations: NextStepRecommendationVO[];
 }

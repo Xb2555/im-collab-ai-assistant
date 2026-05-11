@@ -20,6 +20,7 @@ import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskResultEvaluationService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.planner.service.ConversationTaskStateService;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -155,11 +156,23 @@ public class PlannerExecutionReviewService {
             syncCompletedPlanCards(session, snapshot);
         }
         session.setPlanningPhase(nextPhase);
-        session.setTransitionReason(overrideReason != null && !overrideReason.isBlank()
+        String transitionReason = overrideReason != null && !overrideReason.isBlank()
                 ? overrideReason
                 : "Planner reviewed harness execution result: "
-                + (evaluation == null ? "UNKNOWN" : evaluation.getVerdict()));
-        sessionService.save(session);
+                + (evaluation == null ? "UNKNOWN" : evaluation.getVerdict());
+        session.setTransitionReason(transitionReason);
+        try {
+            sessionService.save(session);
+        } catch (VersionConflictException conflict) {
+            log.warn("Execution review session save conflicted, retrying with latest session: taskId={}", session.getTaskId(), conflict);
+            PlanTaskSession latest = sessionService.get(session.getTaskId());
+            if (nextPhase == PlanningPhaseEnum.COMPLETED) {
+                syncCompletedPlanCards(latest, snapshot);
+            }
+            latest.setPlanningPhase(nextPhase);
+            latest.setTransitionReason(transitionReason);
+            sessionService.saveWithoutVersionChange(latest);
+        }
         taskRuntimeService.syncTaskState(session.getTaskId(), nextPhase);
         sessionService.publishEvent(session.getTaskId(), nextPhase.name());
     }

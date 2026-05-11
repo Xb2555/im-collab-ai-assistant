@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.service.TaskCancellationRegistry;
 import com.lark.imcollab.common.service.ExecutionAttemptContext;
 import com.lark.imcollab.harness.support.ExecutionBusyException;
+import com.lark.imcollab.harness.support.HarnessExecutionLockRecoveryService;
 import com.lark.imcollab.planner.config.PlannerExecutionProperties;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
@@ -20,7 +21,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.task.AsyncTaskExecutor;
-import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.concurrent.Future;
@@ -33,7 +33,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 import java.util.UUID;
 
-@Service
 public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultImTaskCommandFacade.class);
@@ -53,6 +52,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     private final ScheduledExecutorService executionTimeoutScheduler;
     private final PlannerExecutionProperties executionProperties;
     private final TaskCancellationRegistry cancellationRegistry;
+    private final HarnessExecutionLockRecoveryService lockRecoveryService;
     private final ConcurrentHashMap<String, ActiveExecution> activeExecutions = new ConcurrentHashMap<>();
 
     public DefaultImTaskCommandFacade(
@@ -67,7 +67,8 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             @Qualifier("executionTaskExecutor") AsyncTaskExecutor executionExecutor,
             ScheduledExecutorService executionTimeoutScheduler,
             PlannerExecutionProperties executionProperties,
-            TaskCancellationRegistry cancellationRegistry
+            TaskCancellationRegistry cancellationRegistry,
+            HarnessExecutionLockRecoveryService lockRecoveryService
     ) {
         this.sessionService = sessionService;
         this.taskBridgeService = taskBridgeService;
@@ -81,6 +82,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         this.executionTimeoutScheduler = executionTimeoutScheduler;
         this.executionProperties = executionProperties;
         this.cancellationRegistry = cancellationRegistry;
+        this.lockRecoveryService = lockRecoveryService;
     }
 
     @Override
@@ -93,6 +95,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             log.warn("Skip execution restart because previous run is still draining: taskId={}", taskId);
             return session;
         }
+        clearStaleExecutionLocks(taskId);
         cancellationRegistry.clear(taskId);
         if (!shouldPreserveExistingArtifacts(session)) {
             taskArtifactResetService.clearGeneratedArtifactsBeforeExecution(taskId);
@@ -120,6 +123,7 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             log.warn("Skip retry because previous run is still draining: taskId={}", taskId);
             return session;
         }
+        clearStaleExecutionLocks(taskId);
         cancellationRegistry.clear(taskId);
         PlanTaskSession retrying = plannerRetryService.prepareRetry(taskId, feedback);
         if (!shouldPreserveExistingArtifacts(retrying)) {
@@ -341,6 +345,13 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
         return session != null
                 && session.getIntakeState() != null
                 && session.getIntakeState().isPreserveExistingArtifactsOnExecution();
+    }
+
+    private void clearStaleExecutionLocks(String taskId) {
+        if (lockRecoveryService == null) {
+            return;
+        }
+        lockRecoveryService.clearStaleTaskLocks(taskId);
     }
 
     private void clearPreserveExistingArtifactsFlag(PlanTaskSession session) {

@@ -141,4 +141,35 @@ getActiveTasks: async (limit = 20, cursor = '0'): Promise<TaskListResponse> => {
     if (response.data.code !== 0) throw new Error(response.data.message);
     return response.data.data;
   },
+
+  /**
+   * [新增] 8. 执行下一步推荐 (Smart Follow-up)
+   */
+  executeRecommendation: async (
+    taskId: string, 
+    recommendationId: string, 
+    data: { version: number; workspaceContext?: any }
+  ): Promise<PlanPreviewVO> => {
+    try {
+      const response = await apiClient.post<ApiResponse<PlanPreviewVO>>(
+        `/planner/tasks/${taskId}/recommendations/${recommendationId}/execute`,
+        data
+      );
+      if (response.data.code !== 0) {
+        // 将后端 code 挂载到 Error 上抛出，方便前端根据错误码做特殊处理
+        const error = new Error(response.data.message);
+        (error as any).code = response.data.code;
+        throw error;
+      }
+      return response.data.data;
+    } catch (error: any) {
+      // 兼容 Axios 的拦截器错误透传
+      if (error.response?.data?.code) {
+         const wrappedError = new Error(error.response.data.message);
+         (wrappedError as any).code = error.response.data.code;
+         throw wrappedError;
+      }
+      throw error;
+    }
+  },
 };

@@ -212,7 +212,8 @@ export default function DashboardMobile() {
             <span className="font-semibold text-sm text-zinc-800">Agent 工作台</span>
           </div>
           <div className="flex-1 overflow-hidden relative">
-            <AgentWorkspaceMobile />
+            {/* ✨ 传入打开历史抽屉的方法 */}
+            <AgentWorkspaceMobile onOpenHistory={loadHistoryTasks} />
           </div>
         </div>
       </div>

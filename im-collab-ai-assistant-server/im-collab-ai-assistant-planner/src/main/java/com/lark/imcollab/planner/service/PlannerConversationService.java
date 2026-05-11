@@ -148,15 +148,6 @@ public class PlannerConversationService {
         PlanTaskSession session = resolution.existingSession()
                 ? sessionService.get(resolution.taskId())
                 : transientSession(resolution.taskId(), workspaceContext);
-        PlanTaskSession followUpResult = tryResumePendingFollowUpRecommendation(
-                session,
-                resolution,
-                firstText(userFeedback, rawInstruction),
-                workspaceContext
-        );
-        if (followUpResult != null) {
-            return finalizePlanAdjustmentResult(followUpResult);
-        }
         TaskIntakeDecision preliminaryIntakeDecision = intakeService.decide(
                 session,
                 rawInstruction,
@@ -215,6 +206,16 @@ public class PlannerConversationService {
         );
         if (earlyCompletedArtifactAdjustment != null) {
             return earlyCompletedArtifactAdjustment;
+        }
+        PlanTaskSession followUpResult = tryResumePendingFollowUpRecommendation(
+                session,
+                resolution,
+                userInput,
+                workspaceContext,
+                intakeDecision
+        );
+        if (followUpResult != null) {
+            return finalizePlanAdjustmentResult(followUpResult);
         }
         if (shouldStartFreshTask(taskId, resolution, intakeDecision)) {
             workspaceContext = carryForwardCompletedArtifactContext(session, workspaceContext, intakeDecision, graphInstruction);
@@ -340,6 +341,7 @@ public class PlannerConversationService {
                 userFeedback
         );
         taskBridgeService.ensureTask(result);
+        markAwaitingExecutionConfirmationIfNeeded(result);
         if (resumedExecutingPlanAdjustmentClarification
                 && result != null
                 && result.getPlanningPhase() == PlanningPhaseEnum.ASK_USER) {
@@ -1062,8 +1064,7 @@ public class PlannerConversationService {
         if (intakeDecision == null) {
             return false;
         }
-        if (intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT
-                && intakeDecision.intakeType() != TaskIntakeTypeEnum.NEW_TASK) {
+        if (intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
             return false;
         }
         if (intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
@@ -1291,7 +1292,8 @@ public class PlannerConversationService {
             PlanTaskSession currentSession,
             TaskSessionResolution resolution,
             String userInput,
-            WorkspaceContext workspaceContext
+            WorkspaceContext workspaceContext,
+            TaskIntakeDecision intakeDecision
     ) {
         if (conversationTaskStateService == null
                 || pendingFollowUpRecommendationMatcher == null
@@ -1312,12 +1314,19 @@ public class PlannerConversationService {
             return null;
         }
         ConversationTaskState state = stateOptional.get();
+        if (!shouldAttemptPendingFollowUpRecommendation(intakeDecision, state.isPendingFollowUpAwaitingSelection())) {
+            return null;
+        }
         List<PendingFollowUpRecommendation> recommendations = defaultList(state.getPendingFollowUpRecommendations());
         PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
                 userInput,
                 recommendations,
-                state.isPendingFollowUpAwaitingSelection()
+                state.isPendingFollowUpAwaitingSelection(),
+                intakeDecision != null && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
         );
+        if (match == null) {
+            return null;
+        }
         if (match.type() == PendingFollowUpRecommendationMatcher.Type.ASK_SELECTION) {
             conversationTaskStateService.markPendingFollowUpAwaitingSelection(resolution.continuationKey(), true);
             return followUpSelectionReply(currentSession, recommendations);
@@ -1359,6 +1368,25 @@ public class PlannerConversationService {
         normalizeFollowUpContinuationResult(result, resolution, userInput);
         markPreserveExistingArtifactsOnExecution(result);
         return result;
+    }
+
+    private boolean shouldAttemptPendingFollowUpRecommendation(
+            TaskIntakeDecision intakeDecision,
+            boolean awaitingSelection
+    ) {
+        if (intakeDecision == null) {
+            return awaitingSelection;
+        }
+        if (isForcedNewTask(intakeDecision)) {
+            return false;
+        }
+        if (awaitingSelection) {
+            return intakeDecision.intakeType() != TaskIntakeTypeEnum.CANCEL_TASK
+                    && intakeDecision.intakeType() != TaskIntakeTypeEnum.STATUS_QUERY;
+        }
+        return intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
+                || intakeDecision.intakeType() == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+                || intakeDecision.intakeType() == TaskIntakeTypeEnum.CONFIRM_ACTION;
     }
 
     private PlanTaskSession followUpSelectionReply(
@@ -1876,6 +1904,23 @@ public class PlannerConversationService {
                 ? TaskIntakeState.builder().build()
                 : session.getIntakeState();
         intakeState.setPendingInteractionType(pendingInteractionType);
+        session.setIntakeState(intakeState);
+        sessionService.saveWithoutVersionChange(session);
+    }
+
+    private void markAwaitingExecutionConfirmationIfNeeded(PlanTaskSession session) {
+        if (session == null || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
+            return;
+        }
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        if (intakeState.getPendingInteractionType() == PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT
+                || intakeState.getPendingInteractionType() == PendingInteractionTypeEnum.COMPLETED_TASK_SELECTION
+                || intakeState.getPendingInteractionType() == PendingInteractionTypeEnum.COMPLETED_ARTIFACT_SELECTION) {
+            return;
+        }
+        intakeState.setPendingInteractionType(PendingInteractionTypeEnum.AWAITING_EXECUTION_CONFIRMATION);
         session.setIntakeState(intakeState);
         sessionService.saveWithoutVersionChange(session);
     }

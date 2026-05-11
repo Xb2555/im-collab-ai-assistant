@@ -1,7 +1,11 @@
 package com.lark.imcollab.planner.intent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
+import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
+import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
@@ -82,5 +86,21 @@ class LlmIntentClassifierTest {
         assertThat(result).isPresent();
         assertThat(result.get().type()).isEqualTo(TaskCommandTypeEnum.ADJUST_PLAN);
         assertThat(result.get().adjustmentTarget()).isEqualTo(AdjustmentTargetEnum.COMPLETED_ARTIFACT);
+    }
+
+    @Test
+    void promptIncludesAwaitingExecutionConfirmationContext() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(TaskIntakeState.builder()
+                        .pendingInteractionType(PendingInteractionTypeEnum.AWAITING_EXECUTION_CONFIRMATION)
+                        .build())
+                .build();
+
+        String prompt = classifier.buildPrompt(session, "没问题", true);
+
+        assertThat(prompt).contains("awaitingExecutionConfirmation: true");
+        assertThat(prompt).contains("a short approval that clearly accepts the current plan");
     }
 }
