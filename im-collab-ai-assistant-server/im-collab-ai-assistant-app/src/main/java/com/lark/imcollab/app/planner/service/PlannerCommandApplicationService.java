@@ -16,6 +16,7 @@ import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
 import com.lark.imcollab.planner.service.FollowUpRecommendationExecutionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
+import com.lark.imcollab.planner.service.ReplanScopeService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskBridgeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
@@ -40,6 +41,7 @@ public class PlannerCommandApplicationService {
     private final TaskRuntimeService taskRuntimeService;
     private final PlannerSessionService sessionService;
     private final FollowUpRecommendationExecutionService followUpRecommendationExecutionService;
+    private final ReplanScopeService replanScopeService;
     private final ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider;
 
     @Autowired
@@ -51,6 +53,7 @@ public class PlannerCommandApplicationService {
             TaskRuntimeService taskRuntimeService,
             PlannerSessionService sessionService,
             FollowUpRecommendationExecutionService followUpRecommendationExecutionService,
+            ReplanScopeService replanScopeService,
             ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider
     ) {
         this.graphRunner = graphRunner;
@@ -60,7 +63,22 @@ public class PlannerCommandApplicationService {
         this.taskRuntimeService = taskRuntimeService;
         this.sessionService = sessionService;
         this.followUpRecommendationExecutionService = followUpRecommendationExecutionService;
+        this.replanScopeService = replanScopeService;
         this.documentArtifactIterationFacadeProvider = documentArtifactIterationFacadeProvider;
+    }
+
+    public PlannerCommandApplicationService(
+            PlannerSupervisorGraphRunner graphRunner,
+            TaskBridgeService taskBridgeService,
+            PlannerRetryService plannerRetryService,
+            ImTaskCommandFacade taskCommandFacade,
+            TaskRuntimeService taskRuntimeService,
+            PlannerSessionService sessionService,
+            FollowUpRecommendationExecutionService followUpRecommendationExecutionService,
+            ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider
+    ) {
+        this(graphRunner, taskBridgeService, plannerRetryService, taskCommandFacade, taskRuntimeService,
+                sessionService, followUpRecommendationExecutionService, new ReplanScopeService(taskRuntimeService), documentArtifactIterationFacadeProvider);
     }
 
     public PlanTaskSession resume(String taskId, String feedback, boolean replanFromRoot) {
@@ -137,6 +155,16 @@ public class PlannerCommandApplicationService {
             return replan(taskId, feedback, null, null, workspaceContext);
         }
         taskRuntimeService.appendUserIntervention(taskId, feedback);
+        ReplanScopeService.ReplanScopeDecision scopeDecision = replanScopeService == null
+                ? null
+                : replanScopeService.inferForInterruptedExecution(current, feedback, false);
+        if (scopeDecision != null) {
+            replanScopeService.apply(
+                    current,
+                    scopeDecision,
+                    scopeDecision.scope() != com.lark.imcollab.common.model.enums.ReplanScopeEnum.FULL_TASK_RESET
+            );
+        }
         current.setPlanningPhase(PlanningPhaseEnum.INTERRUPTING);
         current.setTransitionReason("Interrupt current execution for plan adjustment");
         sessionService.save(current);
@@ -159,7 +187,10 @@ public class PlannerCommandApplicationService {
         }
 
         PlanTaskSession replanning = sessionService.get(taskId);
-        resetExecutionSemanticsForFullReplan(replanning);
+        if (scopeDecision != null
+                && scopeDecision.scope() == com.lark.imcollab.common.model.enums.ReplanScopeEnum.FULL_TASK_RESET) {
+            resetExecutionSemanticsForFullReplan(replanning);
+        }
         replanning.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
         replanning.setActiveExecutionAttemptId(null);
         replanning.setTransitionReason("Replanning after execution interrupt");

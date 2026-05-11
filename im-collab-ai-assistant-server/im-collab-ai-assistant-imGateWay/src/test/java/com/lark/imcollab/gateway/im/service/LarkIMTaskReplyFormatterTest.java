@@ -26,6 +26,7 @@ class LarkIMTaskReplyFormatterTest {
     void planReadyUsesShortConversationalSummary() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
+                .planningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.PLAN_READY)
                 .planBlueprint(PlanBlueprint.builder()
                         .successCriteria(List.of("文档结构清晰", "PPT 可汇报"))
                         .risks(List.of("资料不足"))
@@ -41,6 +42,10 @@ class LarkIMTaskReplyFormatterTest {
         assertThat(text).contains("我准备这样推进", "你确认没问题我就开工");
         assertThat(text).contains("生成技术方案文档", "生成汇报 PPT");
         assertThat(text).contains("你还可以指定");
+        assertThat(text).contains("你也可以直接这样说");
+        assertThat(text).contains("开始执行：按当前计划继续");
+        assertThat(text).contains("从头重做：放弃当前方案，重新规划并重跑整个任务");
+        assertThat(text).contains("继续修改：直接说你想改哪一步、改成什么");
         assertThat(text).contains("文档目前支持基于已选消息", "PPT 目前支持创建新的飞书演示稿");
         assertThat(text).contains("基于文档摘要生成 PPT");
         assertThat(text).contains("文档里补一段风险清单");
@@ -51,6 +56,7 @@ class LarkIMTaskReplyFormatterTest {
     void planReadyTurnsNounTitlesIntoActionSteps() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
+                .planningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.PLAN_READY)
                 .planBlueprint(PlanBlueprint.builder()
                         .planCards(List.of(
                                 card("技术方案文档（含 Mermaid 架构图）", PlanCardTypeEnum.DOC),
@@ -70,6 +76,7 @@ class LarkIMTaskReplyFormatterTest {
     void singlePptPlanDoesNotStartWithThen() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
+                .planningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.PLAN_READY)
                 .planBlueprint(PlanBlueprint.builder()
                         .planCards(List.of(card("老板汇报 PPT 初稿", PlanCardTypeEnum.PPT)))
                         .build())
@@ -85,6 +92,7 @@ class LarkIMTaskReplyFormatterTest {
     void multiStepPlanUsesLastOnlyForFinalStep() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
+                .planningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.PLAN_READY)
                 .planBlueprint(PlanBlueprint.builder()
                         .planCards(List.of(
                                 card("技术方案文档", PlanCardTypeEnum.DOC),
@@ -106,6 +114,7 @@ class LarkIMTaskReplyFormatterTest {
     void planReadySuggestsCurrentCapabilityScopedEdits() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("task-1")
+                .planningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.PLAN_READY)
                 .planBlueprint(PlanBlueprint.builder()
                         .planCards(List.of(
                                 card("生成技术方案文档（面向老板）", PlanCardTypeEnum.DOC)
@@ -119,6 +128,33 @@ class LarkIMTaskReplyFormatterTest {
         assertThat(text).contains("文档里补一段风险清单");
         assertThat(text).contains("文档里加一段行动项");
         assertThat(text).doesNotContain("加一段群内摘要");
+    }
+
+    @Test
+    void planAdjustedUsesCompletedPrefixSpecificFullResetGuidance() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.PLAN_READY)
+                .planCards(List.of(
+                        UserPlanCard.builder()
+                                .cardId("card-001")
+                                .title("生成技术方案文档")
+                                .type(PlanCardTypeEnum.DOC)
+                                .status("COMPLETED")
+                                .artifactRefs(List.of("artifact-doc-1"))
+                                .build(),
+                        UserPlanCard.builder()
+                                .cardId("card-002")
+                                .title("生成汇报 PPT")
+                                .type(PlanCardTypeEnum.PPT)
+                                .status("PENDING")
+                                .build()
+                ))
+                .build();
+
+        String text = formatter.planAdjusted(session);
+
+        assertThat(text).contains("从头重做：整任务重跑，并丢弃当前已完成产物");
     }
 
     @Test

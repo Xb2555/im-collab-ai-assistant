@@ -14,6 +14,7 @@ import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.FollowUpModeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.ReplanScopeEnum;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.planner.replan.PlanPatchIntent;
@@ -50,6 +51,7 @@ class FollowUpRecommendationExecutionServiceTest {
         ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
         PlannerPatchTool patchTool = mock(PlannerPatchTool.class);
         PlanQualityService qualityService = mock(PlanQualityService.class);
+        ReplanScopeService replanScopeService = new ReplanScopeService(mock(TaskRuntimeService.class));
         FollowUpRecommendationExecutionService service = new FollowUpRecommendationExecutionService(
                 stateStore,
                 sessionResolver,
@@ -58,7 +60,8 @@ class FollowUpRecommendationExecutionServiceTest {
                 planningNodeService,
                 conversationTaskStateService,
                 patchTool,
-                qualityService
+                qualityService,
+                replanScopeService
         );
 
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(TaskRecord.builder()
@@ -135,6 +138,9 @@ class FollowUpRecommendationExecutionServiceTest {
 
         assertThat(result).isSameAs(targetSession);
         assertThat(result.getIntakeState().getIntakeType()).isEqualTo(com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        assertThat(result.getIntakeState().getReplanScope()).isEqualTo(ReplanScopeEnum.TAIL_REPLAN);
+        assertThat(result.getIntakeState().getReplanAnchorCardId()).isEqualTo("card-002");
+        assertThat(result.getIntakeState().isPreserveExistingArtifactsOnExecution()).isTrue();
         verify(patchTool).merge(any(PlanBlueprint.class), argThat(intent ->
                         intent != null
                                 && intent.getOperation() == com.lark.imcollab.planner.replan.PlanPatchOperation.ADD_STEP
@@ -157,6 +163,7 @@ class FollowUpRecommendationExecutionServiceTest {
         ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
         PlannerPatchTool patchTool = mock(PlannerPatchTool.class);
         PlanQualityService qualityService = mock(PlanQualityService.class);
+        ReplanScopeService replanScopeService = new ReplanScopeService(mock(TaskRuntimeService.class));
         FollowUpRecommendationExecutionService service = new FollowUpRecommendationExecutionService(
                 stateStore,
                 sessionResolver,
@@ -165,7 +172,8 @@ class FollowUpRecommendationExecutionServiceTest {
                 planningNodeService,
                 conversationTaskStateService,
                 patchTool,
-                qualityService
+                qualityService,
+                replanScopeService
         );
 
         when(sessionService.get("task-1")).thenReturn(PlanTaskSession.builder()

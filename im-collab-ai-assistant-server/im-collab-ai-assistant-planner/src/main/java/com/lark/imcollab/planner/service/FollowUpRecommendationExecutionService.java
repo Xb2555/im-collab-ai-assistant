@@ -28,6 +28,7 @@ import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.List;
 import java.util.Optional;
@@ -44,7 +45,9 @@ public class FollowUpRecommendationExecutionService {
     private final ConversationTaskStateService conversationTaskStateService;
     private final PlannerPatchTool patchTool;
     private final PlanQualityService qualityService;
+    private final ReplanScopeService replanScopeService;
 
+    @Autowired
     public FollowUpRecommendationExecutionService(
             PlannerStateStore stateStore,
             TaskSessionResolver sessionResolver,
@@ -55,6 +58,21 @@ public class FollowUpRecommendationExecutionService {
             PlannerPatchTool patchTool,
             PlanQualityService qualityService
     ) {
+        this(stateStore, sessionResolver, sessionService, graphRunner, planningNodeService,
+                conversationTaskStateService, patchTool, qualityService, null);
+    }
+
+    public FollowUpRecommendationExecutionService(
+            PlannerStateStore stateStore,
+            TaskSessionResolver sessionResolver,
+            PlannerSessionService sessionService,
+            PlannerSupervisorGraphRunner graphRunner,
+            PlanningNodeService planningNodeService,
+            ConversationTaskStateService conversationTaskStateService,
+            PlannerPatchTool patchTool,
+            PlanQualityService qualityService,
+            ReplanScopeService replanScopeService
+    ) {
         this.stateStore = stateStore;
         this.sessionResolver = sessionResolver;
         this.sessionService = sessionService;
@@ -63,6 +81,7 @@ public class FollowUpRecommendationExecutionService {
         this.conversationTaskStateService = conversationTaskStateService;
         this.patchTool = patchTool;
         this.qualityService = qualityService;
+        this.replanScopeService = replanScopeService;
     }
 
     public Optional<NextStepRecommendation> findExecutableRecommendation(String taskId, String recommendationId) {
@@ -219,6 +238,9 @@ public class FollowUpRecommendationExecutionService {
         intakeState.setReadOnlyView(null);
         intakeState.setAdjustmentTarget(AdjustmentTargetEnum.READY_PLAN);
         session.setIntakeState(intakeState);
+        if (replanScopeService != null) {
+            replanScopeService.markTailContinuationState(session);
+        }
         sessionService.saveWithoutVersionChange(session);
     }
 
@@ -247,6 +269,9 @@ public class FollowUpRecommendationExecutionService {
                 : session.getIntakeState();
         intakeState.setPreserveExistingArtifactsOnExecution(true);
         session.setIntakeState(intakeState);
+        if (replanScopeService != null) {
+            replanScopeService.markTailContinuationState(session);
+        }
         sessionService.saveWithoutVersionChange(session);
     }
 

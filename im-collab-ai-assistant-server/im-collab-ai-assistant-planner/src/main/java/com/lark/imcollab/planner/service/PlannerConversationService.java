@@ -16,6 +16,7 @@ import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.ReplanScopeEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.util.ExecutionCommandGuard;
@@ -55,6 +56,7 @@ public class PlannerConversationService {
     private final PlannerSupervisorGraphRunner graphRunner;
     private final PlannerExecutionTool executionTool;
     private final TaskRuntimeService taskRuntimeService;
+    private final ReplanScopeService replanScopeService;
     private final FollowUpArtifactContextResolver followUpArtifactContextResolver;
     private final ConversationTaskStateService conversationTaskStateService;
     private final PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher;
@@ -74,7 +76,7 @@ public class PlannerConversationService {
             PlannerConversationMemoryService memoryService,
             PlannerSupervisorGraphRunner graphRunner
     ) {
-        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null, null, null, null, null);
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null, null, null, null, null, null);
     }
 
     @Autowired
@@ -87,6 +89,7 @@ public class PlannerConversationService {
             PlannerSupervisorGraphRunner graphRunner,
             PlannerExecutionTool executionTool,
             TaskRuntimeService taskRuntimeService,
+            ReplanScopeService replanScopeService,
             FollowUpArtifactContextResolver followUpArtifactContextResolver,
             ConversationTaskStateService conversationTaskStateService,
             PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
@@ -100,6 +103,7 @@ public class PlannerConversationService {
         this.graphRunner = graphRunner;
         this.executionTool = executionTool;
         this.taskRuntimeService = taskRuntimeService;
+        this.replanScopeService = replanScopeService;
         this.followUpArtifactContextResolver = followUpArtifactContextResolver;
         this.conversationTaskStateService = conversationTaskStateService;
         this.pendingFollowUpRecommendationMatcher = pendingFollowUpRecommendationMatcher;
@@ -117,7 +121,7 @@ public class PlannerConversationService {
             TaskRuntimeService taskRuntimeService
     ) {
         this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
-                executionTool, taskRuntimeService, null, null, null, null);
+                executionTool, taskRuntimeService, new ReplanScopeService(taskRuntimeService), null, null, null, null);
     }
 
     public PlannerConversationService(
@@ -134,7 +138,26 @@ public class PlannerConversationService {
             PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher
     ) {
         this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
-                executionTool, taskRuntimeService, followUpArtifactContextResolver, conversationTaskStateService,
+                executionTool, taskRuntimeService, new ReplanScopeService(taskRuntimeService), followUpArtifactContextResolver, conversationTaskStateService,
+                pendingFollowUpRecommendationMatcher, null);
+    }
+
+    public PlannerConversationService(
+            TaskSessionResolver sessionResolver,
+            TaskIntakeService intakeService,
+            PlannerSessionService sessionService,
+            TaskBridgeService taskBridgeService,
+            PlannerConversationMemoryService memoryService,
+            PlannerSupervisorGraphRunner graphRunner,
+            PlannerExecutionTool executionTool,
+            TaskRuntimeService taskRuntimeService,
+            ReplanScopeService replanScopeService,
+            FollowUpArtifactContextResolver followUpArtifactContextResolver,
+            ConversationTaskStateService conversationTaskStateService,
+            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher
+    ) {
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
+                executionTool, taskRuntimeService, replanScopeService, followUpArtifactContextResolver, conversationTaskStateService,
                 pendingFollowUpRecommendationMatcher, null);
     }
 
@@ -851,8 +874,19 @@ public class PlannerConversationService {
             String graphInstruction,
             String pendingAdjustmentInstruction
     ) {
+        String replanInstruction = hasText(pendingAdjustmentInstruction) ? pendingAdjustmentInstruction : graphInstruction;
+        ReplanScopeService.ReplanScopeDecision scopeDecision = replanScopeService == null
+                ? null
+                : replanScopeService.inferForInterruptedExecution(session, replanInstruction, false);
         session = saveWithoutVersionChangeRetrying(session, current -> {
             updateSessionEnvelope(current, workspaceContext, intakeDecision, resolution, graphInstruction);
+            if (scopeDecision != null) {
+                replanScopeService.apply(
+                        current,
+                        scopeDecision,
+                        scopeDecision.scope() != ReplanScopeEnum.FULL_TASK_RESET
+                );
+            }
             memoryService.appendUserTurn(
                     current,
                     graphInstruction,
@@ -891,8 +925,6 @@ public class PlannerConversationService {
         }
 
         session = sessionService.get(session.getTaskId());
-        // 优先用调用前取出的原始指令（updateSessionEnvelope 已清除 intakeState 中的该字段）
-        String replanInstruction = hasText(pendingAdjustmentInstruction) ? pendingAdjustmentInstruction : graphInstruction;
         session = saveWithoutVersionChangeRetrying(session, current -> {
             current.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
             current.setActiveExecutionAttemptId(null);
@@ -1225,7 +1257,11 @@ public class PlannerConversationService {
                     : current.getIntakeState();
             intakeState.setPendingInteractionType(null);
             intakeState.setPendingAdjustmentInstruction(null);
+            intakeState.setPreserveExistingArtifactsOnExecution(false);
             current.setIntakeState(intakeState);
+            if (replanScopeService != null) {
+                replanScopeService.clear(current);
+            }
         });
         if (executionTool == null) {
             PlanTaskSession resumed = saveWithoutVersionChangeRetrying(sessionService.get(session.getTaskId()), current -> {
@@ -1759,7 +1795,7 @@ public class PlannerConversationService {
             return null;
         }
         return new TaskIntakeDecision(
-                TaskIntakeTypeEnum.CLARIFICATION_REPLY,
+                TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
                 effectiveInput,
                 "guard executing plan adjustment clarification reply",
                 null,
@@ -1796,6 +1832,8 @@ public class PlannerConversationService {
                 .readOnlyView(intakeDecision.readOnlyView())
                 .adjustmentTarget(intakeDecision.adjustmentTarget())
                 .lastInputAt(workspaceContext == null ? null : workspaceContext.getTimeRange())
+                .replanScope(previousIntakeState == null ? null : previousIntakeState.getReplanScope())
+                .replanAnchorCardId(previousIntakeState == null ? null : previousIntakeState.getReplanAnchorCardId())
                 .preserveExistingArtifactsOnExecution(previousIntakeState != null
                         && previousIntakeState.isPreserveExistingArtifactsOnExecution())
                 .build());

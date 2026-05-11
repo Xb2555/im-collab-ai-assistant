@@ -5,9 +5,11 @@ import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
+import com.lark.imcollab.common.model.enums.ReplanScopeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -195,6 +197,7 @@ public class PlanAdjustmentInterpreter {
         builder.append("- REGENERATE_ALL only when the user explicitly asks to redo the whole plan.\n");
         builder.append("- If the request is ambiguous or unsupported, return CLARIFY_REQUIRED with one natural question.\n");
         builder.append("- Stable deliverables are only DOC, PPT, SUMMARY. Mermaid is a DOC content requirement, not a separate artifact.\n");
+        appendScopeHints(builder, session, cards);
         builder.append("Current cards:\n");
         for (UserPlanCard card : cards) {
             builder.append("- ")
@@ -212,6 +215,28 @@ public class PlanAdjustmentInterpreter {
         }
         builder.append("User adjustment: ").append(instruction == null ? "" : instruction.trim());
         return builder.toString();
+    }
+
+    private void appendScopeHints(StringBuilder builder, PlanTaskSession session, List<UserPlanCard> cards) {
+        TaskIntakeState intakeState = session == null ? null : session.getIntakeState();
+        ReplanScopeEnum scope = intakeState == null ? null : intakeState.getReplanScope();
+        if (scope == null) {
+            return;
+        }
+        builder.append("Current replan scope: ").append(scope.name()).append("\n");
+        if (hasText(intakeState.getReplanAnchorCardId())) {
+            builder.append("Current replan anchorCardId: ").append(intakeState.getReplanAnchorCardId()).append("\n");
+        }
+        List<String> frozenPrefix = frozenPrefixIds(cards, intakeState.getReplanAnchorCardId());
+        if (!frozenPrefix.isEmpty()) {
+            builder.append("Frozen completed prefix cardIds: ").append(frozenPrefix).append("\n");
+            builder.append("- Do not target, remove, rename, merge, or reorder frozen completed prefix cards.\n");
+        }
+        if (scope == ReplanScopeEnum.CURRENT_STEP_REDO) {
+            builder.append("- CURRENT_STEP_REDO means only the anchor step may be rewritten. You may append helper steps after it, but do not target other existing steps.\n");
+        } else if (scope == ReplanScopeEnum.TAIL_REPLAN) {
+            builder.append("- TAIL_REPLAN means preserve completed prefix cards and only adjust the anchor step and later tail.\n");
+        }
     }
 
     private PlanPatchIntent clarify(String question) {
@@ -238,6 +263,28 @@ public class PlanAdjustmentInterpreter {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private List<String> frozenPrefixIds(List<UserPlanCard> cards, String anchorCardId) {
+        if (cards == null || cards.isEmpty()) {
+            return List.of();
+        }
+        List<String> frozen = new ArrayList<>();
+        for (UserPlanCard card : cards) {
+            if (card == null) {
+                continue;
+            }
+            if (hasText(anchorCardId) && anchorCardId.equals(card.getCardId())) {
+                break;
+            }
+            if (!"COMPLETED".equalsIgnoreCase(card.getStatus())) {
+                break;
+            }
+            if (hasText(card.getCardId())) {
+                frozen.add(card.getCardId());
+            }
+        }
+        return frozen;
     }
 
     private boolean passesModelThreshold(PlanPatchIntent intent) {

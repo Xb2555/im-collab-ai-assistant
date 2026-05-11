@@ -359,6 +359,8 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             return;
         }
         session.getIntakeState().setPreserveExistingArtifactsOnExecution(false);
+        session.getIntakeState().setReplanScope(null);
+        session.getIntakeState().setReplanAnchorCardId(null);
     }
 
     private boolean awaitPreviousExecutionDrain(String taskId) {
