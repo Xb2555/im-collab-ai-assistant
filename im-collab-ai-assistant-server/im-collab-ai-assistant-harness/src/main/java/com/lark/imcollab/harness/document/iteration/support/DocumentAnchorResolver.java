@@ -38,7 +38,7 @@ public class DocumentAnchorResolver {
     public ResolvedDocumentAnchor resolve(Artifact artifact, DocumentStructureSnapshot snapshot, DocumentEditIntent intent) {
         DocumentSemanticActionType action = intent.getSemanticAction();
         DocumentAnchorSpec spec = intent.getAnchorSpec();
-        log.info("DOC_ITER_ANCHOR resolve_start action={} anchorKind={} matchMode={} headingTitle='{}' headingNumber='{}' outlinePath='{}' ordinal={} ordinalScope={} quotedText='{}' docId={}",
+        log.debug("DOC_ITER_ANCHOR resolve_start action={} anchorKind={} matchMode={} headingTitle='{}' headingNumber='{}' outlinePath='{}' ordinal={} ordinalScope={} quotedText='{}' docId={}",
                 action,
                 spec == null ? null : spec.getAnchorKind(),
                 spec == null ? null : spec.getMatchMode(),
@@ -75,7 +75,7 @@ public class DocumentAnchorResolver {
         if (targetsInsertAfterSection(action)) {
             DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(artifact, snapshot, spec);
             if (sectionAnchor == null) {
-                log.info("DOC_ITER_ANCHOR insert_after_unresolved action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                log.debug("DOC_ITER_ANCHOR insert_after_unresolved action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
                         action,
                         spec == null ? null : spec.getHeadingTitle(),
                         spec == null ? null : spec.getOutlinePath(),
@@ -114,7 +114,7 @@ public class DocumentAnchorResolver {
         if (targetsSection(action)) {
             DocumentSectionAnchor sectionAnchor = resolveSectionAnchor(artifact, snapshot, spec);
             if (sectionAnchor == null) {
-                log.info("DOC_ITER_ANCHOR section_unresolved action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
+                log.debug("DOC_ITER_ANCHOR section_unresolved action={} headingTitle='{}' outlinePath='{}' ordinal={} ordinalScope={}",
                         action,
                         spec == null ? null : spec.getHeadingTitle(),
                         spec == null ? null : spec.getOutlinePath(),
@@ -122,7 +122,7 @@ public class DocumentAnchorResolver {
                         spec == null ? null : spec.getStructuralOrdinalScope());
                 return unresolved("无法唯一定位目标章节，请提供更明确的章节标题或序号");
             }
-            log.info("DOC_ITER_ANCHOR section_resolved action={} headingBlockId={} headingText='{}' bodySize={} topLevelIndex={}",
+            log.debug("DOC_ITER_ANCHOR section_resolved action={} headingBlockId={} headingText='{}' bodySize={} topLevelIndex={}",
                     action,
                     sectionAnchor.getHeadingBlockId(),
                     sectionAnchor.getHeadingText(),
@@ -148,12 +148,12 @@ public class DocumentAnchorResolver {
         // 默认：block 锚点
         DocumentBlockAnchor blockAnchor = resolveBlockAnchor(snapshot, spec);
         if (blockAnchor == null || blockAnchor.getBlockId() == null) {
-            log.info("DOC_ITER_ANCHOR block_unresolved action={} quotedText='{}'",
+            log.debug("DOC_ITER_ANCHOR block_unresolved action={} quotedText='{}'",
                     action,
                     spec == null ? null : spec.getQuotedText());
             return unresolved("无法定位目标 block，请提供更明确的引用文本");
         }
-        log.info("DOC_ITER_ANCHOR block_resolved action={} blockId={} plainText='{}'",
+        log.debug("DOC_ITER_ANCHOR block_resolved action={} blockId={} plainText='{}'",
                 action, blockAnchor.getBlockId(), blockAnchor.getPlainText());
         return ResolvedDocumentAnchor.builder()
                 .anchorType(DocumentAnchorType.BLOCK)
@@ -188,7 +188,7 @@ public class DocumentAnchorResolver {
         }
 
         if (headingBlockId == null) return null;
-        log.info("DOC_ITER_ANCHOR section_heading_candidate matchMode={} headingBlockId={}",
+        log.debug("DOC_ITER_ANCHOR section_heading_candidate matchMode={} headingBlockId={}",
                 spec.getMatchMode(), headingBlockId);
 
         // 按需抓取 section 明细
@@ -213,18 +213,18 @@ public class DocumentAnchorResolver {
         if ((parentTitle != null || parentNumber != null) && !exactMatches.isEmpty()) {
             exactMatches.removeIf(id -> !matchesParentScope(snapshot, id, parentTitle, parentNumber));
         }
-        log.info("DOC_ITER_ANCHOR title_match title='{}' normalized='{}' exactMatches={}", title, normalized, exactMatches);
+        log.debug("DOC_ITER_ANCHOR title_match title='{}' normalized='{}' exactMatches={}", title, normalized, exactMatches);
         if (exactMatches.size() == 1) {
             return exactMatches.get(0);
         }
         java.util.List<String> aliasMatches = findHeadingByTitleAlias(snapshot, title, parentTitle, parentNumber);
-        log.info("DOC_ITER_ANCHOR title_alias_match title='{}' aliasMatches={}", title, aliasMatches);
+        log.debug("DOC_ITER_ANCHOR title_alias_match title='{}' aliasMatches={}", title, aliasMatches);
         if (aliasMatches.size() == 1) {
             return aliasMatches.get(0);
         }
         String ordinalFallback = findHeadingByOrdinalTitle(snapshot, title);
         if (ordinalFallback != null && matchesParentScopeIfNeeded(snapshot, ordinalFallback, parentTitle, parentNumber)) {
-            log.info("DOC_ITER_ANCHOR title_ordinal_match title='{}' headingBlockId={}", title, ordinalFallback);
+            log.debug("DOC_ITER_ANCHOR title_ordinal_match title='{}' headingBlockId={}", title, ordinalFallback);
             return ordinalFallback;
         }
         return null;
@@ -294,7 +294,7 @@ public class DocumentAnchorResolver {
                 matches.add(entry.getKey());
             }
         }
-        log.info("DOC_ITER_ANCHOR outline_path_match outlinePath='{}' matches={}", outlinePath, matches);
+        log.debug("DOC_ITER_ANCHOR outline_path_match outlinePath='{}' matches={}", outlinePath, matches);
         return matches.size() == 1 ? matches.get(0) : null;
     }
 
@@ -312,7 +312,7 @@ public class DocumentAnchorResolver {
         if (matched == null) {
             matched = snapshot.getHeadingPathNumberIndex().get(normalizedPath);
         }
-        log.info("DOC_ITER_ANCHOR number_path_match path='{}' normalized='{}' headingBlockId={}", rawPath, normalizedPath, matched);
+        log.debug("DOC_ITER_ANCHOR number_path_match path='{}' normalized='{}' headingBlockId={}", rawPath, normalizedPath, matched);
         return matched;
     }
 
@@ -327,7 +327,7 @@ public class DocumentAnchorResolver {
         if ("TOP_LEVEL_SECTION".equalsIgnoreCase(scope)) {
             List<String> topLevel = snapshot.getTopLevelSequence();
             if (topLevel != null && index < topLevel.size()) {
-                log.info("DOC_ITER_ANCHOR ordinal_match scope={} ordinal={} headingBlockId={}", scope, ordinal, topLevel.get(index));
+                log.debug("DOC_ITER_ANCHOR ordinal_match scope={} ordinal={} headingBlockId={}", scope, ordinal, topLevel.get(index));
                 return topLevel.get(index);
             }
             return null;
@@ -612,7 +612,7 @@ public class DocumentAnchorResolver {
             return null;
         }
         String childId = children.get(zeroBasedIndex);
-        log.info("DOC_ITER_ANCHOR ordinal_match parentId={} index={} headingBlockId={}", parentId, zeroBasedIndex + 1, childId);
+        log.debug("DOC_ITER_ANCHOR ordinal_match parentId={} index={} headingBlockId={}", parentId, zeroBasedIndex + 1, childId);
         return childId;
     }
 

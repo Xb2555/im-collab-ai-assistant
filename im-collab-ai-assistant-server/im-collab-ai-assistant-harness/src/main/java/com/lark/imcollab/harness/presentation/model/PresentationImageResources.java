@@ -23,6 +23,7 @@ public class PresentationImageResources implements Serializable {
     public static class PageImageResource implements Serializable {
         private String slideId;
         private List<ResourceItem> contentImages;
+        private List<TimelineNodeResource> timelineNodeImages;
         private List<ResourceItem> illustrations;
         private List<ResourceItem> diagrams;
     }
@@ -38,8 +39,23 @@ public class PresentationImageResources implements Serializable {
         private String sourceSite;
         private String assetType;
         private String purpose;
+        private String queryKey;
+        private String searchCategory;
+        private String searchSubject;
         private String whiteboardDsl;
         private String mimeType;
         private String fallbackSource;
+        private String normalizedQuery;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TimelineNodeResource implements Serializable {
+        private String nodeId;
+        private Integer nodeIndex;
+        private String nodeText;
+        private ResourceItem resource;
     }
 }

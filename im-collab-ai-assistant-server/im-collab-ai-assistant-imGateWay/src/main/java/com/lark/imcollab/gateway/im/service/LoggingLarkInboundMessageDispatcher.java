@@ -85,9 +85,10 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         }
 
         PlanTaskSession accepted = acceptedSession(message);
+        long dispatchStartedAt = System.nanoTime();
         replyImmediateReceipt(message, accepted);
         try {
-            plannerDispatchExecutor.execute(() -> dispatchAndReply(message));
+            plannerDispatchExecutor.execute(() -> dispatchAndReply(message, dispatchStartedAt));
         } catch (RejectedExecutionException exception) {
             log.warn("Scenario A planner dispatch queue rejected inbound message: messageId={}, chatId={}",
                     message.messageId(), message.chatId(), exception);
@@ -124,13 +125,14 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         }
     }
 
-    private void dispatchAndReply(LarkInboundMessage message) {
+    private void dispatchAndReply(LarkInboundMessage message, long dispatchStartedAt) {
         log.info("SCENARIO_A inbound_dispatch_start messageId={} chatId={} senderOpenId={} content='{}'",
                 message == null ? null : message.messageId(),
                 message == null ? null : message.chatId(),
                 message == null ? null : message.senderOpenId(),
                 message == null ? null : message.content());
         PlanTaskSession session;
+        long plannerStartedAt = System.nanoTime();
         try {
             session = plannerPlanFacade.plan(
                     message.content(),
@@ -142,6 +144,10 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             log.warn("Scenario A planner dispatch failed: messageId={}, chatId={}",
                     message.messageId(), message.chatId(), exception);
             session = failedSession(message, humanizeFailure(exception));
+            printTiming("im.planner.seconds", session == null ? null : session.getTaskId(), null, plannerStartedAt, exception);
+        }
+        if (session != null && session.getPlanningPhase() != PlanningPhaseEnum.FAILED) {
+            printTiming("im.planner.seconds", session.getTaskId(), null, plannerStartedAt, null);
         }
         log.info("SCENARIO_A inbound_dispatch_result messageId={} chatId={} taskId={} phase={} intakeType={} assistantReply='{}'",
                 message == null ? null : message.messageId(),
@@ -151,6 +157,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
                 session == null || session.getIntakeState() == null ? null : session.getIntakeState().getIntakeType(),
                 session == null || session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply());
         replyBySessionState(message, session);
+        printTiming("im.end_to_end.seconds", session == null ? null : session.getTaskId(), message == null ? null : message.messageId(), dispatchStartedAt, null);
         log.info("Scenario A inbound Lark message bridged to planner: messageId={}, chatId={}, taskId={}, phase={}",
                 message.messageId(), message.chatId(), session == null ? null : session.getTaskId(),
                 session == null ? null : session.getPlanningPhase());
@@ -365,6 +372,7 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             return;
         }
         String idempotencyKey = buildIdempotencyKey(session, message, replyType);
+        long replyStartedAt = System.nanoTime();
         try {
             if (isP2P(message) && hasText(message.senderOpenId())) {
                 replyTool.sendPrivateText(message.senderOpenId(), text, idempotencyKey);
@@ -437,5 +445,14 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         return text.contains("继续跑")
                 || text.contains("继续执行")
                 || text.contains("重新开始执行");
+    }
+
+    private void printTiming(String metric, String taskId, String messageId, long startedAt, Throwable throwable) {
+        System.err.println(metric
+                + " taskId=" + safe(taskId)
+                + " messageId=" + safe(messageId)
+                + " status=" + (throwable == null ? "success" : "failed")
+                + " seconds=" + String.format(java.util.Locale.ROOT, "%.3f", (System.nanoTime() - startedAt) / 1_000_000_000.0d)
+                + (throwable == null ? "" : " error=" + safe(throwable.getMessage())));
     }
 }

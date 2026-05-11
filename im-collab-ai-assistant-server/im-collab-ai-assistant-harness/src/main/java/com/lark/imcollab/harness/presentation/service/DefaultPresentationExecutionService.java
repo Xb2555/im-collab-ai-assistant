@@ -41,12 +41,14 @@ public class DefaultPresentationExecutionService implements PresentationExecutio
 
     @Override
     public void execute(String taskId) {
-        executionGuard.execute(taskId, () -> runSafely(taskId, null, null));
+        long startedAt = System.nanoTime();
+        executionGuard.execute(taskId, () -> runSafely(taskId, null, null, startedAt));
     }
 
     @Override
     public void resume(String taskId, Approval approval) {
-        executionGuard.execute(taskId, () -> runSafely(taskId, approval.getUserFeedback(), approval.getStepId()));
+        long startedAt = System.nanoTime();
+        executionGuard.execute(taskId, () -> runSafely(taskId, approval.getUserFeedback(), approval.getStepId(), startedAt));
     }
 
     private void runWorkflow(String taskId, String userFeedback) {
@@ -90,17 +92,28 @@ public class DefaultPresentationExecutionService implements PresentationExecutio
         return value == null || value.isBlank() ? fallback : value.trim();
     }
 
-    private void runSafely(String taskId, String userFeedback, String stepId) {
+    private void runSafely(String taskId, String userFeedback, String stepId, long startedAt) {
         try {
             runWorkflow(taskId, userFeedback);
+            printTiming("ppt.workflow.seconds", taskId, startedAt, null);
         } catch (ExecutionInterruptedException exception) {
             Thread.interrupted();
+            printTiming("ppt.workflow.seconds", taskId, startedAt, exception);
         } catch (Exception exception) {
             if (!executionSupport.isCurrentExecution(taskId)) {
                 return;
             }
             executionSupport.publishEvent(taskId, stepId, TaskEventType.TASK_FAILED, exception.getMessage());
+            printTiming("ppt.workflow.seconds", taskId, startedAt, exception);
             throw exception;
         }
+    }
+
+    private void printTiming(String metric, String taskId, long startedAt, Throwable throwable) {
+        System.err.println(metric
+                + " taskId=" + (taskId == null ? "" : taskId)
+                + " status=" + (throwable == null ? "success" : "failed")
+                + " seconds=" + String.format(java.util.Locale.ROOT, "%.3f", (System.nanoTime() - startedAt) / 1_000_000_000.0d)
+                + (throwable == null ? "" : " error=" + (throwable.getMessage() == null ? "" : throwable.getMessage())));
     }
 }
