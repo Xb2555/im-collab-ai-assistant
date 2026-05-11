@@ -12,11 +12,16 @@ import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.FollowUpModeEnum;
+import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.ResultVerdictEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.util.ExecutionCommandGuard;
+import com.lark.imcollab.planner.replan.PlanPatchCardDraft;
+import com.lark.imcollab.planner.replan.PlanPatchIntent;
+import com.lark.imcollab.planner.replan.PlanPatchOperation;
+import com.lark.imcollab.planner.supervisor.PlannerPatchTool;
 import com.lark.imcollab.planner.supervisor.PlanningNodeService;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorDecision;
@@ -37,6 +42,8 @@ public class FollowUpRecommendationExecutionService {
     private final PlannerSupervisorGraphRunner graphRunner;
     private final PlanningNodeService planningNodeService;
     private final ConversationTaskStateService conversationTaskStateService;
+    private final PlannerPatchTool patchTool;
+    private final PlanQualityService qualityService;
 
     public FollowUpRecommendationExecutionService(
             PlannerStateStore stateStore,
@@ -44,7 +51,9 @@ public class FollowUpRecommendationExecutionService {
             PlannerSessionService sessionService,
             PlannerSupervisorGraphRunner graphRunner,
             PlanningNodeService planningNodeService,
-            ConversationTaskStateService conversationTaskStateService
+            ConversationTaskStateService conversationTaskStateService,
+            PlannerPatchTool patchTool,
+            PlanQualityService qualityService
     ) {
         this.stateStore = stateStore;
         this.sessionResolver = sessionResolver;
@@ -52,6 +61,8 @@ public class FollowUpRecommendationExecutionService {
         this.graphRunner = graphRunner;
         this.planningNodeService = planningNodeService;
         this.conversationTaskStateService = conversationTaskStateService;
+        this.patchTool = patchTool;
+        this.qualityService = qualityService;
     }
 
     public Optional<NextStepRecommendation> findExecutableRecommendation(String taskId, String recommendationId) {
@@ -116,14 +127,17 @@ public class FollowUpRecommendationExecutionService {
         WorkspaceContext followUpContext = appendFollowUpSourceArtifact(workspaceContext, recommendation, targetSession);
         String effectiveUserInput = firstText(userInput, recommendation.suggestedUserInstruction(), recommendation.plannerInstruction());
         String plannerInstruction = appendFollowUpPlannerHints(recommendation, userInput);
-        clearPendingFollowUpRecommendations(continuationKey);
-        PlanTaskSession result = graphRunner.run(
-                new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "resume pending follow-up recommendation"),
-                recommendation.targetTaskId(),
-                plannerInstruction,
-                followUpContext,
-                effectiveUserInput
-        );
+        PlanTaskSession result = tryStructuredContinuation(targetSession, recommendation, effectiveUserInput, userInput);
+        if (result == null) {
+            result = graphRunner.run(
+                    new PlannerSupervisorDecision(PlannerSupervisorAction.PLAN_ADJUSTMENT, "resume pending follow-up recommendation"),
+                    recommendation.targetTaskId(),
+                    plannerInstruction,
+                    followUpContext,
+                    effectiveUserInput
+            );
+        }
+        clearPendingFollowUpRecommendationsIfSucceeded(continuationKey, result);
         normalizeContinuationResult(result, continuationKey, effectiveUserInput);
         markPreserveExistingArtifactsOnExecution(result);
         return result;
@@ -143,13 +157,50 @@ public class FollowUpRecommendationExecutionService {
         );
         String effectiveUserInput = firstText(userInput, recommendation.suggestedUserInstruction(), recommendation.plannerInstruction());
         String plannerInstruction = appendFollowUpPlannerHints(recommendation, userInput);
-        clearPendingFollowUpRecommendations(continuationKey);
         PlanTaskSession result = planningNodeService.plan(newTaskId, plannerInstruction, followUpContext, effectiveUserInput);
+        clearPendingFollowUpRecommendationsIfSucceeded(continuationKey, result);
         if (hasText(continuationKey)) {
             sessionResolver.bindConversation(new TaskSessionResolution(newTaskId, true, continuationKey));
             normalizeNewTaskResult(result, continuationKey, effectiveUserInput);
         }
         return result;
+    }
+
+    private PlanTaskSession tryStructuredContinuation(
+            PlanTaskSession targetSession,
+            RecommendationDescriptor recommendation,
+            String effectiveUserInput,
+            String userInput
+    ) {
+        if (targetSession == null
+                || targetSession.getPlanBlueprint() == null
+                || patchTool == null
+                || qualityService == null) {
+            return null;
+        }
+        PlanCardTypeEnum cardType = toPlanCardType(recommendation.targetDeliverable());
+        if (cardType == null) {
+            return null;
+        }
+        PlanPatchIntent patchIntent = PlanPatchIntent.builder()
+                .operation(PlanPatchOperation.ADD_STEP)
+                .targetCardIds(List.of())
+                .orderedCardIds(List.of())
+                .newCardDrafts(List.of(PlanPatchCardDraft.builder()
+                        .title(buildFollowUpCardTitle(recommendation, cardType))
+                        .description(buildFollowUpCardDescription(recommendation, effectiveUserInput, userInput))
+                        .type(cardType)
+                        .build()))
+                .confidence(1.0d)
+                .reason(firstText(recommendation.plannerInstruction(), "resume pending follow-up recommendation"))
+                .build();
+        qualityService.applyMergedPlanAdjustment(
+                targetSession,
+                patchTool.merge(targetSession.getPlanBlueprint(), patchIntent, targetSession.getTaskId()),
+                firstText(recommendation.plannerInstruction(), "resume pending follow-up recommendation")
+        );
+        sessionService.saveWithoutVersionChange(targetSession);
+        return targetSession;
     }
 
     private void normalizeContinuationResult(PlanTaskSession session, String continuationKey, String userInput) {
@@ -199,11 +250,57 @@ public class FollowUpRecommendationExecutionService {
         sessionService.saveWithoutVersionChange(session);
     }
 
-    private void clearPendingFollowUpRecommendations(String continuationKey) {
-        if (conversationTaskStateService == null || !hasText(continuationKey)) {
+    private void clearPendingFollowUpRecommendationsIfSucceeded(String continuationKey, PlanTaskSession result) {
+        if (conversationTaskStateService == null
+                || !hasText(continuationKey)
+                || result == null
+                || (result.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY
+                && result.getPlanningPhase() != PlanningPhaseEnum.EXECUTING
+                && result.getPlanningPhase() != PlanningPhaseEnum.COMPLETED)) {
             return;
         }
         conversationTaskStateService.clearPendingFollowUpRecommendations(continuationKey);
+    }
+
+    private PlanCardTypeEnum toPlanCardType(ArtifactTypeEnum targetDeliverable) {
+        if (targetDeliverable == null) {
+            return null;
+        }
+        return switch (targetDeliverable) {
+            case DOC -> PlanCardTypeEnum.DOC;
+            case PPT -> PlanCardTypeEnum.PPT;
+            case SUMMARY -> PlanCardTypeEnum.SUMMARY;
+            default -> null;
+        };
+    }
+
+    private String buildFollowUpCardTitle(RecommendationDescriptor recommendation, PlanCardTypeEnum cardType) {
+        if (hasText(recommendation.title())) {
+            return recommendation.title().trim();
+        }
+        return switch (cardType) {
+            case DOC -> "生成配套文档";
+            case PPT -> "生成汇报PPT初稿";
+            case SUMMARY -> "生成任务摘要";
+        };
+    }
+
+    private String buildFollowUpCardDescription(
+            RecommendationDescriptor recommendation,
+            String effectiveUserInput,
+            String userInput
+    ) {
+        StringBuilder builder = new StringBuilder(firstText(
+                recommendation.plannerInstruction(),
+                effectiveUserInput,
+                recommendation.suggestedUserInstruction()
+        ));
+        if (hasText(userInput)
+                && !compact(userInput).equals(compact(recommendation.suggestedUserInstruction()))
+                && !ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
+            builder.append(" 用户补充要求：").append(userInput.trim());
+        }
+        return builder.toString().trim();
     }
 
     private WorkspaceContext appendFollowUpSourceArtifact(
@@ -336,8 +433,10 @@ public class FollowUpRecommendationExecutionService {
     private RecommendationDescriptor descriptor(NextStepRecommendation recommendation) {
         return new RecommendationDescriptor(
                 recommendation == null ? null : recommendation.getRecommendationId(),
+                recommendation == null ? null : recommendation.getTitle(),
                 recommendation == null ? null : recommendation.getTargetTaskId(),
                 recommendation == null ? null : recommendation.getFollowUpMode(),
+                recommendation == null ? null : recommendation.getTargetDeliverable(),
                 recommendation == null ? null : recommendation.getSourceArtifactId(),
                 recommendation == null ? null : recommendation.getSourceArtifactType(),
                 recommendation == null ? null : recommendation.getPlannerInstruction(),
@@ -349,8 +448,10 @@ public class FollowUpRecommendationExecutionService {
     private RecommendationDescriptor descriptor(PendingFollowUpRecommendation recommendation) {
         return new RecommendationDescriptor(
                 recommendation == null ? null : recommendation.getRecommendationId(),
+                null,
                 recommendation == null ? null : recommendation.getTargetTaskId(),
                 recommendation == null ? null : recommendation.getFollowUpMode(),
+                recommendation == null ? null : recommendation.getTargetDeliverable(),
                 recommendation == null ? null : recommendation.getSourceArtifactId(),
                 recommendation == null ? null : recommendation.getSourceArtifactType(),
                 recommendation == null ? null : recommendation.getPlannerInstruction(),
@@ -397,8 +498,10 @@ public class FollowUpRecommendationExecutionService {
 
     private record RecommendationDescriptor(
             String recommendationId,
+            String title,
             String targetTaskId,
             FollowUpModeEnum followUpMode,
+            ArtifactTypeEnum targetDeliverable,
             String sourceArtifactId,
             ArtifactTypeEnum sourceArtifactType,
             String plannerInstruction,

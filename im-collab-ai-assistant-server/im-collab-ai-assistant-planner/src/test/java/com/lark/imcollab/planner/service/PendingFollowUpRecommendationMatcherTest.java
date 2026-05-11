@@ -34,6 +34,87 @@ class PendingFollowUpRecommendationMatcherTest {
     }
 
     @Test
+    void exactSuggestedInstructionStillWinsEvenWhenUpstreamSuggestsStandaloneTask() {
+        PendingFollowUpRecommendation recommendation = recommendation("rec-ppt", "基于这份文档生成一版汇报PPT");
+
+        PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
+                "基于这份文档生成一版汇报PPT",
+                List.of(recommendation),
+                false,
+                true
+        );
+
+        assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.SELECTED);
+        assertThat(result.recommendation().getRecommendationId()).isEqualTo("rec-ppt");
+    }
+
+    @Test
+    void standaloneTaskHintCanStillChooseNoneForOnlySimilarRecommendationText() {
+        PendingFollowUpRecommendation recommendation = recommendation("rec-ppt", "基于这份文档生成一版汇报PPT");
+        when(choiceResolver.chooseOne(anyString(), eq(List.of("rec-ppt", "NONE")), anyString()))
+                .thenReturn("NONE");
+
+        PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
+                "帮我基于这份文档做一版汇报PPT，单独起一个新任务",
+                List.of(recommendation),
+                false,
+                true
+        );
+
+        assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.NONE);
+    }
+
+    @Test
+    void standaloneTaskHintStillAllowsLlmToSelectRecommendationWhenSemanticallyClear() {
+        PendingFollowUpRecommendation recommendation = recommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要");
+        when(choiceResolver.chooseOne(anyString(), eq(List.of("rec-summary", "NONE")), anyString()))
+                .thenReturn("rec-summary");
+
+        PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
+                "基于当前任务内容生成一段可直接发送的摘要",
+                List.of(recommendation),
+                false,
+                true
+        );
+
+        assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.SELECTED);
+        assertThat(result.recommendation().getRecommendationId()).isEqualTo("rec-summary");
+    }
+
+    @Test
+    void prefixSupplementOfSuggestedInstructionSelectsRecommendationWithoutCallingLlm() {
+        PendingFollowUpRecommendation recommendation = recommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要");
+        when(choiceResolver.chooseOne(anyString(), eq(List.of("rec-summary", "NONE")), anyString()))
+                .thenReturn("rec-summary");
+
+        PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
+                "基于当前任务内容生成一段可直接发送的摘要，要求100字左右",
+                List.of(recommendation),
+                false,
+                true
+        );
+
+        assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.SELECTED);
+        assertThat(result.recommendation().getRecommendationId()).isEqualTo("rec-summary");
+    }
+
+    @Test
+    void explicitNewTaskSignalPreventsPrefixShortcutSelection() {
+        PendingFollowUpRecommendation recommendation = recommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要");
+        when(choiceResolver.chooseOne(anyString(), eq(List.of("rec-summary", "NONE")), anyString()))
+                .thenReturn("NONE");
+
+        PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
+                "基于当前任务内容生成一段可直接发送的摘要，另起一个任务，要求100字左右",
+                List.of(recommendation),
+                false,
+                true
+        );
+
+        assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.NONE);
+    }
+
+    @Test
     void asksForSelectionWhenMultipleRecommendationsAndUserOnlySaysStart() {
         PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
                 "开始执行",

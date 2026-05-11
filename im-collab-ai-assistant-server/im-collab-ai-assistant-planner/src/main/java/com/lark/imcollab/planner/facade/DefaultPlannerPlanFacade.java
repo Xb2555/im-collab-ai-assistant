@@ -136,8 +136,12 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
                 effectiveInput,
                 recommendations,
-                awaitingSelection
+                awaitingSelection,
+                routingResult.type() == TaskCommandTypeEnum.START_TASK
         );
+        if (match == null) {
+            return "";
+        }
         if (match.type() == PendingFollowUpRecommendationMatcher.Type.SELECTED) {
             return "🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。";
         }
@@ -154,14 +158,12 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (routingResult == null || routingResult.type() == null) {
             return awaitingSelection;
         }
-        if (routingResult.type() == TaskCommandTypeEnum.START_TASK) {
-            return false;
-        }
         if (awaitingSelection) {
             return routingResult.type() != TaskCommandTypeEnum.QUERY_STATUS
                     && routingResult.type() != TaskCommandTypeEnum.CANCEL_TASK;
         }
-        return routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
+        return routingResult.type() == TaskCommandTypeEnum.START_TASK
+                || routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
                 || routingResult.type() == TaskCommandTypeEnum.CONFIRM_ACTION;
     }
 

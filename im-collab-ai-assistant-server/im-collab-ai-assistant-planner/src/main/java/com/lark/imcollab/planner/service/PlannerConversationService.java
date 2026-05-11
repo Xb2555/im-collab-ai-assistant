@@ -341,6 +341,7 @@ public class PlannerConversationService {
                 userFeedback
         );
         taskBridgeService.ensureTask(result);
+        markAwaitingExecutionConfirmationIfNeeded(result);
         if (resumedExecutingPlanAdjustmentClarification
                 && result != null
                 && result.getPlanningPhase() == PlanningPhaseEnum.ASK_USER) {
@@ -1320,8 +1321,12 @@ public class PlannerConversationService {
         PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
                 userInput,
                 recommendations,
-                state.isPendingFollowUpAwaitingSelection()
+                state.isPendingFollowUpAwaitingSelection(),
+                intakeDecision != null && intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
         );
+        if (match == null) {
+            return null;
+        }
         if (match.type() == PendingFollowUpRecommendationMatcher.Type.ASK_SELECTION) {
             conversationTaskStateService.markPendingFollowUpAwaitingSelection(resolution.continuationKey(), true);
             return followUpSelectionReply(currentSession, recommendations);
@@ -1372,14 +1377,15 @@ public class PlannerConversationService {
         if (intakeDecision == null) {
             return awaitingSelection;
         }
-        if (isForcedNewTask(intakeDecision) || intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK) {
+        if (isForcedNewTask(intakeDecision)) {
             return false;
         }
         if (awaitingSelection) {
             return intakeDecision.intakeType() != TaskIntakeTypeEnum.CANCEL_TASK
                     && intakeDecision.intakeType() != TaskIntakeTypeEnum.STATUS_QUERY;
         }
-        return intakeDecision.intakeType() == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
+        return intakeDecision.intakeType() == TaskIntakeTypeEnum.NEW_TASK
+                || intakeDecision.intakeType() == TaskIntakeTypeEnum.PLAN_ADJUSTMENT
                 || intakeDecision.intakeType() == TaskIntakeTypeEnum.CONFIRM_ACTION;
     }
 
@@ -1898,6 +1904,23 @@ public class PlannerConversationService {
                 ? TaskIntakeState.builder().build()
                 : session.getIntakeState();
         intakeState.setPendingInteractionType(pendingInteractionType);
+        session.setIntakeState(intakeState);
+        sessionService.saveWithoutVersionChange(session);
+    }
+
+    private void markAwaitingExecutionConfirmationIfNeeded(PlanTaskSession session) {
+        if (session == null || session.getPlanningPhase() != PlanningPhaseEnum.PLAN_READY) {
+            return;
+        }
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        if (intakeState.getPendingInteractionType() == PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT
+                || intakeState.getPendingInteractionType() == PendingInteractionTypeEnum.COMPLETED_TASK_SELECTION
+                || intakeState.getPendingInteractionType() == PendingInteractionTypeEnum.COMPLETED_ARTIFACT_SELECTION) {
+            return;
+        }
+        intakeState.setPendingInteractionType(PendingInteractionTypeEnum.AWAITING_EXECUTION_CONFIRMATION);
         session.setIntakeState(intakeState);
         sessionService.saveWithoutVersionChange(session);
     }

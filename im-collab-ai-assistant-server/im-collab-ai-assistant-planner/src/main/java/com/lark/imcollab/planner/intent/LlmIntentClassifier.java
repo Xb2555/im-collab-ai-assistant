@@ -115,7 +115,7 @@ public class LlmIntentClassifier {
         }
     }
 
-    private String buildPrompt(PlanTaskSession session, String rawInput, boolean existingSession) {
+    String buildPrompt(PlanTaskSession session, String rawInput, boolean existingSession) {
         StringBuilder builder = new StringBuilder();
         builder.append("You classify one user message into a fixed task command intent.\n");
         builder.append("Return JSON only. Do not plan steps, do not execute actions, do not answer the user.\n");
@@ -130,7 +130,9 @@ public class LlmIntentClassifier {
         builder.append("- Requests like 中断当前执行 / 中断当前任务 / 先停下来 / 按新计划继续 / 不要按刚才那个方案做了 / 重新规划一下 are ADJUST_PLAN with adjustmentTarget=RUNNING_PLAN when there is an executing task. Do NOT classify 中断/暂停 as CANCEL_TASK — only 取消任务 / 放弃 / 不要做了 warrant CANCEL_TASK.\n");
         builder.append("- When phase=EXECUTING and the message modifies specific content (标题, 文字, 内容, a data value) without explicitly mentioning stopping/interrupting, prefer UNKNOWN over RUNNING_PLAN.\n");
         builder.append("- If the message is short and ambiguous, such as 改一下标题 / 换成 78787 / 帮我把标题改成X, prefer adjustmentTarget=UNKNOWN instead of guessing.\n");
-        builder.append("- CONFIRM_ACTION requires an explicit execution/retry request, such as 开始执行 / 开始计划 / 确认执行 / 没问题，执行 / 重试一下. Generic approval like 这个方案还行 or 就这样 is not enough.\n");
+        builder.append("- CONFIRM_ACTION usually requires an explicit execution/retry request, such as 开始执行 / 开始计划 / 确认执行 / 没问题，执行 / 重试一下.\n");
+        builder.append("- Exception: when phase=PLAN_READY and awaitingExecutionConfirmation=true, a short approval that clearly accepts the current plan, such as 没问题 / 可以 / 行 / 好的 / 就这样, should usually be CONFIRM_ACTION unless the user is asking to modify the plan or only commenting without accepting the current next step.\n");
+        builder.append("- Outside that explicit confirmation-waiting context, generic approval like 这个方案还行 or 就这样 is usually not enough for CONFIRM_ACTION.\n");
         builder.append("- ANSWER_CLARIFICATION means the system is waiting for user details and the user provides those details.\n");
         builder.append("- In ASK_USER phase, choose ANSWER_CLARIFICATION only when the latest message directly answers the pending question or supplies the missing material. Meta questions, identity/capability questions, greetings, or a standalone new task request are not clarification answers.\n");
         builder.append("- If phase=ASK_USER and the user supplements the current task's source material or range, such as 提供消息范围 / 提供文档材料 / 指定最近10分钟消息 / 改成基于聊天记录生成, prefer ANSWER_CLARIFICATION instead of START_TASK.\n");
@@ -152,6 +154,7 @@ public class LlmIntentClassifier {
         builder.append("- phase: ").append(session == null || session.getPlanningPhase() == null
                 ? PlanningPhaseEnum.INTAKE
                 : session.getPlanningPhase()).append("\n");
+        builder.append("- awaitingExecutionConfirmation: ").append(awaitingExecutionConfirmation(session)).append("\n");
         builder.append("- hasPlan: ").append(hasPlan(session)).append("\n");
         builder.append("- recentCards: ").append(cardSummary(session)).append("\n");
         String memoryContext = memoryService == null ? "" : memoryService.renderContext(session);
@@ -166,6 +169,14 @@ public class LlmIntentClassifier {
         return session != null
                 && ((session.getPlanCards() != null && !session.getPlanCards().isEmpty())
                 || session.getPlanBlueprint() != null);
+    }
+
+    private boolean awaitingExecutionConfirmation(PlanTaskSession session) {
+        return session != null
+                && session.getPlanningPhase() == PlanningPhaseEnum.PLAN_READY
+                && session.getIntakeState() != null
+                && session.getIntakeState().getPendingInteractionType()
+                == com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum.AWAITING_EXECUTION_CONFIRMATION;
     }
 
     private String cardSummary(PlanTaskSession session) {
