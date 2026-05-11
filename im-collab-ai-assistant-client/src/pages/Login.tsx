@@ -33,9 +33,10 @@ export default function Login() {
       setLoading(true);
       setShowFallback(false);
       const platform = Capacitor.getPlatform();
-      const oauthUrl = await authLauncher.getOAuthUrl();
-
       const isTauriDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+      const client: 'web' | 'desktop' =
+        isTauriDesktop || platform === 'ios' || platform === 'android' ? 'desktop' : 'web';
+      const oauthUrl = await authLauncher.getOAuthUrl(client);
 
       if (isTauriDesktop) {
         console.info('[LOGIN_PATH] desktop-shell-open');

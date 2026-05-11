@@ -1,6 +1,7 @@
 // src/services/os/launcher/auth.ts
 import { Browser } from '@capacitor/browser';
-import { authApi } from '@/services/api/auth';
+import { Capacitor } from '@capacitor/core';
+import { authApi, type OAuthClientType } from '@/services/api/auth';
 
 const isTauriEnvironment = (): boolean => {
   return typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__ !== undefined;
@@ -12,8 +13,8 @@ export const authLauncher = {
   /**
    * 获取飞书 OAuth 授权 URL（用于二维码渲染或 App 内打开）
    */
-  getOAuthUrl: async (): Promise<string> => {
-    const result = await authApi.getLoginUrl();
+  getOAuthUrl: async (client: OAuthClientType): Promise<string> => {
+    const result = await authApi.getLoginUrl(client);
     return result.authorizationUri;
   },
 
@@ -25,15 +26,16 @@ export const authLauncher = {
   },
 
   /**
-   * 统一登录入口：
-   * - Web: 直接跳转后端登录入口
-   * - Tauri: 返回 OAuth URL 给页面用于渲染二维码
+   * 统一登录入口（显式 client 路线）：
+   * - tauri / ios / android -> desktop
+   * - web -> web
+   * 返回 OAuth URL 供外层决定打开方式（重定向或内嵌浏览器）
    */
-  startLogin: async (): Promise<string | null> => {
-    if (!isTauriEnvironment()) {
-      window.location.href = authApi.getLoginUrlRedirectPath();
-      return null;
-    }
-    return authLauncher.getOAuthUrl();
+  startLogin: async (): Promise<string> => {
+    const platform = Capacitor.getPlatform();
+    const client: OAuthClientType =
+      isTauriEnvironment() || platform === 'ios' || platform === 'android' ? 'desktop' : 'web';
+
+    return authLauncher.getOAuthUrl(client);
   }
 };
