@@ -77,16 +77,6 @@ public class IntentRouterService {
                 : llmIntentClassifier.classify(session, normalized, existingSession)
                 .map(result -> decisionGuard.guard(session, normalized, existingSession, result));
         if (model.isPresent()) {
-            log.info("INTENT_ROUTER classify_result source=llm taskId={} existingSession={} phase={} input='{}' type={} confidence={} reason='{}' normalizedInput='{}' readOnlyView={}",
-                    session == null ? null : session.getTaskId(),
-                    existingSession,
-                    session == null ? null : session.getPlanningPhase(),
-                    normalized,
-                    model.get().type(),
-                    model.get().confidence(),
-                    model.get().reason(),
-                    model.get().normalizedInput(),
-                    model.get().readOnlyView());
             return model.get();
         }
         if (plannerProperties.getIntent().isFallbackToLocalRules()) {

@@ -44,16 +44,7 @@ public class ExecutionContractFactory {
         List<String> allowedArtifacts = requestedArtifacts.isEmpty() ? List.of("DOC") : requestedArtifacts;
         String clarifiedInstruction = buildClarifiedInstruction(session, rawInstruction);
         List<String> resolvedConstraints = resolveConstraints(session);
-        log.info("EXEC_CONTRACT build: taskId={}, sessionTaskBrief='{}', blueprintConstraints={}, intentConstraints={}, clarificationAnswers={}, existingClarified='{}', resolvedConstraints={}, raw='{}', clarified='{}'",
-                session == null ? null : session.getTaskId(),
-                abbreviate(session == null || session.getPlanBlueprint() == null ? null : session.getPlanBlueprint().getTaskBrief()),
-                session == null || session.getPlanBlueprint() == null ? null : defaultList(session.getPlanBlueprint().getConstraints()),
-                session == null || session.getIntentSnapshot() == null ? null : defaultList(session.getIntentSnapshot().getConstraints()),
-                session == null ? null : defaultList(session.getClarificationAnswers()),
-                abbreviate(session == null ? null : session.getClarifiedInstruction()),
-                resolvedConstraints,
-                abbreviate(rawInstruction),
-                abbreviate(clarifiedInstruction));
+
         WorkspaceContext sourceScope = session.getPlanBlueprint() != null && session.getPlanBlueprint().getSourceScope() != null
                 ? session.getPlanBlueprint().getSourceScope()
                 : session.getIntentSnapshot() == null ? null : session.getIntentSnapshot().getSourceScope();

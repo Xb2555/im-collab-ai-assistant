@@ -32,14 +32,12 @@ public class PresentationConcurrencyConfig {
     public PresentationAssetSettings presentationAssetSettings(
             @Value("${presentation.assets.max-image-tasks-per-slide:1}") int maxImageTasksPerSlide,
             @Value("${presentation.assets.cover-max-image-tasks:2}") int coverMaxImageTasks,
-            @Value("${presentation.assets.query-cache-ttl-hours:24}") long queryCacheTtlHours,
             @Value("${presentation.assets.download-cache-ttl-days:7}") long downloadCacheTtlDays,
             @Value("${presentation.assets.download-cache-max-files:500}") int downloadCacheMaxFiles,
             @Value("${presentation.assets.download-timeout-seconds:10}") int downloadTimeoutSeconds) {
         return new PresentationAssetSettings(
                 maxImageTasksPerSlide,
                 coverMaxImageTasks,
-                queryCacheTtlHours,
                 downloadCacheTtlDays,
                 downloadCacheMaxFiles,
                 downloadTimeoutSeconds);

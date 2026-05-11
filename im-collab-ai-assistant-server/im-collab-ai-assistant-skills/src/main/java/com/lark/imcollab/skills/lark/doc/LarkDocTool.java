@@ -76,39 +76,29 @@ public class LarkDocTool {
         if (openApiClient == null) throw new IllegalStateException("飞书文档 OpenAPI 客户端未配置，无法创建文档。");
         String normalizedTitle = normalizeTitle(title);
         String normalizedMarkdown = normalizeMarkdown(title, markdown);
-        log.info("LARK_DOC_CREATE markdown_normalized title='{}' markdownLength={} containsMermaidFence={} preview='{}'",
-                normalizedTitle,
-                normalizedMarkdown.length(),
-                normalizedMarkdown.contains("```mermaid"),
-                previewMarkdown(normalizedMarkdown));
+
         MermaidWhiteboardPlan mermaidPlan = extractMermaidWhiteboardPlan(normalizedMarkdown);
-        log.info("LARK_DOC_CREATE start title='{}' hasMermaid={} mermaidCount={}",
-                normalizedTitle, mermaidPlan.hasWhiteboards(), mermaidPlan.mermaidBlocks().size());
+
         JsonNode document = createEmptyDocument(normalizedTitle);
         String documentId = readGateway.firstNonBlank(readGateway.text(document, "document_id"), readGateway.text(document, "doc_id"));
         requireValue(documentId, "documentId");
-        log.info("LARK_DOC_CREATE created_empty_doc docId={}", documentId);
+
         if (mermaidPlan.hasWhiteboards()) {
-            log.info("LARK_DOC_CREATE mermaid_upgrade overwrite_start docId={} placeholderCount={}",
-                    documentId, mermaidPlan.mermaidBlocks().size());
+
             LarkDocUpdateResult overwriteResult = writeGateway.overwriteMarkdown(documentId, mermaidPlan.markdownWithWhiteboardPlaceholders());
-            log.info("LARK_DOC_CREATE mermaid_upgrade overwrite_done docId={} boardTokens={}",
-                    documentId, overwriteResult.getBoardTokens());
+
             if (overwriteResult.getBoardTokens() == null || overwriteResult.getBoardTokens().size() < mermaidPlan.mermaidBlocks().size()) {
                 throw new IllegalStateException("飞书文档 Mermaid 白板占位创建失败：返回的 board_tokens 数量不足。");
             }
             for (int index = 0; index < mermaidPlan.mermaidBlocks().size(); index++) {
                 String whiteboardToken = overwriteResult.getBoardTokens().get(index);
                 String mermaidSource = mermaidPlan.mermaidBlocks().get(index);
-                log.info("LARK_DOC_CREATE mermaid_upgrade whiteboard_update_start docId={} whiteboardToken={} mermaidLength={}",
-                        documentId, whiteboardToken, mermaidSource == null ? 0 : mermaidSource.length());
+
                 writeGateway.updateWhiteboard(whiteboardToken, mermaidSource, "mermaid");
-                log.info("LARK_DOC_CREATE mermaid_upgrade whiteboard_update_done docId={} whiteboardToken={}",
-                        documentId, whiteboardToken);
+
             }
         } else {
-            log.info("LARK_DOC_CREATE write_markdown_blocks docId={} markdownLength={}",
-                    documentId, normalizedMarkdown.length());
+
             contentCodec.writeMarkdownBlocks(documentId, normalizedMarkdown);
         }
         String docUrl = readGateway.firstNonBlank(readGateway.text(document, "url"), queryDocUrl(documentId), buildDocUrl(documentId));

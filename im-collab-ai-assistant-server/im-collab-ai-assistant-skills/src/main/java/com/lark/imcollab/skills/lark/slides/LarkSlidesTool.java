@@ -383,8 +383,7 @@ public class LarkSlidesTool {
             args.add("--yes");
             JsonNode root = executeJson(args);
             JsonNode dataNode = root.path("data").isMissingNode() ? root : root.path("data");
-            log.info("Lark slides whole page replaced: presentationId={}, slideId={}, xmlChars={}, timeoutMs={}, elapsedMs={}",
-                    presentationId.trim(), slideId.trim(), slideXml.length(), commandTimeoutMillis(), elapsedMs(startedAt));
+
             return LarkSlidesReplaceResult.builder()
                     .presentationId(firstNonBlank(
                             text(dataNode, "xml_presentation_id"),
@@ -406,33 +405,14 @@ public class LarkSlidesTool {
     }
 
     private JsonNode executeJson(List<String> args) {
-        log.info(
-                "Lark slides CLI request start: command={}, timeoutMs={}, workingDir='{}'",
-                summarizeArgs(args),
-                commandTimeoutMillis(),
-                cliWorkingDirectory()
-        );
+
         long startedAt = System.nanoTime();
         CliCommandResult result = larkCliClient.execute(args, null, commandTimeoutMillis());
         if (!result.isSuccess()) {
-            log.warn(
-                    "Lark slides CLI request failed: command={}, exitCode={}, elapsedMs={}, outputPreview={}",
-                    summarizeArgs(args),
-                    result.exitCode(),
-                    elapsedMs(startedAt),
-                    previewOutput(result.output())
-            );
             throw new IllegalStateException(readableCliError(result.output()));
         }
         try {
             JsonNode parsed = larkCliClient.readJsonOutput(result.output());
-            log.info(
-                    "Lark slides CLI request finished: command={}, exitCode={}, elapsedMs={}, outputPreview={}",
-                    summarizeArgs(args),
-                    result.exitCode(),
-                    elapsedMs(startedAt),
-                    previewOutput(result.output())
-            );
             return parsed;
         } catch (Exception exception) {
             log.warn(

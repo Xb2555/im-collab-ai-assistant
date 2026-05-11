@@ -145,7 +145,6 @@ public class PresentationWorkflowNodes {
     private final HttpClient httpClient;
     private final Path assetWorkspaceDirectory;
     private final Path assetCacheIndexPath;
-    private final Path queryCacheIndexPath;
     private final String pexelsApiKey;
     private final ExecutorService presentationIoExecutor;
     private final PresentationConcurrencySettings concurrencySettings;
@@ -209,13 +208,12 @@ public class PresentationWorkflowNodes {
         this.httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
         this.assetWorkspaceDirectory = Path.of("").toAbsolutePath().normalize().resolve(".ppt-generated-assets");
         this.assetCacheIndexPath = this.assetWorkspaceDirectory.resolve("index").resolve("asset-cache.json");
-        this.queryCacheIndexPath = this.assetWorkspaceDirectory.resolve("index").resolve("query-cache.json");
         this.presentationIoExecutor = presentationIoExecutor;
         this.concurrencySettings = concurrencySettings == null
                 ? new PresentationConcurrencySettings(8, 4, 6, 3)
                 : concurrencySettings;
         this.assetSettings = assetSettings == null
-                ? new PresentationAssetSettings(1, 2, 24, 7, 500, 10)
+                ? new PresentationAssetSettings(1, 2, 7, 500, 10)
                 : assetSettings;
         this.pexelsApiKey = blankToDefault(pexelsApiKey, "");
     }
@@ -341,7 +339,7 @@ public class PresentationWorkflowNodes {
                             .templateVariant(slide.getTemplateVariant())
                             .visualEmphasis(slide.getVisualEmphasis())
                             .contentImageTasks(selectContentImageTasks(pagePlan, slide))
-                            .timelineImageTasks(List.of())
+                            .timelineImageTasks(selectTimelineImageTasks(pagePlan, slide))
                             .illustrationTasks(pagePlan == null ? List.of() : safeAssetTasks(pagePlan.getIllustrationTasks(), slide, "illustration"))
                             .diagramTasks(pagePlan == null ? List.of() : safeDiagramTasks(pagePlan.getDiagramTasks()))
                             .chartTasks("data".equalsIgnoreCase(slide.getVisualEmphasis())
@@ -644,15 +642,11 @@ public class PresentationWorkflowNodes {
             List<PresentationAssetResources.SlideAssetResource> slides) {
         long finalSelectedCount = slides == null ? 0 : slides.stream()
                 .filter(Objects::nonNull)
-                .flatMap(slide -> java.util.stream.Stream.of(slide.getImages(), slide.getIllustrations()))
-                .filter(Objects::nonNull)
-                .flatMap(List::stream)
-                .filter(Objects::nonNull)
-                .count();
+                .mapToLong(this::countResolvedAssets)
+                .sum();
         System.err.println("ppt.asset.stats"
                 + " taskId=" + blankToDefault(taskId, "unknown")
                 + " searchCount=" + resolutionContext.searchCount.get()
-                + " searchCacheHitCount=" + resolutionContext.searchCacheHitCount.get()
                 + " candidateUrlCount=" + resolutionContext.candidateUrlCount.get()
                 + " downloadRequestedCount=" + resolutionContext.downloadRequestedCount.get()
                 + " downloadCacheHitCount=" + resolutionContext.downloadCacheHitCount.get()
@@ -2469,6 +2463,25 @@ public class PresentationWorkflowNodes {
         return safeAssetTasks(pagePlan.getContentImageTasks(), slide, "content");
     }
 
+    private List<PresentationAssetPlan.TimelineImageTask> selectTimelineImageTasks(
+            PresentationImagePlan.PageImagePlan pagePlan,
+            PresentationSlidePlan slide) {
+        if (pagePlan == null || slide == null || !allowsTimelineContentImage(slide)) {
+            return List.of();
+        }
+        List<PresentationAssetPlan.AssetTask> tasks = safeAssetTasks(pagePlan.getContentImageTasks(), slide, "timeline-content");
+        if (tasks.isEmpty()) {
+            return List.of();
+        }
+        PresentationAssetPlan.AssetTask task = tasks.get(0);
+        return List.of(PresentationAssetPlan.TimelineImageTask.builder()
+                .nodeId(slide.getSlideId() + "-timeline-image")
+                .nodeIndex(0)
+                .nodeText(blankToDefault(slide.getTitle(), "时间轴配图"))
+                .assetTask(task)
+                .build());
+    }
+
     private int allowedAssetTaskCount(PresentationSlidePlan slide, String assetKind) {
         if (slide == null) {
             return 0;
@@ -2494,7 +2507,7 @@ public class PresentationWorkflowNodes {
             return 0;
         }
         if ("TIMELINE".equals(pageType) || "timeline".equalsIgnoreCase(blankToDefault(slide.getLayout(), ""))) {
-            return 0;
+            return allowsTimelineContentImage(slide) ? 1 : 0;
         }
         return allowsLocalContentImage(slide)
                 ? Math.max(1, Math.min(1, Math.min(policy.contentSlots(), assetSettings.maxImageTasksPerSlide())))
@@ -2532,7 +2545,9 @@ public class PresentationWorkflowNodes {
             return TemplateImagePolicy.background();
         }
         if ("TIMELINE".equals(pageType) || "timeline".equals(layout)) {
-            return TemplateImagePolicy.background();
+            return allowsTimelineContentImage(slide)
+                    ? TemplateImagePolicy.backgroundWithContent()
+                    : TemplateImagePolicy.background();
         }
         if ("COMPARISON".equals(pageType) || "comparison".equals(layout) || "two-column".equals(layout)) {
             return TemplateImagePolicy.backgroundWithContent();
@@ -2573,7 +2588,12 @@ public class PresentationWorkflowNodes {
         }
         String pageType = blankToDefault(slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
         String layout = blankToDefault(slide.getLayout(), "").toLowerCase(java.util.Locale.ROOT);
-        return "COMPARISON".equals(pageType) || "comparison".equals(layout) || "two-column".equals(layout);
+        String templateVariant = blankToDefault(slide.getTemplateVariant(), "").toLowerCase(java.util.Locale.ROOT);
+        if ("COMPARISON".equals(pageType) || "comparison".equals(layout) || "two-column".equals(layout)) {
+            return true;
+        }
+        return "section".equals(layout)
+                && !List.of("headline-panel", "split-band", "rail-notes").contains(templateVariant);
     }
 
     private boolean allowsLocalContentImage(PresentationAssetPlan.SlideAssetPlan slide) {
@@ -2582,7 +2602,32 @@ public class PresentationWorkflowNodes {
         }
         String pageType = blankToDefault(slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
         String layout = blankToDefault(slide.getLayout(), "").toLowerCase(java.util.Locale.ROOT);
-        return "COMPARISON".equals(pageType) || "comparison".equals(layout) || "two-column".equals(layout);
+        String templateVariant = blankToDefault(slide.getTemplateVariant(), "").toLowerCase(java.util.Locale.ROOT);
+        if ("COMPARISON".equals(pageType) || "comparison".equals(layout) || "two-column".equals(layout)) {
+            return true;
+        }
+        return "section".equals(layout)
+                && !List.of("headline-panel", "split-band", "rail-notes").contains(templateVariant);
+    }
+
+    private boolean allowsTimelineContentImage(PresentationSlidePlan slide) {
+        if (slide == null) {
+            return false;
+        }
+        String pageType = blankToDefault(slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
+        String layout = blankToDefault(slide.getLayout(), "").toLowerCase(java.util.Locale.ROOT);
+        return ("TIMELINE".equals(pageType) || "timeline".equals(layout))
+                && timelineTemplateUsesImage(slide);
+    }
+
+    private boolean allowsTimelineContentImage(PresentationAssetPlan.SlideAssetPlan slide) {
+        if (slide == null) {
+            return false;
+        }
+        String pageType = blankToDefault(slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
+        String layout = blankToDefault(slide.getLayout(), "").toLowerCase(java.util.Locale.ROOT);
+        return ("TIMELINE".equals(pageType) || "timeline".equals(layout))
+                && timelineTemplateUsesImage(slide.getTemplateVariant());
     }
 
     private boolean usesSharedBackground(PresentationSlidePlan slide) {
@@ -2632,6 +2677,8 @@ public class PresentationWorkflowNodes {
             PresentationImageResources.PageImageResource page = resourceBySlide.get(slide.getSlideId());
             results.add(PresentationAssetResources.SlideAssetResource.builder()
                     .slideId(slide.getSlideId())
+                    .coverGroupImage(resolveRealAsset(slide.getSlideId(), page == null ? null : page.getCoverGroupImage(), "cover-group-image", resolutionContext))
+                    .sharedBackgroundImage(resolveRealAsset(slide.getSlideId(), page == null ? null : page.getSharedBackgroundImage(), "shared-background-image", resolutionContext))
                     .images(resolveRealAssets(slide.getSlideId(), page == null ? List.of() : page.getContentImages(), "image", resolutionContext))
                     .timelineNodeImages(resolveTimelineNodeAssets(slide, page == null ? List.of() : page.getTimelineNodeImages(), resolutionContext))
                     .illustrations(resolveRealAssets(slide.getSlideId(), page == null ? List.of() : page.getIllustrations(), "illustration", resolutionContext))
@@ -2640,6 +2687,18 @@ public class PresentationWorkflowNodes {
                     .build());
         }
         return results;
+    }
+
+    private PresentationAssetResources.AssetResource resolveRealAsset(
+            String slideId,
+            PresentationImageResources.ResourceItem item,
+            String assetType,
+            AssetResolutionContext resolutionContext) {
+        if (item == null) {
+            return null;
+        }
+        List<PresentationAssetResources.AssetResource> assets = resolveRealAssets(slideId, List.of(item), assetType, resolutionContext);
+        return assets.isEmpty() ? null : assets.get(0);
     }
 
     private List<PresentationAssetResources.TimelineNodeAssetResource> resolveTimelineNodeAssets(
@@ -2829,6 +2888,8 @@ public class PresentationWorkflowNodes {
                 concurrencySettings.imageUploadConcurrency(),
                 slide -> PresentationAssetResources.SlideAssetResource.builder()
                         .slideId(slide.getSlideId())
+                        .coverGroupImage(uploadAsset(slide.getCoverGroupImage(), presentationId))
+                        .sharedBackgroundImage(uploadAsset(slide.getSharedBackgroundImage(), presentationId))
                         .images(uploadAssetList(presentationId, slide.getImages()))
                         .timelineNodeImages(uploadTimelineNodeAssetList(presentationId, slide.getTimelineNodeImages()))
                         .illustrations(uploadAssetList(presentationId, slide.getIllustrations()))
@@ -2836,6 +2897,15 @@ public class PresentationWorkflowNodes {
                         .charts(slide.getCharts() == null ? List.of() : slide.getCharts())
                         .build());
         return PresentationAssetResources.builder().slides(uploadedSlides).build();
+    }
+
+    private PresentationAssetResources.AssetResource uploadAsset(
+            PresentationAssetResources.AssetResource asset,
+            String presentationId) {
+        if (asset == null) {
+            return null;
+        }
+        return uploadAssetList(presentationId, List.of(asset)).stream().findFirst().orElse(null);
     }
 
     private List<PresentationAssetResources.TimelineNodeAssetResource> uploadTimelineNodeAssetList(
@@ -3063,12 +3133,10 @@ public class PresentationWorkflowNodes {
                 concurrencySettings.imageResolveConcurrency(),
                 slide -> PresentationImageResources.PageImageResource.builder()
                         .slideId(slide.getSlideId())
-                        .contentImages(assembleSlideImageResources(
-                                slide,
-                                resolveTaskResources(slide, slide.getContentImageTasks(), "image", resolutionContext),
-                                sharedCoverGroupImage,
-                                sharedBackgroundImage))
-                        .timelineNodeImages(List.of())
+                        .coverGroupImage(isCoverGroupPage(slide) ? sharedCoverGroupImage : null)
+                        .sharedBackgroundImage(usesSharedBackground(slide) ? sharedBackgroundImage : null)
+                        .contentImages(resolveTaskResources(slide, slide.getContentImageTasks(), "image", resolutionContext))
+                        .timelineNodeImages(resolveTimelineContentResources(slide, resolutionContext))
                         .illustrations(resolveIllustrationResources(slide, slide.getIllustrationTasks(), resolutionContext))
                         .diagrams(resolveDiagramResourceItems(slide.getDiagramTasks()))
                         .build());
@@ -3113,27 +3181,6 @@ public class PresentationWorkflowNodes {
                 .fallbackSource("")
                 .normalizedQuery(normalizedQuery)
                 .build();
-    }
-
-    private List<PresentationImageResources.ResourceItem> assembleSlideImageResources(
-            PresentationAssetPlan.SlideAssetPlan slide,
-            List<PresentationImageResources.ResourceItem> localContentImages,
-            PresentationImageResources.ResourceItem sharedCoverGroupImage,
-            PresentationImageResources.ResourceItem sharedBackgroundImage) {
-        List<PresentationImageResources.ResourceItem> images = new ArrayList<>();
-        if (isCoverGroupPage(slide)) {
-            if (sharedCoverGroupImage != null) {
-                images.add(sharedCoverGroupImage);
-            }
-            return images;
-        }
-        if (localContentImages != null) {
-            images.addAll(localContentImages.stream().filter(Objects::nonNull).toList());
-        }
-        if (usesSharedBackground(slide) && sharedBackgroundImage != null) {
-            images.add(sharedBackgroundImage);
-        }
-        return images;
     }
 
     private List<PresentationImageResources.ResourceItem> resolveTaskResources(
@@ -3273,16 +3320,11 @@ public class PresentationWorkflowNodes {
         if (!hasText(normalizedQuery)) {
             return List.of();
         }
-        List<String> cached = readQueryCache(normalizedQuery);
-        if (!cached.isEmpty()) {
-            resolutionContext.recordSearch(true);
-            return cached;
-        }
         if (!hasText(pexelsApiKey) || !hasText(normalizedQuery)) {
             return List.of();
         }
         try {
-            resolutionContext.recordSearch(false);
+            resolutionContext.recordSearch();
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(PEXELS_SEARCH_API + URLEncoder.encode(normalizedQuery.trim(), StandardCharsets.UTF_8)))
                     .timeout(java.time.Duration.ofSeconds(20))
@@ -3313,7 +3355,6 @@ public class PresentationWorkflowNodes {
                     break;
                 }
             }
-            writeQueryCache(normalizedQuery, candidates);
             return candidates;
         } catch (Exception exception) {
             return List.of();
@@ -3513,36 +3554,6 @@ public class PresentationWorkflowNodes {
                 .toList();
     }
 
-    private List<String> readQueryCache(String normalizedQuery) {
-        Map<String, CachedQueryEntry> cache = readCacheFile(
-                queryCacheIndexPath,
-                new TypeReference<Map<String, CachedQueryEntry>>() { },
-                TreeMap::new);
-        CachedQueryEntry entry = cache.get(normalizedQuery);
-        if (entry == null || entry.getFetchedAt() == null) {
-            return List.of();
-        }
-        if (entry.getFetchedAt().isBefore(Instant.now().minus(Duration.ofHours(Math.max(1, assetSettings.queryCacheTtlHours()))))) {
-            return List.of();
-        }
-        return entry.getCandidateUrls() == null ? List.of() : entry.getCandidateUrls();
-    }
-
-    private void writeQueryCache(String normalizedQuery, List<String> candidates) {
-        synchronized (assetCacheMonitor("query-cache")) {
-            Map<String, CachedQueryEntry> cache = readCacheFile(
-                    queryCacheIndexPath,
-                    new TypeReference<Map<String, CachedQueryEntry>>() { },
-                    TreeMap::new);
-            cache.put(normalizedQuery, CachedQueryEntry.builder()
-                    .normalizedQuery(normalizedQuery)
-                    .candidateUrls(candidates == null ? List.of() : candidates)
-                    .fetchedAt(Instant.now())
-                    .build());
-            writeCacheFile(queryCacheIndexPath, cache);
-        }
-    }
-
     private CachedAssetEntry findCachedAsset(String sourceUrl) {
         synchronized (assetCacheMonitor("asset-cache")) {
             Map<String, CachedAssetEntry> cache = readCacheFile(
@@ -3690,16 +3701,6 @@ public class PresentationWorkflowNodes {
         private Instant lastAccessedAt;
     }
 
-    @Data
-    @Builder
-    @NoArgsConstructor
-    @AllArgsConstructor
-    static class CachedQueryEntry implements Serializable {
-        private String normalizedQuery;
-        private List<String> candidateUrls;
-        private Instant fetchedAt;
-    }
-
     record SearchQuerySpec(String normalizedQuery, String searchCategory, String searchSubject, String queryKey) { }
 
     private record TemplateImagePolicy(int backgroundSlots, int contentSlots, int timelineNodeSlots) {
@@ -3754,7 +3755,6 @@ public class PresentationWorkflowNodes {
         private final String taskId;
         private final Set<String> usedSourceUrls = ConcurrentHashMap.newKeySet();
         private final AtomicInteger searchCount = new AtomicInteger();
-        private final AtomicInteger searchCacheHitCount = new AtomicInteger();
         private final AtomicInteger candidateUrlCount = new AtomicInteger();
         private final AtomicInteger downloadRequestedCount = new AtomicInteger();
         private final AtomicInteger downloadCacheHitCount = new AtomicInteger();
@@ -3771,12 +3771,8 @@ public class PresentationWorkflowNodes {
             this.taskId = taskId;
         }
 
-        void recordSearch(boolean cacheHit) {
-            if (cacheHit) {
-                searchCacheHitCount.incrementAndGet();
-            } else {
-                searchCount.incrementAndGet();
-            }
+        void recordSearch() {
+            searchCount.incrementAndGet();
         }
 
         void recordCandidateCount(int count) {
@@ -3952,56 +3948,21 @@ public class PresentationWorkflowNodes {
                 .build();
     }
 
-    private java.util.Optional<PresentationAssetResources.AssetResource> resolveFirstImage(
-            String slideId,
-            PresentationAssetResources resources) {
-        if (resources == null || resources.getSlides() == null) {
-            return java.util.Optional.empty();
+    private List<PresentationImageResources.TimelineNodeResource> resolveTimelineContentResources(
+            PresentationAssetPlan.SlideAssetPlan slide,
+            AssetResolutionContext resolutionContext) {
+        if (slide == null || slide.getTimelineImageTasks() == null || slide.getTimelineImageTasks().isEmpty()) {
+            return List.of();
         }
-        return resources.getSlides().stream()
-                .filter(item -> Objects.equals(item.getSlideId(), slideId))
-                .findFirst()
-                .flatMap(item -> {
-                    if (item.getImages() != null) {
-                        java.util.Optional<PresentationAssetResources.AssetResource> image = item.getImages().stream()
-                                .filter(Objects::nonNull)
-                                .findFirst();
-                        if (image.isPresent()) {
-                            return image;
-                        }
-                    }
-                    if (item.getIllustrations() != null) {
-                        return item.getIllustrations().stream().filter(Objects::nonNull).findFirst();
-                    }
-                    return java.util.Optional.empty();
-                });
-    }
-
-    private java.util.Optional<PresentationAssetResources.AssetResource> resolveFirstNonBackgroundImage(
-            String slideId,
-            PresentationAssetResources resources) {
-        if (resources == null || resources.getSlides() == null) {
-            return java.util.Optional.empty();
-        }
-        return resources.getSlides().stream()
+        return slide.getTimelineImageTasks().stream()
                 .filter(Objects::nonNull)
-                .filter(item -> Objects.equals(item.getSlideId(), slideId))
-                .findFirst()
-                .flatMap(item -> {
-                    if (item.getImages() != null) {
-                        java.util.Optional<PresentationAssetResources.AssetResource> image = item.getImages().stream()
-                                .filter(Objects::nonNull)
-                                .filter(asset -> !isSharedBackgroundAsset(asset))
-                                .findFirst();
-                        if (image.isPresent()) {
-                            return image;
-                        }
-                    }
-                    if (item.getIllustrations() != null) {
-                        return item.getIllustrations().stream().filter(Objects::nonNull).findFirst();
-                    }
-                    return java.util.Optional.empty();
-                });
+                .map(task -> PresentationImageResources.TimelineNodeResource.builder()
+                        .nodeId(task.getNodeId())
+                        .nodeIndex(task.getNodeIndex())
+                        .nodeText(task.getNodeText())
+                        .resource(resolveTaskResources(slide, List.of(task.getAssetTask()), "image", resolutionContext).stream().findFirst().orElse(null))
+                        .build())
+                .toList();
     }
 
     private java.util.Optional<PresentationAssetResources.AssetResource> resolveSlideImage(
@@ -4014,19 +3975,24 @@ public class PresentationWorkflowNodes {
         if (policy.contentSlots() <= 0 && policy.backgroundSlots() <= 0) {
             return java.util.Optional.empty();
         }
-        java.util.Optional<PresentationAssetResources.AssetResource> direct = resolveFirstNonBackgroundImage(slide.getSlideId(), resources);
-        if (direct.filter(this::isRenderableAsset).isPresent()) {
+        java.util.Optional<PresentationAssetResources.SlideAssetResource> slideAssets = resolveSlideAssets(slide.getSlideId(), resources);
+        String pageType = blankToDefault(slide.getPageType(), "");
+        if (isCoverGroupPage(slide)) {
+            java.util.Optional<PresentationAssetResources.AssetResource> coverGroupImage = slideAssets
+                    .map(PresentationAssetResources.SlideAssetResource::getCoverGroupImage)
+                    .filter(this::isRenderableAsset);
+            if (coverGroupImage.isPresent()) {
+                return coverGroupImage;
+            }
+        }
+        java.util.Optional<PresentationAssetResources.AssetResource> direct = resolvePrimaryContentImage(slide, slideAssets.orElse(null));
+        if (direct.isPresent()) {
             return direct;
         }
-        if ("THANKS".equalsIgnoreCase(blankToDefault(slide.getPageType(), ""))) {
-            return resolveFirstNonBackgroundImage("slide-1", resources).filter(this::isRenderableAsset);
-        }
-        if ("TOC".equalsIgnoreCase(blankToDefault(slide.getPageType(), ""))) {
-            java.util.Optional<PresentationAssetResources.AssetResource> coverImage = resolveFirstNonBackgroundImage("slide-1", resources)
+        if ("THANKS".equalsIgnoreCase(pageType) || "TOC".equalsIgnoreCase(pageType)) {
+            return resolveSlideAssets("slide-1", resources)
+                    .map(PresentationAssetResources.SlideAssetResource::getCoverGroupImage)
                     .filter(this::isRenderableAsset);
-            if (coverImage.isPresent()) {
-                return coverImage;
-            }
         }
         return java.util.Optional.empty();
     }
@@ -4055,62 +4021,58 @@ public class PresentationWorkflowNodes {
                 .toList();
     }
 
-    private java.util.Optional<PresentationAssetResources.AssetResource> resolveSectionNeighborImage(
-            PresentationSlidePlan slide,
-            PresentationAssetResources resources) {
-        if (slide == null || resources == null || resources.getSlides() == null || !hasText(slide.getSectionId())) {
-            return java.util.Optional.empty();
-        }
-        String numericPart = slide.getSlideId() == null ? "" : slide.getSlideId().replace("slide-", "");
-        int currentIndex;
-        try {
-            currentIndex = Integer.parseInt(blankToDefault(numericPart, "0"));
-        } catch (NumberFormatException exception) {
-            currentIndex = 0;
-        }
-        final int anchorIndex = currentIndex;
-        return resources.getSlides().stream()
-                .filter(Objects::nonNull)
-                .filter(item -> !Objects.equals(item.getSlideId(), slide.getSlideId()))
-                .sorted(Comparator.comparingInt(item -> Math.abs(extractSlideIndex(item.getSlideId()) - anchorIndex)))
-                .filter(item -> item.getImages() != null && !item.getImages().isEmpty())
-                .map(item -> item.getImages().get(0))
-                .filter(Objects::nonNull)
-                .filter(this::isRenderableAsset)
-                .findFirst();
-    }
-
     private boolean isRenderableAsset(PresentationAssetResources.AssetResource asset) {
         return asset != null && hasText(asset.getFileToken());
     }
 
     private int firstNonEmptyAssetCount(PresentationAssetResources.SlideAssetResource slideResources) {
-        if (slideResources.getTimelineNodeImages() != null && slideResources.getTimelineNodeImages().stream().anyMatch(item -> item != null && item.getAsset() != null)) {
-            return (int) slideResources.getTimelineNodeImages().stream().filter(item -> item != null && item.getAsset() != null).count();
+        if (slideResources == null) {
+            return 0;
         }
-        int imageCount = slideResources.getImages() == null ? 0 : (int) slideResources.getImages().stream().filter(Objects::nonNull).count();
-        int illustrationCount = slideResources.getIllustrations() == null ? 0 : (int) slideResources.getIllustrations().stream().filter(Objects::nonNull).count();
-        return imageCount + illustrationCount;
+        int count = 0;
+        if (slideResources.getCoverGroupImage() != null) {
+            count++;
+        }
+        if (slideResources.getSharedBackgroundImage() != null) {
+            count++;
+        }
+        if (slideResources.getImages() != null) {
+            count += (int) slideResources.getImages().stream().filter(Objects::nonNull).count();
+        }
+        if (slideResources.getTimelineNodeImages() != null) {
+            count += (int) slideResources.getTimelineNodeImages().stream()
+                    .filter(Objects::nonNull)
+                    .map(PresentationAssetResources.TimelineNodeAssetResource::getAsset)
+                    .filter(Objects::nonNull)
+                    .count();
+        }
+        return count;
     }
 
     private int firstRenderableAssetCount(PresentationAssetResources.SlideAssetResource slideResources) {
+        if (slideResources == null) {
+            return 0;
+        }
+        int count = 0;
+        if (isRenderableAsset(slideResources.getCoverGroupImage())) {
+            count++;
+        }
+        if (isRenderableAsset(slideResources.getSharedBackgroundImage())) {
+            count++;
+        }
+        if (slideResources.getImages() != null) {
+            count += (int) slideResources.getImages().stream()
+                    .filter(this::isRenderableAsset)
+                    .count();
+        }
         if (slideResources.getTimelineNodeImages() != null) {
-            long renderableTimelineCount = slideResources.getTimelineNodeImages().stream()
+            count += (int) slideResources.getTimelineNodeImages().stream()
                     .filter(Objects::nonNull)
                     .map(PresentationAssetResources.TimelineNodeAssetResource::getAsset)
                     .filter(this::isRenderableAsset)
                     .count();
-            if (renderableTimelineCount > 0) {
-                return (int) renderableTimelineCount;
-            }
         }
-        int renderableImages = slideResources.getImages() == null ? 0 : (int) slideResources.getImages().stream()
-                .filter(this::isRenderableAsset)
-                .count();
-        int renderableIllustrations = slideResources.getIllustrations() == null ? 0 : (int) slideResources.getIllustrations().stream()
-                .filter(this::isRenderableAsset)
-                .count();
-        return renderableImages + renderableIllustrations;
+        return count;
     }
 
     private int extractSlideIndex(String slideId) {
@@ -4127,27 +4089,83 @@ public class PresentationWorkflowNodes {
     private java.util.Optional<PresentationAssetResources.AssetResource> resolveUnifiedContentBackground(
             PresentationSlidePlan slide,
             PresentationAssetResources resources) {
-        if (slide == null || resources == null || resources.getSlides() == null) {
+        if (slide == null) {
             return java.util.Optional.empty();
         }
-        String pageType = blankToDefault(slide.getPageType(), "");
-        if (!List.of("CONTENT", "TIMELINE", "COMPARISON", "CHART", "BACKGROUND").contains(pageType.toUpperCase())) {
+        if (!usesSharedBackground(slide)) {
+            return java.util.Optional.empty();
+        }
+        return resolveSlideAssets(slide.getSlideId(), resources)
+                .map(PresentationAssetResources.SlideAssetResource::getSharedBackgroundImage)
+                .filter(this::isRenderableAsset);
+    }
+
+    private long countResolvedAssets(PresentationAssetResources.SlideAssetResource slide) {
+        if (slide == null) {
+            return 0L;
+        }
+        long count = 0L;
+        if (slide.getCoverGroupImage() != null) {
+            count++;
+        }
+        if (slide.getSharedBackgroundImage() != null) {
+            count++;
+        }
+        if (slide.getImages() != null) {
+            count += slide.getImages().stream().filter(Objects::nonNull).count();
+        }
+        if (slide.getTimelineNodeImages() != null) {
+            count += slide.getTimelineNodeImages().stream()
+                    .filter(Objects::nonNull)
+                    .map(PresentationAssetResources.TimelineNodeAssetResource::getAsset)
+                    .filter(Objects::nonNull)
+                    .count();
+        }
+        return count;
+    }
+
+    private java.util.Optional<PresentationAssetResources.SlideAssetResource> resolveSlideAssets(
+            String slideId,
+            PresentationAssetResources resources) {
+        if (!hasText(slideId) || resources == null || resources.getSlides() == null) {
             return java.util.Optional.empty();
         }
         return resources.getSlides().stream()
                 .filter(Objects::nonNull)
-                .filter(item -> Objects.equals(item.getSlideId(), slide.getSlideId()))
-                .map(PresentationAssetResources.SlideAssetResource::getImages)
-                .filter(Objects::nonNull)
-                .flatMap(List::stream)
-                .filter(Objects::nonNull)
-                .filter(this::isSharedBackgroundAsset)
-                .filter(asset -> hasText(asset.getFileToken()))
+                .filter(item -> Objects.equals(item.getSlideId(), slideId))
                 .findFirst();
     }
 
-    private boolean isSharedBackgroundAsset(PresentationAssetResources.AssetResource asset) {
-        return asset != null && "统一正文背景图".equals(blankToDefault(asset.getPurpose(), ""));
+    private java.util.Optional<PresentationAssetResources.AssetResource> resolvePrimaryContentImage(
+            PresentationSlidePlan slide,
+            PresentationAssetResources.SlideAssetResource slideAssets) {
+        if (slide == null || slideAssets == null) {
+            return java.util.Optional.empty();
+        }
+        if (allowsTimelineContentImage(slide) && slideAssets.getTimelineNodeImages() != null) {
+            java.util.Optional<PresentationAssetResources.AssetResource> timelineAsset = slideAssets.getTimelineNodeImages().stream()
+                    .filter(Objects::nonNull)
+                    .map(PresentationAssetResources.TimelineNodeAssetResource::getAsset)
+                    .filter(this::isRenderableAsset)
+                    .findFirst();
+            if (timelineAsset.isPresent()) {
+                return timelineAsset;
+            }
+        }
+        if (slideAssets.getImages() != null) {
+            java.util.Optional<PresentationAssetResources.AssetResource> imageAsset = slideAssets.getImages().stream()
+                    .filter(this::isRenderableAsset)
+                    .findFirst();
+            if (imageAsset.isPresent()) {
+                return imageAsset;
+            }
+        }
+        if (slideAssets.getIllustrations() != null) {
+            return slideAssets.getIllustrations().stream()
+                    .filter(this::isRenderableAsset)
+                    .findFirst();
+        }
+        return java.util.Optional.empty();
     }
 
     private String compileSlideXml(PresentationSlideIR slideIr, int totalSlides, PresentationGenerationOptions options) {

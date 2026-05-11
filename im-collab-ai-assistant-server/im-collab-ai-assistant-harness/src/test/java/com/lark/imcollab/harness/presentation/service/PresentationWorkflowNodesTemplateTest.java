@@ -12,6 +12,7 @@ import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.harness.presentation.config.PresentationConcurrencySettings;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetPlan;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetResources;
+import com.lark.imcollab.harness.presentation.model.PresentationImageResources;
 import com.lark.imcollab.harness.presentation.model.PresentationOutline;
 import com.lark.imcollab.harness.presentation.model.PresentationSlideXml;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionSupport;
@@ -532,6 +533,123 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void resolveSlideImagePrefersContentSlotWhileBackgroundStaysSeparate() throws Exception {
+        Method resolveSlideImage = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "resolveSlideImage",
+                PresentationSlidePlan.class,
+                PresentationAssetResources.class);
+        resolveSlideImage.setAccessible(true);
+        Method resolveUnifiedContentBackground = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "resolveUnifiedContentBackground",
+                PresentationSlidePlan.class,
+                PresentationAssetResources.class);
+        resolveUnifiedContentBackground.setAccessible(true);
+
+        PresentationSlidePlan slide = PresentationSlidePlan.builder()
+                .slideId("slide-3")
+                .pageType("CONTENT")
+                .layout("section")
+                .templateVariant("section-frame")
+                .build();
+        PresentationAssetResources resources = PresentationAssetResources.builder()
+                .slides(List.of(PresentationAssetResources.SlideAssetResource.builder()
+                        .slideId("slide-3")
+                        .sharedBackgroundImage(PresentationAssetResources.AssetResource.builder()
+                                .assetId("bg-1")
+                                .fileToken("boxcnSharedBackground")
+                                .purpose("统一正文背景图")
+                                .build())
+                        .images(List.of(PresentationAssetResources.AssetResource.builder()
+                                .assetId("img-1")
+                                .fileToken("boxcnContentImage")
+                                .purpose("正文配图")
+                                .build()))
+                        .build()))
+                .build();
+
+        @SuppressWarnings("unchecked")
+        Optional<PresentationAssetResources.AssetResource> image =
+                (Optional<PresentationAssetResources.AssetResource>) resolveSlideImage.invoke(nodes, slide, resources);
+        @SuppressWarnings("unchecked")
+        Optional<PresentationAssetResources.AssetResource> background =
+                (Optional<PresentationAssetResources.AssetResource>) resolveUnifiedContentBackground.invoke(nodes, slide, resources);
+
+        assertThat(image).isPresent();
+        assertThat(image.get().getFileToken()).isEqualTo("boxcnContentImage");
+        assertThat(background).isPresent();
+        assertThat(background.get().getFileToken()).isEqualTo("boxcnSharedBackground");
+    }
+
+    @Test
+    void resolveSlideImageUsesCoverGroupImageForCoverTocAndThanks() throws Exception {
+        Method resolveSlideImage = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "resolveSlideImage",
+                PresentationSlidePlan.class,
+                PresentationAssetResources.class);
+        resolveSlideImage.setAccessible(true);
+
+        PresentationAssetResources resources = PresentationAssetResources.builder()
+                .slides(List.of(
+                        PresentationAssetResources.SlideAssetResource.builder()
+                                .slideId("slide-1")
+                                .coverGroupImage(PresentationAssetResources.AssetResource.builder()
+                                        .assetId("cover-1")
+                                        .fileToken("boxcnCoverGroup")
+                                        .purpose("封面目录感谢共享图")
+                                        .build())
+                                .build(),
+                        PresentationAssetResources.SlideAssetResource.builder()
+                                .slideId("slide-2")
+                                .coverGroupImage(PresentationAssetResources.AssetResource.builder()
+                                        .assetId("cover-2")
+                                        .fileToken("boxcnCoverGroup")
+                                        .purpose("封面目录感谢共享图")
+                                        .build())
+                                .build(),
+                        PresentationAssetResources.SlideAssetResource.builder()
+                                .slideId("slide-10")
+                                .coverGroupImage(PresentationAssetResources.AssetResource.builder()
+                                        .assetId("cover-3")
+                                        .fileToken("boxcnCoverGroup")
+                                        .purpose("封面目录感谢共享图")
+                                        .build())
+                                .build()))
+                .build();
+
+        @SuppressWarnings("unchecked")
+        Optional<PresentationAssetResources.AssetResource> cover =
+                (Optional<PresentationAssetResources.AssetResource>) resolveSlideImage.invoke(nodes, PresentationSlidePlan.builder()
+                        .slideId("slide-1")
+                        .pageType("COVER")
+                        .layout("cover")
+                        .templateVariant("hero-band")
+                        .build(), resources);
+        @SuppressWarnings("unchecked")
+        Optional<PresentationAssetResources.AssetResource> toc =
+                (Optional<PresentationAssetResources.AssetResource>) resolveSlideImage.invoke(nodes, PresentationSlidePlan.builder()
+                        .slideId("slide-2")
+                        .pageType("TOC")
+                        .layout("section")
+                        .templateVariant("headline-panel")
+                        .build(), resources);
+        @SuppressWarnings("unchecked")
+        Optional<PresentationAssetResources.AssetResource> thanks =
+                (Optional<PresentationAssetResources.AssetResource>) resolveSlideImage.invoke(nodes, PresentationSlidePlan.builder()
+                        .slideId("slide-10")
+                        .pageType("THANKS")
+                        .layout("summary")
+                        .templateVariant("next-step-board")
+                        .build(), resources);
+
+        assertThat(cover).isPresent();
+        assertThat(toc).isPresent();
+        assertThat(thanks).isPresent();
+        assertThat(cover.get().getFileToken()).isEqualTo("boxcnCoverGroup");
+        assertThat(toc.get().getFileToken()).isEqualTo("boxcnCoverGroup");
+        assertThat(thanks.get().getFileToken()).isEqualTo("boxcnCoverGroup");
+    }
+
+    @Test
     void timelineWithoutImageDoesNotRenderWhitePlaceholderRectangles() {
         String xml = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
                         .index(3)
@@ -821,7 +939,7 @@ class PresentationWorkflowNodesTemplateTest {
                     .templateVariant("toc-list")
                     .build());
 
-            assertThat(timelineWithImage).isEqualTo(1);
+            assertThat(timelineWithImage).isEqualTo(2);
             assertThat(timelineWithoutImage).isEqualTo(1);
             assertThat(tocSlots).isEqualTo(1);
         }
@@ -855,6 +973,55 @@ class PresentationWorkflowNodesTemplateTest {
             assertThat(resources.getSlides()).hasSize(1);
             assertThat(resources.getSlides().get(0).getImages()).isEmpty();
             assertThat(resources.getSlides().get(0).getIllustrations()).isEmpty();
+        }
+
+        @Test
+        void toResolvedSlideResourcesKeepsSharedSlotsSeparatedFromContentSlots() throws Exception {
+            Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                    "toResolvedSlideResources",
+                    PresentationAssetPlan.class,
+                    PresentationImageResources.class,
+                    Class.forName("com.lark.imcollab.harness.presentation.service.PresentationWorkflowNodes$AssetResolutionContext"));
+            method.setAccessible(true);
+            Class<?> contextClass = Class.forName("com.lark.imcollab.harness.presentation.service.PresentationWorkflowNodes$AssetResolutionContext");
+            var constructor = contextClass.getDeclaredConstructor(String.class);
+            constructor.setAccessible(true);
+            Object context = constructor.newInstance("task-test");
+
+            PresentationAssetPlan assetPlan = PresentationAssetPlan.builder()
+                    .slides(List.of(PresentationAssetPlan.SlideAssetPlan.builder()
+                            .slideId("slide-6")
+                            .pageType("TIMELINE")
+                            .layout("timeline")
+                            .templateVariant("horizontal-milestones")
+                            .build()))
+                    .build();
+            PresentationImageResources imageResources = PresentationImageResources.builder()
+                    .resources(List.of(PresentationImageResources.PageImageResource.builder()
+                            .slideId("slide-6")
+                            .sharedBackgroundImage(PresentationImageResources.ResourceItem.builder()
+                                    .candidateUrls(List.of())
+                                    .build())
+                            .timelineNodeImages(List.of(PresentationImageResources.TimelineNodeResource.builder()
+                                    .nodeId("slide-6-timeline-image")
+                                    .nodeIndex(0)
+                                    .nodeText("时间轴配图")
+                                    .resource(PresentationImageResources.ResourceItem.builder()
+                                            .candidateUrls(List.of())
+                                            .build())
+                                    .build()))
+                            .build()))
+                    .build();
+
+            @SuppressWarnings("unchecked")
+            List<PresentationAssetResources.SlideAssetResource> slides =
+                    (List<PresentationAssetResources.SlideAssetResource>) method.invoke(nodes, assetPlan, imageResources, context);
+
+            assertThat(slides).hasSize(1);
+            PresentationAssetResources.SlideAssetResource slide = slides.get(0);
+            assertThat(slide.getSharedBackgroundImage()).isNull();
+            assertThat(slide.getImages()).isEmpty();
+            assertThat(slide.getTimelineNodeImages()).hasSize(1);
         }
     }
 }
