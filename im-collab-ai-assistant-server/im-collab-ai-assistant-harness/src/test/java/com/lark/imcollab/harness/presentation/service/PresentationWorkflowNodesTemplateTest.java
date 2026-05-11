@@ -515,6 +515,155 @@ class PresentationWorkflowNodesTemplateTest {
         assertThat(xml).doesNotContain("{{TIMELINE_ITEMS}}");
     }
 
+    @Test
+    void compileSlideXmlRendersDistinctTimelineNodeImagesWhenProvided() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-5")
+                .pageIndex(5)
+                .slideRole("timeline")
+                .pageType("TIMELINE")
+                .pageSubType("TIMELINE.HORIZONTAL")
+                .title("推进路线")
+                .visualIntent("action")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("horizontal-milestones").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("阶段一；阶段二；阶段三")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-node-1")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("timeline-node-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnNode1").altText("节点一").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-node-2")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("timeline-node-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnNode2").altText("节点二").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-node-3")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("timeline-node-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnNode3").altText("节点三").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 7, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnNode1\"");
+        assertThat(xml).contains("src=\"boxcnNode2\"");
+        assertThat(xml).contains("src=\"boxcnNode3\"");
+    }
+
+    @Test
+    void contentSectionWithoutRenderableImageDowngradesToExplicitNoImageTemplate() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-7")
+                .pageIndex(7)
+                .slideRole("section")
+                .pageType("CONTENT")
+                .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                .title("正文无图降级")
+                .visualIntent("balance")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-7-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("section-frame").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-7-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("要点一；要点二")
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 8, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).doesNotContain("{{CONTENT_IMAGE}}");
+        assertThat(xml).doesNotContain("<img src=");
+        assertThat(xml).contains("topLeftX=\"82\" topLeftY=\"164\" width=\"748\" height=\"250\"");
+    }
+
+    @Test
+    void compileSlideXmlDoesNotRenderRightImagePlaceholderWhenNoImageExists() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-2")
+                .pageIndex(2)
+                .slideRole("two-column")
+                .pageType("CONTENT")
+                .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                .title("无图页")
+                .visualIntent("balance")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-2-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("dual-cards").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-2-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("要点一；要点二")
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).doesNotContain("<img src=");
+        assertThat(xml).doesNotContain("{{RIGHT_IMAGE}}");
+    }
+
     @Nested
     class AssetResolution {
 
@@ -527,6 +676,58 @@ class PresentationWorkflowNodesTemplateTest {
                     "https://undraw.co/api/illustrations/choose?query=travel+planning");
 
             assertThat(safe).isFalse();
+        }
+
+        @Test
+        void stableSearchQueryIgnoresPurposeProseAndKeepsSemanticKey() throws Exception {
+            Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                    "buildStableSearchQuery",
+                    PresentationAssetPlan.SlideAssetPlan.class,
+                    PresentationAssetPlan.AssetTask.class,
+                    String.class);
+            method.setAccessible(true);
+
+            PresentationAssetPlan.SlideAssetPlan slide = PresentationAssetPlan.SlideAssetPlan.builder()
+                    .slideId("slide-2")
+                    .build();
+            Object left = method.invoke(nodes, slide, PresentationAssetPlan.AssetTask.builder()
+                    .query("揭阳学宫 卡片配图")
+                    .purpose("增强可信度，避免喧宾夺主")
+                    .build(), "image");
+            Object right = method.invoke(nodes, slide, PresentationAssetPlan.AssetTask.builder()
+                    .query("揭阳学宫 右侧图片")
+                    .purpose("做视觉陪衬，不要太花")
+                    .build(), "image");
+
+            Method normalizedQuery = left.getClass().getDeclaredMethod("normalizedQuery");
+            normalizedQuery.setAccessible(true);
+            assertThat(normalizedQuery.invoke(left)).isEqualTo(normalizedQuery.invoke(right));
+        }
+
+        @Test
+        void expectedImageSlotsFollowsTemplateVariantRules() throws Exception {
+            Method method = PresentationWorkflowNodes.class.getDeclaredMethod("expectedImageSlots", PresentationSlidePlan.class);
+            method.setAccessible(true);
+
+            int timelineWithImage = (int) method.invoke(nodes, PresentationSlidePlan.builder()
+                    .pageType("TIMELINE")
+                    .layout("timeline")
+                    .templateVariant("horizontal-milestones")
+                    .build());
+            int timelineWithoutImage = (int) method.invoke(nodes, PresentationSlidePlan.builder()
+                    .pageType("TIMELINE")
+                    .layout("timeline")
+                    .templateVariant("stacked-steps")
+                    .build());
+            int tocSlots = (int) method.invoke(nodes, PresentationSlidePlan.builder()
+                    .pageType("TOC")
+                    .layout("section")
+                    .templateVariant("toc-list")
+                    .build());
+
+            assertThat(timelineWithImage).isEqualTo(1);
+            assertThat(timelineWithoutImage).isEqualTo(0);
+            assertThat(tocSlots).isEqualTo(0);
         }
 
         @Test

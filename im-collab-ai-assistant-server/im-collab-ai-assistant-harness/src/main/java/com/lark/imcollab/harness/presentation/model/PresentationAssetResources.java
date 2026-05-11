@@ -23,6 +23,7 @@ public class PresentationAssetResources implements Serializable {
     public static class SlideAssetResource implements Serializable {
         private String slideId;
         private List<AssetResource> images;
+        private List<TimelineNodeAssetResource> timelineNodeImages;
         private List<AssetResource> illustrations;
         private List<AssetResource> diagrams;
         private List<AssetResource> charts;
@@ -45,5 +46,19 @@ public class PresentationAssetResources implements Serializable {
         private String purpose;
         private String mimeType;
         private String fallbackSource;
+        private String normalizedQuery;
+        private Integer selectedFromCandidateIndex;
+        private Boolean cacheHit;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TimelineNodeAssetResource implements Serializable {
+        private String nodeId;
+        private Integer nodeIndex;
+        private String nodeText;
+        private AssetResource asset;
     }
 }
