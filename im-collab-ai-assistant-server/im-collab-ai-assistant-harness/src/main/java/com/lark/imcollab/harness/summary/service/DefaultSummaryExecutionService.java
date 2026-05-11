@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -67,7 +68,7 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
                     artifacts
             )));
             if (summary.isBlank()) {
-                summary = fallbackSummary(task);
+                summary = fallbackSummary(task, artifacts);
             }
             summary = appendShareableLinks(summary, artifacts);
             executionSupport.saveArtifact(taskId, stepId, ArtifactType.SUMMARY, summaryTitle(task), summary, null);
@@ -85,17 +86,21 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
     private String buildPrompt(Task task, List<Step> steps, List<TaskEvent> events, List<Artifact> artifacts) {
         ExecutionContract contract = task.getExecutionContract();
         WorkspaceContext context = contract == null ? null : contract.getSourceScope();
+        SummaryToneProfile toneProfile = resolveToneProfile(task, contract, context);
         return """
-                你是 SUMMARY Agent，负责把整个任务上下文整理成可直接发到 IM 聊天框的自然中文文本。
+                你是 SUMMARY Agent，负责把整个任务上下文整理成可直接发到 IM 聊天框里的工作汇报文本。
 
                 输出要求：
                 1. 只输出最终摘要正文，不要解释你的思考过程。
                 2. 不要使用 Markdown 语法：不要 #/##/### 标题，不要 - 或 * 列表符号，不要 **加粗**，不要代码块，不要表格。
-                3. 可以用自然分段和中文序号，例如“一、...”“二、...”，但每一段都要像普通聊天文本一样可读。
-                4. 必须基于下方任务上下文和已有产物，不要编造未出现的事实。
-                5. 如果上下文里包含已选消息或已拉取消息，优先总结这些消息的事实、风险、结论、待办。
-                6. 如果任务已产生执行步骤、事件或产物，需要把进展、结果、失败点或下一步一起纳入摘要。
-                7. 如果已有产物里包含可访问链接，摘要正文里必须带上这些链接，便于用户直接转发；可以在结尾自然写成“相关产物链接：文档：...；PPT：...”。
+                3. 默认写成 1 到 2 段、可直接转发的工作汇报口吻，像人在群里或私聊里同步进展，不要写成“任务记录”“执行日志”或方案说明书。
+                4. 不要使用“一、二、三”这类分节编号，不要逐条罗列“第一步/第二步/第三步”。
+                5. 开头优先直接同步结果和进展，例如“%s”这类口吻，但不要机械照抄模板。
+                6. 必须基于下方任务上下文和已有产物，不要编造未出现的事实。
+                7. 如果上下文里包含已选消息或已拉取消息，优先提炼事实、结论、风险、待办，而不是复述原文。
+                8. 如果任务已产生执行步骤、事件或产物，要优先说明已完成的交付物、补充修改和当前可用于汇报/转发的结果。
+                9. 如果已有产物里包含可访问链接，摘要正文里必须自然带上这些链接，便于用户直接转发；可在结尾自然写成“文档：...；PPT：...”。
+                10. 语气偏好：%s。
 
                 任务信息：
                 任务ID：%s
@@ -119,6 +124,8 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
                 已有产物：
                 %s
                 """.formatted(
+                toneProfile.openingHint(),
+                toneProfile.toneInstruction(),
                 safe(task.getTaskId()),
                 task.getStatus() == null ? "" : task.getStatus().name(),
                 safe(task.getRawInstruction()),
@@ -239,17 +246,96 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
                 .replace("__", "")
                 .replace("`", "");
         cleaned = cleaned.lines()
-                .map(line -> line
-                        .replaceFirst("^\\s*#+\\s*", "")
-                        .replaceFirst("^\\s*[-*+]\\s+", "")
-                        .trim())
+                .map(line -> {
+                    String normalized = line
+                            .replaceFirst("^\\s*[一二三四五六七八九十]+、\\s*", "")
+                            .replaceFirst("^\\s*#+\\s*", "")
+                            .replaceFirst("^\\s*[-*+]\\s+", "")
+                            .replaceFirst("^\\s*#+\\s*", "")
+                            .replaceFirst("^\\s*[-*+]\\s+", "");
+                    return normalized.trim();
+                })
                 .filter(line -> !line.isBlank())
                 .collect(Collectors.joining("\n"));
         return limit(cleaned.replaceAll("\\n{3,}", "\n\n").trim(), MAX_ARTIFACT_CHARS);
     }
 
-    private String fallbackSummary(Task task) {
-        return "本次任务已完成摘要整理。任务目标是：" + firstNonBlank(task.getClarifiedInstruction(), task.getRawInstruction(), "整理当前任务上下文");
+    private String fallbackSummary(Task task, List<Artifact> artifacts) {
+        SummaryToneProfile toneProfile = resolveToneProfile(
+                task,
+                task == null ? null : task.getExecutionContract(),
+                task == null || task.getExecutionContract() == null ? null : task.getExecutionContract().getSourceScope()
+        );
+        StringBuilder builder = new StringBuilder();
+        builder.append(toneProfile.openingHint())
+                .append("本次任务已完成，");
+        String artifactSummary = summarizeArtifactTitles(artifacts);
+        if (!artifactSummary.isBlank()) {
+            builder.append("目前已产出").append(artifactSummary).append("，");
+        } else {
+            builder.append("已完成摘要整理，");
+        }
+        builder.append("核心目标围绕")
+                .append(firstNonBlank(task == null ? null : task.getClarifiedInstruction(),
+                        task == null ? null : task.getRawInstruction(),
+                        "当前任务内容"))
+                .append("展开，当前结果已可直接用于后续同步或汇报。");
+        return builder.toString();
+    }
+
+    private String summarizeArtifactTitles(List<Artifact> artifacts) {
+        if (artifacts == null || artifacts.isEmpty()) {
+            return "";
+        }
+        List<String> titles = artifacts.stream()
+                .filter(Objects::nonNull)
+                .filter(artifact -> artifact.getType() != ArtifactType.DOC_DRAFT
+                        && artifact.getType() != ArtifactType.DOC_OUTLINE
+                        && artifact.getType() != ArtifactType.SUMMARY)
+                .map(artifact -> firstNonBlank(artifact.getTitle(), artifact.getType() == null ? null : artifact.getType().name()))
+                .filter(title -> title != null && !title.isBlank())
+                .distinct()
+                .limit(3)
+                .toList();
+        if (titles.isEmpty()) {
+            return "";
+        }
+        if (titles.size() == 1) {
+            return titles.get(0);
+        }
+        if (titles.size() == 2) {
+            return titles.get(0) + "和" + titles.get(1);
+        }
+        return titles.get(0) + "、" + titles.get(1) + "等产物";
+    }
+
+    private SummaryToneProfile resolveToneProfile(Task task, ExecutionContract contract, WorkspaceContext context) {
+        String combined = String.join("\n",
+                safe(task == null ? null : task.getRawInstruction()),
+                safe(task == null ? null : task.getClarifiedInstruction()),
+                safe(task == null ? null : task.getTaskBrief()),
+                safe(contract == null ? null : contract.getAudience()),
+                safe(context == null ? null : context.getChatId()));
+        String lower = combined.toLowerCase(Locale.ROOT);
+        if (containsAny(lower, "老板", "领导", "管理层", "汇报", "汇总给老板")) {
+            return new SummaryToneProfile("跟您同步一下当前进展：", "偏正式、简洁、面向老板汇报");
+        }
+        if (containsAny(lower, "群", "群里", "工作群", "同步", "同事", "团队")) {
+            return new SummaryToneProfile("各位同步一下当前进展：", "偏工作群同步，简洁自然，适合直接转发");
+        }
+        return new SummaryToneProfile("同步一下当前进展：", "偏工作汇报，简洁自然，适合直接发送");
+    }
+
+    private boolean containsAny(String value, String... needles) {
+        if (value == null || value.isBlank() || needles == null) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (needle != null && !needle.isBlank() && value.contains(needle.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String appendShareableLinks(String summary, List<Artifact> artifacts) {
@@ -317,5 +403,8 @@ public class DefaultSummaryExecutionService implements SummaryExecutionService {
         }
         String trimmed = value.trim();
         return trimmed.length() <= maxLength ? trimmed : trimmed.substring(0, maxLength) + "...";
+    }
+
+    private record SummaryToneProfile(String openingHint, String toneInstruction) {
     }
 }
