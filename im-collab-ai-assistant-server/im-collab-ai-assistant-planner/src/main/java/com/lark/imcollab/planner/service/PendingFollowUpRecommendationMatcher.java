@@ -43,11 +43,9 @@ public class PendingFollowUpRecommendationMatcher {
         if (index != null && index >= 1 && index <= recommendations.size()) {
             return MatchResult.selected(recommendations.get(index - 1));
         }
-        String normalizedInput = compact(userInput);
-        for (PendingFollowUpRecommendation recommendation : recommendations) {
-            if (recommendation != null && normalizedInput.equals(compact(recommendation.getSuggestedUserInstruction()))) {
-                return MatchResult.selected(recommendation);
-            }
+        Optional<PendingFollowUpRecommendation> explicitCarryForward = explicitCarryForwardMatch(userInput, recommendations);
+        if (explicitCarryForward.isPresent()) {
+            return MatchResult.selected(explicitCarryForward.get());
         }
         if (!upstreamSuggestsStandaloneTask
                 && recommendations.size() == 1
@@ -85,6 +83,37 @@ public class PendingFollowUpRecommendationMatcher {
                 .findFirst()
                 .map(MatchResult::selected)
                 .orElseGet(MatchResult::none);
+    }
+
+    public boolean isExplicitCarryForwardCandidate(
+            String userInput,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        return explicitCarryForwardMatch(userInput, recommendations).isPresent();
+    }
+
+    private Optional<PendingFollowUpRecommendation> explicitCarryForwardMatch(
+            String userInput,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        if (!hasText(userInput) || recommendations == null || recommendations.isEmpty()) {
+            return Optional.empty();
+        }
+        String normalizedInput = compact(userInput);
+        for (PendingFollowUpRecommendation recommendation : recommendations) {
+            if (recommendation == null || !hasText(recommendation.getSuggestedUserInstruction())) {
+                continue;
+            }
+            String normalizedSuggestion = compact(recommendation.getSuggestedUserInstruction());
+            if (normalizedInput.equals(normalizedSuggestion)) {
+                return Optional.of(recommendation);
+            }
+            if (normalizedInput.startsWith(normalizedSuggestion)
+                    && !looksLikeExplicitFreshTask(userInput)) {
+                return Optional.of(recommendation);
+            }
+        }
+        return Optional.empty();
     }
 
     private List<String> allowedChoices(List<PendingFollowUpRecommendation> recommendations) {
@@ -160,6 +189,16 @@ public class PendingFollowUpRecommendationMatcher {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean looksLikeExplicitFreshTask(String value) {
+        String normalized = compact(value);
+        return normalized.contains("新建一个任务")
+                || normalized.contains("新开一个任务")
+                || normalized.contains("另起一个任务")
+                || normalized.contains("再开一个任务")
+                || normalized.contains("重新开始一个新任务")
+                || normalized.contains("单独起一个新任务");
     }
 
     private String nullToEmpty(String value) {

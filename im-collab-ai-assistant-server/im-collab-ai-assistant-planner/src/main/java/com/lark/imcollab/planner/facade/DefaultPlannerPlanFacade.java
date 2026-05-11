@@ -10,13 +10,14 @@ import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.intent.IntentRoutingResult;
 import com.lark.imcollab.planner.intent.LlmIntentClassifier;
+import com.lark.imcollab.planner.service.CompletedArtifactIntentRecoveryService;
 import com.lark.imcollab.planner.service.ConversationTaskStateService;
 import com.lark.imcollab.planner.service.PendingFollowUpRecommendationMatcher;
 import com.lark.imcollab.planner.service.PlannerConversationService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.TaskSessionResolution;
 import com.lark.imcollab.planner.service.TaskSessionResolver;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -24,7 +25,6 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 
 @Service
-@RequiredArgsConstructor
 public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
 
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
@@ -36,6 +36,39 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     private final LlmIntentClassifier llmIntentClassifier;
     private final ConversationTaskStateService conversationTaskStateService;
     private final PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher;
+    private final CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService;
+
+    @Autowired
+    public DefaultPlannerPlanFacade(
+            PlannerConversationService plannerConversationService,
+            TaskSessionResolver taskSessionResolver,
+            PlannerSessionService plannerSessionService,
+            LlmIntentClassifier llmIntentClassifier,
+            ConversationTaskStateService conversationTaskStateService,
+            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
+            CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService
+    ) {
+        this.plannerConversationService = plannerConversationService;
+        this.taskSessionResolver = taskSessionResolver;
+        this.plannerSessionService = plannerSessionService;
+        this.llmIntentClassifier = llmIntentClassifier;
+        this.conversationTaskStateService = conversationTaskStateService;
+        this.pendingFollowUpRecommendationMatcher = pendingFollowUpRecommendationMatcher;
+        this.completedArtifactIntentRecoveryService = completedArtifactIntentRecoveryService;
+    }
+
+    public DefaultPlannerPlanFacade(
+            PlannerConversationService plannerConversationService,
+            TaskSessionResolver taskSessionResolver,
+            PlannerSessionService plannerSessionService,
+            LlmIntentClassifier llmIntentClassifier,
+            ConversationTaskStateService conversationTaskStateService,
+            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher
+    ) {
+        this(plannerConversationService, taskSessionResolver, plannerSessionService, llmIntentClassifier,
+                conversationTaskStateService, pendingFollowUpRecommendationMatcher,
+                new CompletedArtifactIntentRecoveryService(taskSessionResolver));
+    }
 
     @Override
     public String previewImmediateReply(
@@ -54,11 +87,25 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (result.isEmpty()) {
             return "";
         }
-        String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput, result.get());
+        IntentRoutingResult routingResult = result.get();
+        CompletedArtifactIntentRecoveryService.RecoveryResult recoveryResult =
+                completedArtifactIntentRecoveryService == null
+                        ? CompletedArtifactIntentRecoveryService.RecoveryResult.none()
+                        : completedArtifactIntentRecoveryService.recoverIntentRouting(
+                                session,
+                                resolution,
+                                workspaceContext,
+                                routingResult,
+                                effectiveInput
+                        );
+        if (recoveryResult.recoveredIntent() != null) {
+            routingResult = recoveryResult.recoveredIntent();
+        }
+        String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput, routingResult);
         if (!followUpPreview.isBlank()) {
             return followUpPreview;
         }
-        return immediateReceipt(result.get().type(), result.get().adjustmentTarget(), session, workspaceContext);
+        return immediateReceipt(routingResult.type(), routingResult.adjustmentTarget(), session, workspaceContext);
     }
 
     @Override
@@ -69,6 +116,11 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             String userFeedback
     ) {
         return plannerConversationService.handlePlanRequest(rawInstruction, workspaceContext, taskId, userFeedback);
+    }
+
+    @Override
+    public PlanTaskSession getLatestSession(String taskId) {
+        return safeGet(taskId);
     }
 
     private String immediateReceipt(TaskCommandTypeEnum type, AdjustmentTargetEnum adjustmentTarget, PlanTaskSession session, WorkspaceContext workspaceContext) {
@@ -124,13 +176,13 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
                 conversationTaskStateService.find(resolution.continuationKey());
         boolean awaitingSelection = stateOptional.map(com.lark.imcollab.common.model.entity.ConversationTaskState::isPendingFollowUpAwaitingSelection)
                 .orElse(false);
-        if (!shouldPreviewPendingFollowUpImmediateReply(routingResult, awaitingSelection)) {
-            return "";
-        }
         List<PendingFollowUpRecommendation> recommendations = stateOptional
                 .map(state -> state.getPendingFollowUpRecommendations())
                 .orElse(List.of());
         if (recommendations == null || recommendations.isEmpty()) {
+            return "";
+        }
+        if (!shouldPreviewPendingFollowUpImmediateReply(routingResult, awaitingSelection, effectiveInput, recommendations)) {
             return "";
         }
         PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
@@ -153,7 +205,9 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
 
     private boolean shouldPreviewPendingFollowUpImmediateReply(
             IntentRoutingResult routingResult,
-            boolean awaitingSelection
+            boolean awaitingSelection,
+            String userInput,
+            List<PendingFollowUpRecommendation> recommendations
     ) {
         if (routingResult == null || routingResult.type() == null) {
             return awaitingSelection;
@@ -162,8 +216,11 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             return routingResult.type() != TaskCommandTypeEnum.QUERY_STATUS
                     && routingResult.type() != TaskCommandTypeEnum.CANCEL_TASK;
         }
-        return routingResult.type() == TaskCommandTypeEnum.START_TASK
-                || routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
+        if (routingResult.type() == TaskCommandTypeEnum.START_TASK) {
+            return pendingFollowUpRecommendationMatcher != null
+                    && pendingFollowUpRecommendationMatcher.isExplicitCarryForwardCandidate(userInput, recommendations);
+        }
+        return routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
                 || routingResult.type() == TaskCommandTypeEnum.CONFIRM_ACTION;
     }
 

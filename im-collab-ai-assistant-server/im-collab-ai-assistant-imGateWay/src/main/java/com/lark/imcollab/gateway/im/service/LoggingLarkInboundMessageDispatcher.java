@@ -22,11 +22,14 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(LoggingLarkInboundMessageDispatcher.class);
+    private static final Pattern SESSION_TASK_ID_PATTERN = Pattern.compile("taskId=([^,\\s]+)");
     private final PlannerPlanFacade plannerPlanFacade;
     private final ImTaskCommandFacade taskCommandFacade;
     private final LarkMessageReplyTool replyTool;
@@ -143,7 +146,10 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
         } catch (RuntimeException exception) {
             log.warn("Scenario A planner dispatch failed: messageId={}, chatId={}",
                     message.messageId(), message.chatId(), exception);
-            session = failedSession(message, humanizeFailure(exception));
+            session = recoverSessionAfterVersionConflict(exception);
+            if (session == null) {
+                session = failedSession(message, humanizeFailure(exception));
+            }
             printTiming("im.planner.seconds", session == null ? null : session.getTaskId(), null, plannerStartedAt, exception);
         }
         if (session != null && session.getPlanningPhase() != PlanningPhaseEnum.FAILED) {
@@ -341,6 +347,71 @@ public class LoggingLarkInboundMessageDispatcher implements LarkInboundMessageDi
             return "处理消息时遇到异常";
         }
         return message.length() > 120 ? message.substring(0, 120) + "..." : message;
+    }
+
+    private PlanTaskSession recoverSessionAfterVersionConflict(RuntimeException exception) {
+        if (!isVersionConflict(exception) || plannerPlanFacade == null) {
+            return null;
+        }
+        String taskId = extractTaskId(exception == null ? null : exception.getMessage());
+        if (!hasText(taskId)) {
+            return null;
+        }
+        PlanTaskSession latest = plannerPlanFacade.getLatestSession(taskId);
+        if (latest == null) {
+            return null;
+        }
+        TaskRuntimeSnapshot snapshot = snapshot(latest);
+        if (!shouldRecoverAsSuccess(latest, snapshot)) {
+            return null;
+        }
+        log.info("im_version_conflict_recovered_as_success taskId={} phase={} intakeType={} assistantReplyPresent={}",
+                latest.getTaskId(),
+                latest.getPlanningPhase(),
+                latest.getIntakeState() == null ? null : latest.getIntakeState().getIntakeType(),
+                hasAssistantReply(latest));
+        return latest;
+    }
+
+    private boolean shouldRecoverAsSuccess(PlanTaskSession session, TaskRuntimeSnapshot snapshot) {
+        if (session == null) {
+            return false;
+        }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED && hasAssistantReply(session)) {
+            return true;
+        }
+        if (session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER && hasPendingDocumentApproval(session)) {
+            return true;
+        }
+        if (snapshot == null || snapshot.getTask() == null || snapshot.getTask().getStatus() == null) {
+            return false;
+        }
+        if (snapshot.getTask().getStatus() == com.lark.imcollab.common.model.enums.TaskStatusEnum.FAILED
+                || snapshot.getTask().getStatus() == com.lark.imcollab.common.model.enums.TaskStatusEnum.CANCELLED) {
+            return false;
+        }
+        return session.getPlanningPhase() == PlanningPhaseEnum.COMPLETED
+                || session.getPlanningPhase() == PlanningPhaseEnum.ASK_USER;
+    }
+
+    private boolean hasPendingDocumentApproval(PlanTaskSession session) {
+        return session != null
+                && session.getIntakeState() != null
+                && hasText(session.getIntakeState().getPendingDocumentIterationTaskId())
+                && hasText(session.getIntakeState().getPendingDocumentApprovalMode());
+    }
+
+    private boolean isVersionConflict(RuntimeException exception) {
+        String message = exception == null ? null : exception.getMessage();
+        return hasText(message) && message.contains("Session state conflict:");
+    }
+
+    private String extractTaskId(String message) {
+        if (!hasText(message)) {
+            return null;
+        }
+        Matcher matcher = SESSION_TASK_ID_PATTERN.matcher(message);
+        return matcher.find() ? matcher.group(1).trim() : null;
     }
 
     private LarkMessageEvent toSourceEvent(LarkInboundMessage message) {

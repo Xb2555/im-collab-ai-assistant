@@ -22,6 +22,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -68,7 +69,7 @@ class ReadOnlyNodeServiceTest {
         assertThat(result.getIntakeState().getAssistantReply()).contains("计划我先保留");
         assertThat(result.getIntakeState().getAssistantReply()).doesNotContain("没完全判断清楚");
         verify(memoryService).appendAssistantTurn(session, result.getIntakeState().getAssistantReply());
-        verify(sessionService).saveWithoutVersionChange(session);
+        verify(sessionService, never()).saveWithoutVersionChange(session);
     }
 
     @Test
@@ -118,7 +119,7 @@ class ReadOnlyNodeServiceTest {
         assertThat(result.getIntakeState().getAssistantReply()).contains("项目进展文档");
         assertThat(result.getIntakeState().getAssistantReply()).contains("https://example.feishu.cn/docx/doc");
         verify(memoryService).appendAssistantTurn(session, result.getIntakeState().getAssistantReply());
-        verify(sessionService).saveWithoutVersionChange(session);
+        verify(sessionService, never()).saveWithoutVersionChange(session);
     }
 
     @Test

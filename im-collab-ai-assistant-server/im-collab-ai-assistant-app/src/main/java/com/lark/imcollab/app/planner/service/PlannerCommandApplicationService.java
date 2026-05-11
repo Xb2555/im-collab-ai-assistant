@@ -14,6 +14,7 @@ import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.planner.exception.RetryNotAllowedException;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.planner.service.FollowUpRecommendationExecutionService;
 import com.lark.imcollab.planner.service.PlannerRetryService;
 import com.lark.imcollab.planner.service.ReplanScopeService;
@@ -332,9 +333,7 @@ public class PlannerCommandApplicationService {
             intakeState.setPendingAdjustmentInstruction(null);
             current.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
             current.setTransitionReason("Completed DOC adjustment approval executed");
-            sessionService.saveWithoutVersionChange(current);
-            sessionService.publishEvent(taskId, "COMPLETED");
-            return current;
+            return finalizeDocumentApprovalSession(current, "doc_approval_completed", "文档修改已执行，状态同步稍后刷新。");
         }
         if (status == DocumentArtifactIterationStatus.WAITING_APPROVAL) {
             intakeState.setAssistantReply(result.getSummary());
@@ -344,17 +343,87 @@ public class PlannerCommandApplicationService {
             intakeState.setPendingDocumentApprovalSummary(result.getSummary());
             current.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
             current.setTransitionReason("Completed DOC adjustment approval still waiting");
-            sessionService.saveWithoutVersionChange(current);
-            sessionService.publishEvent(taskId, "ASK_USER");
-            return current;
+            return finalizeDocumentApprovalSession(current, "doc_approval_waiting", "已进入待确认状态，状态同步稍后刷新。");
         }
         clearPendingDocumentApproval(intakeState);
         current.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
         intakeState.setAssistantReply(result == null ? feedback : result.getSummary());
         current.setTransitionReason("Completed DOC adjustment approval failed");
-        sessionService.saveWithoutVersionChange(current);
-        sessionService.publishEvent(taskId, "COMPLETED");
-        return current;
+        return finalizeDocumentApprovalSession(current, "doc_approval_failed",
+                result == null ? feedback : result.getSummary());
+    }
+
+    private PlanTaskSession finalizeDocumentApprovalSession(
+            PlanTaskSession session,
+            String finalizeOutcome,
+            String degradedAssistantReply
+    ) {
+        if (session == null) {
+            return null;
+        }
+        try {
+            sessionService.saveWithoutVersionChange(session);
+            sessionService.publishEvent(session.getTaskId(), session.getPlanningPhase().name());
+            return session;
+        } catch (VersionConflictException conflict) {
+            log.warn(
+                    "completed_artifact_finalize_conflict_retry taskId={} planningPhase={} intakeType={} stateRevision_expected={} finalizeOutcome={}",
+                    session.getTaskId(),
+                    session.getPlanningPhase(),
+                    session.getIntakeState() == null ? null : session.getIntakeState().getIntakeType(),
+                    session.getStateRevision(),
+                    finalizeOutcome,
+                    conflict
+            );
+            PlanTaskSession latest = sessionService.get(session.getTaskId());
+            copyApprovalFinalizeFields(session, latest, degradedAssistantReply);
+            try {
+                sessionService.saveWithoutVersionChange(latest);
+                sessionService.publishEvent(latest.getTaskId(), latest.getPlanningPhase().name());
+                return latest;
+            } catch (VersionConflictException retryConflict) {
+                log.warn(
+                        "completed_artifact_finalize_conflict_degraded_success taskId={} planningPhase={} intakeType={} stateRevision_expected={} stateRevision_actual={} finalizeOutcome={}",
+                        latest.getTaskId(),
+                        latest.getPlanningPhase(),
+                        latest.getIntakeState() == null ? null : latest.getIntakeState().getIntakeType(),
+                        session.getStateRevision(),
+                        latest.getStateRevision(),
+                        finalizeOutcome,
+                        retryConflict
+                );
+                copyApprovalFinalizeFields(session, latest, degradedAssistantReply);
+                return latest;
+            }
+        }
+    }
+
+    private void copyApprovalFinalizeFields(
+            PlanTaskSession source,
+            PlanTaskSession target,
+            String degradedAssistantReply
+    ) {
+        if (source == null || target == null) {
+            return;
+        }
+        target.setPlanningPhase(source.getPlanningPhase());
+        target.setTransitionReason(source.getTransitionReason());
+        TaskIntakeState sourceIntake = source.getIntakeState();
+        TaskIntakeState targetIntake = target.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : target.getIntakeState();
+        if (sourceIntake != null) {
+            targetIntake.setAssistantReply(hasText(sourceIntake.getAssistantReply()) ? sourceIntake.getAssistantReply() : degradedAssistantReply);
+            targetIntake.setPendingAdjustmentInstruction(sourceIntake.getPendingAdjustmentInstruction());
+            targetIntake.setPendingDocumentIterationTaskId(sourceIntake.getPendingDocumentIterationTaskId());
+            targetIntake.setPendingDocumentArtifactId(sourceIntake.getPendingDocumentArtifactId());
+            targetIntake.setPendingDocumentDocUrl(sourceIntake.getPendingDocumentDocUrl());
+            targetIntake.setPendingDocumentApprovalSummary(sourceIntake.getPendingDocumentApprovalSummary());
+            targetIntake.setPendingDocumentApprovalMode(sourceIntake.getPendingDocumentApprovalMode());
+        } else if (hasText(degradedAssistantReply)) {
+            targetIntake.setAssistantReply(degradedAssistantReply);
+        }
+        target.setIntakeState(targetIntake);
     }
 
     private String resolveApprovalAction(String feedback, boolean confirmed) {

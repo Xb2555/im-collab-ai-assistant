@@ -45,6 +45,10 @@ public class ReadOnlyNodeService {
 
     public PlanTaskSession readOnly(String taskId, String userInput, PlannerSupervisorDecisionResult decision) {
         PlanTaskSession session = sessionService.get(taskId);
+        return readOnly(session, userInput, decision);
+    }
+
+    public PlanTaskSession readOnly(PlanTaskSession session, String userInput, PlannerSupervisorDecisionResult decision) {
         if (session == null) {
             return null;
         }
@@ -55,7 +59,6 @@ public class ReadOnlyNodeService {
                 intakeState.setAssistantReply(reply);
             }
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         if (decision != null && decision.action() == PlannerSupervisorAction.UNKNOWN && decision.needsClarification()) {
@@ -71,7 +74,6 @@ public class ReadOnlyNodeService {
                 intakeState.setAssistantReply(clarification);
             }
             memoryService.appendAssistantTurn(session, clarification);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         if (session.getIntakeState() != null && "PLAN".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
@@ -79,7 +81,6 @@ public class ReadOnlyNodeService {
             TaskIntakeState intakeState = session.getIntakeState();
             intakeState.setAssistantReply(reply);
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         if (session.getIntakeState() != null && "STATUS".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
@@ -87,7 +88,6 @@ public class ReadOnlyNodeService {
             TaskIntakeState intakeState = session.getIntakeState();
             intakeState.setAssistantReply(reply);
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         if (session.getIntakeState() != null && "ARTIFACTS".equalsIgnoreCase(session.getIntakeState().getReadOnlyView())) {
@@ -95,7 +95,6 @@ public class ReadOnlyNodeService {
             TaskIntakeState intakeState = session.getIntakeState();
             intakeState.setAssistantReply(reply);
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
             return session;
         }
         String reply = firstNonBlank(
@@ -108,7 +107,6 @@ public class ReadOnlyNodeService {
                 intakeState.setAssistantReply(reply);
             }
             memoryService.appendAssistantTurn(session, reply);
-            sessionService.saveWithoutVersionChange(session);
         }
         return session;
     }

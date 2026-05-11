@@ -19,10 +19,14 @@ import com.lark.imcollab.common.model.enums.FollowUpModeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.common.facade.DocumentEditIntentFacade;
+import com.lark.imcollab.common.facade.PresentationEditIntentFacade;
+import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorGraphRunner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.Instant;
 import java.util.List;
@@ -840,13 +844,104 @@ class PlannerConversationCompletedSelectionTest {
     }
 
     @Test
-    void completedCurrentTaskDoesNotRouteArtifactEditWhenClassifierSaysNewTask() {
+    void completedCurrentTaskRecoversDocArtifactEditWhenClassifierSaysNewTask() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
         TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
         PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
         PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-doc")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-doc", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-doc")).thenReturn(completed);
+        when(intakeService.decide(completed, "加一小节关于ggbond的内容，随意编造即可", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.NEW_TASK,
+                        "加一小节关于ggbond的内容，随意编造即可",
+                        "llm misclassified as standalone task",
+                        null));
+        when(resolver.conversationState(context)).thenReturn(java.util.Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-doc")
+                        .lastCompletedTaskId("task-doc")
+                        .build()
+        ));
+        when(resolver.hasEditableArtifacts("task-doc")).thenReturn(true);
+        when(resolver.resolveEditableArtifacts("task-doc")).thenReturn(List.of(ArtifactRecord.builder()
+                .artifactId("artifact-doc-1")
+                .taskId("task-doc")
+                .type(ArtifactTypeEnum.DOC)
+                .url("https://doc.example/1")
+                .build()));
+        when(resolver.inferEditableArtifact("task-doc", "加一小节关于ggbond的内容，随意编造即可"))
+                .thenReturn(java.util.Optional.of(ArtifactRecord.builder()
+                        .artifactId("artifact-doc-1")
+                        .taskId("task-doc")
+                        .type(ArtifactTypeEnum.DOC)
+                        .url("https://doc.example/1")
+                        .build()));
+        when(documentEditIntentFacade.resolve(eq("加一小节关于ggbond的内容，随意编造即可"), eq(context)))
+                .thenReturn(DocumentEditIntent.builder()
+                        .clarificationNeeded(false)
+                        .build());
+        PlanTaskSession adjusted = PlanTaskSession.builder()
+                .taskId("task-doc")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(graphRunner.run(any(), eq("task-doc"),
+                eq("加一小节关于ggbond的内容，随意编造即可\n目标产物ID：artifact-doc-1"),
+                eq(context), isNull()))
+                .thenReturn(adjusted);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner,
+                recoveryService
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("加一小节关于ggbond的内容，随意编造即可", context, null, null);
+
+        assertThat(result).isSameAs(adjusted);
+        verify(graphRunner).run(any(), eq("task-doc"),
+                eq("加一小节关于ggbond的内容，随意编造即可\n目标产物ID：artifact-doc-1"),
+                eq(context), isNull());
+        verify(taskBridgeService).ensureTask(adjusted);
+    }
+
+    @Test
+    void completedCurrentTaskDoesNotRecoverExplicitFreshTaskRequest() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
         WorkspaceContext context = WorkspaceContext.builder()
                 .inputSource("LARK_PRIVATE_CHAT")
                 .chatId("chat-1")
@@ -862,11 +957,11 @@ class PlannerConversationCompletedSelectionTest {
                 .taskId(invocation.getArgument(0, String.class))
                 .planningPhase(PlanningPhaseEnum.INTAKE)
                 .build());
-        when(intakeService.decide(completed, "帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结", null, true))
+        when(intakeService.decide(completed, "新建一个任务，生成一份新的项目文档", null, true))
                 .thenReturn(new TaskIntakeDecision(
                         TaskIntakeTypeEnum.NEW_TASK,
-                        "帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结",
-                        "llm misclassified as standalone task",
+                        "新建一个任务，生成一份新的项目文档",
+                        "standalone new task",
                         null));
         when(resolver.conversationState(context)).thenReturn(java.util.Optional.of(
                 ConversationTaskState.builder()
@@ -876,13 +971,13 @@ class PlannerConversationCompletedSelectionTest {
                         .build()
         ));
         when(resolver.hasEditableArtifacts("task-doc")).thenReturn(true);
-        ArgumentCaptor<String> taskIdCaptor = ArgumentCaptor.forClass(String.class);
         PlanTaskSession freshTask = PlanTaskSession.builder()
                 .taskId("task-new")
                 .planningPhase(PlanningPhaseEnum.ASK_USER)
                 .build();
+        ArgumentCaptor<String> taskIdCaptor = ArgumentCaptor.forClass(String.class);
         when(graphRunner.run(any(), taskIdCaptor.capture(),
-                eq("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结"),
+                eq("新建一个任务，生成一份新的项目文档"),
                 eq(context), isNull()))
                 .thenReturn(freshTask);
         PlannerConversationService service = new PlannerConversationService(
@@ -891,18 +986,54 @@ class PlannerConversationCompletedSelectionTest {
                 sessionService,
                 taskBridgeService,
                 memoryService,
-                graphRunner
+                graphRunner,
+                recoveryService
         );
 
-        PlanTaskSession result = service.handlePlanRequest("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结", context, null, null);
+        PlanTaskSession result = service.handlePlanRequest("新建一个任务，生成一份新的项目文档", context, null, null);
 
         assertThat(result).isSameAs(freshTask);
         assertThat(taskIdCaptor.getValue()).isNotEqualTo("task-doc");
-        verify(graphRunner).run(any(), anyString(),
-                eq("帮我改doc，加一节关于666的内容，拉取前10分钟的消息作为内容总结"),
-                eq(context), isNull());
         verify(taskBridgeService).ensureTask(freshTask);
-        verify(resolver, never()).inferEditableArtifact(anyString(), anyString());
+    }
+
+    private static <T> ObjectProvider<T> provider(T facade) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject(Object... args) {
+                return facade;
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return facade;
+            }
+
+            @Override
+            public T getIfUnique() {
+                return facade;
+            }
+
+            @Override
+            public T getObject() {
+                return facade;
+            }
+
+            @Override
+            public java.util.Iterator<T> iterator() {
+                return java.util.List.of(facade).iterator();
+            }
+
+            @Override
+            public java.util.stream.Stream<T> stream() {
+                return java.util.stream.Stream.of(facade);
+            }
+
+            @Override
+            public java.util.stream.Stream<T> orderedStream() {
+                return java.util.stream.Stream.of(facade);
+            }
+        };
     }
 
     @Test
