@@ -375,9 +375,7 @@ public class LarkSlidesTool {
             List<String> args = new ArrayList<>();
             args.add("slides");
             args.add("xml_presentation.slide");
-            args.add("patch");
-            args.add("--as");
-            args.add(resolveSlidesIdentity());
+            args.add("replace");
             args.add("--params");
             args.add(params.arg());
             args.add("--data");

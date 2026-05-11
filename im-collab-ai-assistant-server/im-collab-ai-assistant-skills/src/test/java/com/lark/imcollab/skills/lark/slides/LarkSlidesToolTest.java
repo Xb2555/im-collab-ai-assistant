@@ -169,6 +169,38 @@ class LarkSlidesToolTest {
     }
 
     @Test
+    void replaceWholeSlideUsesReplaceSubcommandWithoutAsFlag() throws Exception {
+        List<CliCommand> commands = new ArrayList<>();
+        List<String> paramsPayloads = new ArrayList<>();
+        List<String> dataPayloads = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            paramsPayloads.add(readAtFileArg(command.arguments(), "--params"));
+            dataPayloads.add(readAtFileArg(command.arguments(), "--data"));
+            return new CliCommandResult(0, """
+                    {"data":{"xml_presentation_id":"slides-1","slide_id":"s1","revision_id":"8"}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkSlidesTool tool = new LarkSlidesTool(new LarkCliClient(executor, properties, objectMapper), properties, objectMapper);
+
+        LarkSlidesReplaceResult result = tool.replaceWholeSlide("slides-1", "s1", "<slide id=\"s1\"><data>更新页</data></slide>");
+
+        assertThat(result.getSlideId()).isEqualTo("s1");
+        assertThat(commands.get(0).arguments()).containsSequence(List.of(
+                "slides", "xml_presentation.slide", "replace",
+                "--params"
+        ));
+        assertThat(commands.get(0).arguments()).contains("--data", "--yes");
+        assertThat(commands.get(0).arguments()).doesNotContain("--as");
+        JsonNode params = objectMapper.readTree(paramsPayloads.get(0));
+        JsonNode data = objectMapper.readTree(dataPayloads.get(0));
+        assertThat(params.path("xml_presentation_id").asText()).isEqualTo("slides-1");
+        assertThat(params.path("slide_id").asText()).isEqualTo("s1");
+        assertThat(data.path("slide").path("content").asText()).contains("更新页");
+    }
+
+    @Test
     void createSlideAppendsWhenBeforeSlideIdMissing() throws Exception {
         List<String> paramsPayloads = new ArrayList<>();
         CliCommandExecutor executor = command -> {

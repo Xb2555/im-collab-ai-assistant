@@ -1,0 +1,18 @@
+<slide xmlns="http://www.larkoffice.com/sml/2.0">
+  <style><fill><fillColor color="{{BACKGROUND}}"/></fill></style>
+  <data>
+    {{BACKGROUND_IMAGE}}
+    <shape type="rect" topLeftX="0" topLeftY="0" width="220" height="540"><fill><fillColor color="{{CARD_FILL}}"/></fill></shape>
+    <shape type="rect" topLeftX="48" topLeftY="100" width="90" height="8"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
+    <shape type="text" topLeftX="248" topLeftY="106" width="620" height="150">{{TITLE}}</shape>
+    <shape type="text" topLeftX="250" topLeftY="286" width="560" height="64">{{SUBTITLE}}</shape>
+    <shape type="rect" topLeftX="250" topLeftY="390" width="126" height="38"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
+    <shape type="rect" topLeftX="376" topLeftY="390" width="154" height="38"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
+    <shape type="text" topLeftX="260" topLeftY="398" width="104" height="20">{{PRESENTER_LABEL}}</shape>
+    <shape type="text" topLeftX="388" topLeftY="398" width="130" height="20">{{PRESENTER_VALUE}}</shape>
+    <shape type="rect" topLeftX="548" topLeftY="390" width="126" height="38"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
+    <shape type="rect" topLeftX="674" topLeftY="390" width="150" height="38"><fill><fillColor color="rgba(255,255,255,0.96)"/></fill></shape>
+    <shape type="text" topLeftX="558" topLeftY="398" width="104" height="20">{{DATE_LABEL}}</shape>
+    <shape type="text" topLeftX="686" topLeftY="398" width="126" height="20">{{DATE_VALUE}}</shape>
+  </data>{{NOTE}}
+</slide>

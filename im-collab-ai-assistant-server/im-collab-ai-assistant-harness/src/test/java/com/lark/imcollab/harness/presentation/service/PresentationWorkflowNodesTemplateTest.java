@@ -3,7 +3,13 @@ package com.lark.imcollab.harness.presentation.service;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.lark.imcollab.common.domain.Task;
+import com.lark.imcollab.common.model.entity.PresentationAssetRef;
+import com.lark.imcollab.common.model.entity.PresentationElementIR;
+import com.lark.imcollab.common.model.entity.PresentationLayoutSpec;
+import com.lark.imcollab.common.model.entity.PresentationSlideIR;
+import com.lark.imcollab.common.model.enums.PresentationElementKind;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
+import com.lark.imcollab.harness.presentation.config.PresentationConcurrencySettings;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetPlan;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetResources;
 import com.lark.imcollab.harness.presentation.model.PresentationOutline;
@@ -16,6 +22,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -27,9 +35,12 @@ import static org.mockito.Mockito.when;
 class PresentationWorkflowNodesTemplateTest {
 
     private static final ReactAgent AGENT = mock(ReactAgent.class);
+    private static final ExecutorService EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
+    private static final PresentationConcurrencySettings CONCURRENCY_SETTINGS =
+            new PresentationConcurrencySettings(8, 4, 6, 3);
 
     private final PresentationWorkflowNodes nodes = new PresentationWorkflowNodes(
-            null, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+            null, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
     @Test
     void deepTechTimelineUsesGradientAndTimelineShapes() {
@@ -57,6 +68,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .contains("rgb(246,249,255)")
                 .contains("fontSize=\"31\"")
                 .contains("startX=\"130\" startY=\"280\"")
+                .contains("<ellipse topLeftX=\"110\" topLeftY=\"262\" width=\"36\" height=\"36\">")
                 .contains("<note>")
                 .contains("实施路径");
     }
@@ -97,7 +109,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成一份5页浅色商务风中文PPT，详细版，不要演讲备注，面向产品和工程团队做方案评审")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-1",
@@ -122,7 +134,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成一份2页简约专业风中文PPT，第一页说明测试目标，第二页说明生成链路和风险，无演讲备注。")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-2",
@@ -144,7 +156,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .inputSummary("生成8页深色科技风中文PPT，面向比赛评委和管理层，详细版，无演讲备注。")
                 .build()));
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
                 "task-3",
@@ -156,6 +168,21 @@ class PresentationWorkflowNodesTemplateTest {
         assertThat(options.getThemeFamily()).isEqualTo("deep-tech");
         assertThat(options.getDensity()).isEqualTo("detailed");
         assertThat(options.isSpeakerNotes()).isFalse();
+    }
+
+    @Test
+    void autoPageCountExpandsWhenUserDidNotSpecifyPageLimit() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "defaultAutoPageCount",
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
+        method.setAccessible(true);
+
+        int pageCount = (int) method.invoke(nodes,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                        .keyMessages(List.of("背景", "方案", "风险", "下一步"))
+                        .build());
+
+        assertThat(pageCount).isGreaterThanOrEqualTo(10);
     }
 
     @Test
@@ -192,9 +219,55 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void tocStripsPrefixedNumbersBeforeOlAutoNumbering() {
+        String xml = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
+                        .index(2)
+                        .title("目录")
+                        .layout("section")
+                        .pageType("TOC")
+                        .templateVariant("headline-panel")
+                        .keyPoints(List.of("1.1.项目背景", "2.2.核心方案", "3.风险与计划"))
+                        .build(),
+                2,
+                5,
+                PresentationGenerationOptions.builder()
+                        .style("business-light")
+                        .themeFamily("business-light")
+                        .density("standard")
+                        .speakerNotes(false)
+                        .templateDiversity("balanced")
+                        .allowVariantMixing(true)
+                        .build());
+
+        assertThat(xml).contains("<ol>");
+        assertThat(xml).contains("项目背景", "核心方案", "风险与计划");
+        assertThat(xml).doesNotContain("1.1.项目背景", "2.2.核心方案", "3.风险与计划");
+    }
+
+    @Test
+    void fallbackOutlineKeepsTransitionPageWhenPageBudgetIsTight() throws Exception {
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
+
+        var method = PresentationWorkflowNodes.class.getDeclaredMethod("fallbackOutline", com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
+        method.setAccessible(true);
+        var outline = (com.lark.imcollab.harness.presentation.model.PresentationOutline) method.invoke(localNodes,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                        .title("方案汇报")
+                        .audience("团队")
+                        .style("business-light")
+                        .pageCount(6)
+                        .goal("汇报方案")
+                        .keyMessages(List.of("背景", "方案", "风险", "下一步"))
+                        .build());
+
+        assertThat(outline.getSlides().stream().anyMatch(slide -> "TRANSITION".equals(slide.getPageType()))).isTrue();
+    }
+
+    @Test
     void fallbackOutlineRotatesTemplateVariants() throws Exception {
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
         var method = PresentationWorkflowNodes.class.getDeclaredMethod("fallbackOutline", com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
         method.setAccessible(true);
@@ -220,7 +293,7 @@ class PresentationWorkflowNodesTemplateTest {
     @Test
     void validateSlideXmlPreservesImgBlock() {
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
-                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), "");
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
         String xml = """
                 <slide xmlns="http://www.larkoffice.com/sml/2.0">
                   <data>
@@ -253,6 +326,193 @@ class PresentationWorkflowNodesTemplateTest {
         List<PresentationSlideXml> validated = (List<PresentationSlideXml>) result.get("slideXmlList");
         assertThat(validated).hasSize(1);
         assertThat(validated.get(0).getXml()).contains("<img src=\"boxcnRealImageToken\"");
+    }
+
+    @Test
+    void compileSlideXmlUsesSharedBackgroundAndContentImageForContentPage() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-3")
+                .pageIndex(3)
+                .slideRole("two-column")
+                .pageType("CONTENT")
+                .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                .title("核心方案")
+                .visualIntent("balance")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("headline-panel").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("要点一；要点二")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnContentImage").altText("正文配图").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-background")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("background-image")
+                                .targetElementType(com.lark.imcollab.common.model.enums.PresentationTargetElementType.IMAGE)
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnSharedBackground").altText("统一正文背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnSharedBackground\"");
+        assertThat(xml).contains("src=\"boxcnContentImage\"");
+    }
+
+    @Test
+    void compileSlideXmlUsesCoverStyleTemplateForThanksPage() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-6")
+                .pageIndex(6)
+                .slideRole("summary")
+                .pageType("THANKS")
+                .pageSubType("THANKS.CLOSING")
+                .title("感谢聆听")
+                .visualIntent("title")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-6-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("next-step-board").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-6-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("Thank you for listening；汇报人：张三；汇报时间：2026年05月10日")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-6-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnThanksBackground").altText("结束页背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnThanksBackground\"");
+        assertThat(xml).contains("感谢聆听");
+        assertThat(xml).contains("Thank you for listening");
+        assertThat(xml).contains("topLeftX=\"88\" topLeftY=\"82\" width=\"748\" height=\"320\"");
+    }
+
+    @Test
+    void timelineWithoutImageDoesNotRenderWhitePlaceholderRectangles() {
+        String xml = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
+                        .index(3)
+                        .title("时间轴")
+                        .layout("timeline")
+                        .templateVariant("horizontal-milestones")
+                        .keyPoints(List.of("阶段一", "阶段二", "阶段三"))
+                        .build(),
+                3,
+                6,
+                PresentationGenerationOptions.builder()
+                        .style("business-light")
+                        .themeFamily("business-light")
+                        .density("standard")
+                        .speakerNotes(false)
+                        .templateDiversity("balanced")
+                        .allowVariantMixing(true)
+                        .build());
+
+        assertThat(xml).doesNotContain("topLeftY=\"328\" width=\"110\" height=\"82\"");
+    }
+
+    @Test
+    void compileSlideXmlRendersTimelineImageIntoTimelineItemsSlot() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-4")
+                .pageIndex(4)
+                .slideRole("timeline")
+                .pageType("TIMELINE")
+                .pageSubType("TIMELINE.HORIZONTAL")
+                .title("实施路径")
+                .visualIntent("action")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("horizontal-milestones").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("需求澄清；方案设计；上线验证")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnTimelineImage").altText("时间轴节点配图").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-background")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("background-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnSharedBackground").altText("统一正文背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 6, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnSharedBackground\"");
+        assertThat(xml).contains("src=\"boxcnTimelineImage\"");
+        assertThat(xml).contains("topLeftY=\"328\" width=\"110\" height=\"82\"");
+        assertThat(xml).doesNotContain("{{TIMELINE_ITEMS}}");
     }
 
     @Nested
