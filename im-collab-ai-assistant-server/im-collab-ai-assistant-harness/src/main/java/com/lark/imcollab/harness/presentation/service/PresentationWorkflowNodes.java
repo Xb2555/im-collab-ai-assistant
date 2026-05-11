@@ -371,20 +371,12 @@ public class PresentationWorkflowNodes {
         AssetResolutionContext resolutionContext = new AssetResolutionContext(taskId);
         PresentationImageResources imageResources = resolveImageResources(assetPlan, resolutionContext);
         printPptStageTiming("ppt.asset_resolve.seconds", taskId, imageResolveStartedAt, null, null);
-        log.info("presentation asset resources fetched: taskId={}, resourcePageCount={}",
-                taskId,
-                imageResources == null || imageResources.getResources() == null ? 0 : imageResources.getResources().size());
         long assetDownloadStartedAt = System.nanoTime();
         List<PresentationAssetResources.SlideAssetResource> slides = toResolvedSlideResources(
                 assetPlan,
                 imageResources,
                 resolutionContext);
         printPptStageTiming("ppt.asset_download.seconds", taskId, assetDownloadStartedAt, null, null);
-        log.info("presentation asset resources resolved: taskId={}, resolvedSlides={}, downloadedImageCount={}, downloadedIllustrationCount={}",
-                taskId,
-                slides.size(),
-                slides.stream().filter(Objects::nonNull).map(PresentationAssetResources.SlideAssetResource::getImages).filter(Objects::nonNull).mapToLong(List::size).sum(),
-                slides.stream().filter(Objects::nonNull).map(PresentationAssetResources.SlideAssetResource::getIllustrations).filter(Objects::nonNull).mapToLong(List::size).sum());
         printAssetResolutionStats(taskId, resolutionContext, assetPlan, slides);
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.ASSET_RESOURCES, PresentationAssetResources.builder().slides(slides).build(),
@@ -410,16 +402,6 @@ public class PresentationWorkflowNodes {
                 .height(540)
                 .slides(slides)
                 .build();
-        log.info("presentation ir built: slideCount={}, imageElementCount={}",
-                slides.size(),
-                slides.stream()
-                        .filter(Objects::nonNull)
-                        .map(PresentationSlideIR::getElements)
-                        .filter(Objects::nonNull)
-                        .flatMap(List::stream)
-                        .filter(Objects::nonNull)
-                        .filter(element -> element.getElementKind() == PresentationElementKind.IMAGE)
-                        .count());
         return CompletableFuture.completedFuture(Map.of(
                 PresentationStateKeys.PRESENTATION_IR, ir,
                 PresentationStateKeys.DONE_IR, true
@@ -456,11 +438,6 @@ public class PresentationWorkflowNodes {
                     PresentationSlideXml generated = invokeSlideXml(prompt, slide, taskId);
                     String compiledXml = index < irSlides.size() ? compileSlideXml(irSlides.get(index), slides.size(), generationOptions(state)) : null;
                     generated.setXml(hasText(compiledXml) ? compiledXml : generated.getXml());
-                    log.info("slide xml generated: taskId={}, slideId={}, hasCompiledXml={}, containsImg={}",
-                            taskId,
-                            generated.getSlideId(),
-                            hasText(compiledXml),
-                            hasText(generated.getXml()) && generated.getXml().contains("<img "));
                     return generated;
                 });
         printPptStageTiming("ppt.slide_xml.seconds", taskId, slideXmlStartedAt, null, null);
@@ -488,9 +465,6 @@ public class PresentationWorkflowNodes {
             if (!isValidSlideXml(xml)) {
                 throw new IllegalStateException("Generated slide XML failed validation: " + blankToDefault(slideXml.getSlideId(), "slide-" + (i + 1)));
             }
-            log.info("slide xml validated: slideId={}, containsImg={}",
-                    slideXml.getSlideId(),
-                    hasText(xml) && xml.contains("<img "));
             slideXml.setXml(xml);
             validated.add(slideXml);
         }
@@ -557,8 +531,6 @@ public class PresentationWorkflowNodes {
         LarkSlidesCreateResult result = null;
         try {
             result = larkSlidesTool.createPresentation(title, List.of());
-            log.info("empty presentation created before media upload: taskId={}, presentationId={}, presentationUrl={}",
-                    taskId, result.getPresentationId(), result.getPresentationUrl());
             long assetUploadStartedAt = System.nanoTime();
             PresentationAssetResources uploadedResources = uploadResolvedAssets(result.getPresentationId(), resources);
             printPptStageTiming("ppt.asset_upload.seconds", taskId, assetUploadStartedAt, result.getPresentationId(), null);
@@ -575,10 +547,6 @@ public class PresentationWorkflowNodes {
             long finalXmlStartedAt = System.nanoTime();
             List<String> xmlPages = compileFinalSlideXmlPages(finalIr, options);
             printPptStageTiming("ppt.final_xml.seconds", taskId, finalXmlStartedAt, result.getPresentationId(), null);
-            log.info("presentation xml compiled for create: taskId={}, slideCount={}, imgSlideCount={}",
-                    taskId,
-                    xmlPages.size(),
-                    xmlPages.stream().filter(xml -> xml.contains("<img ")).count());
             if (xmlPages.isEmpty()) {
                 throw new IllegalStateException("No valid slide XML pages to create");
             }
@@ -3837,7 +3805,6 @@ public class PresentationWorkflowNodes {
             PresentationAssetResources resources) {
         List<PresentationElementIR> elements = new ArrayList<>();
         TemplateImagePolicy imagePolicy = templateImagePolicy(slide);
-        resolutionAudit("post_upload", slide, resources, imagePolicy);
         elements.add(PresentationElementIR.builder()
                 .elementId(slide.getSlideId() + "-title")
                 .elementKind(PresentationElementKind.TITLE)
@@ -3939,19 +3906,6 @@ public class PresentationWorkflowNodes {
                         .build())
                 .editability(PresentationEditability.HYBRID_EDITABLE)
                 .build()));
-        log.info("slide ir built: slideId={}, layout={}, templateVariant={}, imageSelected={}, keyPointCount={}",
-                slide.getSlideId(),
-                slide.getLayout(),
-                slide.getTemplateVariant(),
-                elements.stream().anyMatch(element -> element.getElementKind() == PresentationElementKind.IMAGE),
-                slide.getKeyPoints() == null ? 0 : slide.getKeyPoints().size());
-        if (imagePolicy.requiresRenderableAsset() && !hasRenderableVisual(elements, imagePolicy)) {
-            log.warn("ppt.image.missing slideId={} pageType={} templateVariant={} reason=no_renderable_asset",
-                    slide.getSlideId(),
-                    slide.getPageType(),
-                    slide.getTemplateVariant());
-            return buildSlideIrWithoutVisualSlots(slide, options, resources);
-        }
         return PresentationSlideIR.builder()
                 .slideId(slide.getSlideId())
                 .pageIndex(slide.getIndex())
@@ -3965,49 +3919,6 @@ public class PresentationWorkflowNodes {
                 .message(slide.getSpeakerNotes())
                 .visualIntent(slide.getVisualEmphasis())
                 .editability(imagePolicy.totalSlots() > 0 ? PresentationEditability.HYBRID_EDITABLE : PresentationEditability.NATIVE_EDITABLE)
-                .elements(elements)
-                .build();
-    }
-
-    private PresentationSlideIR buildSlideIrWithoutVisualSlots(
-            PresentationSlidePlan slide,
-            PresentationGenerationOptions options,
-            PresentationAssetResources resources) {
-        PresentationSlidePlan downgraded = downgradeSlidePlanWithoutImages(slide);
-        List<PresentationElementIR> elements = new ArrayList<>();
-        elements.add(PresentationElementIR.builder()
-                .elementId(downgraded.getSlideId() + "-title")
-                .elementKind(PresentationElementKind.TITLE)
-                .targetElementType(PresentationTargetElementType.TITLE)
-                .semanticRole("title")
-                .textType("title")
-                .textContent(downgraded.getTitle())
-                .layoutBox(PresentationLayoutSpec.builder().templateVariant(downgraded.getTemplateVariant()).build())
-                .editability(PresentationEditability.NATIVE_EDITABLE)
-                .build());
-        elements.add(PresentationElementIR.builder()
-                .elementId(downgraded.getSlideId() + "-body")
-                .elementKind(PresentationElementKind.BODY)
-                .targetElementType(PresentationTargetElementType.BODY)
-                .semanticRole("body")
-                .textType("body")
-                .textContent(downgraded.getKeyPoints() == null ? "" : String.join("；", downgraded.getKeyPoints()))
-                .layoutBox(PresentationLayoutSpec.builder().templateVariant(downgraded.getTemplateVariant()).build())
-                .editability(PresentationEditability.NATIVE_EDITABLE)
-                .build());
-        return PresentationSlideIR.builder()
-                .slideId(downgraded.getSlideId())
-                .pageIndex(downgraded.getIndex())
-                .slideRole(blankToDefault(downgraded.getLayout(), "content"))
-                .pageType(downgraded.getPageType())
-                .pageSubType(downgraded.getPageSubType())
-                .sectionId(downgraded.getSectionId())
-                .sectionTitle(downgraded.getSectionTitle())
-                .sectionOrder(downgraded.getSectionOrder())
-                .title(downgraded.getTitle())
-                .message(downgraded.getSpeakerNotes())
-                .visualIntent(downgraded.getVisualEmphasis())
-                .editability(PresentationEditability.NATIVE_EDITABLE)
                 .elements(elements)
                 .build();
     }
@@ -4118,32 +4029,6 @@ public class PresentationWorkflowNodes {
         return asset != null && hasText(asset.getFileToken());
     }
 
-    private void resolutionAudit(
-            String stage,
-            PresentationSlidePlan slide,
-            PresentationAssetResources resources,
-            TemplateImagePolicy policy) {
-        if (slide == null || resources == null || resources.getSlides() == null) {
-            return;
-        }
-        PresentationAssetResources.SlideAssetResource slideResources = resources.getSlides().stream()
-                .filter(Objects::nonNull)
-                .filter(item -> Objects.equals(item.getSlideId(), slide.getSlideId()))
-                .findFirst()
-                .orElse(null);
-        int resolvedCount = slideResources == null ? 0 : firstNonEmptyAssetCount(slideResources);
-        int renderableCount = slideResources == null ? 0 : firstRenderableAssetCount(slideResources);
-        log.info("ppt.asset.slot.{} slideId={} pageType={} layout={} templateVariant={} expectedImageSlots={} resolvedImageSlots={} renderableImageSlots={}",
-                blankToDefault(stage, "audit"),
-                slide.getSlideId(),
-                slide.getPageType(),
-                slide.getLayout(),
-                slide.getTemplateVariant(),
-                policy == null ? 0 : policy.totalSlots(),
-                resolvedCount,
-                renderableCount);
-    }
-
     private int firstNonEmptyAssetCount(PresentationAssetResources.SlideAssetResource slideResources) {
         if (slideResources.getTimelineNodeImages() != null && slideResources.getTimelineNodeImages().stream().anyMatch(item -> item != null && item.getAsset() != null)) {
             return (int) slideResources.getTimelineNodeImages().stream().filter(item -> item != null && item.getAsset() != null).count();
@@ -4227,7 +4112,6 @@ public class PresentationWorkflowNodes {
                 .keyPoints(extractBodyPoints(slideIr))
                 .speakerNotes(slideIr.getMessage())
                 .build();
-        plan = downgradePlanIfMissingRequiredImage(plan, slideIr);
         String baseXml = buildSlideXmlTemplateRaw(plan, plan.getIndex(), totalSlides, options);
         String layout = normalizeLayout(plan.getLayout(), plan.getIndex(), totalSlides);
         PresentationElementIR image = slideIr.getElements() == null ? null : slideIr.getElements().stream()
@@ -4246,7 +4130,6 @@ public class PresentationWorkflowNodes {
                 .filter(element -> "timeline-node-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
                 .toList();
         String compiledXml = injectSlideImages(baseXml, plan, layout, image, timelineNodeImages, backgroundImage, options);
-        logFinalImageInjection(plan, slideIr, compiledXml);
         return clearUnresolvedImageSlots(compiledXml);
     }
 
@@ -4351,116 +4234,6 @@ public class PresentationWorkflowNodes {
                 .replace("{{SIDE_IMAGE}}", "")
                 .replace("{{CONTENT_IMAGE}}", "")
                 .replace("{{TIMELINE_ITEMS}}", "");
-    }
-
-    private PresentationSlidePlan downgradePlanIfMissingRequiredImage(
-            PresentationSlidePlan plan,
-            PresentationSlideIR slideIr) {
-        TemplateImagePolicy policy = templateImagePolicy(plan);
-        if (!policy.requiresRenderableAsset() || hasRenderableVisual(slideIr == null ? List.of() : slideIr.getElements(), policy)) {
-            return plan;
-        }
-        return downgradeSlidePlanWithoutImages(plan);
-    }
-
-    private PresentationSlidePlan downgradeSlidePlanWithoutImages(PresentationSlidePlan slide) {
-        if (slide == null) {
-            return null;
-        }
-        String layout = blankToDefault(slide.getLayout(), "");
-        String templateVariant = blankToDefault(slide.getTemplateVariant(), "");
-        if ("two-column".equalsIgnoreCase(layout) || "comparison".equalsIgnoreCase(layout)) {
-            return cloneSlidePlan(slide, "section", "headline-panel");
-        }
-        if ("timeline".equalsIgnoreCase(layout)) {
-            return cloneSlidePlan(slide, "timeline", "stacked-steps");
-        }
-        if ("section".equalsIgnoreCase(layout)
-                && !List.of("rail-notes", "split-band", "headline-panel").contains(templateVariant.toLowerCase(java.util.Locale.ROOT))) {
-            return cloneSlidePlan(slide, "section", "headline-panel");
-        }
-        return slide;
-    }
-
-    private PresentationSlidePlan cloneSlidePlan(PresentationSlidePlan slide, String layout, String templateVariant) {
-        return PresentationSlidePlan.builder()
-                .slideId(slide.getSlideId())
-                .index(slide.getIndex())
-                .title(slide.getTitle())
-                .keyPoints(slide.getKeyPoints())
-                .layout(layout)
-                .pageType(slide.getPageType())
-                .pageSubType(slide.getPageSubType())
-                .sectionId(slide.getSectionId())
-                .sectionTitle(slide.getSectionTitle())
-                .sectionOrder(slide.getSectionOrder())
-                .templateVariant(templateVariant)
-                .visualEmphasis(slide.getVisualEmphasis())
-                .speakerNotes(slide.getSpeakerNotes())
-                .build();
-    }
-
-    private boolean hasRenderableVisual(List<PresentationElementIR> elements, TemplateImagePolicy policy) {
-        if (elements == null || elements.isEmpty() || policy == null || policy.totalSlots() <= 0) {
-            return policy == null || policy.totalSlots() <= 0;
-        }
-        long backgroundCount = elements.stream()
-                .filter(Objects::nonNull)
-                .filter(element -> "background-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
-                .filter(element -> hasText(resolveRenderableImageSrc(element)))
-                .count();
-        long timelineNodeCount = elements.stream()
-                .filter(Objects::nonNull)
-                .filter(element -> "timeline-node-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
-                .filter(element -> hasText(resolveRenderableImageSrc(element)))
-                .count();
-        long contentCount = elements.stream()
-                .filter(Objects::nonNull)
-                .filter(element -> PresentationElementKind.IMAGE == element.getElementKind())
-                .filter(element -> !"background-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
-                .filter(element -> !"timeline-node-image".equalsIgnoreCase(blankToDefault(element.getSemanticRole(), "")))
-                .filter(element -> hasText(resolveRenderableImageSrc(element)))
-                .count();
-        boolean backgroundSatisfied = backgroundCount >= policy.backgroundSlots()
-                || (policy.backgroundSlots() > 0 && contentCount > 0);
-        boolean timelineSatisfied = timelineNodeCount >= policy.timelineNodeSlots()
-                || (policy.timelineNodeSlots() > 0 && contentCount > 0);
-        return backgroundSatisfied
-                && contentCount >= policy.contentSlots()
-                && timelineSatisfied;
-    }
-
-    private void logFinalImageInjection(
-            PresentationSlidePlan plan,
-            PresentationSlideIR slideIr,
-            String compiledXml) {
-        TemplateImagePolicy policy = templateImagePolicy(plan);
-        int injectedSlots = countInjectedImages(compiledXml);
-        log.info("ppt.asset.slot.final_xml slideId={} pageType={} layout={} templateVariant={} expectedImageSlots={} injectedImageSlots={}",
-                plan.getSlideId(),
-                plan.getPageType(),
-                plan.getLayout(),
-                plan.getTemplateVariant(),
-                policy.totalSlots(),
-                injectedSlots);
-        if (policy.requiresRenderableAsset() && injectedSlots < policy.requiredRenderableSlots()) {
-            log.warn("ppt.image.missing slideId={} pageType={} templateVariant={} reason=no_renderable_asset",
-                    plan.getSlideId(),
-                    plan.getPageType(),
-                    plan.getTemplateVariant());
-        }
-    }
-
-    private int countInjectedImages(String xml) {
-        if (!hasText(xml)) {
-            return 0;
-        }
-        Matcher matcher = Pattern.compile("<img\\s+src=\"[^\"]+\"").matcher(xml);
-        int count = 0;
-        while (matcher.find()) {
-            count++;
-        }
-        return count;
     }
 
     private List<String> blankToDefaultList(List<String> values) {
