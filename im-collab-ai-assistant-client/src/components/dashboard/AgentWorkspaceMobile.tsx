@@ -1,5 +1,5 @@
 // src/components/dashboard/AgentWorkspaceMobile.tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect,useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Bot, Loader2, X, AlertCircle, RefreshCw, CheckCircle2, Play,
@@ -51,7 +51,8 @@ const getDuration = (start?: string | null, end?: string | null) => {
   return diff < 1000 ? `${diff}ms` : `${(diff / 1000).toFixed(1)}s`;
 };
 
-export function AgentWorkspaceMobile() {
+// ✨ 接收 onOpenHistory 属性
+export function AgentWorkspaceMobile({ onOpenHistory }: { onOpenHistory?: () => void }) {
   const { activeChatId } = useChatStore();
   const { activeTaskId, planPreview, taskRuntime, setPlanPreview, setTaskRuntime, clearTask, isPlanning } = useTaskStore();
 
@@ -64,11 +65,35 @@ export function AgentWorkspaceMobile() {
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
   const [isDelivering, setIsDelivering] = useState(false);
-  
+  // ✨ 新增：移动端历史任务的状态
+  const [recentTasks, setRecentTasks] = useState<any[]>([]);
+  const [isLoadingTasks, setIsLoadingTasks] = useState(false);
+
+  // ✨ 修改：用 async 函数包装一层，符合 React 官方推荐的数据拉取模式，完美解决 ESLint 报错
+  useEffect(() => {
+    if (!activeTaskId) {
+      const fetchRecentTasks = async () => {
+        setIsLoadingTasks(true);
+        try {
+          // 注意：如果 plannerApi 里获取列表的方法名不一样，请自行替换 getTasks
+          const res: any = await plannerApi.getTasks?.();
+          setRecentTasks(res?.tasks || res?.data?.tasks || []);
+        } catch (error) {
+          console.error('获取历史任务失败:', error);
+        } finally {
+          setIsLoadingTasks(false);
+        }
+      };
+      
+      fetchRecentTasks();
+    }
+  }, [activeTaskId]);
   // ✨ 新增：移动端也同步记录时间戳
   const [lastDeliveredTime, setLastDeliveredTime] = useState<string | null>(null);
   const [prevTaskId, setPrevTaskId] = useState(activeTaskId);
-
+// ✨ 新增：移动端也加上独立的折叠状态控制
+  const [expandedSummaries, setExpandedSummaries] = useState<Record<string, boolean>>({});
+  const toggleSummary = (id: string) => setExpandedSummaries(prev => ({ ...prev, [id]: !prev[id] }));
   if (activeTaskId !== prevTaskId) {
     setPrevTaskId(activeTaskId);
     setLastDeliveredTime(null);
@@ -84,7 +109,17 @@ export function AgentWorkspaceMobile() {
   const runtimeEvents = taskRuntime?.events ?? [];
 // ✨ 新增：推荐执行状态
   const [executingRecId, setExecutingRecId] = useState<string | null>(null);
+// ✨ 新增：用于锚定操作区的 Ref
+  const actionAreaRef = useRef<HTMLDivElement>(null);
 
+  // ✨ 新增：监听状态变化并平滑滚动
+  useEffect(() => {
+    if (['WAITING_APPROVAL', 'CLARIFYING', 'FAILED'].includes(runtimeTask?.status || '')) {
+      setTimeout(() => {
+        actionAreaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 300);
+    }
+  }, [runtimeTask?.status]);
   // ✨ 新增：处理推荐点击的专门函数
   const handleExecuteRecommendation = async (recId: string) => {
     if (!activeTaskId || !runtimeTask?.version) return;
@@ -148,14 +183,35 @@ export function AgentWorkspaceMobile() {
   };
 
   const handleDeliver = async () => {
-    if (!activeTaskId || !activeChatId || isDelivering) return;
+// 🚨 修复点 1：把 !activeChatId 从这里删掉
+    if (!activeTaskId || isDelivering) return;
+    
+    // ✨ 修复点 2：加上拦截提示
+    if (!activeChatId) {
+      toast.warning('未选择群聊', { description: '请先在主页选择一个发送目标群聊！' });
+      return;
+    }
+
     setIsDelivering(true);
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+    
     try {
       // 1. 提取各个产物
       const docLink = taskRuntime?.artifacts.find(a => a.type === 'DOC')?.url;
       const pptLink = taskRuntime?.artifacts.find(a => a.type === 'PPT')?.url;
-      const summaryContent = taskRuntime?.artifacts.find(a => a.type === 'SUMMARY')?.preview;
+      
+      // ✨ 终极防御版：提取真正的全局摘要
+      // 过滤条件：必须是 SUMMARY 类型，且标题【不包含】"文档迭代" 相关的字眼
+      const trueSummaryArtifacts = taskRuntime?.artifacts.filter(a => 
+        a.type === 'SUMMARY' && 
+        !(a.title || '').includes('文档迭代') 
+      ) || [];
+      
+      // 取数组的最后一条（最新生成的）
+      const latestSummary = trueSummaryArtifacts.length > 0 
+        ? trueSummaryArtifacts[trueSummaryArtifacts.length - 1] 
+        : null;
+      const summaryContent = latestSummary?.preview;
       
       // 2. 组装文案（分段式拼接）
       let deliverText = `🎉 本次任务已由 Agent 顺利完成，成果如下：\n\n`;
@@ -223,9 +279,58 @@ export function AgentWorkspaceMobile() {
                 <h2 className="text-lg font-bold text-zinc-800">{greetingIcon} {title}！</h2>
                 <p className="text-xs text-zinc-500 leading-relaxed">{subtitle}</p>
               </div>
-              <div className="text-[11px] font-medium text-blue-600 bg-blue-50 px-5 py-2.5 rounded-full border border-blue-100 animate-bounce">
+              <div className="text-[11px] font-medium text-blue-600 bg-blue-50 px-5 py-2.5 rounded-full border border-blue-100 animate-bounce mb-8">
                 👉 随时在下方输入指令唤醒我
               </div>
+
+              {/* ✨ 新增：移动端近期任务历史区域 */}
+              <div className="w-full mt-4">
+                <div className="flex items-center justify-between mb-3 px-1">
+                  <h3 className="text-xs font-bold text-zinc-700 flex items-center gap-1.5">
+                    <History className="w-3.5 h-3.5 text-zinc-400" />
+                    近期任务历史
+                  </h3>
+                  {/* ✨ 绑定打开抽屉事件 */}
+              <button 
+                onClick={() => onOpenHistory?.()}
+                className="text-[11px] text-zinc-500 hover:text-indigo-600 active:text-indigo-700 font-medium"
+              >
+                查看全部
+              </button>
+                </div>
+
+                {isLoadingTasks ? (
+                  <div className="flex justify-center py-6"><Loader2 className="w-4 h-4 animate-spin text-zinc-300" /></div>
+                ) : recentTasks?.length > 0 ? (
+                  <div className="flex flex-col gap-2">
+                    {recentTasks.slice(0, 3).map(task => (
+                      <div 
+                        key={task.taskId} 
+                        onClick={() => useTaskStore.getState().setActiveTaskId(task.taskId)}
+                        className="bg-white border border-zinc-200 rounded-xl p-3 flex flex-col gap-1.5 active:bg-zinc-50 transition-colors shadow-sm text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-zinc-800 truncate flex-1">{task.title || '未命名任务'}</span>
+                      {/* ✨ 动态调用 getStatusDisplay 来获取正确的颜色和文案 */}
+                      {(() => { 
+                        const { label, style } = getStatusDisplay(task.status); 
+                        return <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium shrink-0 border ${style}`}>{label}</span>; 
+                      })()}
+                    </div>
+                        <div className="text-[10px] text-zinc-400 flex items-center justify-between">
+                          <span>{new Date(task.updatedAt || task.createdAt).toLocaleString()}</span>
+                          <ChevronRight className="w-3.5 h-3.5 text-zinc-300" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-6 text-xs text-zinc-400 bg-zinc-50 rounded-xl border border-zinc-100">
+                    暂无历史任务
+                  </div>
+                )}
+              </div>
+
             </div>
           );
         })()
@@ -285,7 +390,7 @@ export function AgentWorkspaceMobile() {
           </div>
 
           {runtimeTask.status === 'CLARIFYING' && (
-            <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 flex flex-col gap-3">
+            <div ref={actionAreaRef} className="bg-blue-50 border border-blue-100 rounded-2xl p-4 flex flex-col gap-3">
               <div className="text-sm font-bold text-blue-700">🤖 需要您的进一步信息</div>
               {clarificationQuestions.map((q, i) => <p key={i} className="text-xs text-blue-900 bg-white/60 p-2 rounded-lg">{q}</p>)}
               <textarea 
@@ -300,7 +405,7 @@ export function AgentWorkspaceMobile() {
           )}
 
           {runtimeTask.status === 'WAITING_APPROVAL' && (
-            <div className="bg-white border-2 border-blue-500/20 rounded-2xl p-4 flex flex-col gap-3 shadow-md">
+            <div ref={actionAreaRef} className="bg-white border-2 border-blue-500/20 rounded-2xl p-4 flex flex-col gap-3 shadow-md">
               <div className="text-sm font-bold text-blue-800 flex items-center gap-1.5"><CheckCircle2 className="w-4 h-4"/>任务执行方案已就绪</div>
               {isReplanningMode ? (
                 <>
@@ -319,35 +424,58 @@ export function AgentWorkspaceMobile() {
             </div>
           )}
 
+          {/* ✨ 修复后的移动端产物展示区域 */}
           {runtimeArtifacts.length > 0 && (
             <div className="flex flex-col gap-2">
               <h4 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest pl-1">产物预览</h4>
               {runtimeArtifacts.map(a => {
-                // ✨ 新增：针对 SUMMARY 的特殊移动端渲染（直接展示纯文本，不需要弹窗）
+                // 1. 针对 SUMMARY 的特殊移动端渲染（直接展示内容）
+                // 1. 针对 SUMMARY 的特殊移动端渲染（带折叠功能）
                 if (a.type === 'SUMMARY') {
+                  const isExpanded = expandedSummaries[a.artifactId];
+                  // 移动端屏幕更小，字数超过80就显示折叠
+                  const hasLongText = (a.preview?.length || 0) > 80; 
+
                   return (
-                    <div key={a.artifactId} className="bg-amber-50/40 border border-amber-200/60 rounded-xl p-3 shadow-sm mb-1 animate-in fade-in">
+                    <div key={a.artifactId} className="bg-amber-50/40 border border-amber-200/60 rounded-xl p-3 shadow-sm mb-1 animate-in fade-in transition-all duration-300">
                       <div className="flex items-center gap-1.5 mb-2 text-amber-700">
                         <Sparkles className="h-3.5 w-3.5" />
-                        <span className="text-[11px] font-bold">任务执行摘要</span>
+                        <span className="text-[11px] font-bold">{a.title || '任务执行摘要'}</span>
                       </div>
-                      <div className="text-[11px] text-zinc-600 leading-relaxed whitespace-pre-wrap bg-white/60 p-2.5 rounded-lg border border-amber-100/30">
-                        {a.preview || "摘要内容生成中..."}
+                      <div className="bg-white/60 p-2.5 rounded-lg border border-amber-100/30">
+                        <div className={`text-[11px] text-zinc-600 leading-relaxed whitespace-pre-wrap transition-all duration-300 ${isExpanded ? '' : 'line-clamp-3'}`}>
+                          {a.preview || "摘要内容生成中..."}
+                        </div>
+                        {hasLongText && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); toggleSummary(a.artifactId); }}
+                            className="mt-2 text-[11px] font-bold text-amber-600 flex items-center active:text-amber-700"
+                          >
+                            {isExpanded ? <><ChevronUp className="w-3.5 h-3.5 mr-0.5" /> 收起</> : <><ChevronDown className="w-3.5 h-3.5 mr-0.5" /> 展开</>}
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
                 }
 
-                // 👇 原有逻辑：DOC 和 PPT 保持原来的紧凑列表样式，点击后弹窗预览
+                // 2. 针对 DOC 和 PPT 的标准移动端渲染（紧凑列表 + 点击预览）
+                // 必须在这里 Return，否则 map 会报错
                 return (
-                  <div key={a.artifactId} onClick={() => setPreviewArtifactId(a.artifactId)} className="bg-white p-3 rounded-xl border border-zinc-200 flex items-center justify-between active:bg-zinc-50">
+                  <div 
+                    key={a.artifactId} 
+                    onClick={() => setPreviewArtifactId(a.artifactId)} 
+                    className="bg-white p-3 rounded-xl border border-zinc-200 flex items-center justify-between active:bg-zinc-50"
+                  >
                     <div className="flex items-center gap-3">
                       <div className={`p-2 rounded-lg ${a.type === 'PPT' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
                         {a.type === 'PPT' ? <Presentation className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
                       </div>
                       <div className="flex flex-col overflow-hidden">
                         <span className="text-sm font-bold text-zinc-800 truncate">{a.title}</span>
-                        <span className="text-[10px] text-zinc-400">状态: {a.status === 'CREATED' ? '已生成' : '处理中'}</span>
+                        <span className="text-[10px] text-zinc-400">
+                          状态: {a.status === 'CREATED' ? '已生成' : '处理中'}
+                        </span>
                       </div>
                     </div>
                     <ChevronRight className="h-4 w-4 text-zinc-300" />

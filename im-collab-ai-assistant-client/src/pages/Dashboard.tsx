@@ -161,13 +161,15 @@ export default function Dashboard() {
 
             {/* 右侧积木：智能工作台 (标准宽度) */}
             <aside className="flex flex-1 lg:w-[360px] flex-col bg-zinc-50 shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.02)] relative z-10 border-l border-zinc-200">
-              <AgentWorkspace />
+              {/* ✨ 修改：传入方法 */}
+              <AgentWorkspace onOpenHistory={loadHistoryTasks} />
             </aside>
           </>
         ) : (
           /* 无群聊时：隐藏聊天室，让待命大厅(工作台)占满全部剩余的 flex-1 空间 */
           <div className="flex flex-1 flex-col bg-white relative z-10">
-            <AgentWorkspace />
+            {/* ✨ 修改：传入方法 */}
+            <AgentWorkspace onOpenHistory={loadHistoryTasks} />
           </div>
         )}
       </main>
