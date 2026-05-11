@@ -84,6 +84,7 @@ class ClarificationNodeServiceTest {
                 .intakeState(TaskIntakeState.builder()
                         .pendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT)
                         .resumeOriginalExecutionAvailable(true)
+                        .preserveExistingArtifactsOnExecution(true)
                         .assistantReply("您是想暂停当前任务的执行流程，还是想修改计划内容？")
                         .build())
                 .build();
@@ -98,6 +99,7 @@ class ClarificationNodeServiceTest {
         assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.CONFIRM_ACTION);
         assertThat(result.getIntakeState().getPendingInteractionType()).isNull();
         assertThat(result.getIntakeState().isResumeOriginalExecutionAvailable()).isFalse();
+        assertThat(result.getIntakeState().isPreserveExistingArtifactsOnExecution()).isTrue();
         assertThat(result.getIntakeState().getAssistantReply()).contains("继续按原执行流程推进");
         verify(executionTool).confirmExecution("task-1");
         verify(replanNodeService, never()).replan("task-1", "恢复执行", workspaceContext);

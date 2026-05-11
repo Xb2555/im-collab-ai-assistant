@@ -1770,6 +1770,7 @@ class PlannerConversationCancelTests {
                 .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
                         .pendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT)
                         .resumeOriginalExecutionAvailable(true)
+                        .preserveExistingArtifactsOnExecution(true)
                         .assistantReply("您是想暂停当前任务的执行流程，还是想修改计划内容？")
                         .build())
                 .build();
@@ -1779,7 +1780,9 @@ class PlannerConversationCancelTests {
         PlanTaskSession resumed = PlanTaskSession.builder()
                 .taskId("task-1")
                 .planningPhase(PlanningPhaseEnum.EXECUTING)
-                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder().build())
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .preserveExistingArtifactsOnExecution(true)
+                        .build())
                 .build();
 
         when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK:chat-1"));
@@ -1810,6 +1813,7 @@ class PlannerConversationCancelTests {
         assertThat(result.getIntakeState().getPendingInteractionType()).isNull();
         assertThat(result.getIntakeState().getPendingAdjustmentInstruction()).isNull();
         assertThat(result.getIntakeState().isResumeOriginalExecutionAvailable()).isFalse();
+        assertThat(askUser.getIntakeState().isPreserveExistingArtifactsOnExecution()).isTrue();
         verify(graphRunner, never()).run(any(), any(), any(), any(), any());
         verify(executionTool).confirmExecution("task-1");
     }

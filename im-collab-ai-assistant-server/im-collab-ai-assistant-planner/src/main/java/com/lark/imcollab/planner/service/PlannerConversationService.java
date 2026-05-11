@@ -1519,7 +1519,6 @@ public class PlannerConversationService {
             intakeState.setPendingInteractionType(null);
             intakeState.setPendingAdjustmentInstruction(null);
             intakeState.setResumeOriginalExecutionAvailable(false);
-            intakeState.setPreserveExistingArtifactsOnExecution(false);
             current.setIntakeState(intakeState);
             if (replanScopeService != null) {
                 replanScopeService.clear(current);
