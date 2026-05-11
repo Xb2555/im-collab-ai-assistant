@@ -293,6 +293,28 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void fallbackOutlineForFifteenPagesEndsWithThanksAndIncludesFiveTransitions() throws Exception {
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
+
+        var method = PresentationWorkflowNodes.class.getDeclaredMethod("fallbackOutline", com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
+        method.setAccessible(true);
+        var outline = (com.lark.imcollab.harness.presentation.model.PresentationOutline) method.invoke(localNodes,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                        .title("杭州旅游")
+                        .audience("团队")
+                        .style("business-light")
+                        .pageCount(15)
+                        .goal("生成杭州旅游PPT")
+                        .keyMessages(List.of("景点", "美食", "行程", "文化", "历史"))
+                        .build());
+
+        assertThat(outline.getSlides()).hasSize(15);
+        assertThat(outline.getSlides().get(14).getPageType()).isEqualTo("THANKS");
+        assertThat(outline.getSlides().stream().filter(slide -> "TRANSITION".equals(slide.getPageType()))).hasSize(5);
+    }
+
+    @Test
     void tocNormalizationAllowsUpToSixAgendaPoints() throws Exception {
         Method method = PresentationWorkflowNodes.class.getDeclaredMethod("normalizeTocPoints", List.class);
         method.setAccessible(true);
@@ -546,6 +568,54 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void compileSlideXmlAllowsBackgroundImageForTransitionPage() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-3")
+                .pageIndex(3)
+                .slideRole("section")
+                .pageType("TRANSITION")
+                .pageSubType("TRANSITION.SECTION_BREAK")
+                .title("文化特色")
+                .visualIntent("title")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("rail-notes").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("文化特色")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-3-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnTransitionBackground").altText("过渡页背景图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 8, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).contains("src=\"boxcnTransitionBackground\"");
+    }
+
+    @Test
     void resolveSlideImagePrefersContentSlotWhileBackgroundStaysSeparate() throws Exception {
         Method resolveSlideImage = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "resolveSlideImage",
@@ -626,6 +696,14 @@ class PresentationWorkflowNodesTemplateTest {
                                         .fileToken("boxcnCoverGroup")
                                         .purpose("封面目录感谢共享图")
                                         .build())
+                                .build(),
+                        PresentationAssetResources.SlideAssetResource.builder()
+                                .slideId("slide-4")
+                                .coverGroupImage(PresentationAssetResources.AssetResource.builder()
+                                        .assetId("cover-4")
+                                        .fileToken("boxcnCoverGroup")
+                                        .purpose("封面目录感谢共享图")
+                                        .build())
                                 .build()))
                 .build();
 
@@ -653,13 +731,23 @@ class PresentationWorkflowNodesTemplateTest {
                         .layout("summary")
                         .templateVariant("next-step-board")
                         .build(), resources);
+        @SuppressWarnings("unchecked")
+        Optional<PresentationAssetResources.AssetResource> transition =
+                (Optional<PresentationAssetResources.AssetResource>) resolveSlideImage.invoke(nodes, PresentationSlidePlan.builder()
+                        .slideId("slide-4")
+                        .pageType("TRANSITION")
+                        .layout("section")
+                        .templateVariant("rail-notes")
+                        .build(), resources);
 
         assertThat(cover).isPresent();
         assertThat(toc).isPresent();
         assertThat(thanks).isPresent();
+        assertThat(transition).isPresent();
         assertThat(cover.get().getFileToken()).isEqualTo("boxcnCoverGroup");
         assertThat(toc.get().getFileToken()).isEqualTo("boxcnCoverGroup");
         assertThat(thanks.get().getFileToken()).isEqualTo("boxcnCoverGroup");
+        assertThat(transition.get().getFileToken()).isEqualTo("boxcnCoverGroup");
     }
 
     @Test

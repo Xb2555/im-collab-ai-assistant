@@ -50,15 +50,7 @@ public class LarkCliClient {
             List<String> fullArgs = new ArrayList<>(properties.getArgs());
             fullArgs.addAll(args);
             ResolvedCliCommand resolvedCommand = resolveCommand(properties.getExecutable(), fullArgs);
-            log.info(
-                    "Lark CLI execute start: requestedExecutable='{}', resolvedExecutable='{}', args={}, timeoutMs={}, workingDir='{}', stdinBytes={}",
-                    properties.getExecutable(),
-                    resolvedCommand.executable(),
-                    summarizeArgs(resolvedCommand.args()),
-                    timeoutMillis,
-                    normalizeWorkingDirectory(properties.getWorkingDirectory()),
-                    stdin == null ? 0 : stdin.getBytes().length
-            );
+
             long startedAt = System.nanoTime();
             CliCommandResult result = cliCommandExecutor.execute(new CliCommand(
                     resolvedCommand.executable(),

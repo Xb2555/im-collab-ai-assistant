@@ -967,6 +967,7 @@ public class PresentationWorkflowNodes {
                 storyline.getPageCount() <= 0 ? defaultAutoPageCount(storyline) : storyline.getPageCount()));
         List<PresentationSlidePlan> slides = new ArrayList<>();
         PresentationCoverMeta coverMeta = resolveCoverMeta(storyline);
+        SlideBudget budget = allocateSlideBudget(requested, keyMessages.size());
         String coverSubtitle = firstNonBlank(
                 keyMessages.isEmpty() ? null : keyMessages.get(0),
                 storyline.getGoal(),
@@ -999,17 +1000,39 @@ public class PresentationWorkflowNodes {
                 .visualEmphasis("balance")
                 .speakerNotes("说明本次汇报的章节结构。")
                 .build());
-        int remainingSlides = Math.max(1, requested - slides.size() - 1);
-        int contentBudget = remainingSlides;
-        for (int i = 0; i < keyMessages.size() && contentBudget > 0; i++) {
+        List<String> normalizedSections = keyMessages == null ? List.of() : keyMessages.stream()
+                .filter(this::hasText)
+                .toList();
+        int contentBudget = budget.contentSlides();
+        int transitionBudget = budget.transitionSlides();
+        int remainingFlexible = budget.flexibleSlides();
+        for (int i = 0; i < normalizedSections.size() && contentBudget > 0; i++) {
             int sectionOrder = i + 1;
             String sectionId = "section-" + sectionOrder;
-            String sectionTitle = compactSlidePoint(keyMessages.get(Math.min(i, keyMessages.size() - 1)), 14);
+            String sectionTitle = compactSlidePoint(normalizedSections.get(Math.min(i, normalizedSections.size() - 1)), 14);
+            if (transitionBudget > 0) {
+                slides.add(PresentationSlidePlan.builder()
+                        .slideId("slide-" + (slides.size() + 1))
+                        .index(slides.size() + 1)
+                        .title(sectionTitle)
+                        .keyPoints(List.of(sectionTitle))
+                        .layout("section")
+                        .pageType("TRANSITION")
+                        .pageSubType("TRANSITION.SECTION_BREAK")
+                        .sectionId(sectionId)
+                        .sectionTitle(sectionTitle)
+                        .sectionOrder(sectionOrder)
+                        .templateVariant("rail-notes")
+                        .visualEmphasis("title")
+                        .speakerNotes("做章节过渡。")
+                        .build());
+                transitionBudget--;
+            }
             slides.add(PresentationSlidePlan.builder()
                     .slideId("slide-" + (slides.size() + 1))
                     .index(slides.size() + 1)
                     .title(sectionTitle)
-                    .keyPoints(normalizeKeyPointsForDensity(keyMessages, List.of(sectionTitle), "standard"))
+                    .keyPoints(normalizeKeyPointsForDensity(normalizedSections, List.of(sectionTitle), "standard"))
                     .layout(sectionOrder % 4 == 1 ? "two-column"
                             : sectionOrder % 4 == 2 ? "timeline"
                             : sectionOrder % 4 == 3 ? "comparison" : "metric-cards")
@@ -1028,7 +1051,44 @@ public class PresentationWorkflowNodes {
                     .visualEmphasis(sectionOrder % 4 == 2 || sectionOrder % 4 == 0 ? "data" : "balance")
                     .speakerNotes("围绕章节重点展开。")
                     .build());
+            if (remainingFlexible > 0 && prefersFlexibleExpansion(sectionTitle, sectionOrder, normalizedSections.size())) {
+                slides.add(PresentationSlidePlan.builder()
+                        .slideId("slide-" + (slides.size() + 1))
+                        .index(slides.size() + 1)
+                        .title(sectionTitle + " - 亮点展开")
+                        .keyPoints(normalizeKeyPointsForDensity(normalizedSections, List.of(sectionTitle), "detailed"))
+                        .layout("two-column")
+                        .pageType("CONTENT")
+                        .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                        .sectionId(sectionId)
+                        .sectionTitle(sectionTitle)
+                        .sectionOrder(sectionOrder)
+                        .templateVariant("dual-cards")
+                        .visualEmphasis("balance")
+                        .speakerNotes("补充章节亮点与核心介绍。")
+                        .build());
+                remainingFlexible--;
+            }
             contentBudget--;
+        }
+        while (remainingFlexible > 0 && !normalizedSections.isEmpty()) {
+            String sectionTitle = compactSlidePoint(normalizedSections.get(0), 14);
+            slides.add(PresentationSlidePlan.builder()
+                    .slideId("slide-" + (slides.size() + 1))
+                    .index(slides.size() + 1)
+                    .title(sectionTitle + " - 核心亮点")
+                    .keyPoints(normalizeKeyPointsForDensity(normalizedSections, List.of(sectionTitle), "detailed"))
+                    .layout("two-column")
+                    .pageType("CONTENT")
+                    .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                    .sectionId("section-1")
+                    .sectionTitle(sectionTitle)
+                    .sectionOrder(1)
+                    .templateVariant("dual-cards")
+                    .visualEmphasis("balance")
+                    .speakerNotes("补充核心亮点。")
+                    .build());
+            remainingFlexible--;
         }
         slides.add(PresentationSlidePlan.builder()
                 .slideId("slide-" + (slides.size() + 1))
@@ -1697,6 +1757,31 @@ public class PresentationWorkflowNodes {
                 .toList();
     }
 
+    private SlideBudget allocateSlideBudget(int requested, int sectionCount) {
+        int safeRequested = Math.max(6, Math.min(MAX_SLIDES, requested));
+        int safeSections = Math.max(1, sectionCount);
+        int fixedSlides = 3;
+        int transitionSlides = Math.min(safeSections, Math.max(0, safeRequested - fixedSlides - safeSections));
+        int remaining = Math.max(0, safeRequested - fixedSlides - transitionSlides);
+        int contentSlides = Math.min(safeSections, remaining);
+        remaining = Math.max(0, remaining - contentSlides);
+        int flexibleSlides = remaining;
+        if (contentSlides < safeSections) {
+            transitionSlides = Math.max(0, transitionSlides - (safeSections - contentSlides));
+            contentSlides = Math.min(safeSections, safeRequested - fixedSlides - transitionSlides);
+            flexibleSlides = Math.max(0, safeRequested - fixedSlides - transitionSlides - contentSlides);
+        }
+        return new SlideBudget(fixedSlides, transitionSlides, contentSlides, flexibleSlides);
+    }
+
+    private boolean prefersFlexibleExpansion(String sectionTitle, int sectionOrder, int totalSections) {
+        String normalized = normalize(blankToDefault(sectionTitle, ""));
+        if (normalized.contains("亮点") || normalized.contains("核心") || normalized.contains("特色")) {
+            return true;
+        }
+        return sectionOrder == 1 || sectionOrder == Math.max(1, totalSections / 2);
+    }
+
     private String stripAgendaNumberPrefix(String value) {
         if (!hasText(value)) {
             return "";
@@ -1754,6 +1839,9 @@ public class PresentationWorkflowNodes {
             }
         }
         if (!repaired.isEmpty()) {
+            forceThanksAtTail(repaired, targetCount);
+        }
+        if (!repaired.isEmpty()) {
             repaired.get(0).setKeyPoints(List.of(
                     firstNonBlank(repaired.get(0).getKeyPoints() == null || repaired.get(0).getKeyPoints().isEmpty() ? null : repaired.get(0).getKeyPoints().get(0),
                             storyline.getGoal(),
@@ -1762,6 +1850,43 @@ public class PresentationWorkflowNodes {
                     "汇报时间：" + coverMeta.reportDate()));
         }
         return repaired;
+    }
+
+    private void forceThanksAtTail(List<PresentationSlidePlan> slides, int targetCount) {
+        if (slides == null || slides.isEmpty()) {
+            return;
+        }
+        int thanksIndex = -1;
+        for (int i = 0; i < slides.size(); i++) {
+            if ("THANKS".equalsIgnoreCase(blankToDefault(slides.get(i).getPageType(), ""))) {
+                thanksIndex = i;
+                break;
+            }
+        }
+        PresentationSlidePlan thanks = thanksIndex >= 0 ? slides.remove(thanksIndex) : PresentationSlidePlan.builder()
+                .title("感谢聆听")
+                .keyPoints(List.of("期待交流指正"))
+                .layout("summary")
+                .pageType("THANKS")
+                .pageSubType("THANKS.CLOSING")
+                .templateVariant("next-step-board")
+                .visualEmphasis("action")
+                .speakerNotes("结束致谢。")
+                .build();
+        if (!slides.isEmpty() && "TRANSITION".equalsIgnoreCase(blankToDefault(slides.get(slides.size() - 1).getPageType(), ""))) {
+            slides.remove(slides.size() - 1);
+        }
+        slides.add(thanks);
+        if (targetCount > 0 && slides.size() > targetCount) {
+            while (slides.size() > targetCount) {
+                int removableIndex = findRemovableSlideIndex(slides);
+                if (removableIndex < 0 || removableIndex >= slides.size() - 1) {
+                    slides.remove(Math.max(0, slides.size() - 2));
+                } else {
+                    slides.remove(removableIndex);
+                }
+            }
+        }
     }
 
     private List<String> normalizeSlideKeyPoints(
@@ -2519,7 +2644,7 @@ public class PresentationWorkflowNodes {
             return TemplateImagePolicy.background();
         }
         if ("TRANSITION".equals(pageType)) {
-            return TemplateImagePolicy.none();
+            return TemplateImagePolicy.background();
         }
         if ("CHART".equals(pageType) || "BACKGROUND".equals(pageType)) {
             return TemplateImagePolicy.background();
@@ -2631,7 +2756,7 @@ public class PresentationWorkflowNodes {
             return false;
         }
         String pageType = blankToDefault(slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
-        return "COVER".equals(pageType) || "TOC".equals(pageType) || "THANKS".equals(pageType);
+        return "COVER".equals(pageType) || "TOC".equals(pageType) || "THANKS".equals(pageType) || "TRANSITION".equals(pageType);
     }
 
     private boolean isCoverGroupPage(PresentationAssetPlan.SlideAssetPlan slide) {
@@ -2639,7 +2764,7 @@ public class PresentationWorkflowNodes {
             return false;
         }
         String pageType = blankToDefault(slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
-        return "COVER".equals(pageType) || "TOC".equals(pageType) || "THANKS".equals(pageType);
+        return "COVER".equals(pageType) || "TOC".equals(pageType) || "THANKS".equals(pageType) || "TRANSITION".equals(pageType);
     }
 
     private List<PresentationAssetResources.SlideAssetResource> toResolvedSlideResources(
@@ -3711,6 +3836,9 @@ public class PresentationWorkflowNodes {
     }
 
     record SearchQuerySpec(String normalizedQuery, String searchCategory, String searchSubject, String queryKey) { }
+
+    private record SlideBudget(int fixedSlides, int transitionSlides, int contentSlides, int flexibleSlides) {
+    }
 
     private record TemplateImagePolicy(int backgroundSlots, int contentSlots, int timelineNodeSlots) {
 
