@@ -257,6 +257,7 @@ public class ReplanNodeService {
                 : session.getIntakeState();
         intakeState.setPendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
         intakeState.setPendingAdjustmentInstruction(instruction);
+        intakeState.setResumeOriginalExecutionAvailable(true);
         intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         session.setIntakeState(intakeState);
         sessionService.saveWithoutVersionChange(session);

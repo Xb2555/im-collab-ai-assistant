@@ -439,10 +439,13 @@ public class PlannerConversationService {
         );
         taskBridgeService.ensureTask(result);
         markAwaitingExecutionConfirmationIfNeeded(result);
-        if (resumedExecutingPlanAdjustmentClarification
-                && result != null
-                && result.getPlanningPhase() == PlanningPhaseEnum.ASK_USER) {
-            markPendingInteractionType(result, PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
+        if (resumedExecutingPlanAdjustmentClarification && result != null) {
+            if (result.getPlanningPhase() == PlanningPhaseEnum.ASK_USER) {
+                markPendingInteractionType(result, PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
+                markResumeOriginalExecutionAvailable(result, true);
+            } else {
+                markResumeOriginalExecutionAvailable(result, false);
+            }
         }
         return result;
     }
@@ -1092,9 +1095,11 @@ public class PlannerConversationService {
             }
             if (replanned.getPlanningPhase() == PlanningPhaseEnum.ASK_USER) {
                 markPendingInteractionType(replanned, PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
+                markResumeOriginalExecutionAvailable(replanned, true);
             }
             return replanned;
         }
+        markResumeOriginalExecutionAvailable(replanned, false);
         return replanned;
     }
 
@@ -1500,9 +1505,9 @@ public class PlannerConversationService {
                 || (session.getPlanningPhase() != PlanningPhaseEnum.ASK_USER
                 && session.getPlanningPhase() != PlanningPhaseEnum.EXECUTING)
                 || session.getIntakeState().getPendingInteractionType() != PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT
-                || !hasText(session.getIntakeState().getPendingAdjustmentInstruction())
                 || intakeDecision == null
-                || intakeDecision.intakeType() != TaskIntakeTypeEnum.CONFIRM_ACTION
+                || intakeDecision.intakeType() == TaskIntakeTypeEnum.STATUS_QUERY
+                || intakeDecision.intakeType() == TaskIntakeTypeEnum.CANCEL_TASK
                 || !ExecutionCommandGuard.isExplicitExecutionRequest(userInput)) {
             return null;
         }
@@ -1513,6 +1518,7 @@ public class PlannerConversationService {
                     : current.getIntakeState();
             intakeState.setPendingInteractionType(null);
             intakeState.setPendingAdjustmentInstruction(null);
+            intakeState.setResumeOriginalExecutionAvailable(false);
             intakeState.setPreserveExistingArtifactsOnExecution(false);
             current.setIntakeState(intakeState);
             if (replanScopeService != null) {
@@ -2318,6 +2324,29 @@ public class PlannerConversationService {
             currentState.setPendingInteractionType(pendingInteractionType);
             current.setIntakeState(currentState);
         }, "mark_pending_interaction_type");
+    }
+
+    private void markResumeOriginalExecutionAvailable(
+            PlanTaskSession session,
+            boolean resumeOriginalExecutionAvailable
+    ) {
+        if (session == null) {
+            return;
+        }
+        TaskIntakeState intakeState = session.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : session.getIntakeState();
+        intakeState.setResumeOriginalExecutionAvailable(resumeOriginalExecutionAvailable);
+        session.setIntakeState(intakeState);
+        saveWithoutVersionChangeBestEffort(session, current -> {
+            TaskIntakeState currentState = current.getIntakeState() == null
+                    ? TaskIntakeState.builder().build()
+                    : current.getIntakeState();
+            currentState.setResumeOriginalExecutionAvailable(resumeOriginalExecutionAvailable);
+            current.setIntakeState(currentState);
+        }, resumeOriginalExecutionAvailable
+                ? "mark_resume_original_execution_available"
+                : "clear_resume_original_execution_available");
     }
 
     private void markAwaitingExecutionConfirmationIfNeeded(PlanTaskSession session) {
