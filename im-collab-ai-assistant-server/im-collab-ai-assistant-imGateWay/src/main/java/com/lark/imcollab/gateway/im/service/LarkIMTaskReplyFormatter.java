@@ -11,6 +11,8 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.util.PlanCapabilityHints;
+import com.lark.imcollab.common.util.TriggerGuidanceResolver;
+import com.lark.imcollab.common.model.vo.TriggerGuidanceVO;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -23,12 +25,14 @@ public class LarkIMTaskReplyFormatter {
     private static final int MAX_IM_ARTIFACTS = 5;
     private static final int MAX_CLARIFICATION_QUESTIONS = 2;
     private static final int MAX_FAILURE_DETAIL_CHARS = 180;
+    private final TriggerGuidanceResolver triggerGuidanceResolver = new TriggerGuidanceResolver();
 
     public String planReady(PlanTaskSession session) {
         List<UserPlanCard> cards = cards(session);
         StringBuilder builder = new StringBuilder("🧭 我准备这样推进：");
         appendCardSummary(builder, cards);
         appendCapabilityHints(builder, cards);
+        appendInteractionGuidance(builder, session);
         builder.append("\n\n🚀 你确认没问题我就开工。要改的话直接说");
         appendEditHint(builder, cards);
         builder.append("。");
@@ -40,6 +44,7 @@ public class LarkIMTaskReplyFormatter {
         List<UserPlanCard> cards = cards(session);
         appendCardSummary(builder, cards);
         appendCapabilityHints(builder, cards);
+        appendInteractionGuidance(builder, session);
         builder.append("\n\n🚀 你确认没问题我就继续推进。要继续改的话也可以直接说");
         appendEditHint(builder, cards);
         builder.append("。");
@@ -268,6 +273,23 @@ public class LarkIMTaskReplyFormatter {
         }
         if (cards.size() > limit) {
             builder.append("\n").append(limit + 1).append(". 还有 ").append(cards.size() - limit).append(" 个后续步骤会继续串起来");
+        }
+    }
+
+    private void appendInteractionGuidance(StringBuilder builder, PlanTaskSession session) {
+        List<TriggerGuidanceVO> guidance = triggerGuidanceResolver.resolve(session);
+        if (guidance.isEmpty()) {
+            return;
+        }
+        builder.append("\n\n💡 你也可以直接这样说：");
+        for (TriggerGuidanceVO item : guidance) {
+            if (item == null || !item.visible()) {
+                continue;
+            }
+            builder.append("\n- ")
+                    .append(firstNonBlank(item.label(), "继续修改"))
+                    .append("：")
+                    .append(firstNonBlank(item.description(), "直接说你想改哪一步、改成什么"));
         }
     }
 

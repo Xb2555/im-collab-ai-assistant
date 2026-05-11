@@ -22,7 +22,13 @@ public class PresentationAssetPlan implements Serializable {
     @AllArgsConstructor
     public static class SlideAssetPlan implements Serializable {
         private String slideId;
+        private String title;
+        private String pageType;
+        private String layout;
+        private String templateVariant;
+        private String visualEmphasis;
         private List<AssetTask> contentImageTasks;
+        private List<TimelineImageTask> timelineImageTasks;
         private List<AssetTask> illustrationTasks;
         private List<DiagramTask> diagramTasks;
         private List<AssetTask> chartTasks;
@@ -46,5 +52,16 @@ public class PresentationAssetPlan implements Serializable {
     public static class DiagramTask implements Serializable {
         private String mermaidCode;
         private String purpose;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TimelineImageTask implements Serializable {
+        private String nodeId;
+        private Integer nodeIndex;
+        private String nodeText;
+        private AssetTask assetTask;
     }
 }

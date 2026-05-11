@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.common.util.TriggerGuidanceResolver;
 import com.lark.imcollab.common.model.vo.PlanCardVO;
 import com.lark.imcollab.common.model.vo.PlanPreviewVO;
 import com.lark.imcollab.common.model.vo.TaskActionVO;
@@ -21,6 +22,8 @@ import java.util.stream.Collectors;
 
 @Component
 public class PlannerViewAssembler {
+
+    private final TriggerGuidanceResolver triggerGuidanceResolver = new TriggerGuidanceResolver();
 
     public PlanPreviewVO toPlanPreview(PlanTaskSession session) {
         return toPlanPreview(session, null);
@@ -47,7 +50,8 @@ public class PlannerViewAssembler {
                 !transientReply,
                 transientReply,
                 session.getIntakeState() == null ? null : session.getIntakeState().getAssistantReply(),
-                PlanCapabilityHints.fromPlanCards(session.getPlanCards())
+                PlanCapabilityHints.fromPlanCards(session.getPlanCards()),
+                transientReply ? List.of() : triggerGuidanceResolver.resolve(session, snapshot)
         );
     }
 

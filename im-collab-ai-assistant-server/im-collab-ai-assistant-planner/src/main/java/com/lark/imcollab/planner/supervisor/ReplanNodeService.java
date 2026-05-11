@@ -31,6 +31,7 @@ import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.ReplanScopeEnum;
 import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
@@ -42,9 +43,11 @@ import com.lark.imcollab.planner.replan.PlanPatchIntent;
 import com.lark.imcollab.planner.replan.PlanPatchOperation;
 import com.lark.imcollab.planner.service.PlanQualityService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
+import com.lark.imcollab.planner.service.ReplanScopeService;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -74,6 +77,7 @@ public class ReplanNodeService {
     private final PlanQualityService qualityService;
     private final PlannerStateStore stateStore;
     private final TaskRuntimeService taskRuntimeService;
+    private final ReplanScopeService replanScopeService;
     private final ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider;
     private final ObjectProvider<PresentationIterationFacade> presentationIterationFacadeProvider;
     private final ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider;
@@ -82,6 +86,7 @@ public class ReplanNodeService {
     private final ContextNodeService contextNodeService;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public ReplanNodeService(
             PlannerSessionService sessionService,
             PlanAdjustmentInterpreter adjustmentInterpreter,
@@ -99,6 +104,31 @@ public class ReplanNodeService {
             ContextNodeService contextNodeService,
             ObjectMapper objectMapper
     ) {
+        this(sessionService, adjustmentInterpreter, patchTool, questionTool, planningNodeService, qualityService,
+                stateStore, taskRuntimeService, new ReplanScopeService(taskRuntimeService), presentationEditIntentFacadeProvider,
+                presentationIterationFacadeProvider, documentEditIntentFacadeProvider,
+                documentArtifactIterationFacadeProvider, plannerContextAcquisitionFacadeProvider,
+                contextNodeService, objectMapper);
+    }
+
+    public ReplanNodeService(
+            PlannerSessionService sessionService,
+            PlanAdjustmentInterpreter adjustmentInterpreter,
+            PlannerPatchTool patchTool,
+            PlannerQuestionTool questionTool,
+            PlanningNodeService planningNodeService,
+            PlanQualityService qualityService,
+            PlannerStateStore stateStore,
+            TaskRuntimeService taskRuntimeService,
+            ReplanScopeService replanScopeService,
+            ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider,
+            ObjectProvider<PresentationIterationFacade> presentationIterationFacadeProvider,
+            ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider,
+            ObjectProvider<DocumentArtifactIterationFacade> documentArtifactIterationFacadeProvider,
+            ObjectProvider<PlannerContextAcquisitionFacade> plannerContextAcquisitionFacadeProvider,
+            ContextNodeService contextNodeService,
+            ObjectMapper objectMapper
+    ) {
         this.sessionService = sessionService;
         this.adjustmentInterpreter = adjustmentInterpreter;
         this.patchTool = patchTool;
@@ -107,6 +137,7 @@ public class ReplanNodeService {
         this.qualityService = qualityService;
         this.stateStore = stateStore;
         this.taskRuntimeService = taskRuntimeService;
+        this.replanScopeService = replanScopeService;
         this.presentationEditIntentFacadeProvider = presentationEditIntentFacadeProvider;
         this.presentationIterationFacadeProvider = presentationIterationFacadeProvider;
         this.documentEditIntentFacadeProvider = documentEditIntentFacadeProvider;
@@ -143,6 +174,9 @@ public class ReplanNodeService {
             return planningNodeService.plan(taskId, adjustmentInstruction, workspaceContext, null);
         }
         boolean resumableInterruptedExecution = session.getPlanningPhase() == PlanningPhaseEnum.REPLANNING;
+        ReplanScopeService.ReplanScopeDecision scopeDecision = replanScopeService == null
+                ? new ReplanScopeService.ReplanScopeDecision(ReplanScopeEnum.FULL_TASK_RESET, null, "replan scope service unavailable")
+                : replanScopeService.resolveForPlanAdjustment(session, adjustmentInstruction);
         PlanPatchIntent patchIntent = adjustmentInterpreter.interpret(session, adjustmentInstruction, workspaceContext);
         if (patchIntent == null || patchIntent.getOperation() == null
                 || patchIntent.getOperation() == PlanPatchOperation.CLARIFY_REQUIRED) {
@@ -154,7 +188,20 @@ public class ReplanNodeService {
                     : sessionService.get(taskId);
         }
         if (patchIntent.getOperation() == PlanPatchOperation.REGENERATE_ALL) {
+            if (scopeDecision.scope() != ReplanScopeEnum.FULL_TASK_RESET) {
+                return askScopeClarification(
+                        session,
+                        adjustmentInstruction,
+                        "当前会默认保留已完成步骤，只调整后续部分。如果你想整任务重跑，请直接回复“从头重做”。",
+                        resumableInterruptedExecution
+                );
+            }
             return planningNodeService.plan(taskId, adjustmentInstruction, workspaceContext, adjustmentInstruction);
+        }
+        ScopeFence scopeFence = buildScopeFence(session, scopeDecision);
+        String scopeViolation = validatePatchAgainstScope(scopeDecision, scopeFence, patchIntent);
+        if (scopeViolation != null) {
+            return askScopeClarification(session, adjustmentInstruction, scopeViolation, resumableInterruptedExecution);
         }
         resetExecutionSemanticsForPlanAdjustment(session);
         String beforeSignature = visiblePlanSignature(session.getPlanBlueprint());
@@ -167,6 +214,8 @@ public class ReplanNodeService {
                 patchIntent.getNewCardDrafts() == null ? 0 : patchIntent.getNewCardDrafts().size(),
                 patchIntent.getReason());
         PlanBlueprint merged = patchTool.merge(session.getPlanBlueprint(), patchIntent, taskId);
+        merged = applyScopeFence(scopeFence, merged);
+        resetReplannedExecutionState(merged, scopeFence);
         stripPlanLevelExecutionFields(merged);
         int afterCardCount = activeCardCount(merged);
         log.info("Planner replan merge result task={} operation={} beforeCards={} afterCards={}",
@@ -183,6 +232,17 @@ public class ReplanNodeService {
                     : sessionService.get(taskId);
         }
         qualityService.applyMergedPlanAdjustment(session, merged, patchIntent.getReason());
+        if (replanScopeService != null) {
+            replanScopeService.apply(
+                    session,
+                    new ReplanScopeService.ReplanScopeDecision(
+                            scopeDecision.scope(),
+                            hasText(scopeDecision.anchorCardId()) ? scopeDecision.anchorCardId() : scopeFence.anchorCardId(),
+                            scopeDecision.reason()
+                    ),
+                    scopeDecision.scope() != ReplanScopeEnum.FULL_TASK_RESET
+            );
+        }
         sessionService.saveWithoutVersionChange(session);
         return session;
     }
@@ -200,6 +260,209 @@ public class ReplanNodeService {
         session.setIntakeState(intakeState);
         sessionService.saveWithoutVersionChange(session);
         return session;
+    }
+
+    private PlanTaskSession askScopeClarification(
+            PlanTaskSession session,
+            String instruction,
+            String question,
+            boolean resumableInterruptedExecution
+    ) {
+        questionTool.askUser(session, List.of(question));
+        return resumableInterruptedExecution
+                ? markInterruptedExecutionClarification(sessionService.get(session.getTaskId()), instruction)
+                : sessionService.get(session.getTaskId());
+    }
+
+    private ScopeFence buildScopeFence(
+            PlanTaskSession session,
+            ReplanScopeService.ReplanScopeDecision scopeDecision
+    ) {
+        List<UserPlanCard> activeCards = activeCards(session);
+        if (activeCards.isEmpty()) {
+            return new ScopeFence(scopeDecision == null ? ReplanScopeEnum.FULL_TASK_RESET : scopeDecision.scope(), null, List.of());
+        }
+        String anchorCardId = scopeDecision == null ? null : scopeDecision.anchorCardId();
+        if (!hasText(anchorCardId) && replanScopeService != null) {
+            anchorCardId = replanScopeService.resolveAnchorCardId(session);
+        }
+        int anchorIndex = findCardIndex(activeCards, anchorCardId);
+        if (anchorIndex < 0) {
+            anchorIndex = firstNonCompletedIndex(activeCards);
+        }
+        if (anchorIndex < 0) {
+            anchorIndex = activeCards.size();
+        }
+        List<UserPlanCard> frozenPrefix = new java.util.ArrayList<>();
+        for (int index = 0; index < anchorIndex && index < activeCards.size(); index++) {
+            UserPlanCard card = activeCards.get(index);
+            if (card == null || !"COMPLETED".equalsIgnoreCase(card.getStatus())) {
+                break;
+            }
+            frozenPrefix.add(copyCard(card));
+        }
+        return new ScopeFence(
+                scopeDecision == null ? ReplanScopeEnum.FULL_TASK_RESET : scopeDecision.scope(),
+                anchorCardId,
+                frozenPrefix
+        );
+    }
+
+    private String validatePatchAgainstScope(
+            ReplanScopeService.ReplanScopeDecision scopeDecision,
+            ScopeFence scopeFence,
+            PlanPatchIntent patchIntent
+    ) {
+        if (scopeDecision == null || patchIntent == null || patchIntent.getOperation() == null) {
+            return null;
+        }
+        if (scopeDecision.scope() == ReplanScopeEnum.FULL_TASK_RESET) {
+            return null;
+        }
+        List<String> frozenIds = scopeFence.frozenPrefix().stream()
+                .map(UserPlanCard::getCardId)
+                .filter(this::hasText)
+                .toList();
+        if (!frozenIds.isEmpty() && touchesFrozenPrefix(frozenIds, patchIntent)) {
+            return "你这次改动触碰到了前面已经完成的部分。若要保留前面产物，请继续说明后续怎么改；若要整任务重跑，请直接回复“从头重做”。";
+        }
+        if (scopeDecision.scope() != ReplanScopeEnum.CURRENT_STEP_REDO) {
+            return null;
+        }
+        String anchorCardId = scopeFence.anchorCardId();
+        if (!hasText(anchorCardId)) {
+            return "我还没定位到你要改的具体步骤。你可以直接说具体改动；如果你其实想整任务重跑，请直接回复“从头重做”。";
+        }
+        if (patchIntent.getOperation() == PlanPatchOperation.REORDER_STEP
+                || patchIntent.getOperation() == PlanPatchOperation.REMOVE_STEP) {
+            return "这次是只重做当前步骤的调整。若要删步骤或整体调整顺序，请直接说明要改后续流程，我会按尾部重规划处理。";
+        }
+        if (patchIntent.getTargetCardIds() == null || patchIntent.getTargetCardIds().isEmpty()) {
+            return null;
+        }
+        boolean allOnAnchor = patchIntent.getTargetCardIds().stream()
+                .filter(this::hasText)
+                .allMatch(anchorCardId::equals);
+        return allOnAnchor ? null : "这次会只重做当前步骤。你刚才的改动已经超出了当前步骤范围；如果要连后续步骤一起改，我可以按后续尾部重规划处理。";
+    }
+
+    private boolean touchesFrozenPrefix(List<String> frozenIds, PlanPatchIntent patchIntent) {
+        if (frozenIds == null || frozenIds.isEmpty() || patchIntent == null) {
+            return false;
+        }
+        if (patchIntent.getTargetCardIds() != null
+                && patchIntent.getTargetCardIds().stream().filter(this::hasText).anyMatch(frozenIds::contains)) {
+            return true;
+        }
+        if (patchIntent.getOperation() != PlanPatchOperation.REORDER_STEP
+                || patchIntent.getOrderedCardIds() == null
+                || patchIntent.getOrderedCardIds().isEmpty()) {
+            return false;
+        }
+        List<String> ordered = patchIntent.getOrderedCardIds().stream().filter(this::hasText).toList();
+        if (ordered.size() < frozenIds.size()) {
+            return true;
+        }
+        for (int index = 0; index < frozenIds.size(); index++) {
+            if (!frozenIds.get(index).equals(ordered.get(index))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private PlanBlueprint applyScopeFence(ScopeFence scopeFence, PlanBlueprint merged) {
+        if (merged == null || scopeFence == null || scopeFence.scope() == ReplanScopeEnum.FULL_TASK_RESET) {
+            return merged;
+        }
+        List<UserPlanCard> mergedCards = merged.getPlanCards() == null ? List.of() : merged.getPlanCards();
+        if (scopeFence.frozenPrefix().isEmpty()) {
+            return merged;
+        }
+        java.util.LinkedHashSet<String> frozenIds = scopeFence.frozenPrefix().stream()
+                .map(UserPlanCard::getCardId)
+                .filter(this::hasText)
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        List<UserPlanCard> rebuilt = new java.util.ArrayList<>();
+        for (UserPlanCard frozenCard : scopeFence.frozenPrefix()) {
+            rebuilt.add(copyCard(frozenCard));
+        }
+        for (UserPlanCard card : mergedCards) {
+            if (card == null || frozenIds.contains(card.getCardId())) {
+                continue;
+            }
+            rebuilt.add(card);
+        }
+        merged.setPlanCards(rebuilt);
+        return merged;
+    }
+
+    private void resetReplannedExecutionState(PlanBlueprint blueprint, ScopeFence scopeFence) {
+        if (blueprint == null || blueprint.getPlanCards() == null || blueprint.getPlanCards().isEmpty()) {
+            return;
+        }
+        java.util.LinkedHashSet<String> frozenIds = scopeFence == null
+                ? new java.util.LinkedHashSet<>()
+                : scopeFence.frozenPrefix().stream()
+                .map(UserPlanCard::getCardId)
+                .filter(this::hasText)
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        for (UserPlanCard card : blueprint.getPlanCards()) {
+            if (card == null || frozenIds.contains(card.getCardId())) {
+                continue;
+            }
+            card.setStatus("PENDING");
+            card.setProgress(0);
+            if (card.getArtifactRefs() != null && !card.getArtifactRefs().isEmpty()) {
+                card.setArtifactRefs(List.of());
+            }
+        }
+    }
+
+    private int findCardIndex(List<UserPlanCard> cards, String cardId) {
+        if (cards == null || cards.isEmpty() || !hasText(cardId)) {
+            return -1;
+        }
+        for (int index = 0; index < cards.size(); index++) {
+            UserPlanCard card = cards.get(index);
+            if (card != null && cardId.equals(card.getCardId())) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private int firstNonCompletedIndex(List<UserPlanCard> cards) {
+        if (cards == null || cards.isEmpty()) {
+            return -1;
+        }
+        for (int index = 0; index < cards.size(); index++) {
+            UserPlanCard card = cards.get(index);
+            if (card == null || !"COMPLETED".equalsIgnoreCase(card.getStatus())) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private UserPlanCard copyCard(UserPlanCard source) {
+        if (source == null) {
+            return null;
+        }
+        return UserPlanCard.builder()
+                .cardId(source.getCardId())
+                .taskId(source.getTaskId())
+                .version(source.getVersion())
+                .title(source.getTitle())
+                .description(source.getDescription())
+                .type(source.getType())
+                .status(source.getStatus())
+                .progress(source.getProgress())
+                .artifactRefs(source.getArtifactRefs() == null ? List.of() : List.copyOf(source.getArtifactRefs()))
+                .dependsOn(source.getDependsOn() == null ? List.of() : List.copyOf(source.getDependsOn()))
+                .availableActions(source.getAvailableActions() == null ? List.of() : List.copyOf(source.getAvailableActions()))
+                .agentTaskPlanCards(source.getAgentTaskPlanCards())
+                .build();
     }
 
     private PlanTaskSession resumePendingArtifactSelectionIfNeeded(
@@ -1227,6 +1490,22 @@ public class ReplanNodeService {
         return safeBase + "\n补充说明：" + safeSupplement;
     }
 
+    private List<UserPlanCard> activeCards(PlanTaskSession session) {
+        if (session == null) {
+            return List.of();
+        }
+        List<UserPlanCard> cards = session.getPlanCards();
+        if ((cards == null || cards.isEmpty()) && session.getPlanBlueprint() != null) {
+            cards = session.getPlanBlueprint().getPlanCards();
+        }
+        if (cards == null) {
+            return List.of();
+        }
+        return cards.stream()
+                .filter(card -> card != null && !"SUPERSEDED".equalsIgnoreCase(card.getStatus()))
+                .toList();
+    }
+
     private String firstNonBlank(String... values) {
         if (values == null) {
             return null;
@@ -1259,4 +1538,6 @@ public class ReplanNodeService {
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
+
+    private record ScopeFence(ReplanScopeEnum scope, String anchorCardId, List<UserPlanCard> frozenPrefix) {}
 }

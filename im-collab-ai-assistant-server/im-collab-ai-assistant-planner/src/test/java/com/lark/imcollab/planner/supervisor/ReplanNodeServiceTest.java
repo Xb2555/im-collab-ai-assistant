@@ -22,6 +22,8 @@ import com.lark.imcollab.common.model.entity.PresentationEditOperation;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskInputContext;
 import com.lark.imcollab.common.model.entity.TaskIntakeState;
+import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.DocumentArtifactIterationStatus;
@@ -33,11 +35,13 @@ import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
+import com.lark.imcollab.common.model.enums.ReplanScopeEnum;
 import com.lark.imcollab.common.model.enums.PresentationAnchorMode;
 import com.lark.imcollab.common.model.enums.PresentationEditActionType;
 import com.lark.imcollab.common.model.enums.PresentationIterationStatus;
 import com.lark.imcollab.common.model.enums.PresentationIterationIntentType;
 import com.lark.imcollab.common.model.enums.PresentationTargetElementType;
+import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.DocumentArtifactApprovalPayload;
@@ -403,7 +407,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationEditIntentFacade.resolve(anyString(), any())).thenReturn(titleIntent(2, "新标题"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -437,7 +441,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(presentationEditIntentFacade.resolve(anyString())).thenReturn(titleIntent(2, "新标题"));
+        when(presentationEditIntentFacade.resolve(anyString(), any())).thenReturn(titleIntent(2, "新标题"));
         when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
                 .taskId("task-1")
                 .artifactId("artifact-ppt-1")
@@ -471,7 +475,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(presentationEditIntentFacade.resolve("历史文化遗产这一段写的详细一些")).thenReturn(PresentationEditIntent.builder()
+        when(presentationEditIntentFacade.resolve(eq("历史文化遗产这一段写的详细一些"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.EXPAND_ELEMENT)
@@ -510,7 +514,7 @@ class ReplanNodeServiceTest {
         when(sessionService.getOrCreate("task-1")).thenReturn(session);
         when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
         when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
-        when(presentationEditIntentFacade.resolve("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点")).thenReturn(PresentationEditIntent.builder()
+        when(presentationEditIntentFacade.resolve(eq("在第一页的文旅融合创新，消费场景丰富多元后插入新的一小点"), any())).thenReturn(PresentationEditIntent.builder()
                 .intentType(PresentationIterationIntentType.UPDATE_CONTENT)
                 .operations(List.of(PresentationEditOperation.builder()
                         .actionType(PresentationEditActionType.INSERT_AFTER_ELEMENT)
@@ -956,6 +960,115 @@ class ReplanNodeServiceTest {
         assertThat(result).isSameAs(replanned);
         verify(planningNodeService).plan("task-1", "整体重新规划一下任务步骤", null, "整体重新规划一下任务步骤");
         verify(presentationIterationFacade, never()).edit(any());
+    }
+
+    @Test
+    void tailReplanPreservesCompletedPrefixAndOnlyAdjustsTail() {
+        PlanTaskSession session = session();
+        session.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
+        session.getPlanCards().get(0).setStatus("COMPLETED");
+        session.getPlanCards().get(0).setProgress(100);
+        session.getPlanCards().get(0).setArtifactRefs(List.of("artifact-doc-1"));
+        session.getPlanCards().get(1).setStatus("RUNNING");
+        session.setIntakeState(TaskIntakeState.builder()
+                .replanScope(ReplanScopeEnum.TAIL_REPLAN)
+                .replanAnchorCardId("card-002")
+                .build());
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(taskRuntimeService.getSnapshot("task-1")).thenReturn(TaskRuntimeSnapshot.builder()
+                .steps(List.of(
+                        TaskStepRecord.builder().stepId("card-001").status(StepStatusEnum.COMPLETED).progress(100).build(),
+                        TaskStepRecord.builder().stepId("card-002").status(StepStatusEnum.RUNNING).progress(40).build()
+                ))
+                .artifacts(List.of(ArtifactRecord.builder()
+                        .artifactId("artifact-doc-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .build()))
+                .build());
+        when(adjustmentInterpreter.interpret(session, "把PPT改成4页", null))
+                .thenReturn(PlanPatchIntent.builder()
+                        .operation(PlanPatchOperation.UPDATE_STEP)
+                        .targetCardIds(List.of("card-002"))
+                        .newCardDrafts(List.of(PlanPatchCardDraft.builder()
+                                .title("基于技术方案文档生成4页汇报PPT初稿")
+                                .description("将PPT调整为4页，每页40字左右")
+                                .type(PlanCardTypeEnum.PPT)
+                                .build()))
+                        .confidence(0.96d)
+                        .reason("update ppt tail only")
+                        .build());
+        doAnswer(invocation -> {
+            PlanTaskSession target = invocation.getArgument(0);
+            PlanBlueprint merged = invocation.getArgument(1);
+            target.setPlanBlueprint(merged);
+            target.setPlanCards(merged.getPlanCards());
+            target.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+            return target;
+        }).when(qualityService).applyMergedPlanAdjustment(any(), any(), anyString());
+
+        PlanTaskSession result = service.replan("task-1", "把PPT改成4页", null);
+
+        assertThat(result.getPlanCards()).hasSize(2);
+        assertThat(result.getPlanCards().get(0).getCardId()).isEqualTo("card-001");
+        assertThat(result.getPlanCards().get(0).getStatus()).isEqualTo("COMPLETED");
+        assertThat(result.getPlanCards().get(0).getArtifactRefs()).containsExactly("artifact-doc-1");
+        assertThat(result.getPlanCards().get(1).getCardId()).isEqualTo("card-002");
+        assertThat(result.getPlanCards().get(1).getTitle()).contains("4页");
+        assertThat(result.getPlanCards().get(1).getStatus()).isEqualTo("PENDING");
+        assertThat(result.getPlanCards().get(1).getProgress()).isZero();
+        assertThat(result.getIntakeState().getReplanScope()).isEqualTo(ReplanScopeEnum.TAIL_REPLAN);
+        assertThat(result.getIntakeState().getReplanAnchorCardId()).isEqualTo("card-002");
+        assertThat(result.getIntakeState().isPreserveExistingArtifactsOnExecution()).isTrue();
+    }
+
+    @Test
+    void fullResetReplanResetsRunningCardsBackToPendingBeforeExecution() {
+        PlanTaskSession session = session();
+        session.setPlanningPhase(PlanningPhaseEnum.REPLANNING);
+        session.getPlanCards().get(0).setStatus("RUNNING");
+        session.getPlanCards().get(0).setProgress(10);
+        session.getPlanCards().get(1).setStatus("READY");
+        session.getPlanCards().get(1).setProgress(0);
+        session.setIntakeState(TaskIntakeState.builder()
+                .replanScope(ReplanScopeEnum.FULL_TASK_RESET)
+                .build());
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(taskRuntimeService.getSnapshot("task-1")).thenReturn(TaskRuntimeSnapshot.builder()
+                .steps(List.of(
+                        TaskStepRecord.builder().stepId("card-001").status(StepStatusEnum.RUNNING).progress(10).build(),
+                        TaskStepRecord.builder().stepId("card-002").status(StepStatusEnum.READY).progress(0).build()
+                ))
+                .build());
+        when(adjustmentInterpreter.interpret(session, "ppt要5页", null))
+                .thenReturn(PlanPatchIntent.builder()
+                        .operation(PlanPatchOperation.UPDATE_STEP)
+                        .targetCardIds(List.of("card-002"))
+                        .newCardDrafts(List.of(PlanPatchCardDraft.builder()
+                                .title("基于技术方案文档生成5页汇报PPT初稿")
+                                .description("将PPT调整为5页")
+                                .type(PlanCardTypeEnum.PPT)
+                                .build()))
+                        .confidence(0.96d)
+                        .reason("update ppt and reset execution state")
+                        .build());
+        doAnswer(invocation -> {
+            PlanTaskSession target = invocation.getArgument(0);
+            PlanBlueprint merged = invocation.getArgument(1);
+            target.setPlanBlueprint(merged);
+            target.setPlanCards(merged.getPlanCards());
+            target.setPlanningPhase(PlanningPhaseEnum.PLAN_READY);
+            return target;
+        }).when(qualityService).applyMergedPlanAdjustment(any(), any(), anyString());
+
+        PlanTaskSession result = service.replan("task-1", "ppt要5页", null);
+
+        assertThat(result.getPlanCards())
+                .extracting(UserPlanCard::getStatus)
+                .containsExactly("PENDING", "PENDING");
+        assertThat(result.getPlanCards())
+                .extracting(UserPlanCard::getProgress)
+                .containsExactly(0, 0);
     }
 
     private static PlanTaskSession session() {

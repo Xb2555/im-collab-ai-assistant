@@ -210,14 +210,17 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
     }
 
     private void startHarness(String taskId, String executionAttemptId) {
+        long startedAt = System.nanoTime();
         try {
             if (cancellationRegistry.isCancelled(taskId)) {
                 log.info("Skip harness start because task is already cancelled: taskId={}", taskId);
+                printTiming("im.harness_start.seconds", taskId, startedAt, null);
                 return;
             }
             try (ExecutionAttemptContext.Scope ignored = ExecutionAttemptContext.open(taskId, executionAttemptId)) {
                 harnessFacade.startExecution(taskId);
             }
+            printTiming("im.harness_start.seconds", taskId, startedAt, null);
             if (!cancellationRegistry.isCancelled(taskId) && activeExecutions.containsKey(taskId)) {
                 reviewService.reviewAndNotify(taskId);
             } else {
@@ -227,17 +230,28 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             if (isExecutionBusy(exception) && shouldRetryBusyExecution(taskId, executionAttemptId)) {
                 log.info("Harness execution is still busy, will retry same attempt: taskId={}, attempt={}",
                         taskId, executionAttemptId);
+                printTiming("im.harness_start.seconds", taskId, startedAt, exception);
                 scheduleBusyRetry(taskId, executionAttemptId);
                 return;
             }
             if (cancellationRegistry.isCancelled(taskId)) {
                 log.info("Skip failure projection because task was cancelled: taskId={}", taskId);
+                printTiming("im.harness_start.seconds", taskId, startedAt, exception);
                 return;
             }
+            printTiming("im.harness_start.seconds", taskId, startedAt, exception);
             markExecutionFailed(taskId, "Harness execution failed after IM confirmation", exception);
         } finally {
             clearActiveExecution(taskId);
         }
+    }
+
+    private void printTiming(String metric, String taskId, long startedAt, Throwable throwable) {
+        System.err.println(metric
+                + " taskId=" + (taskId == null ? "" : taskId)
+                + " status=" + (throwable == null ? "success" : "failed")
+                + " seconds=" + String.format(java.util.Locale.ROOT, "%.3f", (System.nanoTime() - startedAt) / 1_000_000_000.0d)
+                + (throwable == null ? "" : " error=" + (throwable.getMessage() == null ? "" : throwable.getMessage())));
     }
 
     private void markExecutionFailed(String taskId, String message, RuntimeException exception) {
@@ -345,6 +359,8 @@ public class DefaultImTaskCommandFacade implements ImTaskCommandFacade {
             return;
         }
         session.getIntakeState().setPreserveExistingArtifactsOnExecution(false);
+        session.getIntakeState().setReplanScope(null);
+        session.getIntakeState().setReplanAnchorCardId(null);
     }
 
     private boolean awaitPreviousExecutionDrain(String taskId) {

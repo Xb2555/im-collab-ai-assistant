@@ -23,6 +23,7 @@ public class ExecutionOrchestrator {
     private final TaskCancellationRegistry cancellationRegistry;
 
     public Task start(String taskId) {
+        long startedAt = System.nanoTime();
         Task task = taskRepository.findById(taskId).orElseGet(() -> {
             Task fallback = Task.builder()
                     .taskId(taskId)
@@ -53,7 +54,9 @@ public class ExecutionOrchestrator {
             return abort(taskId);
         }
         stepDispatcher.dispatch(task);
-        return taskRepository.findById(taskId).orElse(task);
+        Task result = taskRepository.findById(taskId).orElse(task);
+        printTiming("harness.orchestrator.start.seconds", taskId, startedAt, null);
+        return result;
     }
 
     public Task resume(String taskId, Approval approval) {
@@ -100,5 +103,13 @@ public class ExecutionOrchestrator {
                 .type(type)
                 .occurredAt(Instant.now())
                 .build());
+    }
+
+    private void printTiming(String metric, String taskId, long startedAt, Throwable throwable) {
+        System.err.println(metric
+                + " taskId=" + (taskId == null ? "" : taskId)
+                + " status=" + (throwable == null ? "success" : "failed")
+                + " seconds=" + String.format(java.util.Locale.ROOT, "%.3f", (System.nanoTime() - startedAt) / 1_000_000_000.0d)
+                + (throwable == null ? "" : " error=" + (throwable.getMessage() == null ? "" : throwable.getMessage())));
     }
 }

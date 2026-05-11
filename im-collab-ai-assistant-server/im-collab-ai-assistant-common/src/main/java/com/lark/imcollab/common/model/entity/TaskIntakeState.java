@@ -2,6 +2,7 @@ package com.lark.imcollab.common.model.entity;
 
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
+import com.lark.imcollab.common.model.enums.ReplanScopeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
@@ -71,6 +72,12 @@ public class TaskIntakeState implements Serializable {
 
     @Schema(description = "最近一次输入时间")
     private String lastInputAt;
+
+    @Schema(description = "中断重规划的作用范围")
+    private ReplanScopeEnum replanScope;
+
+    @Schema(description = "tail/current-step 重规划锚点 cardId")
+    private String replanAnchorCardId;
 
     @Schema(description = "下次执行时是否保留已有产物")
     private boolean preserveExistingArtifactsOnExecution;
