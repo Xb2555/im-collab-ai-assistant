@@ -40,6 +40,9 @@ public class PresentationConcurrencyConfig {
                 coverMaxImageTasks,
                 downloadCacheTtlDays,
                 downloadCacheMaxFiles,
-                downloadTimeoutSeconds);
+                downloadTimeoutSeconds,
+                60,
+                6,
+                6);
     }
 }

@@ -5,6 +5,9 @@ public record PresentationAssetSettings(
         int coverMaxImageTasks,
         long downloadCacheTtlDays,
         int downloadCacheMaxFiles,
-        int downloadTimeoutSeconds
+        int downloadTimeoutSeconds,
+        int searchStageBudgetSeconds,
+        int externalSearchTimeoutSeconds,
+        int fallbackSearchTimeoutSeconds
 ) {
 }

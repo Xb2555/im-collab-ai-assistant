@@ -30,6 +30,7 @@ import com.lark.imcollab.harness.presentation.model.PresentationImagePlan;
 import com.lark.imcollab.harness.presentation.model.PresentationImageResources;
 import com.lark.imcollab.harness.presentation.model.PresentationOutline;
 import com.lark.imcollab.harness.presentation.model.PexelsSearchResponse;
+import com.lark.imcollab.harness.presentation.model.PixabaySearchResponse;
 import com.lark.imcollab.harness.presentation.model.PresentationPreflightResult;
 import com.lark.imcollab.harness.presentation.model.PresentationReviewResult;
 import com.lark.imcollab.harness.presentation.model.PresentationSlidePlan;
@@ -123,7 +124,16 @@ public class PresentationWorkflowNodes {
     private static final Pattern REPORTER_PATTERN = Pattern.compile("(?:汇报人|汇报人员|报告人|主讲人)[:：\\s]*([^\\n，,；;]{1,32})");
     private static final Pattern REPORT_DATE_PATTERN = Pattern.compile("(?:汇报时间|报告时间|日期|时间)[:：\\s]*((?:20\\d{2}|\\d{2})[年\\-/\\.\\s]*\\d{1,2}[月\\-/\\.\\s]*\\d{1,2}日?)");
     private static final String PEXELS_SEARCH_API = "https://api.pexels.com/v1/search?per_page=6&page=1&query=";
+    private static final String PIXABAY_SEARCH_API = "https://pixabay.com/api/?image_type=photo&per_page=6&safesearch=true&key=%s&q=%s";
     private static final List<String> QUERY_STOP_WORDS = List.of("ppt", "ppt初稿", "演示稿", "汇报", "汇报ppt", "生成", "制作", "旅游", "介绍", "方案", "内容");
+    private static final List<String> HIGH_VALUE_QUERY_TERMS = List.of(
+            "景点", "地标", "古镇", "寺", "寺庙", "博物馆", "园林", "夜景", "湖", "桥", "街区",
+            "美食", "小吃", "餐厅", "咖啡", "早茶", "文化", "非遗", "表演", "建筑", "城市", "交通",
+            "行程", "路线", "住宿", "预算", "market", "food", "culture", "museum", "temple",
+            "lake", "bridge", "street", "skyline", "night", "scenic", "landmark");
+    private static final List<String> CITY_TOKENS = List.of(
+            "北京", "上海", "杭州", "苏州", "南京", "西安", "成都", "重庆", "广州", "深圳",
+            "青岛", "厦门", "长沙", "武汉", "天津", "大连", "洛阳", "开封", "昆明", "三亚");
     private static final Set<String> SAFE_IMAGE_DOMAINS = Set.of(
             "unsplash.com", "images.unsplash.com",
             "pexels.com", "images.pexels.com",
@@ -147,6 +157,7 @@ public class PresentationWorkflowNodes {
     private final Path assetWorkspaceDirectory;
     private final Path assetCacheIndexPath;
     private final String pexelsApiKey;
+    private final String pixabayApiKey;
     private final ExecutorService presentationIoExecutor;
     private final PresentationConcurrencySettings concurrencySettings;
     private final PresentationAssetSettings assetSettings;
@@ -182,7 +193,8 @@ public class PresentationWorkflowNodes {
                 concurrencySettings,
                 null,
                 false,
-                pexelsApiKey);
+                pexelsApiKey,
+                "");
     }
 
     @Autowired
@@ -200,7 +212,8 @@ public class PresentationWorkflowNodes {
             PresentationConcurrencySettings concurrencySettings,
             PresentationAssetSettings assetSettings,
             @Value("${presentation.debug.image-pipeline:false}") boolean imagePipelineDebugEnabled,
-            @Value("${pexels.api-key:}") String pexelsApiKey) {
+            @Value("${pexels.api-key:}") String pexelsApiKey,
+            @Value("${pixabay.api-key:}") String pixabayApiKey) {
         this.support = support;
         this.storylineAgent = storylineAgent;
         this.outlineAgent = outlineAgent;
@@ -218,10 +231,11 @@ public class PresentationWorkflowNodes {
                 ? new PresentationConcurrencySettings(8, 4, 6, 3)
                 : concurrencySettings;
         this.assetSettings = assetSettings == null
-                ? new PresentationAssetSettings(1, 2, 7, 500, 10)
+                ? new PresentationAssetSettings(1, 2, 7, 500, 10, 60, 6, 6)
                 : assetSettings;
         this.imagePipelineDebugEnabled = imagePipelineDebugEnabled;
         this.pexelsApiKey = blankToDefault(pexelsApiKey, "");
+        this.pixabayApiKey = blankToDefault(pixabayApiKey, "");
     }
 
     private boolean imagePipelineDebugEnabled() {
@@ -3816,12 +3830,13 @@ private PresentationImageResources.ResourceItem resolveSharedDeckResource(
                 .preferredSourceType(coverGroup ? "DECK_SHARED_COVER_GROUP" : "DECK_SHARED_BACKGROUND")
                 .preferredDomains(List.of())
                 .build();
-        String normalizedQuery = normalizeSearchQuery(deckTopic);
+        SearchQuerySpec querySpec = buildDeckSearchQuery(slides, task, coverGroup ? "cover-group-image" : "shared-background-image");
+        String normalizedQuery = querySpec.normalizedQuery();
         boolean coverOnly = coverGroup;
-        List<String> candidates = searchPexelsCandidates(normalizedQuery, resolutionContext, coverOnly);
+        List<String> candidates = searchCandidates(querySpec, resolutionContext, coverOnly);
         if (candidates.isEmpty()) {
             if (coverGroup) {
-                List<String> fallbackCandidates = searchPexelsCandidates(normalizedQuery, resolutionContext, false);
+                List<String> fallbackCandidates = searchCandidates(querySpec, resolutionContext, false);
                 if (!fallbackCandidates.isEmpty()) {
                     candidates = fallbackCandidates;
                 }
@@ -3864,7 +3879,7 @@ private PresentationImageResources.ResourceItem resolveSharedDeckResource(
                 task -> {
                     SearchQuerySpec querySpec = buildStableSearchQuery(slide, task, assetType);
                     String normalizedQuery = querySpec.normalizedQuery();
-                    List<String> candidates = searchPexelsCandidates(normalizedQuery, resolutionContext);
+                    List<String> candidates = searchCandidates(querySpec, resolutionContext, false);
                     return PresentationImageResources.ResourceItem.builder()
                             .candidateUrls(candidates)
                             .selectedUrl(candidates.isEmpty() ? "" : candidates.get(0))
@@ -3913,7 +3928,7 @@ private PresentationImageResources.ResourceItem resolveSharedDeckResource(
                                 .normalizedQuery(normalizedQuery)
                                 .build();
                     }
-                    List<String> fallbackCandidates = searchPexelsCandidates(normalizedQuery, resolutionContext);
+                    List<String> fallbackCandidates = searchCandidates(querySpec, resolutionContext, false);
                     return PresentationImageResources.ResourceItem.builder()
                             .candidateUrls(fallbackCandidates)
                             .selectedUrl(fallbackCandidates.isEmpty() ? "" : fallbackCandidates.get(0))
@@ -3985,14 +4000,26 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
                 || lower.contains("cdn.pixabay.com");
     }
 
-    private List<String> searchPexelsCandidates(String normalizedQuery, AssetResolutionContext resolutionContext) {
-        return searchPexelsCandidates(normalizedQuery, resolutionContext, false);
+    private List<String> searchCandidates(SearchQuerySpec querySpec, AssetResolutionContext resolutionContext, boolean coverBackgroundOnly) {
+        if (querySpec == null || !hasText(querySpec.normalizedQuery())) {
+            return List.of();
+        }
+        if (resolutionContext != null && !resolutionContext.canSearch(assetSettings.searchStageBudgetSeconds())) {
+            debugImagePipeline("ppt.debug.search.skip query={} reason=budget-exhausted", querySpec.normalizedQuery());
+            return List.of();
+        }
+        List<String> primary = searchPexelsCandidates(querySpec, resolutionContext, coverBackgroundOnly);
+        if (!primary.isEmpty()) {
+            return primary;
+        }
+        return searchPixabayCandidates(querySpec, resolutionContext, coverBackgroundOnly);
     }
 
     private List<String> searchPexelsCandidates(
-            String normalizedQuery,
+            SearchQuerySpec querySpec,
             AssetResolutionContext resolutionContext,
             boolean coverBackgroundOnly) {
+        String normalizedQuery = querySpec == null ? "" : querySpec.normalizedQuery();
         if (!hasText(normalizedQuery)) {
             return List.of();
         }
@@ -4003,7 +4030,7 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
             resolutionContext.recordSearch();
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(PEXELS_SEARCH_API + URLEncoder.encode(normalizedQuery.trim(), StandardCharsets.UTF_8)))
-                    .timeout(java.time.Duration.ofSeconds(20))
+                    .timeout(java.time.Duration.ofSeconds(Math.max(1, assetSettings.externalSearchTimeoutSeconds())))
                     .header("Authorization", pexelsApiKey)
                     .header("Accept", "application/json")
                     .GET()
@@ -4018,7 +4045,7 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
 
                 return List.of();
             }
-            List<String> candidates = new ArrayList<>();
+            List<ScoredImageCandidate> candidates = new ArrayList<>();
             for (PexelsSearchResponse.PexelsPhoto photo : payload.getPhotos()) {
                 if (photo == null || photo.getSrc() == null) {
                     continue;
@@ -4026,15 +4053,65 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
                 if (coverBackgroundOnly && !isQualifiedCoverBackgroundPhoto(photo)) {
                     continue;
                 }
-                addIfSafeCandidate(candidates, photo.getSrc().getOriginal());
-                addIfSafeCandidate(candidates, photo.getSrc().getLarge2x());
-                addIfSafeCandidate(candidates, photo.getSrc().getLarge());
-                addIfSafeCandidate(candidates, photo.getSrc().getMedium());
-                if (candidates.size() >= 6) {
+                String metadata = blankToDefault(photo.getAlt(), "");
+                addScoredCandidate(candidates, photo.getSrc().getOriginal(), metadata, querySpec, resolutionContext, photo.getWidth(), photo.getHeight(), coverBackgroundOnly, "pexels");
+                addScoredCandidate(candidates, photo.getSrc().getLarge2x(), metadata, querySpec, resolutionContext, photo.getWidth(), photo.getHeight(), coverBackgroundOnly, "pexels");
+                addScoredCandidate(candidates, photo.getSrc().getLarge(), metadata, querySpec, resolutionContext, photo.getWidth(), photo.getHeight(), coverBackgroundOnly, "pexels");
+                addScoredCandidate(candidates, photo.getSrc().getMedium(), metadata, querySpec, resolutionContext, photo.getWidth(), photo.getHeight(), coverBackgroundOnly, "pexels");
+                if (candidates.size() >= 12) {
                     break;
                 }
             }
-            return candidates;
+            return finalizeCandidates(candidates);
+        } catch (Exception exception) {
+            return List.of();
+        }
+    }
+
+    private List<String> searchPixabayCandidates(
+            SearchQuerySpec querySpec,
+            AssetResolutionContext resolutionContext,
+            boolean coverBackgroundOnly) {
+        String normalizedQuery = querySpec == null ? "" : querySpec.normalizedQuery();
+        if (!hasText(normalizedQuery) || !hasText(pixabayApiKey)) {
+            return List.of();
+        }
+        try {
+            resolutionContext.recordSearch();
+            String requestUrl = PIXABAY_SEARCH_API.formatted(
+                    URLEncoder.encode(pixabayApiKey, StandardCharsets.UTF_8),
+                    URLEncoder.encode(normalizedQuery.trim(), StandardCharsets.UTF_8));
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(requestUrl))
+                    .timeout(java.time.Duration.ofSeconds(Math.max(1, assetSettings.fallbackSearchTimeoutSeconds())))
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300 || !hasText(response.body())) {
+                return List.of();
+            }
+            PixabaySearchResponse payload = objectMapper.readValue(response.body(), PixabaySearchResponse.class);
+            if (payload.getHits() == null) {
+                return List.of();
+            }
+            List<ScoredImageCandidate> candidates = new ArrayList<>();
+            for (PixabaySearchResponse.PixabayHit hit : payload.getHits()) {
+                if (hit == null) {
+                    continue;
+                }
+                if (coverBackgroundOnly && !isQualifiedCoverBackgroundPhoto(hit.getImageWidth(), hit.getImageHeight())) {
+                    continue;
+                }
+                String metadata = blankToDefault(hit.getTags(), "");
+                addScoredCandidate(candidates, hit.getLargeImageURL(), metadata, querySpec, resolutionContext, hit.getImageWidth(), hit.getImageHeight(), coverBackgroundOnly, "pixabay");
+                addScoredCandidate(candidates, hit.getWebformatURL(), metadata, querySpec, resolutionContext, hit.getImageWidth(), hit.getImageHeight(), coverBackgroundOnly, "pixabay");
+                addScoredCandidate(candidates, hit.getPreviewURL(), metadata, querySpec, resolutionContext, hit.getImageWidth(), hit.getImageHeight(), coverBackgroundOnly, "pixabay");
+                if (candidates.size() >= 12) {
+                    break;
+                }
+            }
+            return finalizeCandidates(candidates);
         } catch (Exception exception) {
             return List.of();
         }
@@ -4044,8 +4121,10 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
         if (photo == null) {
             return false;
         }
-        Integer width = photo.getWidth();
-        Integer height = photo.getHeight();
+        return isQualifiedCoverBackgroundPhoto(photo.getWidth(), photo.getHeight());
+    }
+
+    private boolean isQualifiedCoverBackgroundPhoto(Integer width, Integer height) {
         if (width == null || height == null || width <= 0 || height <= 0) {
             return false;
         }
@@ -4083,12 +4162,29 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
             String assetType) {
         String topic = stableTopicToken(firstNonBlank(
                 task == null ? null : task.getQuery(),
-                slide == null ? null : slide.getTitle()));
+                slide == null ? null : slide.getTitle(),
+                extractSlideKeywordHint(slide)));
         String slideRole = stableSlideRole(slide);
         String searchCategory = stableSearchCategory(slide, task, assetType);
         String searchSubject = stableSearchSubject(slide, task, assetType);
         String queryKey = normalizeSearchQuery(joinQueryTerms(topic, slideRole, searchCategory, searchSubject));
         return new SearchQuerySpec(queryKey, searchCategory, searchSubject, queryKey);
+    }
+
+    private SearchQuerySpec buildDeckSearchQuery(
+            List<PresentationAssetPlan.SlideAssetPlan> slides,
+            PresentationAssetPlan.AssetTask task,
+            String assetType) {
+        String deckTopic = resolveDeckTopic(slides);
+        String topic = stableTopicToken(firstNonBlank(task == null ? null : task.getQuery(), deckTopic));
+        String category = "cover-group-image".equalsIgnoreCase(blankToDefault(assetType, ""))
+                ? "landmark skyline"
+                : "scenic city";
+        String subject = "cover-group-image".equalsIgnoreCase(blankToDefault(assetType, ""))
+                ? "cover scenic"
+                : "wide scenic background";
+        String queryKey = normalizeSearchQuery(joinQueryTerms(topic, category, subject));
+        return new SearchQuerySpec(queryKey, category, subject, queryKey);
     }
 
     private List<String> normalizeTimelineNodeTexts(PresentationSlidePlan slide) {
@@ -4111,7 +4207,7 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
         }
         return slides.stream()
                 .filter(Objects::nonNull)
-                .map(PresentationAssetPlan.SlideAssetPlan::getTitle)
+                .map(slide -> firstNonBlank(slide.getTitle(), extractSlideKeywordHint(slide)))
                 .filter(this::hasText)
                 .map(this::stableTopicToken)
                 .filter(this::hasText)
@@ -4127,7 +4223,8 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
         List<String> parts = Arrays.stream(normalized.split("\\s+"))
                 .filter(this::hasText)
                 .filter(token -> !List.of("卡片配图", "右侧图片", "配图", "图片", "主视觉", "封面图", "插画").contains(token))
-                .limit(3)
+                .sorted(Comparator.comparingInt(this::queryTokenPriority).reversed())
+                .limit(4)
                 .toList();
         return parts.isEmpty() ? "presentation" : String.join(" ", parts);
     }
@@ -4157,16 +4254,16 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
         String purpose = blankToDefault(task == null ? null : task.getPurpose(), "").toLowerCase(java.util.Locale.ROOT);
         String pageType = blankToDefault(slide == null ? null : slide.getPageType(), "").toUpperCase(java.util.Locale.ROOT);
         if (isSharedBackgroundTask(task)) {
-            return "travel";
+            return "scenic";
         }
         if (isSharedCoverGroupTask(task)) {
-            return "landmark";
+            return "landmark skyline";
         }
         if ("illustration".equalsIgnoreCase(assetType)) {
-            return "travel illustration";
+            return "travel";
         }
         if ("TIMELINE".equals(pageType)) {
-            return "travel";
+            return "activity";
         }
         if (query.contains("美食") || query.contains("food") || purpose.contains("美食") || purpose.contains("food")) {
             return "food";
@@ -4177,7 +4274,13 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
         if ("COVER".equals(pageType) || "slide-1".equalsIgnoreCase(blankToDefault(slide == null ? null : slide.getSlideId(), ""))) {
             return "landmark";
         }
-        return "attraction";
+        if (query.contains("交通") || purpose.contains("交通")) {
+            return "transport";
+        }
+        if (query.contains("住宿") || purpose.contains("住宿")) {
+            return "hotel";
+        }
+        return "scenic";
     }
 
     private String stableSearchSubject(
@@ -4189,16 +4292,16 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
             return "wide scenic background";
         }
         if (isSharedCoverGroupTask(task)) {
-            return "cover landmark";
+            return "cover scenic";
         }
         if ("illustration".equalsIgnoreCase(assetType)) {
-            return "travel illustration";
+            return "illustration";
         }
         if ("THANKS".equals(pageType)) {
-            return "cover";
+            return "scenic";
         }
         if ("TIMELINE".equals(pageType)) {
-            return "travel illustration";
+            return "travel scene";
         }
         String query = blankToDefault(task == null ? null : task.getQuery(), "").toLowerCase(java.util.Locale.ROOT);
         String purpose = blankToDefault(task == null ? null : task.getPurpose(), "").toLowerCase(java.util.Locale.ROOT);
@@ -4206,12 +4309,18 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
             return "local cuisine";
         }
         if (query.contains("文化") || query.contains("heritage") || purpose.contains("文化") || purpose.contains("heritage")) {
-            return "performance heritage";
+            return "heritage scene";
         }
         if ("COVER".equals(pageType) || "slide-1".equalsIgnoreCase(blankToDefault(slide == null ? null : slide.getSlideId(), ""))) {
-            return "cover landmark";
+            return "skyline";
         }
-        return "architecture";
+        if (query.contains("交通") || purpose.contains("交通")) {
+            return "city transport";
+        }
+        if (query.contains("住宿") || purpose.contains("住宿")) {
+            return "hotel stay";
+        }
+        return "city scene";
     }
 
     private boolean isSharedBackgroundTask(PresentationAssetPlan.AssetTask task) {
@@ -4253,6 +4362,98 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
                 .filter(url -> !ordered.contains(url))
                 .forEach(ordered::add);
         return ordered;
+    }
+
+    private int queryTokenPriority(String token) {
+        String value = blankToDefault(token, "").toLowerCase(java.util.Locale.ROOT);
+        if (!hasText(value)) {
+            return 0;
+        }
+        if (CITY_TOKENS.stream().anyMatch(value::contains)) {
+            return 100;
+        }
+        if (HIGH_VALUE_QUERY_TERMS.stream().anyMatch(value::contains)) {
+            return 80;
+        }
+        if (value.length() >= 4) {
+            return 40;
+        }
+        return 10;
+    }
+
+    private String extractSlideKeywordHint(PresentationAssetPlan.SlideAssetPlan slide) {
+        if (slide == null) {
+            return "";
+        }
+        return stableTopicToken(firstNonBlank(slide.getTitle(), slide.getPageType(), "presentation"));
+    }
+
+    private void addScoredCandidate(
+            List<ScoredImageCandidate> candidates,
+            String url,
+            String metadata,
+            SearchQuerySpec querySpec,
+            AssetResolutionContext resolutionContext,
+            Integer width,
+            Integer height,
+            boolean coverBackgroundOnly,
+            String source) {
+        if (!hasText(url) || !isSafeImageUrl(url)) {
+            return;
+        }
+        candidates.add(new ScoredImageCandidate(
+                url,
+                scoreCandidate(url, metadata, querySpec, resolutionContext, width, height, coverBackgroundOnly, source),
+                metadata,
+                source));
+    }
+
+    private int scoreCandidate(
+            String url,
+            String metadata,
+            SearchQuerySpec querySpec,
+            AssetResolutionContext resolutionContext,
+            Integer width,
+            Integer height,
+            boolean coverBackgroundOnly,
+            String source) {
+        int score = 0;
+        String corpus = (blankToDefault(url, "") + " " + blankToDefault(metadata, "")).toLowerCase(java.util.Locale.ROOT);
+        List<String> tokens = Arrays.stream(blankToDefault(querySpec == null ? null : querySpec.normalizedQuery(), "").split("\\s+"))
+                .filter(this::hasText)
+                .toList();
+        for (String token : tokens) {
+            if (corpus.contains(token.toLowerCase(java.util.Locale.ROOT))) {
+                score += queryTokenPriority(token);
+            }
+        }
+        if (coverBackgroundOnly && isQualifiedCoverBackgroundPhoto(width, height)) {
+            score += 60;
+        }
+        if (resolutionContext != null && resolutionContext.usedSourceUrls.contains(url)) {
+            score -= 120;
+        }
+        if ("pixabay".equalsIgnoreCase(source)) {
+            score += 5;
+        }
+        if (width != null && height != null && width > 0 && height > 0) {
+            score += Math.min(20, Math.max(width, height) / 200);
+        }
+        return score;
+    }
+
+    private List<String> finalizeCandidates(List<ScoredImageCandidate> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        return candidates.stream()
+                .filter(Objects::nonNull)
+                .sorted(Comparator.comparingInt(ScoredImageCandidate::score).reversed())
+                .map(ScoredImageCandidate::url)
+                .filter(this::hasText)
+                .distinct()
+                .limit(6)
+                .toList();
     }
 
     private int stableOffset(String value, int size) {
@@ -4480,6 +4681,7 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
     private static final class AssetResolutionContext {
         private final String taskId;
         private final Set<String> usedSourceUrls = ConcurrentHashMap.newKeySet();
+        private final Instant startedAt = Instant.now();
         private final AtomicInteger searchCount = new AtomicInteger();
         private final AtomicInteger candidateUrlCount = new AtomicInteger();
         private final AtomicInteger downloadRequestedCount = new AtomicInteger();
@@ -4527,6 +4729,10 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
         void recordSelectionFailure() {
             selectionFailureCount.incrementAndGet();
         }
+
+        boolean canSearch(int budgetSeconds) {
+            return Duration.between(startedAt, Instant.now()).getSeconds() < Math.max(1, budgetSeconds);
+        }
     }
 
     private static final class InFlightDownload {
@@ -4548,6 +4754,9 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
                 return null;
             }
         }
+    }
+
+    private record ScoredImageCandidate(String url, int score, String metadata, String source) {
     }
 
     private PresentationSlideIR buildSlideIr(

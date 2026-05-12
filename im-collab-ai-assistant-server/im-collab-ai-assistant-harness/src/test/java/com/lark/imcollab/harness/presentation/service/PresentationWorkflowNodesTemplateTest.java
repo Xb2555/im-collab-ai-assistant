@@ -1352,6 +1352,55 @@ class PresentationWorkflowNodesTemplateTest {
         }
 
         @Test
+        void stableSearchQueryAddsSpecificFoodSignalsInsteadOfGenericArchitecture() throws Exception {
+            Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                    "buildStableSearchQuery",
+                    PresentationAssetPlan.SlideAssetPlan.class,
+                    PresentationAssetPlan.AssetTask.class,
+                    String.class);
+            method.setAccessible(true);
+
+            Object spec = method.invoke(nodes,
+                    PresentationAssetPlan.SlideAssetPlan.builder()
+                            .slideId("slide-8")
+                            .pageType("CONTENT")
+                            .layout("two-column")
+                            .title("杭州美食推荐")
+                            .build(),
+                    PresentationAssetPlan.AssetTask.builder()
+                            .query("杭州美食推荐 西湖醋鱼 龙井虾仁")
+                            .purpose("正文配图")
+                            .build(),
+                    "image");
+
+            Method normalizedQuery = spec.getClass().getDeclaredMethod("normalizedQuery");
+            normalizedQuery.setAccessible(true);
+            String query = (String) normalizedQuery.invoke(spec);
+
+            assertThat(query).contains("杭州");
+            assertThat(query).contains("food");
+            assertThat(query).doesNotContain("architecture");
+        }
+
+        @Test
+        void assetResolutionContextStopsSearchWhenBudgetExceeded() throws Exception {
+            Class<?> contextClass = Class.forName("com.lark.imcollab.harness.presentation.service.PresentationWorkflowNodes$AssetResolutionContext");
+            var constructor = contextClass.getDeclaredConstructor(String.class);
+            constructor.setAccessible(true);
+            Object context = constructor.newInstance("task-budget");
+
+            var startedAt = contextClass.getDeclaredField("startedAt");
+            startedAt.setAccessible(true);
+            startedAt.set(context, java.time.Instant.now().minusSeconds(120));
+
+            Method canSearch = contextClass.getDeclaredMethod("canSearch", int.class);
+            canSearch.setAccessible(true);
+
+            boolean allowed = (boolean) canSearch.invoke(context, 60);
+            assertThat(allowed).isFalse();
+        }
+
+        @Test
         void expectedImageSlotsFollowsTemplateVariantRules() throws Exception {
             Method method = PresentationWorkflowNodes.class.getDeclaredMethod("expectedImageSlots", PresentationSlidePlan.class);
             method.setAccessible(true);
@@ -1823,8 +1872,9 @@ class PresentationWorkflowNodesTemplateTest {
                 new ObjectMapper(),
                 EXECUTOR,
                 CONCURRENCY_SETTINGS,
-                new PresentationAssetSettings(1, 2, 7, 500, 10),
+                new PresentationAssetSettings(1, 2, 7, 500, 10, 60, 6, 6),
                 true,
+                "",
                 "");
 
         Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
