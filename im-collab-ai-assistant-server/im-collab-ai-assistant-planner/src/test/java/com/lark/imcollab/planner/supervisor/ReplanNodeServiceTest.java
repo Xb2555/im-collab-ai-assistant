@@ -47,6 +47,7 @@ import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.model.vo.DocumentArtifactApprovalPayload;
 import com.lark.imcollab.common.model.vo.DocumentArtifactIterationResult;
 import com.lark.imcollab.common.model.vo.PresentationIterationVO;
+import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.planner.replan.CardPlanPatchMerger;
 import com.lark.imcollab.planner.replan.PlanAdjustmentInterpreter;
 import com.lark.imcollab.planner.replan.PlanPatchCardDraft;
@@ -72,6 +73,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentCaptor.forClass;
 import org.mockito.ArgumentCaptor;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -695,6 +697,47 @@ class ReplanNodeServiceTest {
         assertThat(doc.getStatus()).isEqualTo("UPDATED");
         verify(documentArtifactIterationFacade).edit(any(DocumentArtifactIterationRequest.class));
         verify(presentationIterationFacade, never()).edit(any());
+    }
+
+    @Test
+    void completedDocEditRetriesSessionFinalizeAfterVersionConflict() {
+        PlanTaskSession session = completedSession();
+        session.setStateRevision(69L);
+        ArtifactRecord doc = docArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        PlanTaskSession latest = completedSession();
+        latest.setStateRevision(72L);
+        latest.setIntakeState(TaskIntakeState.builder()
+                .pendingAdjustmentInstruction("旧指令")
+                .build());
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(sessionService.get("task-1")).thenReturn(latest);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(doc));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(documentEditIntentFacade.resolve(eq("把文档补充风险提示\n目标产物ID：artifact-doc-1"), any()))
+                .thenReturn(concreteDocIntent());
+        when(documentArtifactIterationFacade.edit(any(DocumentArtifactIterationRequest.class))).thenReturn(DocumentArtifactIterationResult.builder()
+                .taskId("doc-iter-1")
+                .artifactId("artifact-doc-1")
+                .docUrl(doc.getUrl())
+                .status(DocumentArtifactIterationStatus.COMPLETED)
+                .summary("已补充风险分析章节")
+                .preview("已补充风险分析章节")
+                .build());
+        doThrow(new VersionConflictException("Session state conflict: taskId=task-1, expectedStateRevision=69, actualStateRevision=72"))
+                .doAnswer(invocation -> invocation.getArgument(0))
+                .when(sessionService).saveWithoutVersionChange(any(PlanTaskSession.class));
+
+        PlanTaskSession result = service.replan("task-1", "把文档补充风险提示\n目标产物ID：artifact-doc-1", null);
+
+        assertThat(result).isSameAs(latest);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已补充风险分析章节");
+        assertThat(result.getIntakeState().getPendingAdjustmentInstruction()).isNull();
+        verify(sessionService).publishEvent("task-1", "COMPLETED");
     }
 
     @Test

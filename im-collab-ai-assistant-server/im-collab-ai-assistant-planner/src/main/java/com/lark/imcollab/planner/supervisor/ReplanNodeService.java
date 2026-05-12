@@ -59,6 +59,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -256,6 +257,7 @@ public class ReplanNodeService {
                 : session.getIntakeState();
         intakeState.setPendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT);
         intakeState.setPendingAdjustmentInstruction(instruction);
+        intakeState.setResumeOriginalExecutionAvailable(true);
         intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         session.setIntakeState(intakeState);
         sessionService.saveWithoutVersionChange(session);
@@ -834,9 +836,7 @@ public class ReplanNodeService {
             intakeState.setAssistantReply(reply);
             session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
             session.setTransitionReason("Completed PPT adjustment rejected before write");
-            sessionService.saveWithoutVersionChange(session);
-            sessionService.publishEvent(taskId, "COMPLETED");
-            return session;
+            return finalizeCompletedArtifactSession(session, artifact.getArtifactId(), "ppt_failed_before_write", reply);
         }
 
         artifact.setPreview(firstNonBlank(result.getSummary(), artifact.getPreview()));
@@ -854,9 +854,7 @@ public class ReplanNodeService {
             intakeState.setPendingAdjustmentInstruction(null);
             session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
             session.setTransitionReason("Scenario D PPT artifact partially verified after write");
-            sessionService.saveWithoutVersionChange(session);
-            sessionService.publishEvent(taskId, "COMPLETED");
-            return session;
+            return finalizeCompletedArtifactSession(session, artifact.getArtifactId(), "ppt_partial_success", "PPT 已写入飞书，状态同步稍后刷新。");
         }
 
         appendRuntimeEvent(taskId, session.getVersion(), TaskEventTypeEnum.TASK_COMPLETED, "PPT 原地修改完成");
@@ -864,9 +862,7 @@ public class ReplanNodeService {
         intakeState.setPendingAdjustmentInstruction(null);
         session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
         session.setTransitionReason("Scenario D PPT artifact updated in place by planner replan");
-        sessionService.saveWithoutVersionChange(session);
-        sessionService.publishEvent(taskId, "COMPLETED");
-        return session;
+        return finalizeCompletedArtifactSession(session, artifact.getArtifactId(), "ppt_completed", "PPT 已更新，状态同步稍后刷新。");
     }
 
     private PlanTaskSession editExistingDoc(
@@ -924,7 +920,7 @@ public class ReplanNodeService {
             clearPendingDocumentApproval(updated.getIntakeState());
             updated.getIntakeState().setLastUserMessage(instruction);
             updated.setTransitionReason("Completed task adjustment needs user input");
-            sessionService.saveWithoutVersionChange(updated);
+            saveWithoutVersionChangeBestEffort(updated, current -> { }, "ask_completed_adjustment_question");
             return updated;
         }
         return session;
@@ -959,10 +955,10 @@ public class ReplanNodeService {
             updated.getIntakeState().setPendingArtifactSelection(intakeState.getPendingArtifactSelection());
             updated.getIntakeState().setLastUserMessage(instruction);
             updated.setTransitionReason("Completed task artifact selection needs user input");
-            sessionService.saveWithoutVersionChange(updated);
+            saveWithoutVersionChangeBestEffort(updated, current -> { }, "ask_artifact_selection_question");
             return updated;
         }
-        sessionService.saveWithoutVersionChange(session);
+        saveWithoutVersionChangeBestEffort(session, current -> { }, "ask_artifact_selection_session");
         return session;
     }
 
@@ -1196,7 +1192,7 @@ public class ReplanNodeService {
                 session.getExecutionContract().getSourceScope(),
                 workspaceContext
         ));
-        sessionService.saveWithoutVersionChange(session);
+        saveWithoutVersionChangeBestEffort(session, current -> { }, "persist_artifact_edit_source_scope");
     }
 
     private WorkspaceContext mergeSessionSourceScope(WorkspaceContext current, WorkspaceContext update) {
@@ -1352,9 +1348,7 @@ public class ReplanNodeService {
             intakeState.setPendingAdjustmentInstruction(null);
             session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
             session.setTransitionReason("Scenario D DOC artifact updated in place by planner replan");
-            sessionService.saveWithoutVersionChange(session);
-            sessionService.publishEvent(taskId, "COMPLETED");
-            return session;
+            return finalizeCompletedArtifactSession(session, artifact.getArtifactId(), "doc_completed", "文档已更新，状态同步稍后刷新。");
         }
 
         if (status == DocumentArtifactIterationStatus.WAITING_APPROVAL) {
@@ -1367,9 +1361,7 @@ public class ReplanNodeService {
             intakeState.setPendingDocumentApprovalMode("COMPLETED_TASK_DOC_APPROVAL");
             session.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
             session.setTransitionReason("Completed DOC adjustment is waiting approval");
-            sessionService.saveWithoutVersionChange(session);
-            sessionService.publishEvent(taskId, "ASK_USER");
-            return session;
+            return finalizeCompletedArtifactSession(session, artifact.getArtifactId(), "doc_waiting_approval", "已进入待确认状态，状态同步稍后刷新。");
         }
 
         markRuntimeStatus(taskId, TaskStatusEnum.COMPLETED);
@@ -1379,9 +1371,92 @@ public class ReplanNodeService {
         intakeState.setAssistantReply(firstNonBlank(result == null ? null : result.getSummary(), "文档修改失败"));
         session.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
         session.setTransitionReason("Completed DOC adjustment failed");
-        sessionService.saveWithoutVersionChange(session);
-        sessionService.publishEvent(taskId, "COMPLETED");
-        return session;
+        return finalizeCompletedArtifactSession(
+                session,
+                artifact.getArtifactId(),
+                "doc_failed",
+                firstNonBlank(result == null ? null : result.getSummary(), "文档修改失败")
+        );
+    }
+
+    private PlanTaskSession finalizeCompletedArtifactSession(
+            PlanTaskSession session,
+            String artifactId,
+            String finalizeOutcome,
+            String degradedAssistantReply
+    ) {
+        if (session == null) {
+            return null;
+        }
+        try {
+            sessionService.saveWithoutVersionChange(session);
+            sessionService.publishEvent(session.getTaskId(), session.getPlanningPhase().name());
+            return session;
+        } catch (com.lark.imcollab.planner.exception.VersionConflictException conflict) {
+            log.warn(
+                    "completed_artifact_finalize_conflict_retry taskId={} artifactId={} planningPhase={} intakeType={} stateRevision_expected={} finalizeOutcome={}",
+                    session.getTaskId(),
+                    artifactId,
+                    session.getPlanningPhase(),
+                    session.getIntakeState() == null ? null : session.getIntakeState().getIntakeType(),
+                    session.getStateRevision(),
+                    finalizeOutcome,
+                    conflict
+            );
+            PlanTaskSession latest = sessionService.get(session.getTaskId());
+            copyCompletedArtifactFinalizeFields(session, latest, degradedAssistantReply);
+            try {
+                sessionService.saveWithoutVersionChange(latest);
+                sessionService.publishEvent(latest.getTaskId(), latest.getPlanningPhase().name());
+                return latest;
+            } catch (com.lark.imcollab.planner.exception.VersionConflictException retryConflict) {
+                log.warn(
+                        "completed_artifact_finalize_conflict_degraded_success taskId={} artifactId={} planningPhase={} intakeType={} stateRevision_expected={} stateRevision_actual={} finalizeOutcome={}",
+                        latest.getTaskId(),
+                        artifactId,
+                        latest.getPlanningPhase(),
+                        latest.getIntakeState() == null ? null : latest.getIntakeState().getIntakeType(),
+                        session.getStateRevision(),
+                        latest.getStateRevision(),
+                        finalizeOutcome,
+                        retryConflict
+                );
+                copyCompletedArtifactFinalizeFields(session, latest, degradedAssistantReply);
+                appendRuntimeEvent(latest.getTaskId(), latest.getVersion(), TaskEventTypeEnum.TASK_COMPLETED, degradedAssistantReply);
+                return latest;
+            }
+        }
+    }
+
+    private void copyCompletedArtifactFinalizeFields(
+            PlanTaskSession source,
+            PlanTaskSession target,
+            String degradedAssistantReply
+    ) {
+        if (source == null || target == null) {
+            return;
+        }
+        target.setPlanningPhase(source.getPlanningPhase());
+        target.setTransitionReason(source.getTransitionReason());
+        TaskIntakeState sourceIntake = source.getIntakeState();
+        TaskIntakeState targetIntake = target.getIntakeState() == null
+                ? TaskIntakeState.builder().build()
+                : target.getIntakeState();
+        if (sourceIntake != null) {
+            targetIntake.setAssistantReply(firstNonBlank(sourceIntake.getAssistantReply(), degradedAssistantReply));
+            targetIntake.setPendingAdjustmentInstruction(sourceIntake.getPendingAdjustmentInstruction());
+            targetIntake.setPendingArtifactSelection(sourceIntake.getPendingArtifactSelection());
+            targetIntake.setPendingTaskSelection(sourceIntake.getPendingTaskSelection());
+            targetIntake.setPendingDocumentIterationTaskId(sourceIntake.getPendingDocumentIterationTaskId());
+            targetIntake.setPendingDocumentArtifactId(sourceIntake.getPendingDocumentArtifactId());
+            targetIntake.setPendingDocumentDocUrl(sourceIntake.getPendingDocumentDocUrl());
+            targetIntake.setPendingDocumentApprovalSummary(sourceIntake.getPendingDocumentApprovalSummary());
+            targetIntake.setPendingDocumentApprovalMode(sourceIntake.getPendingDocumentApprovalMode());
+            targetIntake.setPendingInteractionType(sourceIntake.getPendingInteractionType());
+        } else if (hasText(degradedAssistantReply)) {
+            targetIntake.setAssistantReply(degradedAssistantReply);
+        }
+        target.setIntakeState(targetIntake);
     }
 
     private void clearPendingDocumentApproval(TaskIntakeState intakeState) {
@@ -1393,6 +1468,39 @@ public class ReplanNodeService {
         intakeState.setPendingDocumentDocUrl(null);
         intakeState.setPendingDocumentApprovalSummary(null);
         intakeState.setPendingDocumentApprovalMode(null);
+    }
+
+    private void saveWithoutVersionChangeBestEffort(
+            PlanTaskSession session,
+            Consumer<PlanTaskSession> mutator,
+            String mutationKind
+    ) {
+        if (session == null) {
+            return;
+        }
+        Consumer<PlanTaskSession> safeMutator = mutator == null ? current -> { } : mutator;
+        PlanTaskSession current = session;
+        safeMutator.accept(current);
+        try {
+            sessionService.saveWithoutVersionChange(current);
+        } catch (com.lark.imcollab.planner.exception.VersionConflictException conflict) {
+            PlanTaskSession latest = sessionService.get(current.getTaskId());
+            safeMutator.accept(latest);
+            try {
+                sessionService.saveWithoutVersionChange(latest);
+            } catch (com.lark.imcollab.planner.exception.VersionConflictException retryConflict) {
+                log.warn(
+                        "aux_session_write_conflict_best_effort taskId={} planningPhase={} intakeType={} stateRevision_expected={} stateRevision_actual={} mutationKind={}",
+                        latest.getTaskId(),
+                        latest.getPlanningPhase(),
+                        latest.getIntakeState() == null ? null : latest.getIntakeState().getIntakeType(),
+                        current.getStateRevision(),
+                        latest.getStateRevision(),
+                        mutationKind,
+                        retryConflict
+                );
+            }
+        }
     }
 
     private String parsePresentationId(String url) {

@@ -70,6 +70,9 @@ public class TaskIntakeState implements Serializable {
     @Schema(description = "完成态文档审批挂起模式")
     private String pendingDocumentApprovalMode;
 
+    @Schema(description = "执行中断后，当前是否允许恢复原执行流程")
+    private boolean resumeOriginalExecutionAvailable;
+
     @Schema(description = "最近一次输入时间")
     private String lastInputAt;
 

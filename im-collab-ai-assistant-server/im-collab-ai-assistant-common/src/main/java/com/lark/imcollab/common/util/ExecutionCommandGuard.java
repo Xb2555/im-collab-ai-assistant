@@ -27,6 +27,7 @@ public final class ExecutionCommandGuard {
                 || command.equals("重试一下")
                 || command.equals("再试一次")
                 || command.equals("继续执行")
+                || command.equals("恢复执行")
                 || command.equals("重新执行")
                 || command.contains("没问题执行")
                 || command.contains("可以执行")

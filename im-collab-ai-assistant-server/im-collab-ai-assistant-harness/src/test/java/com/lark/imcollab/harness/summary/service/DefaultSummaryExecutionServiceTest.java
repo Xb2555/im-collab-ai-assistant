@@ -105,9 +105,9 @@ class DefaultSummaryExecutionServiceTest {
                 .externalUrl("https://example.feishu.cn/docx/doc-1")
                 .build()));
         when(chatModel.call(anyString())).thenReturn("""
-                # 项目进展
-                - **本周完成** Planner 上下文拉取。
-                - **风险** Slides 授权偶发失败。
+                一、# 项目进展
+                二、- **本周完成** Planner 上下文拉取。
+                三、- **风险** Slides 授权偶发失败。
                 """);
 
         service.execute("task-1");
@@ -122,7 +122,9 @@ class DefaultSummaryExecutionServiceTest {
                         "不要生成文档和PPT",
                         "当前状态：COMPLETED",
                         "生成技术方案文档，状态：COMPLETED",
-                        "ARTIFACT_CREATED@doc-step：技术方案文档已创建"
+                        "ARTIFACT_CREATED@doc-step：技术方案文档已创建",
+                        "各位同步一下当前进展：",
+                        "偏工作群同步，简洁自然，适合直接转发"
                 );
 
         ArgumentCaptor<String> contentCaptor = ArgumentCaptor.forClass(String.class);
@@ -131,7 +133,49 @@ class DefaultSummaryExecutionServiceTest {
         assertThat(contentCaptor.getValue())
                 .contains("本周完成 Planner 上下文拉取", "风险 Slides 授权偶发失败")
                 .contains("相关产物链接：", "https://example.feishu.cn/docx/doc-1")
-                .doesNotContain("#", "- **", "**");
+                .doesNotContain("#", "- **", "**", "一、", "二、", "三、");
         verify(executionSupport).markSummaryStepCompleted(eq("task-1"), eq(contentCaptor.getValue()));
+    }
+
+    @Test
+    void blankModelReplyFallsBackToShareableReportTone() {
+        Task task = Task.builder()
+                .taskId("task-2")
+                .status(TaskStatus.COMPLETED)
+                .rawInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .clarifiedInstruction("生成一段可直接发给老板的项目进展摘要")
+                .taskBrief("老板汇报摘要")
+                .executionContract(ExecutionContract.builder()
+                        .allowedArtifacts(List.of("SUMMARY"))
+                        .build())
+                .build();
+        when(taskRepository.findById("task-2")).thenReturn(Optional.of(task));
+        when(executionSupport.findSummaryStepId("task-2")).thenReturn(Optional.of("summary-step"));
+        when(stepRepository.findByTaskId("task-2")).thenReturn(List.of());
+        when(eventRepository.findByTaskId("task-2")).thenReturn(List.of());
+        when(artifactRepository.findByTaskId("task-2")).thenReturn(List.of(
+                Artifact.builder()
+                        .type(ArtifactType.DOC_LINK)
+                        .title("9191飞书文档")
+                        .externalUrl("https://example.feishu.cn/docx/doc-2")
+                        .build(),
+                Artifact.builder()
+                        .type(ArtifactType.SLIDES_LINK)
+                        .title("9191汇报PPT")
+                        .externalUrl("https://example.feishu.cn/slides/slide-2")
+                        .build()
+        ));
+        when(chatModel.call(anyString())).thenReturn("   ");
+
+        service.execute("task-2");
+
+        ArgumentCaptor<String> contentCaptor = ArgumentCaptor.forClass(String.class);
+        verify(executionSupport).saveArtifact(eq("task-2"), eq("summary-step"), eq(ArtifactType.SUMMARY),
+                eq("老板汇报摘要"), contentCaptor.capture(), eq(null));
+        assertThat(contentCaptor.getValue())
+                .contains("跟您同步一下当前进展：")
+                .contains("已产出9191飞书文档和9191汇报PPT")
+                .contains("9191飞书文档：https://example.feishu.cn/docx/doc-2")
+                .contains("9191汇报PPT：https://example.feishu.cn/slides/slide-2");
     }
 }

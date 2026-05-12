@@ -273,6 +273,31 @@ class LarkIMTaskReplyFormatterTest {
     }
 
     @Test
+    void completedStatusWeakensDocumentIterationSummaryArtifacts() {
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(
+                        ArtifactRecord.builder()
+                                .type(ArtifactTypeEnum.DOC)
+                                .title("9191飞书文档")
+                                .url("https://example.feishu.cn/docx/doc-token")
+                                .build(),
+                        ArtifactRecord.builder()
+                                .type(ArtifactTypeEnum.SUMMARY)
+                                .title("文档迭代结果 v1")
+                                .preview("已补充项目总结")
+                                .build()
+                ))
+                .build();
+
+        String text = formatter.status(snapshot);
+
+        assertThat(text)
+                .contains("已有产物：1 个", "[DOC] 9191飞书文档", "迭代记录：1 条")
+                .doesNotContain("文档迭代结果 v1");
+    }
+
+    @Test
     void failureIncludesFailedStepDetails() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .transitionReason("执行链路失败")

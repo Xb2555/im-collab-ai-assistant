@@ -20,4 +20,8 @@ public interface PlannerPlanFacade {
             String taskId,
             String userFeedback
     );
+
+    default PlanTaskSession getLatestSession(String taskId) {
+        return null;
+    }
 }

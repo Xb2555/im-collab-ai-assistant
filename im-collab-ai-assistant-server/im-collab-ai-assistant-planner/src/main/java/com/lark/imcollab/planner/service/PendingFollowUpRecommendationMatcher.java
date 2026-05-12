@@ -43,11 +43,9 @@ public class PendingFollowUpRecommendationMatcher {
         if (index != null && index >= 1 && index <= recommendations.size()) {
             return MatchResult.selected(recommendations.get(index - 1));
         }
-        String normalizedInput = compact(userInput);
-        for (PendingFollowUpRecommendation recommendation : recommendations) {
-            if (recommendation != null && normalizedInput.equals(compact(recommendation.getSuggestedUserInstruction()))) {
-                return MatchResult.selected(recommendation);
-            }
+        Optional<PendingFollowUpRecommendation> explicitCarryForward = explicitCarryForwardMatch(userInput, recommendations);
+        if (explicitCarryForward.isPresent()) {
+            return MatchResult.selected(explicitCarryForward.get());
         }
         if (!upstreamSuggestsStandaloneTask
                 && recommendations.size() == 1
@@ -72,8 +70,10 @@ public class PendingFollowUpRecommendationMatcher {
                 4. 不要因为用户消息里提到“文档/PPT/摘要”就随便匹配；要看整体语义是否在承接某条推荐。
                 5. 如果用户这句回复是在复述某条推荐语，并补充了字数、页数、风格、受众、详略、标题等执行约束，仍然视为承接该推荐，不要误判为新任务。
                 6. 只有当用户明确表达“新建一个任务 / 新开一个任务 / 另起一个任务 / 再开一个任务”等意思时，才优先按新任务理解并选 NONE。
-                7. 如果上游意图分类已经偏向 START_TASK，把它当成一个重要提示；但如果用户明显是在承接推荐并补充要求，仍然可以选择 recommendationId。
-                8. 只返回一个可选值本身，不要解释。
+                7. 即使用户没有原样复述“当前任务内容”或“这份文档”，只要整体语义明显是在承接某条推荐，也可以选择 recommendationId。
+                8. 如果上游意图分类已经偏向 START_TASK，把它当成一个重要提示；但如果用户明显是在承接推荐并补充要求，仍然可以选择 recommendationId。
+                9. 对“帮我生成一份新的飞书文档 / 新的 PPT / 新的报告”这类明显独立的新需求，应选 NONE。
+                10. 只返回一个可选值本身，不要解释。
                 """
         );
         if (!hasText(choice) || "NONE".equalsIgnoreCase(choice.trim())) {
@@ -85,6 +85,53 @@ public class PendingFollowUpRecommendationMatcher {
                 .findFirst()
                 .map(MatchResult::selected)
                 .orElseGet(MatchResult::none);
+    }
+
+    public boolean isExplicitCarryForwardCandidate(
+            String userInput,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        return classifyCarryForwardCandidate(userInput, recommendations) == CarryForwardHint.EXACT_OR_PREFIX_MATCH;
+    }
+
+    public CarryForwardHint classifyCarryForwardCandidate(
+            String userInput,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        if (!hasText(userInput) || recommendations == null || recommendations.isEmpty()) {
+            return CarryForwardHint.UNRELATED;
+        }
+        if (looksLikeExplicitFreshTask(userInput)) {
+            return CarryForwardHint.EXPLICIT_NEW_TASK;
+        }
+        if (explicitCarryForwardMatch(userInput, recommendations).isPresent()) {
+            return CarryForwardHint.EXACT_OR_PREFIX_MATCH;
+        }
+        return CarryForwardHint.DEFER_TO_LLM;
+    }
+
+    private Optional<PendingFollowUpRecommendation> explicitCarryForwardMatch(
+            String userInput,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        if (!hasText(userInput) || recommendations == null || recommendations.isEmpty()) {
+            return Optional.empty();
+        }
+        String normalizedInput = compact(userInput);
+        for (PendingFollowUpRecommendation recommendation : recommendations) {
+            if (recommendation == null || !hasText(recommendation.getSuggestedUserInstruction())) {
+                continue;
+            }
+            String normalizedSuggestion = compact(recommendation.getSuggestedUserInstruction());
+            if (normalizedInput.equals(normalizedSuggestion)) {
+                return Optional.of(recommendation);
+            }
+            if (normalizedInput.startsWith(normalizedSuggestion)
+                    && !looksLikeExplicitFreshTask(userInput)) {
+                return Optional.of(recommendation);
+            }
+        }
+        return Optional.empty();
     }
 
     private List<String> allowedChoices(List<PendingFollowUpRecommendation> recommendations) {
@@ -162,6 +209,16 @@ public class PendingFollowUpRecommendationMatcher {
         return value != null && !value.isBlank();
     }
 
+    private boolean looksLikeExplicitFreshTask(String value) {
+        String normalized = compact(value);
+        return normalized.contains("新建一个任务")
+                || normalized.contains("新开一个任务")
+                || normalized.contains("另起一个任务")
+                || normalized.contains("再开一个任务")
+                || normalized.contains("重新开始一个新任务")
+                || normalized.contains("单独起一个新任务");
+    }
+
     private String nullToEmpty(String value) {
         return value == null ? "" : value;
     }
@@ -185,5 +242,12 @@ public class PendingFollowUpRecommendationMatcher {
         SELECTED,
         ASK_SELECTION,
         NONE
+    }
+
+    public enum CarryForwardHint {
+        EXACT_OR_PREFIX_MATCH,
+        EXPLICIT_NEW_TASK,
+        DEFER_TO_LLM,
+        UNRELATED
     }
 }

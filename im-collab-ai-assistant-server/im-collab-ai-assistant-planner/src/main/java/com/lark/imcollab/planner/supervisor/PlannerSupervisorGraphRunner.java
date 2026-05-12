@@ -59,6 +59,10 @@ public class PlannerSupervisorGraphRunner {
     }
 
     private PlanTaskSession extractSession(OverAllState state) {
+        Object session = state.data().get(PlannerSupervisorStateKeys.RESULT_SESSION);
+        if (session instanceof PlanTaskSession planTaskSession) {
+            return planTaskSession;
+        }
         Object taskId = state.data().get(PlannerSupervisorStateKeys.TASK_ID);
         if (taskId instanceof String value && !value.isBlank()) {
             return sessionService.get(value);

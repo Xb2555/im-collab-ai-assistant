@@ -22,6 +22,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -68,7 +69,7 @@ class ReadOnlyNodeServiceTest {
         assertThat(result.getIntakeState().getAssistantReply()).contains("计划我先保留");
         assertThat(result.getIntakeState().getAssistantReply()).doesNotContain("没完全判断清楚");
         verify(memoryService).appendAssistantTurn(session, result.getIntakeState().getAssistantReply());
-        verify(sessionService).saveWithoutVersionChange(session);
+        verify(sessionService, never()).saveWithoutVersionChange(session);
     }
 
     @Test
@@ -118,7 +119,53 @@ class ReadOnlyNodeServiceTest {
         assertThat(result.getIntakeState().getAssistantReply()).contains("项目进展文档");
         assertThat(result.getIntakeState().getAssistantReply()).contains("https://example.feishu.cn/docx/doc");
         verify(memoryService).appendAssistantTurn(session, result.getIntakeState().getAssistantReply());
-        verify(sessionService).saveWithoutVersionChange(session);
+        verify(sessionService, never()).saveWithoutVersionChange(session);
+    }
+
+    @Test
+    void artifactReadOnlyReplyStillWorksForCompletedTaskWithoutPlanCards() {
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        ReadOnlyNodeService service = new ReadOnlyNodeService(
+                sessionService,
+                memoryService,
+                runtimeTool,
+                null
+        );
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-artifact-no-plan")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .readOnlyView("ARTIFACTS")
+                        .lastUserMessage("现有产物")
+                        .build())
+                .build();
+        when(sessionService.get("task-artifact-no-plan")).thenReturn(session);
+        when(runtimeTool.getSnapshot("task-artifact-no-plan")).thenReturn(TaskRuntimeSnapshot.builder()
+                .artifacts(List.of(ArtifactRecord.builder()
+                        .artifactId("artifact-2")
+                        .type(ArtifactTypeEnum.PPT)
+                        .title("老板汇报PPT")
+                        .url("https://example.feishu.cn/slides/ppt")
+                        .build()))
+                .build());
+
+        PlanTaskSession result = service.readOnly(
+                "task-artifact-no-plan",
+                "现有产物",
+                PlannerSupervisorDecisionResult.builder()
+                        .action(PlannerSupervisorAction.QUERY_STATUS)
+                        .confidence(1.0d)
+                        .build()
+        );
+
+        assertThat(result.getIntakeState().getAssistantReply())
+                .contains("已有产物：")
+                .contains("老板汇报PPT")
+                .contains("https://example.feishu.cn/slides/ppt")
+                .doesNotContain("现在还没有任务产物");
     }
 
     @Test
@@ -174,5 +221,60 @@ class ReadOnlyNodeServiceTest {
         assertThat(result.getIntakeState().getAssistantReply())
                 .contains("任务状态：已完成", "步骤进度：1/1", "已有产物：1 个")
                 .doesNotContain("需要我", "吗？");
+    }
+
+    @Test
+    void planReadOnlyFallsBackToRuntimeStepsWhenPlanCardsMissing() {
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        ReadOnlyNodeService service = new ReadOnlyNodeService(
+                sessionService,
+                memoryService,
+                runtimeTool,
+                null
+        );
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-plan-no-cards")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .readOnlyView("PLAN")
+                        .lastUserMessage("完整计划")
+                        .build())
+                .build();
+        when(sessionService.get("task-plan-no-cards")).thenReturn(session);
+        when(runtimeTool.getSnapshot("task-plan-no-cards")).thenReturn(TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .steps(List.of(
+                        TaskStepRecord.builder()
+                                .stepId("step-1")
+                                .type(StepTypeEnum.DOC_CREATE)
+                                .name("生成飞书文档")
+                                .status(StepStatusEnum.COMPLETED)
+                                .outputSummary("已生成初稿文档")
+                                .build(),
+                        TaskStepRecord.builder()
+                                .stepId("step-2")
+                                .type(StepTypeEnum.PPT_CREATE)
+                                .name("生成汇报PPT")
+                                .status(StepStatusEnum.COMPLETED)
+                                .outputSummary("已生成4页PPT")
+                                .build()))
+                .build());
+
+        PlanTaskSession result = service.readOnly(
+                "task-plan-no-cards",
+                "完整计划",
+                PlannerSupervisorDecisionResult.builder()
+                        .action(PlannerSupervisorAction.QUERY_STATUS)
+                        .confidence(1.0d)
+                        .build()
+        );
+
+        assertThat(result.getIntakeState().getAssistantReply())
+                .contains("没有保留原始计划卡片")
+                .contains("[DOC_CREATE] 生成飞书文档 - 状态：COMPLETED - 已生成初稿文档")
+                .contains("[PPT_CREATE] 生成汇报PPT - 状态：COMPLETED - 已生成4页PPT");
     }
 }

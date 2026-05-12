@@ -72,8 +72,7 @@ public class LarkSlidesTool {
             args.add(presentationId.trim());
             JsonNode root = executeJson(args);
             JsonNode data = root.path("data").isMissingNode() ? root : root.path("data");
-            log.info("Lark slides media uploaded: presentationId={}, filePath={}, timeoutMs={}, elapsedMs={}",
-                    presentationId.trim(), filePath, commandTimeoutMillis(), elapsedMs(startedAt));
+
             return LarkSlidesMediaUploadResult.builder()
                     .presentationId(firstNonBlank(
                             text(data, "xml_presentation_id"),
@@ -170,8 +169,7 @@ public class LarkSlidesTool {
                 JsonNode root = executeJson(args);
                 JsonNode dataNode = root.path("data").isMissingNode() ? root : root.path("data");
                 JsonNode slide = dataNode.path("slide").isMissingNode() ? dataNode : dataNode.path("slide");
-                log.info("Lark slides page created: presentationId={}, beforeSlideId={}, attempt={}, xmlChars={}, timeoutMs={}, elapsedMs={}",
-                        presentationId.trim(), beforeSlideId, attempt, slideXml.length(), commandTimeoutMillis(), elapsedMs(startedAt));
+
                 return LarkSlidesReplaceResult.builder()
                         .presentationId(firstNonBlank(
                                 text(dataNode, "xml_presentation_id"),
@@ -383,8 +381,7 @@ public class LarkSlidesTool {
             args.add("--yes");
             JsonNode root = executeJson(args);
             JsonNode dataNode = root.path("data").isMissingNode() ? root : root.path("data");
-            log.info("Lark slides whole page replaced: presentationId={}, slideId={}, xmlChars={}, timeoutMs={}, elapsedMs={}",
-                    presentationId.trim(), slideId.trim(), slideXml.length(), commandTimeoutMillis(), elapsedMs(startedAt));
+
             return LarkSlidesReplaceResult.builder()
                     .presentationId(firstNonBlank(
                             text(dataNode, "xml_presentation_id"),
@@ -406,33 +403,14 @@ public class LarkSlidesTool {
     }
 
     private JsonNode executeJson(List<String> args) {
-        log.info(
-                "Lark slides CLI request start: command={}, timeoutMs={}, workingDir='{}'",
-                summarizeArgs(args),
-                commandTimeoutMillis(),
-                cliWorkingDirectory()
-        );
+
         long startedAt = System.nanoTime();
         CliCommandResult result = larkCliClient.execute(args, null, commandTimeoutMillis());
         if (!result.isSuccess()) {
-            log.warn(
-                    "Lark slides CLI request failed: command={}, exitCode={}, elapsedMs={}, outputPreview={}",
-                    summarizeArgs(args),
-                    result.exitCode(),
-                    elapsedMs(startedAt),
-                    previewOutput(result.output())
-            );
             throw new IllegalStateException(readableCliError(result.output()));
         }
         try {
             JsonNode parsed = larkCliClient.readJsonOutput(result.output());
-            log.info(
-                    "Lark slides CLI request finished: command={}, exitCode={}, elapsedMs={}, outputPreview={}",
-                    summarizeArgs(args),
-                    result.exitCode(),
-                    elapsedMs(startedAt),
-                    previewOutput(result.output())
-            );
             return parsed;
         } catch (Exception exception) {
             log.warn(

@@ -22,6 +22,8 @@ public class PresentationAssetResources implements Serializable {
     @AllArgsConstructor
     public static class SlideAssetResource implements Serializable {
         private String slideId;
+        private AssetResource coverGroupImage;
+        private AssetResource sharedBackgroundImage;
         private List<AssetResource> images;
         private List<TimelineNodeAssetResource> timelineNodeImages;
         private List<AssetResource> illustrations;

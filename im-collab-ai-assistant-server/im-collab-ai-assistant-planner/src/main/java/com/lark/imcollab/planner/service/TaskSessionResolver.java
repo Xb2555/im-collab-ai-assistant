@@ -37,20 +37,25 @@ public class TaskSessionResolver {
             return new TaskSessionResolution(UUID.randomUUID().toString(), false, null);
         }
 
+        Optional<String> boundTaskId = stateStore.findConversationTaskId(continuationKey);
         Optional<PlanTaskSession> pendingSelectionSession = Optional.ofNullable(
                 stateStore.findPendingSelectionSession(continuationKey)
         ).orElse(Optional.empty());
-        if (pendingSelectionSession.isPresent()) {
+        if (pendingSelectionSession.isPresent()
+                && (boundTaskId.isEmpty()
+                || sameText(boundTaskId.get(), pendingSelectionSession.get().getTaskId()))) {
             return new TaskSessionResolution(pendingSelectionSession.get().getTaskId(), true, continuationKey);
         }
 
         Optional<ConversationTaskState> conversationState = stateStore.findConversationTaskState(continuationKey);
-        Optional<String> boundTaskId = stateStore.findConversationTaskId(continuationKey);
         Optional<PlanTaskSession> boundSession = boundTaskId
                 .filter(this::hasText)
                 .flatMap(stateStore::findSession);
         if (boundSession.filter(this::isPendingSelectionSession).isPresent()) {
             return new TaskSessionResolution(boundSession.get().getTaskId(), true, continuationKey);
+        }
+        if (boundSession.isPresent()) {
+            return new TaskSessionResolution(boundTaskId.get(), true, continuationKey);
         }
         Optional<String> stateTaskId = conversationState
                 .flatMap(this::preferredTaskId)
@@ -63,10 +68,6 @@ public class TaskSessionResolver {
         }
         if (boundTaskId.isEmpty()) {
             return new TaskSessionResolution(UUID.randomUUID().toString(), false, continuationKey);
-        }
-
-        if (boundSession.isPresent()) {
-            return new TaskSessionResolution(boundTaskId.get(), true, continuationKey);
         }
         return new TaskSessionResolution(UUID.randomUUID().toString(), false, continuationKey);
     }
@@ -201,6 +202,25 @@ public class TaskSessionResolver {
         return stateStore.findConversationTaskState(key);
     }
 
+    public boolean isTaskCurrentInConversation(String taskId, WorkspaceContext workspaceContext) {
+        if (!hasText(taskId)) {
+            return false;
+        }
+        String key = buildConversationKey(workspaceContext);
+        if (!hasText(key)) {
+            return false;
+        }
+        Optional<String> boundTaskId = stateStore.findConversationTaskId(key);
+        if (boundTaskId.filter(this::hasText).filter(bound -> sameText(bound, taskId)).isPresent()) {
+            return true;
+        }
+        return stateStore.findConversationTaskState(key)
+                .map(ConversationTaskState::getActiveTaskId)
+                .filter(this::hasText)
+                .map(activeTaskId -> sameText(activeTaskId, taskId))
+                .orElse(false);
+    }
+
     private PendingTaskCandidate toCandidate(TaskRecord task) {
         List<ArtifactRecord> artifacts = stateStore.findArtifactsByTaskId(task.getTaskId());
         List<ArtifactTypeEnum> artifactTypes = artifacts.stream()
@@ -279,6 +299,13 @@ public class TaskSessionResolver {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean sameText(String left, String right) {
+        if (!hasText(left) || !hasText(right)) {
+            return false;
+        }
+        return left.trim().equals(right.trim());
     }
 
     private boolean isPendingSelectionSession(PlanTaskSession session) {

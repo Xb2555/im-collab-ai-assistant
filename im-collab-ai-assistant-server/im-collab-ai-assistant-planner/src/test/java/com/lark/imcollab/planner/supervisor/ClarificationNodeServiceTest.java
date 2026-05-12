@@ -29,6 +29,7 @@ class ClarificationNodeServiceTest {
     private final ReplanNodeService replanNodeService = mock(ReplanNodeService.class);
     private final TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
     private final TaskRuntimeService taskRuntimeService = mock(TaskRuntimeService.class);
+    private final PlannerExecutionTool executionTool = mock(PlannerExecutionTool.class);
     private final ClarificationNodeService service = new ClarificationNodeService(
             sessionService,
             clarificationService,
@@ -36,7 +37,8 @@ class ClarificationNodeServiceTest {
             planningNodeService,
             replanNodeService,
             taskBridgeService,
-            taskRuntimeService
+            taskRuntimeService,
+            executionTool
     );
 
     @Test
@@ -72,5 +74,35 @@ class ClarificationNodeServiceTest {
         verify(planningNodeService, never()).plan("task-1", "ppt要5页，最后一页内容是关于lfy66的", workspaceContext, "ppt要5页，最后一页内容是关于lfy66的");
         verify(taskBridgeService).ensureTask(ready);
         verify(taskRuntimeService).reconcilePlanReadyProjection(ready, TaskEventTypeEnum.PLAN_ADJUSTED);
+    }
+
+    @Test
+    void resumeForExecutingPlanAdjustmentCanRestoreOriginalExecution() {
+        PlanTaskSession askUser = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .intakeState(TaskIntakeState.builder()
+                        .pendingInteractionType(PendingInteractionTypeEnum.EXECUTING_PLAN_ADJUSTMENT)
+                        .resumeOriginalExecutionAvailable(true)
+                        .preserveExistingArtifactsOnExecution(true)
+                        .assistantReply("您是想暂停当前任务的执行流程，还是想修改计划内容？")
+                        .build())
+                .build();
+        WorkspaceContext workspaceContext = WorkspaceContext.builder().inputSource("LARK_PRIVATE_CHAT").build();
+        when(sessionService.get("task-1")).thenReturn(askUser);
+        when(executionTool.confirmExecution("task-1"))
+                .thenReturn(PlannerToolResult.success("task-1", PlanningPhaseEnum.EXECUTING, "execution confirmed", null));
+
+        PlanTaskSession result = service.resume("task-1", "恢复执行", workspaceContext);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.EXECUTING);
+        assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.CONFIRM_ACTION);
+        assertThat(result.getIntakeState().getPendingInteractionType()).isNull();
+        assertThat(result.getIntakeState().isResumeOriginalExecutionAvailable()).isFalse();
+        assertThat(result.getIntakeState().isPreserveExistingArtifactsOnExecution()).isTrue();
+        assertThat(result.getIntakeState().getAssistantReply()).contains("继续按原执行流程推进");
+        verify(executionTool).confirmExecution("task-1");
+        verify(replanNodeService, never()).replan("task-1", "恢复执行", workspaceContext);
+        verify(planningNodeService, never()).plan("task-1", "恢复执行", workspaceContext, "恢复执行");
     }
 }
