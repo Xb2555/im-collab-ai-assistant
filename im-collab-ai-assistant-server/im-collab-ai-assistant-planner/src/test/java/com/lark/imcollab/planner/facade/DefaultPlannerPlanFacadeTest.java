@@ -107,7 +107,7 @@ class DefaultPlannerPlanFacadeTest {
 
         assertThat(reply).isEqualTo("🧭 需求我接住了，我先理一下重点，稍后给你一个可执行的计划。");
         verify(matcher).classifyCarryForwardCandidate("帮我生成一份飞书文档，标题必须包含 IMMEDIATE_PREVIEW_FIX。", List.of(recommendation));
-        verify(matcher, never()).match(anyString(), any(), anyBoolean(), anyBoolean());
+        verify(matcher).match("帮我生成一份飞书文档，标题必须包含 IMMEDIATE_PREVIEW_FIX。", List.of(recommendation), false, true);
     }
 
     @Test
@@ -807,7 +807,82 @@ class DefaultPlannerPlanFacadeTest {
         );
 
         assertThat(reply).isEqualTo("🧭 需求我接住了，我先理一下重点，稍后给你一个可执行的计划。");
-        verify(matcher, never()).match(anyString(), any(), anyBoolean(), anyBoolean());
+        verify(matcher).match("帮我生成一份飞书文档，标题必须包含 9191，分2小节。", List.of(recommendation), false, true);
+    }
+
+    @Test
+    void previewImmediateReplyTreatsBareSummaryAsCurrentTaskFollowUpWhenCompletedTaskIsExplicitlySelected() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                new CompletedArtifactIntentRecoveryService(resolver)
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .readOnlyView("COMPLETED_TASKS")
+                        .build())
+                .build();
+        PendingFollowUpRecommendation docRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_DOC")
+                .targetTaskId("task-ppt")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.DOC)
+                .sourceArtifactType(ArtifactTypeEnum.PPT)
+                .plannerInstruction("保留现有 PPT，补一份配套文档。")
+                .suggestedUserInstruction("基于这份PPT补一份配套文档")
+                .build();
+        PendingFollowUpRecommendation summaryRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_SHAREABLE_SUMMARY")
+                .targetTaskId("task-ppt")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.SUMMARY)
+                .plannerInstruction("保留现有产物，新增一段可直接发送的任务摘要。")
+                .suggestedUserInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-ppt")).thenReturn(completed);
+        when(classifier.classify(completed, "帮我生成一份摘要", true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.START_TASK,
+                        0.92d,
+                        "bare summary request",
+                        "帮我生成一份摘要",
+                        false
+                )));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-ppt")
+                        .lastCompletedTaskId("task-ppt")
+                        .pendingFollowUpRecommendations(List.of(docRecommendation, summaryRecommendation))
+                        .build()
+        ));
+        when(matcher.classifyCarryForwardCandidate("帮我生成一份摘要", List.of(docRecommendation, summaryRecommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
+        when(matcher.match("帮我生成一份摘要", List.of(docRecommendation, summaryRecommendation), false, true))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(summaryRecommendation));
+
+        String reply = facade.previewImmediateReply("帮我生成一份摘要", context, null, null);
+
+        assertThat(reply).isEqualTo("🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。");
     }
 
     private static <T> org.springframework.beans.factory.ObjectProvider<T> provider(T facade) {

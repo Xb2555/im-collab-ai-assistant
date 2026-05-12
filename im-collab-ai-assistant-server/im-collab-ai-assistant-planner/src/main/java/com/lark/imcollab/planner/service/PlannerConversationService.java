@@ -918,7 +918,13 @@ public class PlannerConversationService {
         intakeState.setContinuationKey(resolution == null ? null : resolution.continuationKey());
         intakeState.setLastUserMessage(firstText(instruction, "查看已完成任务"));
         intakeState.setRoutingReason("completed task selected from list");
-        intakeState.setAssistantReply(selectedCompletedTaskReply(candidate));
+        List<PendingFollowUpRecommendation> restoredRecommendations = conversationTaskStateService == null
+                ? List.of()
+                : conversationTaskStateService.restorePendingFollowUpRecommendationsForTask(
+                        resolution == null ? null : resolution.continuationKey(),
+                        candidate.getTaskId()
+                );
+        intakeState.setAssistantReply(selectedCompletedTaskReply(candidate, restoredRecommendations));
         intakeState.setReadOnlyView("COMPLETED_TASKS");
         selected.setIntakeState(intakeState);
         log.info("read_only_skipped_session_persist taskId={} planningPhase={} intakeType={} readOnlyView={} conversationKey={}",
@@ -1832,10 +1838,8 @@ public class PlannerConversationService {
         if (intakeDecision.intakeType() != TaskIntakeTypeEnum.PLAN_ADJUSTMENT) {
             return false;
         }
-        if (looksLikeAmbiguousMaterialOrganizationRequest(instruction)) {
-            return false;
-        }
-        if (looksLikeNewCompletedDeliverableRequest(instruction)) {
+        if (completedArtifactIntentRecoveryService != null
+                && !completedArtifactIntentRecoveryService.isSoftCompletedArtifactEditCandidate(instruction)) {
             return false;
         }
         if (intakeDecision.adjustmentTarget() == AdjustmentTargetEnum.COMPLETED_ARTIFACT) {
@@ -1984,12 +1988,42 @@ public class PlannerConversationService {
         return builder.toString();
     }
 
-    private String selectedCompletedTaskReply(PendingTaskCandidate candidate) {
+    private String selectedCompletedTaskReply(
+            PendingTaskCandidate candidate,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
         StringBuilder builder = new StringBuilder("已切换到这个已完成任务：");
         builder.append(firstText(candidate.getTitle(), candidate.getGoal()));
         if (candidate.getArtifactTypes() != null && !candidate.getArtifactTypes().isEmpty()) {
             builder.append("\n可修改产物类型：")
                     .append(candidate.getArtifactTypes().stream().map(Enum::name).distinct().reduce((a, b) -> a + "、" + b).orElse(""));
+        }
+        if (recommendations != null && !recommendations.isEmpty()) {
+            builder.append("\n推荐下一步：");
+            for (int index = 0; index < recommendations.size(); index++) {
+                PendingFollowUpRecommendation recommendation = recommendations.get(index);
+                builder.append("\n").append(index + 1).append(". ")
+                        .append(firstText(recommendation.getSuggestedUserInstruction(), recommendation.getPlannerInstruction()));
+            }
+        }
+        List<ArtifactRecord> artifacts = hasText(candidate.getTaskId())
+                ? sessionResolver.resolveEditableArtifacts(candidate.getTaskId())
+                : List.of();
+        if (!artifacts.isEmpty()) {
+            builder.append("\n已有产物：");
+            for (int index = 0; index < artifacts.size(); index++) {
+                ArtifactRecord artifact = artifacts.get(index);
+                builder.append("\n").append(index + 1).append(". ");
+                if (artifact.getType() != null) {
+                    builder.append("[").append(artifact.getType().name()).append("] ");
+                }
+                builder.append(firstText(artifact.getTitle(), artifact.getArtifactId()));
+                if (hasText(artifact.getUrl())) {
+                    builder.append("\n   ").append(artifact.getUrl().trim());
+                } else if (hasText(artifact.getPreview())) {
+                    builder.append("\n   内容预览已生成，正式链接还在回流中。");
+                }
+            }
         }
         builder.append("\n你可以继续说要修改哪一页、哪一段，或者先查看现有产物。");
         return builder.toString();
@@ -2201,23 +2235,31 @@ public class PlannerConversationService {
                 || stateOptional.get().getPendingFollowUpRecommendations().isEmpty()) {
             return null;
         }
+        ConversationTaskState state = stateOptional.get();
+        boolean explicitCurrentTaskContext = isExplicitCurrentTaskContinuationContext(
+                currentSession,
+                resolution,
+                state
+        );
         CurrentTaskContinuationArbiter.Decision decision = pendingFollowUpConflictArbiter.arbitrateExecution(
                 intakeDecision == null ? null : intakeDecision.intakeType(),
                 userInput,
-                defaultList(stateOptional.get().getPendingFollowUpRecommendations()),
-                stateOptional.get().isPendingFollowUpAwaitingSelection(),
+                defaultList(state.getPendingFollowUpRecommendations()),
+                state.isPendingFollowUpAwaitingSelection(),
+                explicitCurrentTaskContext,
                 directRouteEvaluation
         );
         RoutingEvidence evidence = routingEvidenceExtractor.extract(userInput);
         log.info(
-                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} topRecommendationId={} topRecommendationScore={} secondRecommendationId={} secondRecommendationScore={} freshTaskScore={} currentTaskReferenceScore={} continuationIntentScore={} artifactEditScore={} newDeliverableScore={} ambiguousMaterialOrganizationScore={} reason={}",
+                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} explicitCurrentTaskContext={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} topRecommendationId={} topRecommendationScore={} secondRecommendationId={} secondRecommendationScore={} freshTaskScore={} currentTaskReferenceScore={} continuationIntentScore={} artifactEditScore={} newDeliverableScore={} ambiguousMaterialOrganizationScore={} reason={}",
                 currentSession == null ? null : currentSession.getTaskId(),
                 userInput,
                 intakeDecision == null ? null : intakeDecision.intakeType(),
                 decision == null ? null : decision.type(),
                 decision != null && decision.currentReference(),
+                explicitCurrentTaskContext,
                 decision == null ? null : decision.hint(),
-                stateOptional.get().getPendingFollowUpRecommendations().size(),
+                state.getPendingFollowUpRecommendations().size(),
                 decision == null || decision.selectedRecommendation() == null ? null : decision.selectedRecommendation().getRecommendationId(),
                 decision == null ? null : decision.topRecommendationId(),
                 decision == null ? 0 : decision.topRecommendationScore(),
@@ -2232,6 +2274,34 @@ public class PlannerConversationService {
                 decision == null ? null : decision.reason()
         );
         return decision;
+    }
+
+    private boolean isExplicitCurrentTaskContinuationContext(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            ConversationTaskState state
+    ) {
+        if (session == null
+                || session.getPlanningPhase() != PlanningPhaseEnum.COMPLETED
+                || resolution == null
+                || !resolution.existingSession()
+                || state == null
+                || state.getPendingFollowUpRecommendations() == null
+                || state.getPendingFollowUpRecommendations().isEmpty()) {
+            return false;
+        }
+        String taskId = session.getTaskId();
+        if (!hasText(taskId)) {
+            return false;
+        }
+        boolean boundToCurrentTask = taskId.equals(resolution.taskId())
+                || taskId.equals(state.getActiveTaskId())
+                || taskId.equals(state.getLastCompletedTaskId());
+        if (!boundToCurrentTask) {
+            return false;
+        }
+        return state.getPendingFollowUpRecommendations().stream()
+                .anyMatch(recommendation -> recommendation != null && taskId.equals(recommendation.getTargetTaskId()));
     }
 
     private PlanTaskSession tryResumePendingFollowUpRecommendation(

@@ -237,22 +237,29 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (recommendations == null || recommendations.isEmpty()) {
             return "";
         }
+        boolean explicitCurrentTaskContext = isExplicitCurrentTaskContinuationContext(
+                session,
+                resolution,
+                stateOptional.orElse(null)
+        );
         CurrentTaskContinuationArbiter.Decision decision = pendingFollowUpConflictArbiter.arbitratePreview(
                 routingResult == null ? null : routingResult.type(),
                 effectiveInput,
                 recommendations,
                 awaitingSelection,
+                explicitCurrentTaskContext,
                 CompletedArtifactIntentRecoveryService.DirectRouteEvaluation.none("preview phase does not route current artifact edit here")
         );
         RoutingEvidence evidence = routingEvidenceExtractor.extract(effectiveInput);
         PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint = decision.hint();
         log.info(
-                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} topRecommendationId={} topRecommendationScore={} secondRecommendationId={} secondRecommendationScore={} freshTaskScore={} currentTaskReferenceScore={} continuationIntentScore={} artifactEditScore={} newDeliverableScore={} ambiguousMaterialOrganizationScore={} reason={}",
+                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} explicitCurrentTaskContext={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} topRecommendationId={} topRecommendationScore={} secondRecommendationId={} secondRecommendationScore={} freshTaskScore={} currentTaskReferenceScore={} continuationIntentScore={} artifactEditScore={} newDeliverableScore={} ambiguousMaterialOrganizationScore={} reason={}",
                 session == null ? null : session.getTaskId(),
                 effectiveInput,
                 routingResult == null ? null : routingResult.type(),
                 decision.type(),
                 decision.currentReference(),
+                explicitCurrentTaskContext,
                 carryForwardHint,
                 recommendations.size(),
                 decision.selectedRecommendation() == null ? null : decision.selectedRecommendation().getRecommendationId(),
@@ -293,6 +300,34 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             return SUPPRESS_IMMEDIATE_REPLY;
         }
         return "";
+    }
+
+    private boolean isExplicitCurrentTaskContinuationContext(
+            PlanTaskSession session,
+            TaskSessionResolution resolution,
+            com.lark.imcollab.common.model.entity.ConversationTaskState state
+    ) {
+        if (session == null
+                || session.getPlanningPhase() != PlanningPhaseEnum.COMPLETED
+                || resolution == null
+                || !resolution.existingSession()
+                || state == null
+                || state.getPendingFollowUpRecommendations() == null
+                || state.getPendingFollowUpRecommendations().isEmpty()) {
+            return false;
+        }
+        String taskId = session.getTaskId();
+        if (taskId == null || taskId.isBlank()) {
+            return false;
+        }
+        boolean boundToCurrentTask = taskId.equals(resolution.taskId())
+                || taskId.equals(state.getActiveTaskId())
+                || taskId.equals(state.getLastCompletedTaskId());
+        if (!boundToCurrentTask) {
+            return false;
+        }
+        return state.getPendingFollowUpRecommendations().stream()
+                .anyMatch(recommendation -> recommendation != null && taskId.equals(recommendation.getTargetTaskId()));
     }
 
     private boolean hasPendingSelection(PlanTaskSession session) {

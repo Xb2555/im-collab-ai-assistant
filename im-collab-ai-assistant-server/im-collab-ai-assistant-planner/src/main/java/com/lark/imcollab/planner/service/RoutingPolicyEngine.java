@@ -27,6 +27,7 @@ final class RoutingPolicyEngine {
     CurrentTaskContinuationArbiter.Decision decide(
             boolean upstreamSuggestsStandaloneTask,
             boolean upstreamSuggestsContinuation,
+            boolean explicitCurrentTaskContext,
             PendingFollowUpRecommendationMatcher.CarryForwardHint hint,
             PendingFollowUpRecommendationMatcher.MatchResult match,
             RoutingEvidence evidence,
@@ -48,38 +49,41 @@ final class RoutingPolicyEngine {
         if (safeHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.EXPLICIT_NEW_TASK
                 || safeEvidence.freshTaskLevel() == SignalLevel.HIGH) {
             return proceedNewTask(safeHint, PendingFollowUpRecommendationMatcher.MatchResult.none(),
-                    safeEvidence, safeTargetCandidates, "explicit fresh task", ranked);
+                    safeEvidence, explicitCurrentTaskContext, safeTargetCandidates, "explicit fresh task", ranked);
         }
 
-        int continueCurrentTaskScore = computeContinueCurrentTaskScore(safeEvidence, ranked);
+        int continueCurrentTaskScore = computeContinueCurrentTaskScore(safeEvidence, ranked, explicitCurrentTaskContext);
         int startNewTaskScore = computeStartNewTaskScore(safeEvidence);
         int artifactEditPreferenceScore = computeArtifactEditPreferenceScore(safeEvidence);
 
         if (safeMatch.type() == PendingFollowUpRecommendationMatcher.Type.ASK_SELECTION
                 || safeHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.RELATED_BUT_AMBIGUOUS) {
-            return askCurrentTaskSelection(safeHint, safeMatch, safeEvidence, selectionCandidates(safeRecommendations, safeTargetCandidates),
+            return askCurrentTaskSelection(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext,
+                    selectionCandidates(safeRecommendations, safeTargetCandidates),
                     "multiple related current-task candidates", ranked);
         }
 
         if (safeMatch.type() == PendingFollowUpRecommendationMatcher.Type.SELECTED && safeMatch.recommendation() != null) {
             if (safeHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.EXACT_OR_PREFIX_MATCH) {
-                return proceedCurrentTask(safeHint, safeMatch, safeEvidence, safeTargetCandidates, "exact carry-forward", ranked);
+                return proceedCurrentTask(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext,
+                        safeTargetCandidates, "exact carry-forward", ranked);
             }
             if (safeHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM
                     && ranked.topScore() >= tuning.proceedCurrentTaskMinScore()
-                    && safeRecommendations.size() == 1) {
-                return proceedCurrentTask(safeHint, safeMatch, safeEvidence, safeTargetCandidates,
+                    && (safeRecommendations.size() == 1 || explicitCurrentTaskContext)) {
+                return proceedCurrentTask(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext, safeTargetCandidates,
                         "single recommendation semantic continuation", ranked);
             }
             if (safeHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM
                     && ranked.topScore() >= tuning.proceedCurrentTaskMinScore()
                     && (safeEvidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()
-                    || safeEvidence.continuationIntentLevel().ordinal() >= SignalLevel.MEDIUM.ordinal())) {
-                return proceedCurrentTask(safeHint, safeMatch, safeEvidence, safeTargetCandidates,
+                    || safeEvidence.continuationIntentLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()
+                    || explicitCurrentTaskContext)) {
+                return proceedCurrentTask(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext, safeTargetCandidates,
                         "unique semantic current-task continuation", ranked);
             }
             if (upstreamSuggestsContinuation) {
-                return proceedCurrentTask(safeHint, safeMatch, safeEvidence, safeTargetCandidates,
+                return proceedCurrentTask(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext, safeTargetCandidates,
                         "upstream continuation selected recommendation", ranked);
             }
         }
@@ -88,11 +92,13 @@ final class RoutingPolicyEngine {
                 && ranked.topRecommendation() != null
                 && (safeEvidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()
                 || safeEvidence.continuationIntentLevel().ordinal() >= SignalLevel.LOW.ordinal()
-                || safeRecommendations.size() == 1)) {
+                || safeRecommendations.size() == 1
+                || explicitCurrentTaskContext)) {
             return proceedCurrentTask(
                     safeHint,
                     PendingFollowUpRecommendationMatcher.MatchResult.selected(ranked.topRecommendation()),
                     safeEvidence,
+                    explicitCurrentTaskContext,
                     safeTargetCandidates.isEmpty() ? List.of(ranked.topRecommendation()) : safeTargetCandidates,
                     "policy-selected current-task continuation",
                     ranked
@@ -100,15 +106,16 @@ final class RoutingPolicyEngine {
         }
 
         if (safeEvidence.newDeliverableLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()
+                && !explicitCurrentTaskContext
                 && safeEvidence.currentTaskReferenceLevel() == SignalLevel.NONE
                 && safeEvidence.continuationIntentLevel().ordinal() <= SignalLevel.LOW.ordinal()) {
-            return proceedNewTask(safeHint, safeMatch, safeEvidence, safeTargetCandidates,
+            return proceedNewTask(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext, safeTargetCandidates,
                     "new deliverable request without current-task signal", ranked);
         }
 
         if (continueCurrentTaskScore < tuning.continueCurrentTaskMinScore()
                 && startNewTaskScore >= tuning.proceedNewTaskMinScore()) {
-            return proceedNewTask(safeHint, safeMatch, safeEvidence, safeTargetCandidates,
+            return proceedNewTask(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext, safeTargetCandidates,
                     "new task score dominates continuation score", ranked);
         }
 
@@ -116,7 +123,7 @@ final class RoutingPolicyEngine {
                 || safeEvidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal())
                 && safeEvidence.freshTaskLevel() != SignalLevel.HIGH) {
             List<PendingFollowUpRecommendation> candidates = selectionCandidates(safeRecommendations, safeTargetCandidates);
-            return askNewOrCurrent(safeHint, safeMatch, safeEvidence, candidates,
+            return askNewOrCurrent(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext, candidates,
                     "continuation signal without decisive recommendation match", ranked);
         }
 
@@ -124,7 +131,7 @@ final class RoutingPolicyEngine {
                 && !safeRecommendations.isEmpty()
                 && safeEvidence.freshTaskLevel() != SignalLevel.HIGH) {
             List<PendingFollowUpRecommendation> candidates = selectionCandidates(safeRecommendations, safeTargetCandidates);
-            return askNewOrCurrent(safeHint, safeMatch, safeEvidence, candidates,
+            return askNewOrCurrent(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext, candidates,
                     "ambiguous material organization request", ranked);
         }
 
@@ -133,13 +140,17 @@ final class RoutingPolicyEngine {
         }
 
         if (upstreamSuggestsStandaloneTask) {
-            return proceedNewTask(safeHint, safeMatch, safeEvidence, safeTargetCandidates,
+            return proceedNewTask(safeHint, safeMatch, safeEvidence, explicitCurrentTaskContext, safeTargetCandidates,
                     "standalone task has no current-task signal", ranked);
         }
         return noDecision("no current-task arbitration decision", ranked);
     }
 
-    private int computeContinueCurrentTaskScore(RoutingEvidence evidence, RankedRecommendations ranked) {
+    private int computeContinueCurrentTaskScore(
+            RoutingEvidence evidence,
+            RankedRecommendations ranked,
+            boolean explicitCurrentTaskContext
+    ) {
         int score = 0;
         if (evidence.currentTaskReferenceLevel() == SignalLevel.HIGH) {
             score += 35;
@@ -152,6 +163,9 @@ final class RoutingPolicyEngine {
             score += 20;
         }
         score += Math.min(ranked.topScore(), 30);
+        if (explicitCurrentTaskContext) {
+            score += 25;
+        }
         return Math.min(score, 100);
     }
 
@@ -237,6 +251,7 @@ final class RoutingPolicyEngine {
             PendingFollowUpRecommendationMatcher.CarryForwardHint hint,
             PendingFollowUpRecommendationMatcher.MatchResult match,
             RoutingEvidence evidence,
+            boolean explicitCurrentTaskContext,
             List<PendingFollowUpRecommendation> candidates,
             String reason,
             RankedRecommendations ranked
@@ -246,7 +261,7 @@ final class RoutingPolicyEngine {
                 hint,
                 match,
                 null,
-                evidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal(),
+                explicitCurrentTaskContext || evidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal(),
                 candidates == null ? List.of() : candidates,
                 reason,
                 ranked.topRecommendationId(),
@@ -260,6 +275,7 @@ final class RoutingPolicyEngine {
             PendingFollowUpRecommendationMatcher.CarryForwardHint hint,
             PendingFollowUpRecommendationMatcher.MatchResult match,
             RoutingEvidence evidence,
+            boolean explicitCurrentTaskContext,
             List<PendingFollowUpRecommendation> candidates,
             String reason,
             RankedRecommendations ranked
@@ -269,7 +285,7 @@ final class RoutingPolicyEngine {
                 hint,
                 match,
                 match == null ? null : match.recommendation(),
-                evidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal(),
+                explicitCurrentTaskContext || evidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal(),
                 candidates == null ? List.of() : candidates,
                 reason,
                 ranked.topRecommendationId(),
@@ -283,6 +299,7 @@ final class RoutingPolicyEngine {
             PendingFollowUpRecommendationMatcher.CarryForwardHint hint,
             PendingFollowUpRecommendationMatcher.MatchResult match,
             RoutingEvidence evidence,
+            boolean explicitCurrentTaskContext,
             List<PendingFollowUpRecommendation> candidates,
             String reason,
             RankedRecommendations ranked
@@ -294,7 +311,7 @@ final class RoutingPolicyEngine {
                 hint,
                 match,
                 selected,
-                evidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal(),
+                explicitCurrentTaskContext || evidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal(),
                 safeCandidates,
                 reason,
                 ranked.topRecommendationId(),
@@ -308,6 +325,7 @@ final class RoutingPolicyEngine {
             PendingFollowUpRecommendationMatcher.CarryForwardHint hint,
             PendingFollowUpRecommendationMatcher.MatchResult match,
             RoutingEvidence evidence,
+            boolean explicitCurrentTaskContext,
             List<PendingFollowUpRecommendation> candidates,
             String reason,
             RankedRecommendations ranked
@@ -317,7 +335,7 @@ final class RoutingPolicyEngine {
                 hint,
                 match,
                 null,
-                evidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal(),
+                explicitCurrentTaskContext || evidence.currentTaskReferenceLevel().ordinal() >= SignalLevel.MEDIUM.ordinal(),
                 candidates == null ? List.of() : candidates,
                 reason,
                 ranked.topRecommendationId(),

@@ -126,14 +126,9 @@ public class CompletedArtifactIntentRecoveryService {
         if (!isCurrentCompletedTaskActive(session, workspaceContext)) {
             return DirectRouteEvaluation.none("current completed task is not active");
         }
-        if (looksLikeExplicitFreshTaskRequest(instruction)) {
-            return DirectRouteEvaluation.none("explicit fresh-task request");
-        }
-        if (looksLikeAmbiguousMaterialOrganizationRequest(instruction)) {
-            return DirectRouteEvaluation.none("ambiguous material organization request");
-        }
-        if (looksLikeNewCompletedDeliverableRequest(instruction)) {
-            return DirectRouteEvaluation.none("looks like new deliverable request");
+        String rejectionReason = softCompletedArtifactEditRejectionReason(instruction);
+        if (rejectionReason != null) {
+            return DirectRouteEvaluation.none(rejectionReason);
         }
         return directRouteEvaluation(session, workspaceContext, instruction);
     }
@@ -154,14 +149,9 @@ public class CompletedArtifactIntentRecoveryService {
         if (!isCurrentCompletedTaskActive(session, workspaceContext)) {
             return RecoveryEvaluation.none("current completed task is not active");
         }
-        if (looksLikeExplicitFreshTaskRequest(instruction)) {
-            return RecoveryEvaluation.none("explicit fresh-task request");
-        }
-        if (looksLikeAmbiguousMaterialOrganizationRequest(instruction)) {
-            return RecoveryEvaluation.none("ambiguous material organization request");
-        }
-        if (looksLikeNewCompletedDeliverableRequest(instruction)) {
-            return RecoveryEvaluation.none("looks like new deliverable request");
+        String rejectionReason = softCompletedArtifactEditRejectionReason(instruction);
+        if (rejectionReason != null) {
+            return RecoveryEvaluation.none(rejectionReason);
         }
         DirectRouteEvaluation directRouteEvaluation = directRouteEvaluation(session, workspaceContext, instruction);
         if (directRouteEvaluation.type() == DirectRouteType.NONE) {
@@ -182,6 +172,10 @@ public class CompletedArtifactIntentRecoveryService {
             WorkspaceContext workspaceContext,
             String instruction
     ) {
+        String rejectionReason = softCompletedArtifactEditRejectionReason(instruction);
+        if (rejectionReason != null) {
+            return DirectRouteEvaluation.none(rejectionReason);
+        }
         List<ArtifactRecord> editableArtifacts = sessionResolver.resolveEditableArtifacts(session.getTaskId());
         if (editableArtifacts.isEmpty()) {
             return DirectRouteEvaluation.none("no editable artifacts");
@@ -206,6 +200,27 @@ public class CompletedArtifactIntentRecoveryService {
             return resolveDirectRouteByType(ArtifactTypeEnum.DOC, true, docCandidates, "implicit DOC edit");
         }
         return resolveDirectRouteByType(ArtifactTypeEnum.PPT, true, pptCandidates, "implicit PPT edit");
+    }
+
+    boolean isSoftCompletedArtifactEditCandidate(String instruction) {
+        return softCompletedArtifactEditRejectionReason(instruction) == null;
+    }
+
+    String softCompletedArtifactEditRejectionReason(String instruction) {
+        if (looksLikeExplicitFreshTaskRequest(instruction)) {
+            return "explicit fresh-task request";
+        }
+        RoutingEvidence evidence = routingEvidenceExtractor.extract(instruction);
+        if (evidence.ambiguousMaterialOrganizationLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()) {
+            return "ambiguous material organization request";
+        }
+        if (evidence.newDeliverableLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()) {
+            return "looks like new deliverable request";
+        }
+        if (evidence.freshTaskLevel() == SignalLevel.HIGH) {
+            return "explicit fresh-task request";
+        }
+        return null;
     }
 
     private DirectRouteEvaluation resolveDirectRouteByType(

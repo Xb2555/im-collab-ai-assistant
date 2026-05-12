@@ -184,7 +184,10 @@ public final class RoutingEvidenceExtractor {
         if (normalizedInput.contains("第") && containsAny(normalizedInput, "页", "段", "节")) {
             score = max(score, tuning.artifactEditAnchorScore());
         }
-        for (String token : List.of("标题", "改成", "替换", "删除", "新增", "添加", "插入", "补充到", "加到")) {
+        for (String token : List.of(
+                "标题", "改成", "替换", "删除", "新增", "添加", "插入", "补充到", "加到",
+                "改", "补一段", "补一小节", "加一段", "加一小节"
+        )) {
             if (normalizedInput.contains(token)) {
                 score += tuning.artifactEditMutationScore();
             }
@@ -276,15 +279,28 @@ public final class RoutingEvidenceExtractor {
     }
 
     private boolean mentionsSummary(String normalizedInput) {
-        return containsAny(normalizedInput, "摘要", "总结", "汇报总结", "可直接发送", "群里", "发群", "私聊");
+        if (containsAny(normalizedInput, "摘要", "汇报总结", "任务摘要", "可直接发送", "群里", "发群", "私聊")) {
+            return true;
+        }
+        return normalizedInput.contains("总结")
+                && containsAny(normalizedInput,
+                "生成", "整理", "输出", "写",
+                "发给老板", "汇报给老板", "发群里", "发到群里", "同步",
+                "当前任务内容", "任务内容", "当前内容", "这个任务");
     }
 
     private boolean looksLikeTaskLevelSummaryRequest(String normalizedInput) {
-        boolean summaryTarget = containsAny(normalizedInput, "摘要", "汇报总结", "总结一下", "生成总结", "整理总结");
+        boolean summaryTarget = containsAny(normalizedInput, "摘要", "汇报总结", "任务摘要", "总结一下", "生成总结", "整理总结")
+                || (normalizedInput.contains("总结")
+                && containsAny(normalizedInput,
+                "生成", "整理", "输出", "写",
+                "发给老板", "汇报给老板", "发群里", "发到群里", "同步",
+                "当前任务内容", "任务内容", "当前内容", "这个任务"));
         if (!summaryTarget) {
             return false;
         }
-        return containsAny(normalizedInput, "生成", "整理", "总结", "输出", "写");
+        return containsAny(normalizedInput, "生成", "整理", "总结", "输出", "写",
+                "发给老板", "汇报给老板", "发群里", "发到群里", "同步");
     }
 
     private String compact(String value) {

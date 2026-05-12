@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -242,6 +243,80 @@ class PlannerConversationFollowUpConflictChoiceTest {
         assertThat(result.getIntakeState().getPendingInteractionType()).isEqualTo(PendingInteractionTypeEnum.CURRENT_TASK_CONTINUATION_CHOICE);
         assertThat(result.getIntakeState().getAssistantReply()).contains("回复 1 新开任务，回复 2 继续当前任务");
         verifyNoInteractions(graphRunner);
+    }
+
+    @Test
+    void ambiguousReportMaterialRequestOnSelectedCompletedTaskDoesNotFallIntoArtifactSelection() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        PendingFollowUpConflictArbiter arbiter = new PendingFollowUpConflictArbiter(matcher);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation summaryRecommendation = summaryRecommendation();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(resolver.isTaskCurrentInConversation("task-1", context)).thenReturn(true);
+        when(resolver.hasEditableArtifacts("task-1")).thenReturn(true);
+        when(intakeService.decide(completed, "帮我整理一下汇报材料", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "帮我整理一下汇报材料",
+                        "llm misclassified report material organization as completed artifact edit",
+                        null,
+                        null,
+                        AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                ));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-1")
+                        .lastCompletedTaskId("task-1")
+                        .pendingFollowUpRecommendations(List.of(summaryRecommendation))
+                        .build()
+        ));
+        when(matcher.classifyCarryForwardCandidate("帮我整理一下汇报材料", List.of(summaryRecommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED);
+        when(matcher.match("帮我整理一下汇报材料", List.of(summaryRecommendation), false, false))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.none());
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner,
+                null,
+                null,
+                null,
+                new CompletedArtifactIntentRecoveryService(resolver),
+                null,
+                conversationTaskStateService,
+                matcher,
+                null,
+                null,
+                arbiter
+        );
+
+        PlanTaskSession result = service.handlePlanRequest("帮我整理一下汇报材料", context, null, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
+        assertThat(result.getIntakeState().getPendingInteractionType()).isEqualTo(PendingInteractionTypeEnum.CURRENT_TASK_CONTINUATION_CHOICE);
+        assertThat(result.getIntakeState().getAssistantReply()).contains("回复 1 新开任务，回复 2 继续当前任务");
+        verifyNoInteractions(graphRunner);
+        verify(resolver, never()).resolveCompletedCandidates(context);
     }
 
     @Test

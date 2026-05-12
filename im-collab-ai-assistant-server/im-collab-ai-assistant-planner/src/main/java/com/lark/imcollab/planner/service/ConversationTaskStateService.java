@@ -86,6 +86,27 @@ public class ConversationTaskStateService {
         save(state);
     }
 
+    public List<PendingFollowUpRecommendation> restorePendingFollowUpRecommendationsForTask(
+            String conversationKey,
+            String taskId
+    ) {
+        if (!hasText(conversationKey) || !hasText(taskId)) {
+            return List.of();
+        }
+        List<PendingFollowUpRecommendation> restored = stateStore.findLatestEvaluation(taskId)
+                .filter(evaluation -> evaluation.getNextStepRecommendations() != null && !evaluation.getNextStepRecommendations().isEmpty())
+                .map(this::toPendingRecommendations)
+                .orElse(List.of());
+        ConversationTaskState state = find(conversationKey)
+                .orElseGet(() -> ConversationTaskState.builder().conversationKey(conversationKey).build());
+        state.setConversationKey(conversationKey);
+        state.setPendingFollowUpRecommendations(restored);
+        state.setPendingFollowUpAwaitingSelection(false);
+        state.setUpdatedAt(Instant.now());
+        save(state);
+        return restored;
+    }
+
     public void syncFromSession(PlanTaskSession session) {
         if (session == null) {
             return;

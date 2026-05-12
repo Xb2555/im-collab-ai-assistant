@@ -32,6 +32,7 @@ public class CurrentTaskContinuationArbiter {
             String userInput,
             List<PendingFollowUpRecommendation> recommendations,
             boolean awaitingSelection,
+            boolean explicitCurrentTaskContext,
             CompletedArtifactIntentRecoveryService.DirectRouteEvaluation directRouteEvaluation
     ) {
         return arbitrate(
@@ -40,6 +41,7 @@ public class CurrentTaskContinuationArbiter {
                 userInput,
                 recommendations,
                 awaitingSelection,
+                explicitCurrentTaskContext,
                 directRouteEvaluation
         );
     }
@@ -49,6 +51,7 @@ public class CurrentTaskContinuationArbiter {
             String userInput,
             List<PendingFollowUpRecommendation> recommendations,
             boolean awaitingSelection,
+            boolean explicitCurrentTaskContext,
             CompletedArtifactIntentRecoveryService.DirectRouteEvaluation directRouteEvaluation
     ) {
         return arbitrate(
@@ -57,6 +60,7 @@ public class CurrentTaskContinuationArbiter {
                 userInput,
                 recommendations,
                 awaitingSelection,
+                explicitCurrentTaskContext,
                 directRouteEvaluation
         );
     }
@@ -67,6 +71,7 @@ public class CurrentTaskContinuationArbiter {
             String userInput,
             List<PendingFollowUpRecommendation> recommendations,
             boolean awaitingSelection,
+            boolean explicitCurrentTaskContext,
             CompletedArtifactIntentRecoveryService.DirectRouteEvaluation directRouteEvaluation
     ) {
         if (directRouteEvaluation != null
@@ -88,6 +93,7 @@ public class CurrentTaskContinuationArbiter {
             return routingPolicyEngine.decide(
                     upstreamSuggestsStandaloneTask,
                     upstreamSuggestsContinuation,
+                    explicitCurrentTaskContext,
                     hint,
                     PendingFollowUpRecommendationMatcher.MatchResult.none(),
                     evidence,
@@ -100,10 +106,12 @@ public class CurrentTaskContinuationArbiter {
                 && hint == PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED
                 && evidence.currentTaskReferenceScore() == 0
                 && evidence.continuationIntentScore() == 0
-                && evidence.ambiguousMaterialOrganizationScore() == 0) {
+                && evidence.ambiguousMaterialOrganizationScore() == 0
+                && !explicitCurrentTaskContext) {
             return routingPolicyEngine.decide(
                     upstreamSuggestsStandaloneTask,
                     upstreamSuggestsContinuation,
+                    explicitCurrentTaskContext,
                     hint,
                     PendingFollowUpRecommendationMatcher.MatchResult.none(),
                     evidence,
@@ -119,6 +127,7 @@ public class CurrentTaskContinuationArbiter {
         return routingPolicyEngine.decide(
                 upstreamSuggestsStandaloneTask,
                 upstreamSuggestsContinuation,
+                explicitCurrentTaskContext,
                 hint,
                 match,
                 evidence,
