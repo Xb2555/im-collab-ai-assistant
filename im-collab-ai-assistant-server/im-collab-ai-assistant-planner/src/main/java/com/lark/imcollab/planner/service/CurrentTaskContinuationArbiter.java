@@ -3,17 +3,28 @@ package com.lark.imcollab.planner.service;
 import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
 
 import java.util.List;
 
 public class CurrentTaskContinuationArbiter {
 
     protected final PendingFollowUpRecommendationMatcher matcher;
-    private final RoutingEvidenceExtractor routingEvidenceExtractor = new RoutingEvidenceExtractor();
-    private final RoutingPolicyEngine routingPolicyEngine = new RoutingPolicyEngine();
+    private final RoutingEvidenceExtractor routingEvidenceExtractor;
+    private final RoutingPolicyEngine routingPolicyEngine;
 
     public CurrentTaskContinuationArbiter(PendingFollowUpRecommendationMatcher matcher) {
+        this(matcher, RoutingTuning.defaults());
+    }
+
+    public CurrentTaskContinuationArbiter(PendingFollowUpRecommendationMatcher matcher, PlannerProperties properties) {
+        this(matcher, RoutingTuning.from(properties));
+    }
+
+    CurrentTaskContinuationArbiter(PendingFollowUpRecommendationMatcher matcher, RoutingTuning tuning) {
         this.matcher = matcher;
+        this.routingEvidenceExtractor = new RoutingEvidenceExtractor(tuning);
+        this.routingPolicyEngine = new RoutingPolicyEngine(tuning);
     }
 
     public Decision arbitratePreview(
@@ -81,13 +92,15 @@ public class CurrentTaskContinuationArbiter {
                     PendingFollowUpRecommendationMatcher.MatchResult.none(),
                     evidence,
                     safeRecommendations,
-                    targetCandidates
+                    targetCandidates,
+                    matcher
             );
         }
         if (upstreamSuggestsStandaloneTask
                 && hint == PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED
-                && !evidence.currentTaskReference()
-                && !evidence.continuationSignal()) {
+                && evidence.currentTaskReferenceScore() == 0
+                && evidence.continuationIntentScore() == 0
+                && evidence.ambiguousMaterialOrganizationScore() == 0) {
             return routingPolicyEngine.decide(
                     upstreamSuggestsStandaloneTask,
                     upstreamSuggestsContinuation,
@@ -95,7 +108,8 @@ public class CurrentTaskContinuationArbiter {
                     PendingFollowUpRecommendationMatcher.MatchResult.none(),
                     evidence,
                     safeRecommendations,
-                    targetCandidates
+                    targetCandidates,
+                    matcher
             );
         }
 
@@ -109,7 +123,8 @@ public class CurrentTaskContinuationArbiter {
                 match,
                 evidence,
                 safeRecommendations,
-                targetCandidates
+                targetCandidates,
+                matcher
         );
     }
 
@@ -141,18 +156,24 @@ public class CurrentTaskContinuationArbiter {
             PendingFollowUpRecommendation selectedRecommendation,
             boolean currentReference,
             List<PendingFollowUpRecommendation> candidateRecommendations,
-            String reason
+            String reason,
+            String topRecommendationId,
+            int topRecommendationScore,
+            String secondRecommendationId,
+            int secondRecommendationScore
     ) {
         static Decision bypassCompletedArtifact(String reason) {
             return new Decision(DecisionType.BYPASS_TO_COMPLETED_ARTIFACT_EDIT,
                     PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED,
-                    PendingFollowUpRecommendationMatcher.MatchResult.none(), null, true, List.of(), reason);
+                    PendingFollowUpRecommendationMatcher.MatchResult.none(), null, true, List.of(), reason,
+                    null, 0, null, 0);
         }
 
         static Decision noDecision(String reason) {
             return new Decision(DecisionType.NO_DECISION,
                     PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED,
-                    PendingFollowUpRecommendationMatcher.MatchResult.none(), null, false, List.of(), reason);
+                    PendingFollowUpRecommendationMatcher.MatchResult.none(), null, false, List.of(), reason,
+                    null, 0, null, 0);
         }
     }
 

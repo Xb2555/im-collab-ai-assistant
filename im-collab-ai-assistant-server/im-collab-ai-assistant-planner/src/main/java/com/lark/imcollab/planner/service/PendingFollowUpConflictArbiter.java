@@ -1,5 +1,7 @@
 package com.lark.imcollab.planner.service;
 
+import com.lark.imcollab.planner.config.PlannerProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -8,7 +10,12 @@ import org.springframework.stereotype.Service;
 @Service
 public class PendingFollowUpConflictArbiter extends CurrentTaskContinuationArbiter {
 
-    public PendingFollowUpConflictArbiter(PendingFollowUpRecommendationMatcher matcher) {
+    PendingFollowUpConflictArbiter(PendingFollowUpRecommendationMatcher matcher) {
         super(matcher);
+    }
+
+    @Autowired
+    public PendingFollowUpConflictArbiter(PendingFollowUpRecommendationMatcher matcher, PlannerProperties properties) {
+        super(matcher, properties);
     }
 }

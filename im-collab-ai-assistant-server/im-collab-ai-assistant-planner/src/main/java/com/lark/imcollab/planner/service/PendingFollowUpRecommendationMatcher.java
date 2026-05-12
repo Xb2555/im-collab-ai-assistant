@@ -3,7 +3,9 @@ package com.lark.imcollab.planner.service;
 import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.util.ExecutionCommandGuard;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.intent.LlmChoiceResolver;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -16,10 +18,20 @@ import java.util.regex.Pattern;
 public class PendingFollowUpRecommendationMatcher {
 
     private final LlmChoiceResolver llmChoiceResolver;
-    private final RoutingEvidenceExtractor routingEvidenceExtractor = new RoutingEvidenceExtractor();
+    private final RoutingEvidenceExtractor routingEvidenceExtractor;
 
-    public PendingFollowUpRecommendationMatcher(LlmChoiceResolver llmChoiceResolver) {
+    PendingFollowUpRecommendationMatcher(LlmChoiceResolver llmChoiceResolver) {
+        this(llmChoiceResolver, RoutingTuning.defaults());
+    }
+
+    @Autowired
+    public PendingFollowUpRecommendationMatcher(LlmChoiceResolver llmChoiceResolver, PlannerProperties properties) {
+        this(llmChoiceResolver, RoutingTuning.from(properties));
+    }
+
+    PendingFollowUpRecommendationMatcher(LlmChoiceResolver llmChoiceResolver, RoutingTuning tuning) {
         this.llmChoiceResolver = llmChoiceResolver;
+        this.routingEvidenceExtractor = new RoutingEvidenceExtractor(tuning);
     }
 
     public MatchResult match(
@@ -119,15 +131,26 @@ public class PendingFollowUpRecommendationMatcher {
         if (explicitCarryForwardMatch(userInput, recommendations).isPresent()) {
             return CarryForwardHint.EXACT_OR_PREFIX_MATCH;
         }
-        List<PendingFollowUpRecommendation> semanticCandidates = semanticCarryForwardCandidates(evidence, recommendations);
-        if (semanticCandidates.size() == 1) {
-            return CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM;
+        if (recommendations.size() == 1) {
+            PendingFollowUpRecommendation recommendation = recommendations.get(0);
+            if (recommendation != null
+                    && evidence.deliverableMentionLevel(recommendation.getTargetDeliverable()).ordinal() >= SignalLevel.MEDIUM.ordinal()
+                    && routingEvidenceExtractor.sourceContextLevelForRecommendation(evidence, recommendation).ordinal() >= SignalLevel.MEDIUM.ordinal()) {
+                return CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM;
+            }
+            return CarryForwardHint.UNRELATED;
         }
-        if (semanticCandidates.size() > 1) {
+        List<RecommendationScore> ranked = rankRecommendationAffinity(evidence, recommendations);
+        if (ranked.isEmpty()) {
+            return CarryForwardHint.UNRELATED;
+        }
+        RecommendationScore top = ranked.get(0);
+        RecommendationScore second = ranked.size() > 1 ? ranked.get(1) : null;
+        if (top.score() >= 50 && second != null && second.score() >= 50 && Math.abs(top.score() - second.score()) < 25) {
             return CarryForwardHint.RELATED_BUT_AMBIGUOUS;
         }
-        if (recommendations.size() != 1) {
-            return CarryForwardHint.UNRELATED;
+        if (top.score() >= 50 && second != null && Math.abs(top.score() - second.score()) >= 25) {
+            return CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM;
         }
         return CarryForwardHint.UNRELATED;
     }
@@ -236,6 +259,10 @@ public class PendingFollowUpRecommendationMatcher {
         return routingEvidenceExtractor.looksLikeExplicitFreshTask(value);
     }
 
+    int scoreRecommendationAffinity(RoutingEvidence evidence, PendingFollowUpRecommendation recommendation) {
+        return routingEvidenceExtractor.scoreRecommendationAffinity(evidence, recommendation);
+    }
+
     private String nullToEmpty(String value) {
         return value == null ? "" : value;
     }
@@ -263,6 +290,26 @@ public class PendingFollowUpRecommendationMatcher {
             return List.of();
         }
         return routingEvidenceExtractor.semanticCarryForwardCandidates(evidence, recommendations);
+    }
+
+    private List<RecommendationScore> rankRecommendationAffinity(
+            RoutingEvidence evidence,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        if (evidence == null || recommendations == null || recommendations.isEmpty()) {
+            return List.of();
+        }
+        return recommendations.stream()
+                .filter(recommendation -> recommendation != null)
+                .map(recommendation -> new RecommendationScore(recommendation, scoreRecommendationAffinity(evidence, recommendation)))
+                .sorted((left, right) -> Integer.compare(right.score(), left.score()))
+                .toList();
+    }
+
+    private record RecommendationScore(
+            PendingFollowUpRecommendation recommendation,
+            int score
+    ) {
     }
 
     public record MatchResult(Type type, PendingFollowUpRecommendation recommendation) {

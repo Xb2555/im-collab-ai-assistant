@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.intent.IntentRoutingResult;
 import com.lark.imcollab.planner.intent.LlmIntentClassifier;
 import com.lark.imcollab.planner.service.CompletedArtifactIntentRecoveryService;
@@ -17,6 +18,8 @@ import com.lark.imcollab.planner.service.PendingFollowUpConflictArbiter;
 import com.lark.imcollab.planner.service.PendingFollowUpRecommendationMatcher;
 import com.lark.imcollab.planner.service.PlannerConversationService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
+import com.lark.imcollab.planner.service.RoutingEvidence;
+import com.lark.imcollab.planner.service.RoutingEvidenceExtractor;
 import com.lark.imcollab.planner.service.TaskSessionResolution;
 import com.lark.imcollab.planner.service.TaskSessionResolver;
 import org.slf4j.Logger;
@@ -35,6 +38,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final String SUPPRESS_IMMEDIATE_REPLY = "__SUPPRESS_IMMEDIATE_REPLY__";
+    private final RoutingEvidenceExtractor routingEvidenceExtractor;
 
     private final PlannerConversationService plannerConversationService;
     private final TaskSessionResolver taskSessionResolver;
@@ -54,7 +58,8 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             ConversationTaskStateService conversationTaskStateService,
             PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
             CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService,
-            PendingFollowUpConflictArbiter pendingFollowUpConflictArbiter
+            PendingFollowUpConflictArbiter pendingFollowUpConflictArbiter,
+            PlannerProperties plannerProperties
     ) {
         this.plannerConversationService = plannerConversationService;
         this.taskSessionResolver = taskSessionResolver;
@@ -64,6 +69,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         this.pendingFollowUpRecommendationMatcher = pendingFollowUpRecommendationMatcher;
         this.completedArtifactIntentRecoveryService = completedArtifactIntentRecoveryService;
         this.pendingFollowUpConflictArbiter = pendingFollowUpConflictArbiter;
+        this.routingEvidenceExtractor = new RoutingEvidenceExtractor(plannerProperties);
     }
 
     public DefaultPlannerPlanFacade(
@@ -77,7 +83,8 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         this(plannerConversationService, taskSessionResolver, plannerSessionService, llmIntentClassifier,
                 conversationTaskStateService, pendingFollowUpRecommendationMatcher,
                 new CompletedArtifactIntentRecoveryService(taskSessionResolver),
-                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher));
+                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher, new PlannerProperties()),
+                new PlannerProperties());
     }
 
     public DefaultPlannerPlanFacade(
@@ -92,7 +99,8 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         this(plannerConversationService, taskSessionResolver, plannerSessionService, llmIntentClassifier,
                 conversationTaskStateService, pendingFollowUpRecommendationMatcher,
                 completedArtifactIntentRecoveryService,
-                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher));
+                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher, new PlannerProperties()),
+                new PlannerProperties());
     }
 
     @Override
@@ -135,8 +143,13 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
                                 workspaceContext,
                                 effectiveInput
                         );
-        if (routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
-                && directRouteEvaluation.type() != CompletedArtifactIntentRecoveryService.DirectRouteType.NONE) {
+        if (directRouteEvaluation.type() != CompletedArtifactIntentRecoveryService.DirectRouteType.NONE) {
+            return immediateReceipt(TaskCommandTypeEnum.ADJUST_PLAN, AdjustmentTargetEnum.COMPLETED_ARTIFACT, session, workspaceContext);
+        }
+        RoutingEvidence evidence = routingEvidenceExtractor.extract(effectiveInput);
+        if (evidence.artifactEditLevel().ordinal() >= com.lark.imcollab.planner.service.SignalLevel.MEDIUM.ordinal()
+                && evidence.newDeliverableLevel().ordinal() < com.lark.imcollab.planner.service.SignalLevel.MEDIUM.ordinal()
+                && evidence.ambiguousMaterialOrganizationLevel().ordinal() < com.lark.imcollab.planner.service.SignalLevel.MEDIUM.ordinal()) {
             return immediateReceipt(TaskCommandTypeEnum.ADJUST_PLAN, AdjustmentTargetEnum.COMPLETED_ARTIFACT, session, workspaceContext);
         }
         String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput, routingResult);
@@ -231,9 +244,10 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
                 awaitingSelection,
                 CompletedArtifactIntentRecoveryService.DirectRouteEvaluation.none("preview phase does not route current artifact edit here")
         );
+        RoutingEvidence evidence = routingEvidenceExtractor.extract(effectiveInput);
         PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint = decision.hint();
         log.info(
-                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} reason={}",
+                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} topRecommendationId={} topRecommendationScore={} secondRecommendationId={} secondRecommendationScore={} freshTaskScore={} currentTaskReferenceScore={} continuationIntentScore={} artifactEditScore={} newDeliverableScore={} ambiguousMaterialOrganizationScore={} reason={}",
                 session == null ? null : session.getTaskId(),
                 effectiveInput,
                 routingResult == null ? null : routingResult.type(),
@@ -242,6 +256,16 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
                 carryForwardHint,
                 recommendations.size(),
                 decision.selectedRecommendation() == null ? null : decision.selectedRecommendation().getRecommendationId(),
+                decision.topRecommendationId(),
+                decision.topRecommendationScore(),
+                decision.secondRecommendationId(),
+                decision.secondRecommendationScore(),
+                evidence.freshTaskScore(),
+                evidence.currentTaskReferenceScore(),
+                evidence.continuationIntentScore(),
+                evidence.artifactEditScore(),
+                evidence.newDeliverableScore(),
+                evidence.ambiguousMaterialOrganizationScore(),
                 decision.reason()
         );
         if (decision.type() == CurrentTaskContinuationArbiter.DecisionType.NO_DECISION

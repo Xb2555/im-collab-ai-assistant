@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.intent.IntentRoutingResult;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,21 +27,31 @@ public class CompletedArtifactIntentRecoveryService {
     private final TaskSessionResolver sessionResolver;
     private final ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider;
     private final ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider;
-    private final RoutingEvidenceExtractor routingEvidenceExtractor = new RoutingEvidenceExtractor();
+    private final RoutingEvidenceExtractor routingEvidenceExtractor;
 
     @Autowired
     public CompletedArtifactIntentRecoveryService(
             TaskSessionResolver sessionResolver,
             ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider,
-            ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider
+            ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider,
+            PlannerProperties plannerProperties
     ) {
         this.sessionResolver = sessionResolver;
         this.documentEditIntentFacadeProvider = documentEditIntentFacadeProvider;
         this.presentationEditIntentFacadeProvider = presentationEditIntentFacadeProvider;
+        this.routingEvidenceExtractor = new RoutingEvidenceExtractor(plannerProperties);
+    }
+
+    public CompletedArtifactIntentRecoveryService(
+            TaskSessionResolver sessionResolver,
+            ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider,
+            ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider
+    ) {
+        this(sessionResolver, documentEditIntentFacadeProvider, presentationEditIntentFacadeProvider, new PlannerProperties());
     }
 
     public CompletedArtifactIntentRecoveryService(TaskSessionResolver sessionResolver) {
-        this(sessionResolver, null, null);
+        this(sessionResolver, null, null, new PlannerProperties());
     }
 
     public RecoveryResult recoverTaskIntake(

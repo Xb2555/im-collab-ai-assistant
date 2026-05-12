@@ -278,8 +278,14 @@ class PlannerConversationFollowUpConflictChoiceTest {
                         .pendingInteractionType(PendingInteractionTypeEnum.CURRENT_TASK_CONTINUATION_CHOICE)
                         .build())
                 .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(TaskIntakeState.builder().build())
+                .build();
         when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("selector-task", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
         when(sessionService.get("selector-task")).thenReturn(selector);
+        when(sessionService.get("task-1")).thenReturn(completed);
         when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
                 ConversationTaskState.builder()
                         .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
@@ -289,8 +295,8 @@ class PlannerConversationFollowUpConflictChoiceTest {
                         .build()
         ));
         when(resolver.resolveEditableArtifacts("task-1")).thenReturn(List.of(
-                ArtifactRecord.builder().artifactId("doc-1").taskId("task-1").type(ArtifactTypeEnum.DOC).title("9191项目启动会纪要").build(),
-                ArtifactRecord.builder().artifactId("ppt-1").taskId("task-1").type(ArtifactTypeEnum.PPT).title("9191项目启动会汇报").build()
+                ArtifactRecord.builder().artifactId("doc-1").taskId("task-1").type(ArtifactTypeEnum.DOC).title("9191项目启动会纪要").url("https://doc.example/9191").build(),
+                ArtifactRecord.builder().artifactId("ppt-1").taskId("task-1").type(ArtifactTypeEnum.PPT).title("9191项目启动会汇报").preview("preview").build()
         ));
         PlannerConversationService service = new PlannerConversationService(
                 resolver,
@@ -313,16 +319,23 @@ class PlannerConversationFollowUpConflictChoiceTest {
 
         PlanTaskSession result = service.handlePlanRequest("2", context, null, null);
 
-        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
+        assertThat(result).isSameAs(completed);
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
         assertThat(result.getIntakeState().getAssistantReply())
+                .contains("已切回这个已完成任务")
                 .contains("推荐下一步")
                 .contains("基于这份文档生成一版汇报PPT")
                 .contains("基于当前任务内容生成一段可直接发送的摘要")
                 .contains("修改已有产物")
                 .contains("[DOC] 9191项目启动会纪要")
                 .contains("[PPT] 9191项目启动会汇报")
+                .contains("https://doc.example/9191")
+                .contains("内容预览已生成，正式链接还在回流中。")
                 .contains("直接说要改哪一页、哪一段或新增什么内容");
-        verify(conversationTaskStateService).markPendingFollowUpAwaitingSelection("LARK_PRIVATE_CHAT:chat-1:chat-root", true);
+        assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.STATUS_QUERY);
+        assertThat(result.getIntakeState().getReadOnlyView()).isEqualTo("COMPLETED_TASKS");
+        verify(conversationTaskStateService).markPendingFollowUpAwaitingSelection("LARK_PRIVATE_CHAT:chat-1:chat-root", false);
+        verify(conversationTaskStateService).syncFromSession(completed);
         verify(resolver).bindConversation(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
         verifyNoInteractions(graphRunner);
     }
@@ -400,7 +413,7 @@ class PlannerConversationFollowUpConflictChoiceTest {
     }
 
     @Test
-    void conflictChoiceTwoResumesSelectedFollowUpRecommendation() {
+    void conflictChoiceTwoShowsCurrentTaskActionSelectionInsteadOfExecutingRecommendation() {
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
         TaskIntakeService intakeService = mock(TaskIntakeService.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
@@ -432,9 +445,17 @@ class PlannerConversationFollowUpConflictChoiceTest {
                         .pendingInteractionType(PendingInteractionTypeEnum.FOLLOW_UP_CONFLICT_CHOICE)
                         .build())
                 .build();
-        PlanTaskSession continued = PlanTaskSession.builder().taskId("task-1").planningPhase(PlanningPhaseEnum.PLAN_READY).build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(TaskIntakeState.builder().build())
+                .build();
         when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("selector-task", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
         when(sessionService.get("selector-task")).thenReturn(selector);
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(resolver.resolveEditableArtifacts("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder().artifactId("ppt-1").taskId("task-1").type(ArtifactTypeEnum.PPT).title("9191项目启动会汇报").url("https://slides.example/9191").build()
+        ));
         when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
                 ConversationTaskState.builder()
                         .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
@@ -443,12 +464,6 @@ class PlannerConversationFollowUpConflictChoiceTest {
                         .pendingFollowUpRecommendations(List.of(recommendation))
                         .build()
         ));
-        when(followUpRecommendationExecutionService.executePendingRecommendation(
-                eq(recommendation),
-                eq(context),
-                eq("生成一份北京旅游的ppt"),
-                eq("LARK_PRIVATE_CHAT:chat-1:chat-root")
-        )).thenReturn(continued);
         PlannerConversationService service = new PlannerConversationService(
                 resolver,
                 intakeService,
@@ -470,13 +485,20 @@ class PlannerConversationFollowUpConflictChoiceTest {
 
         PlanTaskSession result = service.handlePlanRequest("2", context, null, null);
 
-        assertThat(result).isSameAs(continued);
-        verify(followUpRecommendationExecutionService).executePendingRecommendation(
-                recommendation,
-                context,
-                "生成一份北京旅游的ppt",
-                "LARK_PRIVATE_CHAT:chat-1:chat-root"
-        );
+        assertThat(result).isSameAs(completed);
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply())
+                .contains("已切回这个已完成任务")
+                .contains("推荐下一步")
+                .contains("基于这份PPT补一份配套文档")
+                .contains("回复编号即可执行对应推荐")
+                .contains("https://slides.example/9191");
+        assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.STATUS_QUERY);
+        assertThat(result.getIntakeState().getReadOnlyView()).isEqualTo("COMPLETED_TASKS");
+        verify(conversationTaskStateService).markPendingFollowUpAwaitingSelection("LARK_PRIVATE_CHAT:chat-1:chat-root", false);
+        verify(conversationTaskStateService).syncFromSession(completed);
+        verify(resolver).bindConversation(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        verifyNoInteractions(followUpRecommendationExecutionService);
     }
 
     private PendingFollowUpRecommendation recommendation() {

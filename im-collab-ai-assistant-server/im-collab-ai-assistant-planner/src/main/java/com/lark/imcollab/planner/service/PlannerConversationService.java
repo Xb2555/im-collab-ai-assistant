@@ -22,6 +22,7 @@ import com.lark.imcollab.common.model.enums.ReplanScopeEnum;
 import com.lark.imcollab.common.model.enums.ScenarioCodeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
 import com.lark.imcollab.common.util.ExecutionCommandGuard;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.exception.VersionConflictException;
 import com.lark.imcollab.planner.supervisor.PlannerExecutionTool;
 import com.lark.imcollab.planner.supervisor.PlannerSupervisorAction;
@@ -68,7 +69,7 @@ public class PlannerConversationService {
     private final PendingFollowUpConflictArbiter pendingFollowUpConflictArbiter;
     private final FollowUpRecommendationExecutionService followUpRecommendationExecutionService;
     private final ReadOnlyNodeService readOnlyNodeService;
-    private final RoutingEvidenceExtractor routingEvidenceExtractor = new RoutingEvidenceExtractor();
+    private final RoutingEvidenceExtractor routingEvidenceExtractor;
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
@@ -84,7 +85,7 @@ public class PlannerConversationService {
             PlannerConversationMemoryService memoryService,
             PlannerSupervisorGraphRunner graphRunner
     ) {
-        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null, null, new CompletedArtifactIntentRecoveryService(sessionResolver), null, null, null, null, null, null);
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner, null, null, null, new CompletedArtifactIntentRecoveryService(sessionResolver), null, null, null, null, null, null, new PlannerProperties());
     }
 
     @Autowired
@@ -104,7 +105,8 @@ public class PlannerConversationService {
             PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
             FollowUpRecommendationExecutionService followUpRecommendationExecutionService,
             ReadOnlyNodeService readOnlyNodeService,
-            PendingFollowUpConflictArbiter pendingFollowUpConflictArbiter
+            PendingFollowUpConflictArbiter pendingFollowUpConflictArbiter,
+            PlannerProperties plannerProperties
     ) {
         this.sessionResolver = sessionResolver;
         this.intakeService = intakeService;
@@ -122,6 +124,32 @@ public class PlannerConversationService {
         this.followUpRecommendationExecutionService = followUpRecommendationExecutionService;
         this.readOnlyNodeService = readOnlyNodeService;
         this.pendingFollowUpConflictArbiter = pendingFollowUpConflictArbiter;
+        this.routingEvidenceExtractor = new RoutingEvidenceExtractor(plannerProperties);
+    }
+
+    public PlannerConversationService(
+            TaskSessionResolver sessionResolver,
+            TaskIntakeService intakeService,
+            PlannerSessionService sessionService,
+            TaskBridgeService taskBridgeService,
+            PlannerConversationMemoryService memoryService,
+            PlannerSupervisorGraphRunner graphRunner,
+            PlannerExecutionTool executionTool,
+            TaskRuntimeService taskRuntimeService,
+            ReplanScopeService replanScopeService,
+            CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService,
+            FollowUpArtifactContextResolver followUpArtifactContextResolver,
+            ConversationTaskStateService conversationTaskStateService,
+            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
+            FollowUpRecommendationExecutionService followUpRecommendationExecutionService,
+            ReadOnlyNodeService readOnlyNodeService,
+            PendingFollowUpConflictArbiter pendingFollowUpConflictArbiter
+    ) {
+        this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
+                executionTool, taskRuntimeService, replanScopeService, completedArtifactIntentRecoveryService,
+                followUpArtifactContextResolver, conversationTaskStateService, pendingFollowUpRecommendationMatcher,
+                followUpRecommendationExecutionService, readOnlyNodeService, pendingFollowUpConflictArbiter,
+                new PlannerProperties());
     }
 
     public PlannerConversationService(
@@ -135,7 +163,7 @@ public class PlannerConversationService {
             TaskRuntimeService taskRuntimeService
     ) {
         this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
-                executionTool, taskRuntimeService, new ReplanScopeService(taskRuntimeService), new CompletedArtifactIntentRecoveryService(sessionResolver), null, null, null, null, null, null);
+                executionTool, taskRuntimeService, new ReplanScopeService(taskRuntimeService), new CompletedArtifactIntentRecoveryService(sessionResolver), null, null, null, null, null, null, new PlannerProperties());
     }
 
     public PlannerConversationService(
@@ -154,7 +182,8 @@ public class PlannerConversationService {
         this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
                 executionTool, taskRuntimeService, new ReplanScopeService(taskRuntimeService), new CompletedArtifactIntentRecoveryService(sessionResolver), followUpArtifactContextResolver, conversationTaskStateService,
                 pendingFollowUpRecommendationMatcher, null, null,
-                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher));
+                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher),
+                new PlannerProperties());
     }
 
     public PlannerConversationService(
@@ -174,7 +203,8 @@ public class PlannerConversationService {
         this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
                 executionTool, taskRuntimeService, replanScopeService, new CompletedArtifactIntentRecoveryService(sessionResolver), followUpArtifactContextResolver, conversationTaskStateService,
                 pendingFollowUpRecommendationMatcher, null, null,
-                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher));
+                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher),
+                new PlannerProperties());
     }
 
     public PlannerConversationService(
@@ -187,7 +217,7 @@ public class PlannerConversationService {
             CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService
     ) {
         this(sessionResolver, intakeService, sessionService, taskBridgeService, memoryService, graphRunner,
-                null, null, new ReplanScopeService(null), completedArtifactIntentRecoveryService, null, null, null, null, null, null);
+                null, null, new ReplanScopeService(null), completedArtifactIntentRecoveryService, null, null, null, null, null, null, new PlannerProperties());
     }
 
     public PlannerConversationService(
@@ -211,7 +241,8 @@ public class PlannerConversationService {
                 executionTool, taskRuntimeService, replanScopeService, completedArtifactIntentRecoveryService,
                 followUpArtifactContextResolver, conversationTaskStateService, pendingFollowUpRecommendationMatcher,
                 followUpRecommendationExecutionService, readOnlyNodeService,
-                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher));
+                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher),
+                new PlannerProperties());
     }
 
     public PlanTaskSession handlePlanRequest(
@@ -1142,19 +1173,19 @@ public class PlannerConversationService {
                 .findFirst()
                 .orElse(candidates.size() == 1 ? candidates.get(0) : null);
         clearPendingCurrentTaskContinuationChoice(session);
+        if (hasText(choice.getTargetTaskId())) {
+            sessionResolver.bindConversation(new TaskSessionResolution(
+                    choice.getTargetTaskId(),
+                    true,
+                    resolution == null ? null : resolution.continuationKey()
+            ));
+        }
         if (recommendation == null) {
             if (!candidates.isEmpty()) {
                 if (conversationTaskStateService != null && hasText(resolution == null ? null : resolution.continuationKey())) {
-                    conversationTaskStateService.markPendingFollowUpAwaitingSelection(resolution.continuationKey(), true);
+                    conversationTaskStateService.markPendingFollowUpAwaitingSelection(resolution.continuationKey(), false);
                 }
-                if (hasText(choice.getTargetTaskId())) {
-                    sessionResolver.bindConversation(new TaskSessionResolution(
-                            choice.getTargetTaskId(),
-                            true,
-                            resolution == null ? null : resolution.continuationKey()
-                    ));
-                }
-                return currentTaskActionSelectionReply(session, choice, candidates);
+                return currentTaskActionSelectionReply(session, choice, candidates, resolution);
             }
             return transientReply(
                     session,
@@ -1163,30 +1194,43 @@ public class PlannerConversationService {
                     "我没找到刚才那条可继续的当前任务动作了。你可以重新说一下要继续哪个任务。"
             );
         }
-        if (followUpRecommendationExecutionService != null) {
-            return followUpRecommendationExecutionService.executePendingRecommendation(
-                    recommendation,
-                    workspaceContext,
-                    firstText(choice.getOriginalInstruction(), choice.getNewTaskInstruction()),
-                    resolution == null ? null : resolution.continuationKey()
-            );
+        if (conversationTaskStateService != null && hasText(resolution == null ? null : resolution.continuationKey())) {
+            conversationTaskStateService.markPendingFollowUpAwaitingSelection(resolution.continuationKey(), false);
         }
-        return null;
+        return currentTaskActionSelectionReply(session, choice, List.of(recommendation), resolution);
     }
 
     private PlanTaskSession currentTaskActionSelectionReply(
             PlanTaskSession session,
             PendingCurrentTaskContinuationChoice choice,
-            List<PendingFollowUpRecommendation> recommendations
+            List<PendingFollowUpRecommendation> recommendations,
+            TaskSessionResolution resolution
     ) {
-        PlanTaskSession response = session == null ? PlanTaskSession.builder().taskId(UUID.randomUUID().toString()).build() : session;
+        String targetTaskId = choice == null ? null : choice.getTargetTaskId();
+        PlanTaskSession response = hasText(targetTaskId) ? sessionService.get(targetTaskId) : session;
+        if (response == null) {
+            response = session == null ? PlanTaskSession.builder().taskId(UUID.randomUUID().toString()).build() : session;
+        }
         TaskIntakeState intakeState = response.getIntakeState() == null
                 ? TaskIntakeState.builder().build()
                 : response.getIntakeState();
-        intakeState.setIntakeType(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        intakeState.setIntakeType(TaskIntakeTypeEnum.STATUS_QUERY);
+        intakeState.setContinuedConversation(true);
+        intakeState.setContinuationKey(resolution == null ? null : resolution.continuationKey());
+        intakeState.setLastUserMessage(firstText(
+                choice == null ? null : choice.getOriginalInstruction(),
+                choice == null ? null : choice.getNewTaskInstruction()
+        ));
+        intakeState.setRoutingReason("current completed task resumed from continuation choice");
         intakeState.setAssistantReply(buildCurrentTaskActionSelectionReply(choice, recommendations));
+        intakeState.setReadOnlyView("COMPLETED_TASKS");
+        intakeState.setPendingInteractionType(null);
+        intakeState.setPendingCurrentTaskContinuationChoice(null);
+        intakeState.setPendingFollowUpConflictChoice(null);
         response.setIntakeState(intakeState);
-        response.setPlanningPhase(PlanningPhaseEnum.ASK_USER);
+        if (conversationTaskStateService != null) {
+            conversationTaskStateService.syncFromSession(response);
+        }
         return response;
     }
 
@@ -1194,7 +1238,7 @@ public class PlannerConversationService {
             PendingCurrentTaskContinuationChoice choice,
             List<PendingFollowUpRecommendation> recommendations
     ) {
-        StringBuilder builder = new StringBuilder("已切到当前任务。你可以继续做两类操作：");
+        StringBuilder builder = new StringBuilder("已切回这个已完成任务。你可以继续做两类操作：");
         if (recommendations != null && !recommendations.isEmpty()) {
             builder.append("\n\n推荐下一步：");
             for (int index = 0; index < recommendations.size(); index++) {
@@ -1216,6 +1260,11 @@ public class PlannerConversationService {
                     builder.append("[").append(artifact.getType().name()).append("] ");
                 }
                 builder.append(firstText(artifact.getTitle(), artifact.getArtifactId()));
+                if (hasText(artifact.getUrl())) {
+                    builder.append("\n  ").append(artifact.getUrl().trim());
+                } else if (hasText(artifact.getPreview())) {
+                    builder.append("\n  内容预览已生成，正式链接还在回流中。");
+                }
             }
             builder.append("\n也可以直接说要改哪一页、哪一段或新增什么内容。");
         } else {
@@ -1319,15 +1368,28 @@ public class PlannerConversationService {
             );
         }
         clearPendingFollowUpConflictChoice(session);
-        if (followUpRecommendationExecutionService != null) {
-            return followUpRecommendationExecutionService.executePendingRecommendation(
-                    recommendation,
-                    workspaceContext,
-                    firstText(choice.getOriginalInstruction(), choice.getNewTaskInstruction()),
+        String targetTaskId = hasText(choice.getTargetTaskId()) ? choice.getTargetTaskId() : recommendation.getTargetTaskId();
+        if (hasText(targetTaskId)) {
+            sessionResolver.bindConversation(new TaskSessionResolution(
+                    targetTaskId,
+                    true,
                     resolution == null ? null : resolution.continuationKey()
-            );
+            ));
         }
-        return null;
+        if (conversationTaskStateService != null && hasText(resolution == null ? null : resolution.continuationKey())) {
+            conversationTaskStateService.markPendingFollowUpAwaitingSelection(resolution.continuationKey(), false);
+        }
+        PendingCurrentTaskContinuationChoice currentTaskChoice = PendingCurrentTaskContinuationChoice.builder()
+                .conversationKey(choice.getConversationKey())
+                .originalInstruction(choice.getOriginalInstruction())
+                .targetTaskId(targetTaskId)
+                .continuationType("FOLLOW_UP_RECOMMENDATION")
+                .selectedRecommendationId(recommendation.getRecommendationId())
+                .candidateRecommendationIds(List.of(recommendation.getRecommendationId()))
+                .newTaskInstruction(choice.getNewTaskInstruction())
+                .expiresAt(choice.getExpiresAt())
+                .build();
+        return currentTaskActionSelectionReply(session, currentTaskChoice, List.of(recommendation), resolution);
     }
 
     private PendingFollowUpRecommendation resolvePendingFollowUpRecommendation(
@@ -2146,8 +2208,9 @@ public class PlannerConversationService {
                 stateOptional.get().isPendingFollowUpAwaitingSelection(),
                 directRouteEvaluation
         );
+        RoutingEvidence evidence = routingEvidenceExtractor.extract(userInput);
         log.info(
-                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} reason={}",
+                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} topRecommendationId={} topRecommendationScore={} secondRecommendationId={} secondRecommendationScore={} freshTaskScore={} currentTaskReferenceScore={} continuationIntentScore={} artifactEditScore={} newDeliverableScore={} ambiguousMaterialOrganizationScore={} reason={}",
                 currentSession == null ? null : currentSession.getTaskId(),
                 userInput,
                 intakeDecision == null ? null : intakeDecision.intakeType(),
@@ -2156,6 +2219,16 @@ public class PlannerConversationService {
                 decision == null ? null : decision.hint(),
                 stateOptional.get().getPendingFollowUpRecommendations().size(),
                 decision == null || decision.selectedRecommendation() == null ? null : decision.selectedRecommendation().getRecommendationId(),
+                decision == null ? null : decision.topRecommendationId(),
+                decision == null ? 0 : decision.topRecommendationScore(),
+                decision == null ? null : decision.secondRecommendationId(),
+                decision == null ? 0 : decision.secondRecommendationScore(),
+                evidence.freshTaskScore(),
+                evidence.currentTaskReferenceScore(),
+                evidence.continuationIntentScore(),
+                evidence.artifactEditScore(),
+                evidence.newDeliverableScore(),
+                evidence.ambiguousMaterialOrganizationScore(),
                 decision == null ? null : decision.reason()
         );
         return decision;
