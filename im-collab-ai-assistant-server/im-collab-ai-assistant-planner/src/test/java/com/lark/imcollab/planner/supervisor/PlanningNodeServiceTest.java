@@ -6,9 +6,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.SourceArtifactRef;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AgentTaskTypeEnum;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.planner.prompt.PromptContextKeys;
 import com.lark.imcollab.planner.runtime.TaskRuntimeProjectionService;
@@ -270,6 +272,62 @@ class PlanningNodeServiceTest {
         assertThat(result).isSameAs(session);
         verify(questionTool).askUser(any(PlanTaskSession.class), any());
         verify(planningAgent, never()).invoke(anyString(), any());
+    }
+
+    @Test
+    void sourceArtifactsSatisfySummaryMissingMaterialSlot() throws Exception {
+        ReactAgent intentAgent = mock(ReactAgent.class);
+        ReactAgent planningAgent = mock(ReactAgent.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .rawInstruction("生成一段可直接发送的任务摘要")
+                .build();
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .sourceArtifacts(List.of(SourceArtifactRef.builder()
+                        .artifactId("artifact-ppt")
+                        .taskId("task-1")
+                        .artifactType(ArtifactTypeEnum.PPT)
+                        .title("9191项目启动会汇报")
+                        .preview("已有 DOC 和 PPT 产物，可作为任务摘要来源。")
+                        .usage("PRIMARY_SOURCE")
+                        .build()))
+                .build();
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(sessionService.get("task-1")).thenReturn(session);
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(intentAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"userGoal":"生成任务摘要","deliverableTargets":["SUMMARY"],"missingSlots":["需要整理的具体内容或材料"]}
+                        """)
+        ))));
+        when(planningAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"planCards":[{"cardId":"card-001","title":"生成任务摘要","type":"SUMMARY"}]}
+                        """)
+        ))));
+        PlanningNodeService planningService = new PlanningNodeService(
+                intentAgent,
+                planningAgent,
+                sessionService,
+                new PlanQualityService(new ObjectMapper(), List.of(), new ExecutionContractFactory()),
+                projectionService,
+                memoryService,
+                questionTool,
+                new ObjectMapper()
+        );
+
+        planningService.plan("task-1", "生成一段可直接发送的任务摘要", workspaceContext, "");
+
+        verify(questionTool, never()).askUser(any(PlanTaskSession.class), any());
+        verify(planningAgent).invoke(contains("Source artifacts:"), any());
+        assertThat(session.getPlanCards()).hasSize(1);
+        assertThat(session.getPlanCards().get(0).getType()).isEqualTo(PlanCardTypeEnum.SUMMARY);
     }
 
     @Test

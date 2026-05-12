@@ -26,6 +26,7 @@ public class CompletedArtifactIntentRecoveryService {
     private final TaskSessionResolver sessionResolver;
     private final ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider;
     private final ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider;
+    private final RoutingEvidenceExtractor routingEvidenceExtractor = new RoutingEvidenceExtractor();
 
     @Autowired
     public CompletedArtifactIntentRecoveryService(
@@ -117,6 +118,9 @@ public class CompletedArtifactIntentRecoveryService {
         if (looksLikeExplicitFreshTaskRequest(instruction)) {
             return DirectRouteEvaluation.none("explicit fresh-task request");
         }
+        if (looksLikeAmbiguousMaterialOrganizationRequest(instruction)) {
+            return DirectRouteEvaluation.none("ambiguous material organization request");
+        }
         if (looksLikeNewCompletedDeliverableRequest(instruction)) {
             return DirectRouteEvaluation.none("looks like new deliverable request");
         }
@@ -141,6 +145,9 @@ public class CompletedArtifactIntentRecoveryService {
         }
         if (looksLikeExplicitFreshTaskRequest(instruction)) {
             return RecoveryEvaluation.none("explicit fresh-task request");
+        }
+        if (looksLikeAmbiguousMaterialOrganizationRequest(instruction)) {
+            return RecoveryEvaluation.none("ambiguous material organization request");
         }
         if (looksLikeNewCompletedDeliverableRequest(instruction)) {
             return RecoveryEvaluation.none("looks like new deliverable request");
@@ -245,26 +252,15 @@ public class CompletedArtifactIntentRecoveryService {
     }
 
     private boolean looksLikeExplicitFreshTaskRequest(String instruction) {
-        if (!hasText(instruction)) {
-            return false;
-        }
-        String normalized = instruction.toLowerCase(Locale.ROOT);
-        return normalized.contains("新建一个任务")
-                || normalized.contains("新开一个任务")
-                || normalized.contains("另起一个任务")
-                || normalized.contains("重新来一份")
-                || normalized.contains("重新生成一版")
-                || normalized.contains("忽略上一个任务");
+        return routingEvidenceExtractor.looksLikeExplicitFreshTask(instruction);
     }
 
     private boolean looksLikeNewCompletedDeliverableRequest(String instruction) {
-        if (!hasText(instruction)) {
-            return false;
-        }
-        String lower = instruction.toLowerCase(Locale.ROOT);
-        return (lower.contains("生成") || lower.contains("整理") || lower.contains("做一版") || lower.contains("输出") || lower.contains("补一份"))
-                && (lower.contains("ppt") || lower.contains("演示稿") || lower.contains("幻灯片")
-                || lower.contains("摘要") || lower.contains("总结") || lower.contains("文档") || lower.contains("报告"));
+        return routingEvidenceExtractor.looksLikeNewCompletedDeliverableRequest(instruction);
+    }
+
+    private boolean looksLikeAmbiguousMaterialOrganizationRequest(String instruction) {
+        return routingEvidenceExtractor.looksLikeAmbiguousMaterialOrganizationRequest(instruction);
     }
 
     private String intakeType(TaskIntakeDecision decision) {

@@ -12,6 +12,8 @@ import com.lark.imcollab.planner.intent.IntentRoutingResult;
 import com.lark.imcollab.planner.intent.LlmIntentClassifier;
 import com.lark.imcollab.planner.service.CompletedArtifactIntentRecoveryService;
 import com.lark.imcollab.planner.service.ConversationTaskStateService;
+import com.lark.imcollab.planner.service.CurrentTaskContinuationArbiter;
+import com.lark.imcollab.planner.service.PendingFollowUpConflictArbiter;
 import com.lark.imcollab.planner.service.PendingFollowUpRecommendationMatcher;
 import com.lark.imcollab.planner.service.PlannerConversationService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
@@ -32,6 +34,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     private static final Logger log = LoggerFactory.getLogger(DefaultPlannerPlanFacade.class);
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
+    private static final String SUPPRESS_IMMEDIATE_REPLY = "__SUPPRESS_IMMEDIATE_REPLY__";
 
     private final PlannerConversationService plannerConversationService;
     private final TaskSessionResolver taskSessionResolver;
@@ -40,6 +43,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     private final ConversationTaskStateService conversationTaskStateService;
     private final PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher;
     private final CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService;
+    private final PendingFollowUpConflictArbiter pendingFollowUpConflictArbiter;
 
     @Autowired
     public DefaultPlannerPlanFacade(
@@ -49,7 +53,8 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             LlmIntentClassifier llmIntentClassifier,
             ConversationTaskStateService conversationTaskStateService,
             PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
-            CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService
+            CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService,
+            PendingFollowUpConflictArbiter pendingFollowUpConflictArbiter
     ) {
         this.plannerConversationService = plannerConversationService;
         this.taskSessionResolver = taskSessionResolver;
@@ -58,6 +63,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         this.conversationTaskStateService = conversationTaskStateService;
         this.pendingFollowUpRecommendationMatcher = pendingFollowUpRecommendationMatcher;
         this.completedArtifactIntentRecoveryService = completedArtifactIntentRecoveryService;
+        this.pendingFollowUpConflictArbiter = pendingFollowUpConflictArbiter;
     }
 
     public DefaultPlannerPlanFacade(
@@ -70,7 +76,23 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     ) {
         this(plannerConversationService, taskSessionResolver, plannerSessionService, llmIntentClassifier,
                 conversationTaskStateService, pendingFollowUpRecommendationMatcher,
-                new CompletedArtifactIntentRecoveryService(taskSessionResolver));
+                new CompletedArtifactIntentRecoveryService(taskSessionResolver),
+                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher));
+    }
+
+    public DefaultPlannerPlanFacade(
+            PlannerConversationService plannerConversationService,
+            TaskSessionResolver taskSessionResolver,
+            PlannerSessionService plannerSessionService,
+            LlmIntentClassifier llmIntentClassifier,
+            ConversationTaskStateService conversationTaskStateService,
+            PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
+            CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService
+    ) {
+        this(plannerConversationService, taskSessionResolver, plannerSessionService, llmIntentClassifier,
+                conversationTaskStateService, pendingFollowUpRecommendationMatcher,
+                completedArtifactIntentRecoveryService,
+                pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher));
     }
 
     @Override
@@ -118,6 +140,9 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             return immediateReceipt(TaskCommandTypeEnum.ADJUST_PLAN, AdjustmentTargetEnum.COMPLETED_ARTIFACT, session, workspaceContext);
         }
         String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput, routingResult);
+        if (SUPPRESS_IMMEDIATE_REPLY.equals(followUpPreview)) {
+            return "";
+        }
         if (!followUpPreview.isBlank()) {
             return followUpPreview;
         }
@@ -179,6 +204,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     ) {
         if (conversationTaskStateService == null
                 || pendingFollowUpRecommendationMatcher == null
+                || pendingFollowUpConflictArbiter == null
                 || resolution == null
                 || resolution.continuationKey() == null
                 || effectiveInput == null
@@ -198,59 +224,31 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (recommendations == null || recommendations.isEmpty()) {
             return "";
         }
-        PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint =
-                pendingFollowUpRecommendationMatcher == null
-                        ? PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED
-                        : pendingFollowUpRecommendationMatcher.classifyCarryForwardCandidate(effectiveInput, recommendations);
-        if (carryForwardHint == null) {
-            carryForwardHint = PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED;
-        }
+        CurrentTaskContinuationArbiter.Decision decision = pendingFollowUpConflictArbiter.arbitratePreview(
+                routingResult == null ? null : routingResult.type(),
+                effectiveInput,
+                recommendations,
+                awaitingSelection,
+                CompletedArtifactIntentRecoveryService.DirectRouteEvaluation.none("preview phase does not route current artifact edit here")
+        );
+        PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint = decision.hint();
         log.info(
-                "pending_followup_preview_hint taskId={} userInput='{}' routingType={} carryForwardHint={} recommendationCount={} upstreamSuggestsStandaloneTask={}",
+                "current_task_arbiter_decision taskId={} userInput='{}' upstreamType={} decision={} currentReference={} carryForwardHint={} recommendationCount={} selectedRecommendationId={} reason={}",
                 session == null ? null : session.getTaskId(),
                 effectiveInput,
                 routingResult == null ? null : routingResult.type(),
+                decision.type(),
+                decision.currentReference(),
                 carryForwardHint,
                 recommendations.size(),
-                routingResult != null && routingResult.type() == TaskCommandTypeEnum.START_TASK
+                decision.selectedRecommendation() == null ? null : decision.selectedRecommendation().getRecommendationId(),
+                decision.reason()
         );
-        if (!shouldPreviewPendingFollowUpImmediateReply(
-                routingResult,
-                awaitingSelection,
-                effectiveInput,
-                recommendations,
-                carryForwardHint
-        )) {
-            if (routingResult != null
-                    && routingResult.type() == TaskCommandTypeEnum.START_TASK
-                    && carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.EXPLICIT_NEW_TASK) {
-                log.info(
-                        "pending_followup_explicit_new_task_bypass taskId={} userInput='{}' routingType={} recommendationCount={}",
-                        session == null ? null : session.getTaskId(),
-                        effectiveInput,
-                        routingResult.type(),
-                        recommendations.size()
-                );
-            }
+        if (decision.type() == CurrentTaskContinuationArbiter.DecisionType.NO_DECISION
+                || decision.type() == CurrentTaskContinuationArbiter.DecisionType.PROCEED_NEW_TASK
+                || decision.type() == CurrentTaskContinuationArbiter.DecisionType.BYPASS_TO_COMPLETED_ARTIFACT_EDIT) {
             return "";
         }
-        if (routingResult != null
-                && routingResult.type() == TaskCommandTypeEnum.START_TASK
-                && carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM) {
-            log.info(
-                    "pending_followup_llm_attempt taskId={} userInput='{}' routingType={} recommendationCount={} upstreamSuggestsStandaloneTask=true",
-                    session == null ? null : session.getTaskId(),
-                    effectiveInput,
-                    routingResult.type(),
-                    recommendations.size()
-            );
-        }
-        PendingFollowUpRecommendationMatcher.MatchResult match = pendingFollowUpRecommendationMatcher.match(
-                effectiveInput,
-                recommendations,
-                awaitingSelection,
-                routingResult.type() == TaskCommandTypeEnum.START_TASK
-        );
         log.info(
                 "pending_followup_preview_hint taskId={} userInput='{}' routingType={} carryForwardHint={} recommendationCount={} upstreamSuggestsStandaloneTask={} selectedRecommendationId={}",
                 session == null ? null : session.getTaskId(),
@@ -259,47 +257,41 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
                 carryForwardHint,
                 recommendations.size(),
                 routingResult != null && routingResult.type() == TaskCommandTypeEnum.START_TASK,
-                match == null || match.recommendation() == null ? null : match.recommendation().getRecommendationId()
+                decision.selectedRecommendation() == null ? null : decision.selectedRecommendation().getRecommendationId()
         );
-        if (match == null) {
-            return "";
-        }
-        if (match.type() == PendingFollowUpRecommendationMatcher.Type.SELECTED) {
+        if (decision.type() == CurrentTaskContinuationArbiter.DecisionType.PROCEED_CURRENT_TASK) {
             return "🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。";
         }
-        if (match.type() == PendingFollowUpRecommendationMatcher.Type.ASK_SELECTION) {
-            return "🔢 我这边有多个后续动作，请直接回复编号。";
+        if (decision.type() == CurrentTaskContinuationArbiter.DecisionType.ASK_CURRENT_TASK_SELECTION) {
+            return SUPPRESS_IMMEDIATE_REPLY;
+        }
+        if (decision.type() == CurrentTaskContinuationArbiter.DecisionType.ASK_NEW_OR_CURRENT) {
+            return SUPPRESS_IMMEDIATE_REPLY;
         }
         return "";
-    }
-
-    private boolean shouldPreviewPendingFollowUpImmediateReply(
-            IntentRoutingResult routingResult,
-            boolean awaitingSelection,
-            String userInput,
-            List<PendingFollowUpRecommendation> recommendations,
-            PendingFollowUpRecommendationMatcher.CarryForwardHint carryForwardHint
-    ) {
-        if (routingResult == null || routingResult.type() == null) {
-            return awaitingSelection;
-        }
-        if (awaitingSelection) {
-            return routingResult.type() != TaskCommandTypeEnum.QUERY_STATUS
-                    && routingResult.type() != TaskCommandTypeEnum.CANCEL_TASK;
-        }
-        if (routingResult.type() == TaskCommandTypeEnum.START_TASK) {
-            return carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.EXACT_OR_PREFIX_MATCH
-                    || carryForwardHint == PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM;
-        }
-        return routingResult.type() == TaskCommandTypeEnum.ADJUST_PLAN
-                || routingResult.type() == TaskCommandTypeEnum.CONFIRM_ACTION;
     }
 
     private boolean hasPendingSelection(PlanTaskSession session) {
         return session != null
                 && session.getIntakeState() != null
                 && (session.getIntakeState().getPendingTaskSelection() != null
-                || session.getIntakeState().getPendingArtifactSelection() != null);
+                || session.getIntakeState().getPendingArtifactSelection() != null
+                || session.getIntakeState().getPendingFollowUpConflictChoice() != null
+                || session.getIntakeState().getPendingCurrentTaskContinuationChoice() != null);
+    }
+
+    private String buildFollowUpConflictPrompt(String newTaskInstruction, PendingFollowUpRecommendation recommendation) {
+        if (recommendation == null) {
+            return "❓ 我理解这句话有两种可能：1. 新开一个任务，单独处理“"
+                    + newTaskInstruction.trim()
+                    + "”；2. 接着当前任务继续处理，但我还需要你再选具体后续动作，或直接说明要修改哪个已有产物。回复 1 新开任务，回复 2 继续当前任务。";
+        }
+        String recommendationText = firstText(recommendation.getSuggestedUserInstruction(), recommendation.getPlannerInstruction());
+        return "❓ 我理解这句话有两种可能：1. 新开一个任务，单独处理“"
+                + newTaskInstruction.trim()
+                + "”；2. 接着上一轮任务继续，执行“"
+                + recommendationText
+                + "”。回复 1 新开任务，回复 2 接着上一个任务。";
     }
 
     private PlanTaskSession safeGet(String taskId) {

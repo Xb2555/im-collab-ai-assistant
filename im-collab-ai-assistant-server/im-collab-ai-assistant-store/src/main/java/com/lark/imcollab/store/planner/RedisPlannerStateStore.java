@@ -181,7 +181,9 @@ public class RedisPlannerStateStore implements PlannerStateStore {
                 .filter(session -> session.getIntakeState() != null)
                 .filter(session -> sameText(conversationKey, session.getIntakeState().getContinuationKey()))
                 .filter(session -> session.getIntakeState().getPendingTaskSelection() != null
-                        || session.getIntakeState().getPendingArtifactSelection() != null)
+                        || session.getIntakeState().getPendingArtifactSelection() != null
+                        || session.getIntakeState().getPendingFollowUpConflictChoice() != null
+                        || session.getIntakeState().getPendingCurrentTaskContinuationChoice() != null)
                 .max(Comparator.comparing(PlanTaskSession::getStateRevision)
                         .thenComparing(PlanTaskSession::getVersion));
     }

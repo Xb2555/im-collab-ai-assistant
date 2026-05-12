@@ -1,6 +1,7 @@
 package com.lark.imcollab.planner.service;
 
 import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
+import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.util.ExecutionCommandGuard;
 import com.lark.imcollab.planner.intent.LlmChoiceResolver;
 import org.springframework.stereotype.Service;
@@ -14,9 +15,8 @@ import java.util.regex.Pattern;
 @Service
 public class PendingFollowUpRecommendationMatcher {
 
-    private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
-
     private final LlmChoiceResolver llmChoiceResolver;
+    private final RoutingEvidenceExtractor routingEvidenceExtractor = new RoutingEvidenceExtractor();
 
     public PendingFollowUpRecommendationMatcher(LlmChoiceResolver llmChoiceResolver) {
         this.llmChoiceResolver = llmChoiceResolver;
@@ -39,6 +39,8 @@ public class PendingFollowUpRecommendationMatcher {
         if (!hasText(userInput) || recommendations == null || recommendations.isEmpty()) {
             return MatchResult.none();
         }
+        RoutingEvidence evidence = routingEvidenceExtractor.extract(userInput);
+        boolean explicitFreshTask = evidence.explicitFreshTask();
         Integer index = parseCandidateIndex(userInput);
         if (index != null && index >= 1 && index <= recommendations.size()) {
             return MatchResult.selected(recommendations.get(index - 1));
@@ -46,6 +48,15 @@ public class PendingFollowUpRecommendationMatcher {
         Optional<PendingFollowUpRecommendation> explicitCarryForward = explicitCarryForwardMatch(userInput, recommendations);
         if (explicitCarryForward.isPresent()) {
             return MatchResult.selected(explicitCarryForward.get());
+        }
+        if (!explicitFreshTask) {
+            List<PendingFollowUpRecommendation> semanticCandidates = semanticCarryForwardCandidates(userInput, recommendations);
+            if (semanticCandidates.size() == 1) {
+                return MatchResult.selected(semanticCandidates.get(0));
+            }
+            if (semanticCandidates.size() > 1) {
+                return MatchResult.askSelection();
+            }
         }
         if (!upstreamSuggestsStandaloneTask
                 && recommendations.size() == 1
@@ -104,10 +115,21 @@ public class PendingFollowUpRecommendationMatcher {
         if (looksLikeExplicitFreshTask(userInput)) {
             return CarryForwardHint.EXPLICIT_NEW_TASK;
         }
+        RoutingEvidence evidence = routingEvidenceExtractor.extract(userInput);
         if (explicitCarryForwardMatch(userInput, recommendations).isPresent()) {
             return CarryForwardHint.EXACT_OR_PREFIX_MATCH;
         }
-        return CarryForwardHint.DEFER_TO_LLM;
+        List<PendingFollowUpRecommendation> semanticCandidates = semanticCarryForwardCandidates(evidence, recommendations);
+        if (semanticCandidates.size() == 1) {
+            return CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM;
+        }
+        if (semanticCandidates.size() > 1) {
+            return CarryForwardHint.RELATED_BUT_AMBIGUOUS;
+        }
+        if (recommendations.size() != 1) {
+            return CarryForwardHint.UNRELATED;
+        }
+        return CarryForwardHint.UNRELATED;
     }
 
     private Optional<PendingFollowUpRecommendation> explicitCarryForwardMatch(
@@ -181,8 +203,9 @@ public class PendingFollowUpRecommendationMatcher {
                 return null;
             }
         }
-        Matcher matcher = SINGLE_DIGIT_SELECTION.matcher(trimmed);
-        return matcher.find() ? Integer.parseInt(matcher.group(1)) : null;
+        Matcher matcher = Pattern.compile("^(?:我选|选|回复)?\\s*([1-5])\\s*(?:个|号|即可|就这个)?$", Pattern.CASE_INSENSITIVE)
+                .matcher(trimmed);
+        return matcher.matches() ? Integer.parseInt(matcher.group(1)) : null;
     }
 
     private String compact(String value) {
@@ -210,17 +233,36 @@ public class PendingFollowUpRecommendationMatcher {
     }
 
     private boolean looksLikeExplicitFreshTask(String value) {
-        String normalized = compact(value);
-        return normalized.contains("新建一个任务")
-                || normalized.contains("新开一个任务")
-                || normalized.contains("另起一个任务")
-                || normalized.contains("再开一个任务")
-                || normalized.contains("重新开始一个新任务")
-                || normalized.contains("单独起一个新任务");
+        return routingEvidenceExtractor.looksLikeExplicitFreshTask(value);
     }
 
     private String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    private boolean looksLikeSemanticCarryForward(String userInput, PendingFollowUpRecommendation recommendation) {
+        return looksLikeSemanticCarryForward(routingEvidenceExtractor.extract(userInput), recommendation);
+    }
+
+    private boolean looksLikeSemanticCarryForward(RoutingEvidence evidence, PendingFollowUpRecommendation recommendation) {
+        return routingEvidenceExtractor.matchesSemanticCarryForward(evidence, recommendation);
+    }
+
+    private List<PendingFollowUpRecommendation> semanticCarryForwardCandidates(
+            String userInput,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        return semanticCarryForwardCandidates(routingEvidenceExtractor.extract(userInput), recommendations);
+    }
+
+    private List<PendingFollowUpRecommendation> semanticCarryForwardCandidates(
+            RoutingEvidence evidence,
+            List<PendingFollowUpRecommendation> recommendations
+    ) {
+        if (evidence == null || recommendations == null || recommendations.isEmpty()) {
+            return List.of();
+        }
+        return routingEvidenceExtractor.semanticCarryForwardCandidates(evidence, recommendations);
     }
 
     public record MatchResult(Type type, PendingFollowUpRecommendation recommendation) {
@@ -247,7 +289,8 @@ public class PendingFollowUpRecommendationMatcher {
     public enum CarryForwardHint {
         EXACT_OR_PREFIX_MATCH,
         EXPLICIT_NEW_TASK,
-        DEFER_TO_LLM,
+        SEMANTIC_MATCH_WORTH_LLM,
+        RELATED_BUT_AMBIGUOUS,
         UNRELATED
     }
 }

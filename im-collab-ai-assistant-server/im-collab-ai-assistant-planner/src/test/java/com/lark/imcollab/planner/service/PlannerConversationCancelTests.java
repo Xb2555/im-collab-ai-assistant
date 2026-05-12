@@ -743,7 +743,7 @@ class PlannerConversationCancelTests {
                         .build()
         ));
         when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
-                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
         when(matcher.match(input, List.of(recommendation), false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.none());
         when(sessionService.getOrCreate(org.mockito.ArgumentMatchers.argThat(taskId -> !"old-task".equals(taskId))))
@@ -765,8 +765,8 @@ class PlannerConversationCancelTests {
 
         assertThat(result.getTaskId()).isNotEqualTo("old-task");
         assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.ASK_USER);
-        verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
-        verify(matcher).match(input, List.of(recommendation), false, true);
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).classifyCarryForwardCandidate(input, List.of(recommendation));
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).match(input, List.of(recommendation), false, true);
         verify(graphRunner).run(any(PlannerSupervisorDecision.class),
                 eq(result.getTaskId()),
                 eq(input),
@@ -858,11 +858,108 @@ class PlannerConversationCancelTests {
         assertThat(result.getTaskId()).isEqualTo("task-1");
         assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
         assertThat(result.getIntakeState().getRoutingReason()).isEqualTo("resume pending follow-up recommendation");
-        verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).classifyCarryForwardCandidate(input, List.of(recommendation));
         verify(graphRunner).run(
                 any(PlannerSupervisorDecision.class),
                 eq("task-1"),
                 eq("保留现有产物，新增一段可直接发送的任务摘要。"),
+                eq(workspaceContext),
+                eq(input));
+        verify(conversationTaskStateService).clearPendingFollowUpRecommendations("LARK_PRIVATE_CHAT:chat-1:chat-root");
+        verify(taskBridgeService).ensureTask(replanned);
+    }
+
+    @Test
+    void completedArtifactTargetDoesNotStealSummaryFollowUpNewDeliverable() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                graphRunner,
+                null,
+                null,
+                null,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("chat-1")
+                .inputSource("LARK_PRIVATE_CHAT")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation recommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_SHAREABLE_SUMMARY")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.SUMMARY)
+                .plannerInstruction("保留现有产物，新增一段可直接发送的任务摘要。")
+                .suggestedUserInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .priority(1)
+                .build();
+        ConversationTaskState conversationState = ConversationTaskState.builder()
+                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                .activeTaskId("task-1")
+                .lastCompletedTaskId("task-1")
+                .pendingFollowUpRecommendations(List.of(recommendation))
+                .build();
+        PlanTaskSession replanned = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .intakeState(TaskIntakeState.builder()
+                        .intakeType(TaskIntakeTypeEnum.STATUS_QUERY)
+                        .build())
+                .build();
+        String input = "帮我生成摘要";
+
+        when(resolver.resolve(null, workspaceContext)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(resolver.isTaskCurrentInConversation("task-1", workspaceContext)).thenReturn(true);
+        when(resolver.hasEditableArtifacts("task-1")).thenReturn(true);
+        when(intakeService.decide(completed, input, null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        input,
+                        "llm misclassified summary as completed artifact adjustment",
+                        null,
+                        null,
+                        AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                ));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(conversationState));
+        when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
+        when(matcher.match(input, List.of(recommendation), false, false))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
+        when(graphRunner.run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                org.mockito.ArgumentMatchers.contains("新增一段可直接发送的任务摘要"),
+                eq(workspaceContext),
+                eq(input)))
+                .thenReturn(replanned);
+
+        PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
+
+        assertThat(result).isSameAs(replanned);
+        assertThat(result.getIntakeState().getIntakeType()).isEqualTo(TaskIntakeTypeEnum.PLAN_ADJUSTMENT);
+        verify(resolver, never()).inferEditableArtifact(eq("task-1"), eq(input));
+        verify(graphRunner).run(
+                any(PlannerSupervisorDecision.class),
+                eq("task-1"),
+                eq("保留现有产物，新增一段可直接发送的任务摘要。\n用户补充：帮我生成摘要"),
                 eq(workspaceContext),
                 eq(input));
         verify(conversationTaskStateService).clearPendingFollowUpRecommendations("LARK_PRIVATE_CHAT:chat-1:chat-root");
@@ -937,7 +1034,7 @@ class PlannerConversationCancelTests {
                 ));
         when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(conversationState));
         when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
-                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
         when(matcher.match(input, List.of(recommendation), false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
         when(graphRunner.run(
@@ -952,8 +1049,8 @@ class PlannerConversationCancelTests {
 
         assertThat(result).isSameAs(replanned);
         assertThat(result.getTaskId()).isEqualTo("task-1");
-        verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
-        verify(matcher).match(input, List.of(recommendation), false, true);
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).classifyCarryForwardCandidate(input, List.of(recommendation));
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).match(input, List.of(recommendation), false, true);
         verify(graphRunner).run(
                 any(PlannerSupervisorDecision.class),
                 eq("task-1"),
@@ -1042,7 +1139,7 @@ class PlannerConversationCancelTests {
                 ));
         when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(conversationState));
         when(matcher.classifyCarryForwardCandidate(input, recommendations))
-                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
         when(matcher.match(input, recommendations, false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(pptRecommendation));
         when(graphRunner.run(
@@ -1056,8 +1153,8 @@ class PlannerConversationCancelTests {
         PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
 
         assertThat(result).isSameAs(replanned);
-        verify(matcher).classifyCarryForwardCandidate(input, recommendations);
-        verify(matcher).match(input, recommendations, false, true);
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).classifyCarryForwardCandidate(input, recommendations);
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).match(input, recommendations, false, true);
         verify(graphRunner).run(
                 any(PlannerSupervisorDecision.class),
                 eq("task-1"),
@@ -1135,7 +1232,7 @@ class PlannerConversationCancelTests {
                 ));
         when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(conversationState));
         when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
-                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
         when(matcher.match(input, List.of(recommendation), false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
         when(graphRunner.run(
@@ -1149,8 +1246,8 @@ class PlannerConversationCancelTests {
         PlanTaskSession result = service.handlePlanRequest(input, workspaceContext, null, null);
 
         assertThat(result).isSameAs(replanned);
-        verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
-        verify(matcher).match(input, List.of(recommendation), false, true);
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).classifyCarryForwardCandidate(input, List.of(recommendation));
+        verify(matcher, org.mockito.Mockito.atLeastOnce()).match(input, List.of(recommendation), false, true);
         verify(graphRunner).run(
                 any(PlannerSupervisorDecision.class),
                 eq("task-1"),

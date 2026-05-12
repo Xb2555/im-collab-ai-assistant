@@ -52,6 +52,12 @@ public class TaskIntakeState implements Serializable {
     @Schema(description = "IM 多产物选择挂起态")
     private PendingArtifactSelection pendingArtifactSelection;
 
+    @Schema(description = "新任务与 follow-up 冲突时的用户选择挂起态")
+    private PendingFollowUpConflictChoice pendingFollowUpConflictChoice;
+
+    @Schema(description = "新开任务与继续当前任务之间的用户选择挂起态")
+    private PendingCurrentTaskContinuationChoice pendingCurrentTaskContinuationChoice;
+
     @Schema(description = "完成态产物调整挂起指令")
     private String pendingAdjustmentInstruction;
 
