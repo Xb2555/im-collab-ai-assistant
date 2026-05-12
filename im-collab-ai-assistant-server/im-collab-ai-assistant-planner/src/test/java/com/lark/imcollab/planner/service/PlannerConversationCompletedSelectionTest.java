@@ -442,6 +442,7 @@ class PlannerConversationCompletedSelectionTest {
                 .activeTaskId("task-1")
                 .lastCompletedTaskId("task-1")
                 .build()));
+        when(resolver.isTaskCurrentInConversation("task-1", context)).thenReturn(true);
         when(sessionService.get("task-1")).thenReturn(completed);
         when(intakeService.decide(completed, "把第三页改成实施收益", null, true))
                 .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.PLAN_ADJUSTMENT, "把第三页改成实施收益", "completed active task", null));
@@ -491,6 +492,7 @@ class PlannerConversationCompletedSelectionTest {
                 .activeTaskId("task-doc")
                 .lastCompletedTaskId("task-doc")
                 .build()));
+        when(resolver.isTaskCurrentInConversation("task-doc", context)).thenReturn(true);
         when(sessionService.get("task-doc")).thenReturn(completed);
         when(intakeService.decide(completed, "再加一小节关于项目总结的内容", null, true))
                 .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
@@ -544,6 +546,7 @@ class PlannerConversationCompletedSelectionTest {
                 .activeTaskId("task-ppt")
                 .lastCompletedTaskId("task-ppt")
                 .build()));
+        when(resolver.isTaskCurrentInConversation("task-ppt", context)).thenReturn(true);
         when(sessionService.get("task-ppt")).thenReturn(completed);
         when(intakeService.decide(completed, "把第二页标题改成项目总结", null, true))
                 .thenReturn(new TaskIntakeDecision(TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
@@ -597,6 +600,7 @@ class PlannerConversationCompletedSelectionTest {
                 .activeTaskId("task-2")
                 .lastCompletedTaskId("task-2")
                 .build()));
+        when(resolver.isTaskCurrentInConversation("task-2", context)).thenReturn(true);
         when(sessionService.get("task-2")).thenReturn(completed);
         when(intakeService.decide(completed, "把第三页改成实施收益", null, true))
                 .thenReturn(new TaskIntakeDecision(
@@ -882,6 +886,7 @@ class PlannerConversationCompletedSelectionTest {
                         .lastCompletedTaskId("task-doc")
                         .build()
         ));
+        when(resolver.isTaskCurrentInConversation("task-doc", context)).thenReturn(true);
         when(resolver.hasEditableArtifacts("task-doc")).thenReturn(true);
         when(resolver.resolveEditableArtifacts("task-doc")).thenReturn(List.of(ArtifactRecord.builder()
                 .artifactId("artifact-doc-1")
@@ -925,6 +930,185 @@ class PlannerConversationCompletedSelectionTest {
                 eq("加一小节关于ggbond的内容，随意编造即可\n目标产物ID：artifact-doc-1"),
                 eq(context), isNull());
         verify(taskBridgeService).ensureTask(adjusted);
+    }
+
+    @Test
+    void completedCurrentTaskArtifactEditBypassesPendingFollowUpRecommendation() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation recommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_DOC_FROM_PPT")
+                .targetTaskId("task-ppt")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.DOC)
+                .suggestedUserInstruction("基于这份PPT补一份配套文档")
+                .plannerInstruction("保留现有PPT，基于该PPT新增一份配套文档。")
+                .build();
+        String input = "改PPT，第二页的内容概览多加一小点";
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-ppt")).thenReturn(completed);
+        when(intakeService.decide(completed, input, null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        input,
+                        "ppt edit",
+                        null
+                ));
+        when(resolver.isTaskCurrentInConversation("task-ppt", context)).thenReturn(true);
+        when(resolver.hasEditableArtifacts("task-ppt")).thenReturn(true);
+        when(resolver.resolveEditableArtifacts("task-ppt")).thenReturn(List.of(ArtifactRecord.builder()
+                .artifactId("artifact-ppt-1")
+                .taskId("task-ppt")
+                .type(ArtifactTypeEnum.PPT)
+                .url("https://slides.example/1")
+                .build()));
+        when(resolver.inferEditableArtifact("task-ppt", input))
+                .thenReturn(java.util.Optional.of(ArtifactRecord.builder()
+                        .artifactId("artifact-ppt-1")
+                        .taskId("task-ppt")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .build()));
+        when(presentationEditIntentFacade.resolve(eq(input), eq(context)))
+                .thenReturn(com.lark.imcollab.common.model.entity.PresentationEditIntent.builder()
+                        .clarificationNeeded(false)
+                        .build());
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(java.util.Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-ppt")
+                        .lastCompletedTaskId("task-ppt")
+                        .pendingFollowUpRecommendations(List.of(recommendation))
+                        .build()
+        ));
+        PlanTaskSession adjusted = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(graphRunner.run(any(), eq("task-ppt"),
+                eq("改PPT，第二页的内容概览多加一小点\n目标产物ID：artifact-ppt-1"),
+                eq(context), isNull()))
+                .thenReturn(adjusted);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner,
+                null,
+                null,
+                null,
+                recoveryService,
+                null,
+                conversationTaskStateService,
+                matcher,
+                null,
+                null
+        );
+
+        PlanTaskSession result = service.handlePlanRequest(input, context, null, null);
+
+        assertThat(result).isSameAs(adjusted);
+        verify(graphRunner).run(any(), eq("task-ppt"),
+                eq("改PPT，第二页的内容概览多加一小点\n目标产物ID：artifact-ppt-1"),
+                eq(context), isNull());
+        verifyNoInteractions(matcher);
+        verify(taskBridgeService).ensureTask(adjusted);
+    }
+
+    @Test
+    void completedCurrentTaskArtifactEditWithMultipleCurrentArtifactsEntersArtifactSelectionBeforeFollowUp() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-doc")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(TaskIntakeState.builder().build())
+                .build();
+        String input = "改文档，补一段项目总结";
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-doc", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-doc")).thenReturn(completed);
+        when(intakeService.decide(completed, input, null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        input,
+                        "doc edit",
+                        null
+                ));
+        when(resolver.isTaskCurrentInConversation("task-doc", context)).thenReturn(true);
+        when(resolver.hasEditableArtifacts("task-doc")).thenReturn(true);
+        when(resolver.resolveEditableArtifacts("task-doc")).thenReturn(List.of(
+                ArtifactRecord.builder().artifactId("artifact-doc-1").taskId("task-doc").type(ArtifactTypeEnum.DOC).url("https://doc.example/1").build(),
+                ArtifactRecord.builder().artifactId("artifact-doc-2").taskId("task-doc").type(ArtifactTypeEnum.DOC).url("https://doc.example/2").build()
+        ));
+        when(documentEditIntentFacade.resolve(eq(input), eq(context)))
+                .thenReturn(DocumentEditIntent.builder().clarificationNeeded(false).build());
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner,
+                null,
+                null,
+                null,
+                recoveryService,
+                null,
+                conversationTaskStateService,
+                matcher,
+                null,
+                null
+        );
+
+        PlanTaskSession result = service.handlePlanRequest(input, context, null, null);
+
+        assertThat(result).isSameAs(completed);
+        assertThat(result.getIntakeState().getPendingArtifactSelection()).isNotNull();
+        assertThat(result.getIntakeState().getAssistantReply()).contains("这个任务下有多个可修改产物");
+        verifyNoInteractions(matcher);
+        verify(graphRunner, never()).run(any(), any(), any(), any(), any());
     }
 
     @Test
