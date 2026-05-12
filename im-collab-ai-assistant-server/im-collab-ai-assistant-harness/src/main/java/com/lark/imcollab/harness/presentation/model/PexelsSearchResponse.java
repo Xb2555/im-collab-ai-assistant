@@ -15,6 +15,8 @@ public class PexelsSearchResponse {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class PexelsPhoto {
         private String alt;
+        private Integer width;
+        private Integer height;
         private PexelsPhotoSource src;
     }
 

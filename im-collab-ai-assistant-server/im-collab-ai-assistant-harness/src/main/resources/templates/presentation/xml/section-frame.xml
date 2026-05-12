@@ -2,11 +2,13 @@
   <style><fill><fillColor color="{{BACKGROUND}}"/></fill></style>
   <data>
     {{BACKGROUND_IMAGE}}
-    <shape type="rect" topLeftX="36" topLeftY="28" width="888" height="484"><fill><fillColor color="{{CARD_FILL}}"/></fill><border color="{{CARD_BORDER}}" width="1"/></shape>
+    <shape type="rect" topLeftX="36" topLeftY="28" width="888" height="484"><fill><fillColor color="rgba(255,255,255,0.84)"/></fill><border color="{{CARD_BORDER}}" width="1"/></shape>
     <shape type="rect" topLeftX="36" topLeftY="28" width="888" height="12"><fill><fillColor color="{{ACCENT}}"/></fill></shape>
     <shape type="text" topLeftX="78" topLeftY="70" width="804" height="82">{{TITLE}}</shape>
     <shape type="text" topLeftX="82" topLeftY="164" width="748" height="250"><content textType="body" lineSpacing="multiple:1.35"><ul>{{BODY_LIST}}</ul></content></shape>
-    {{CONTENT_IMAGE}}
+    <img src="{{CONTENT_IMAGE_SRC}}" topLeftX="640" topLeftY="168" width="228" height="204" alpha="{{CONTENT_IMAGE_ALPHA}}" alt="{{CONTENT_IMAGE_ALT}}">
+      <border color="rgba(0,0,0,0.08)" width="1"/>
+    </img>
     {{PAGE_NUMBER}}
   </data>{{NOTE}}
 </slide>

@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.lang.reflect.Method;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.List;
@@ -50,6 +51,27 @@ class PresentationWorkflowNodesTemplateTest {
 
     private final PresentationWorkflowNodes nodes = new PresentationWorkflowNodes(
             null, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
+
+    private PresentationGenerationOptions defaultOptions() {
+        return PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build();
+    }
+
+    private PresentationAssetResources.SlideAssetResource slideAsset(String slideId, String fileToken) {
+        return PresentationAssetResources.SlideAssetResource.builder()
+                .slideId(slideId)
+                .coverGroupImage(PresentationAssetResources.AssetResource.builder()
+                        .fileToken(fileToken)
+                        .purpose("封面背景")
+                        .build())
+                .build();
+    }
 
     @Test
     void deepTechTimelineUsesGradientAndTimelineShapes() {
@@ -522,7 +544,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .allowVariantMixing(true)
                 .build());
 
-        assertThat(xml).contains("src=\"boxcnThanksBackground\"");
+        assertThat(xml).doesNotContain("src=\"boxcnThanksBackground\"");
         assertThat(xml).contains("感谢聆听");
         assertThat(xml).contains("Thank you for listening");
         assertThat(xml).contains("topLeftX=\"88\" topLeftY=\"82\" width=\"748\" height=\"320\"");
@@ -577,7 +599,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void compileSlideXmlAllowsBackgroundImageForTocPage() throws Exception {
+    void compileSlideXmlDisablesBackgroundImageForTocPage() throws Exception {
         Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "compileSlideXml",
                 PresentationSlideIR.class,
@@ -621,11 +643,11 @@ class PresentationWorkflowNodesTemplateTest {
                 .allowVariantMixing(true)
                 .build());
 
-        assertThat(xml).contains("src=\"boxcnTocBackground\"");
+        assertThat(xml).doesNotContain("src=\"boxcnTocBackground\"");
     }
 
     @Test
-    void compileSlideXmlAllowsBackgroundImageForTransitionPage() throws Exception {
+    void compileSlideXmlDisablesBackgroundImageForTransitionPage() throws Exception {
         Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "compileSlideXml",
                 PresentationSlideIR.class,
@@ -669,7 +691,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .allowVariantMixing(true)
                 .build());
 
-        assertThat(xml).contains("src=\"boxcnTransitionBackground\"");
+        assertThat(xml).doesNotContain("src=\"boxcnTransitionBackground\"");
     }
 
     @Test
@@ -721,7 +743,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void resolveSlideImageUsesCoverGroupImageForCoverTocAndThanks() throws Exception {
+    void resolveSlideImageUsesCoverGroupImageOnlyForCover() throws Exception {
         Method resolveSlideImage = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "resolveSlideImage",
                 PresentationSlidePlan.class,
@@ -798,13 +820,10 @@ class PresentationWorkflowNodesTemplateTest {
                         .build(), resources);
 
         assertThat(cover).isPresent();
-        assertThat(toc).isPresent();
-        assertThat(thanks).isPresent();
-        assertThat(transition).isPresent();
+        assertThat(toc).isEmpty();
+        assertThat(thanks).isEmpty();
+        assertThat(transition).isEmpty();
         assertThat(cover.get().getFileToken()).isEqualTo("boxcnCoverGroup");
-        assertThat(toc.get().getFileToken()).isEqualTo("boxcnCoverGroup");
-        assertThat(thanks.get().getFileToken()).isEqualTo("boxcnCoverGroup");
-        assertThat(transition.get().getFileToken()).isEqualTo("boxcnCoverGroup");
     }
 
     @Test
@@ -1090,7 +1109,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .build());
 
         assertThat(xml).doesNotContain("{{CONTENT_IMAGE}}");
-        assertThat(xml).doesNotContain("<img src=");
+        assertThat(xml).contains("<img src=\"\" topLeftX=\"640\" topLeftY=\"168\" width=\"228\" height=\"204\" alpha=\"0\" alt=\"\">");
         assertThat(xml).contains("topLeftX=\"82\" topLeftY=\"164\" width=\"748\" height=\"250\"");
     }
 
@@ -1133,8 +1152,167 @@ class PresentationWorkflowNodesTemplateTest {
                 .allowVariantMixing(true)
                 .build());
 
-        assertThat(xml).doesNotContain("<img src=");
+        assertThat(xml).contains("<img src=\"\" topLeftX=\"468\" topLeftY=\"160\" width=\"396\" height=\"252\" alpha=\"0\" alt=\"\">");
         assertThat(xml).doesNotContain("{{RIGHT_IMAGE}}");
+    }
+
+    @Test
+    void compileSlideXmlRendersFixedRightImageSlotForTwoColumnContent() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-4")
+                .pageIndex(4)
+                .slideRole("two-column")
+                .pageType("CONTENT")
+                .title("双栏正文")
+                .visualIntent("balance")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("dual-cards").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("要点一；要点二")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder()
+                                        .fileToken("boxcnContentImage")
+                                        .altText("正文配图")
+                                        .build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-4-background-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("background-image")
+                                .assetRef(PresentationAssetRef.builder()
+                                        .fileToken("boxcnSharedBackground")
+                                        .build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 8, defaultOptions());
+
+        assertThat(xml).contains("src=\"boxcnSharedBackground\" topLeftX=\"0\" topLeftY=\"0\" width=\"960\" height=\"540\"");
+        assertThat(xml).contains("src=\"boxcnContentImage\" topLeftX=\"468\" topLeftY=\"160\" width=\"396\" height=\"252\" alpha=\"1\" alt=\"正文配图\"");
+        assertThat(xml).doesNotContain("{{RIGHT_IMAGE_SRC}}");
+    }
+
+    @Test
+    void buildSlideXmlTemplateUsesTranslucentContentCards() {
+        String xml = nodes.buildSlideXmlTemplate(PresentationSlidePlan.builder()
+                        .index(2)
+                        .title("正文")
+                        .layout("two-column")
+                        .pageType("CONTENT")
+                        .templateVariant("dual-cards")
+                        .keyPoints(List.of("A", "B"))
+                        .build(),
+                2,
+                5,
+                defaultOptions());
+
+        assertThat(xml).contains("rgba(255,255,255,0.84)");
+    }
+
+    @Test
+    void buildSlideIrDoesNotInjectCoverBackgroundForTocTransitionAndThanks() throws Exception {
+        Method buildSlideIr = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "buildSlideIr",
+                PresentationSlidePlan.class,
+                PresentationGenerationOptions.class,
+                PresentationAssetResources.class);
+        buildSlideIr.setAccessible(true);
+        Method compileSlideXml = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        compileSlideXml.setAccessible(true);
+
+        PresentationAssetResources resources = PresentationAssetResources.builder()
+                .slides(List.of(
+                        slideAsset("slide-2", "boxcnCoverBackground"),
+                        slideAsset("slide-3", "boxcnCoverBackground"),
+                        slideAsset("slide-4", "boxcnCoverBackground")))
+                .build();
+
+        for (PresentationSlidePlan slide : List.of(
+                PresentationSlidePlan.builder().slideId("slide-2").index(2).title("目录").layout("section").pageType("TOC").build(),
+                PresentationSlidePlan.builder().slideId("slide-3").index(3).title("过渡").layout("cover").pageType("TRANSITION").build(),
+                PresentationSlidePlan.builder().slideId("slide-4").index(4).title("感谢").layout("summary").pageType("THANKS").build())) {
+            PresentationSlideIR slideIr = (PresentationSlideIR) buildSlideIr.invoke(nodes, slide, defaultOptions(), resources);
+            String xml = (String) compileSlideXml.invoke(nodes, slideIr, 6, defaultOptions());
+            assertThat(xml).doesNotContain("boxcnCoverBackground");
+            assertThat(xml).doesNotContain("<img src=\"boxcnCoverBackground\"");
+        }
+    }
+
+    @Test
+    void coverBackgroundQualificationRequiresLandscapeAndResolution() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "isQualifiedCoverBackgroundPhoto",
+                com.lark.imcollab.harness.presentation.model.PexelsSearchResponse.PexelsPhoto.class);
+        method.setAccessible(true);
+
+        var wide = new com.lark.imcollab.harness.presentation.model.PexelsSearchResponse.PexelsPhoto();
+        wide.setWidth(1920);
+        wide.setHeight(1080);
+        var tall = new com.lark.imcollab.harness.presentation.model.PexelsSearchResponse.PexelsPhoto();
+        tall.setWidth(1080);
+        tall.setHeight(1920);
+        var small = new com.lark.imcollab.harness.presentation.model.PexelsSearchResponse.PexelsPhoto();
+        small.setWidth(1280);
+        small.setHeight(720);
+
+        assertThat(method.invoke(nodes, wide)).isEqualTo(true);
+        assertThat(method.invoke(nodes, tall)).isEqualTo(false);
+        assertThat(method.invoke(nodes, small)).isEqualTo(false);
+    }
+
+    @Test
+    void buildSlideIrForTocEmitsDisabledBackgroundLog() throws Exception {
+        Method buildSlideIr = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "buildSlideIr",
+                PresentationSlidePlan.class,
+                PresentationGenerationOptions.class,
+                PresentationAssetResources.class);
+        buildSlideIr.setAccessible(true);
+
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        PrintStream originalErr = System.err;
+        System.setErr(new PrintStream(err));
+        try {
+            buildSlideIr.invoke(nodes,
+                    PresentationSlidePlan.builder()
+                            .slideId("slide-2")
+                            .index(2)
+                            .title("目录")
+                            .layout("section")
+                            .pageType("TOC")
+                            .build(),
+                    defaultOptions(),
+                    PresentationAssetResources.builder()
+                            .slides(List.of(slideAsset("slide-2", "boxcnCoverBackground")))
+                            .build());
+        } finally {
+            System.setErr(originalErr);
+        }
+
+        assertThat(err.toString()).contains("ppt.cover-group.background.disabled");
+        assertThat(err.toString()).contains("slideId=slide-2");
+        assertThat(err.toString()).contains("reason=policy-disabled");
     }
 
     @Nested
@@ -1200,7 +1378,7 @@ class PresentationWorkflowNodesTemplateTest {
 
             assertThat(timelineWithImage).isEqualTo(2);
             assertThat(timelineWithoutImage).isEqualTo(1);
-            assertThat(tocSlots).isEqualTo(1);
+            assertThat(tocSlots).isEqualTo(0);
         }
 
         @Test
@@ -1416,6 +1594,53 @@ class PresentationWorkflowNodesTemplateTest {
         assertThat(uploaded.getSlides()).hasSize(2);
         assertThat(uploaded.getSlides()).allSatisfy(slide ->
                 assertThat(slide.getSharedBackgroundImage().getFileToken()).isEqualTo("boxcnSharedBackground"));
+    }
+
+    @Test
+    void uploadResolvedAssetsRetriesContentImageUploadAfterRateLimit() throws Exception {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        AtomicInteger attempts = new AtomicInteger();
+        when(slidesTool.uploadMedia(anyString(), anyString())).thenAnswer(invocation -> {
+            if (attempts.getAndIncrement() == 0) {
+                throw new RuntimeException("upload media failed: [99991400] request trigger frequency limit");
+            }
+            return LarkSlidesMediaUploadResult.builder()
+                    .presentationId("slides-1")
+                    .fileToken("boxcnContentImage")
+                    .build();
+        });
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, slidesTool, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
+
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "uploadResolvedAssets",
+                String.class,
+                PresentationAssetResources.class);
+        method.setAccessible(true);
+
+        PresentationAssetResources resources = PresentationAssetResources.builder()
+                .slides(List.of(
+                        PresentationAssetResources.SlideAssetResource.builder()
+                                .slideId("slide-3")
+                                .images(List.of(PresentationAssetResources.AssetResource.builder()
+                                        .assetId("img-1")
+                                        .assetType("image")
+                                        .sourceUrl("https://example.com/content.jpg")
+                                        .localTempPath("C:\\temp\\content.jpg")
+                                        .downloadStatus("DOWNLOADED")
+                                        .build()))
+                                .timelineNodeImages(List.of())
+                                .illustrations(List.of())
+                                .diagrams(List.of())
+                                .charts(List.of())
+                                .build()))
+                .build();
+
+        PresentationAssetResources uploaded = (PresentationAssetResources) method.invoke(localNodes, "slides-1", resources);
+
+        verify(slidesTool, times(2)).uploadMedia("slides-1", "C:\\temp\\content.jpg");
+        assertThat(uploaded.getSlides().get(0).getImages()).hasSize(1);
+        assertThat(uploaded.getSlides().get(0).getImages().get(0).getFileToken()).isEqualTo("boxcnContentImage");
     }
 
     @Test

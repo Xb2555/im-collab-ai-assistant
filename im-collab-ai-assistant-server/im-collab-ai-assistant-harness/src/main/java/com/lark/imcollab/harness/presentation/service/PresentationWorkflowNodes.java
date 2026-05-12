@@ -152,6 +152,7 @@ public class PresentationWorkflowNodes {
     private final PresentationAssetSettings assetSettings;
     private final Map<String, Object> assetCacheLock = new ConcurrentHashMap<>();
     private final Map<String, InFlightDownload> inFlightDownloads = new ConcurrentHashMap<>();
+    private final Map<String, String> uploadedFileTokenCache = new ConcurrentHashMap<>();
 
     PresentationWorkflowNodes(
             PresentationExecutionSupport support,
@@ -589,6 +590,8 @@ public class PresentationWorkflowNodes {
         } catch (RuntimeException exception) {
             printSlidesApiTiming(taskId, result == null ? null : result.getPresentationId(), slidesApiStartedAt, exception);
             throw exception;
+        } finally {
+            uploadedFileTokenCache.clear();
         }
     }
 
@@ -1612,6 +1615,12 @@ public class PresentationWorkflowNodes {
         placeholders.put("{{RIGHT_LIST}}", bulletList(secondHalf(points), profile.text(), 19));
         placeholders.put("{{RIGHT_IMAGE}}", "{{RIGHT_IMAGE}}");
         placeholders.put("{{CONTENT_IMAGE}}", "{{CONTENT_IMAGE}}");
+        placeholders.put("{{RIGHT_IMAGE_SRC}}", "");
+        placeholders.put("{{RIGHT_IMAGE_ALT}}", "");
+        placeholders.put("{{RIGHT_IMAGE_ALPHA}}", "0");
+        placeholders.put("{{CONTENT_IMAGE_SRC}}", "");
+        placeholders.put("{{CONTENT_IMAGE_ALT}}", "");
+        placeholders.put("{{CONTENT_IMAGE_ALPHA}}", "0");
         placeholders.put("{{RAIL_NOTE}}", plainContent("", profile.muted(), 16, false, "left"));
         placeholders.put("{{BAND_FILL}}", "data".equals(emphasis) ? profile.background() : profile.cardFill());
         placeholders.put("{{METRIC_BLOCK}}", resolveMetricBlock(points, profile, templateVariant, emphasis));
@@ -2906,13 +2915,13 @@ public class PresentationWorkflowNodes {
             return TemplateImagePolicy.background();
         }
         if ("TOC".equals(pageType)) {
-            return TemplateImagePolicy.background();
+            return TemplateImagePolicy.none();
         }
         if ("THANKS".equals(pageType)) {
-            return TemplateImagePolicy.background();
+            return TemplateImagePolicy.none();
         }
         if ("TRANSITION".equals(pageType)) {
-            return TemplateImagePolicy.background();
+            return TemplateImagePolicy.none();
         }
         if ("CHART".equals(pageType) || "BACKGROUND".equals(pageType)) {
             return TemplateImagePolicy.background();
@@ -3275,7 +3284,7 @@ public class PresentationWorkflowNodes {
         return PresentationAssetResources.builder().slides(uploadedSlides).build();
     }
 
-    private Map<String, PresentationAssetResources.AssetResource> uploadSharedBackgroundAssets(
+private Map<String, PresentationAssetResources.AssetResource> uploadSharedBackgroundAssets(
             String presentationId,
             List<PresentationAssetResources.SlideAssetResource> slides) {
         List<PresentationAssetResources.AssetResource> uniqueAssets = slides == null ? List.of() : slides.stream()
@@ -3296,7 +3305,36 @@ public class PresentationWorkflowNodes {
                 "upload-shared-background-assets",
                 uniqueAssets,
                 1,
-                asset -> uploadAssetWithRetry(asset, presentationId, 3, true));
+                asset -> {
+                    String cacheKey = buildUploadCacheKey(asset);
+                    if (hasText(cacheKey) && uploadedFileTokenCache.containsKey(cacheKey)) {
+                        String cachedToken = uploadedFileTokenCache.get(cacheKey);
+                        if (hasText(cachedToken)) {
+                            return PresentationAssetResources.AssetResource.builder()
+                                    .assetId(asset.getAssetId())
+                                    .sourceRef(asset.getSourceRef())
+                                    .candidateUrls(asset.getCandidateUrls())
+                                    .sourceUrl(asset.getSourceUrl())
+                                    .sourceSite(asset.getSourceSite())
+                                    .assetType(asset.getAssetType())
+                                    .localTempPath(asset.getLocalTempPath())
+                                    .downloadStatus("UPLOADED")
+                                    .fileToken(cachedToken)
+                                    .purpose(asset.getPurpose())
+                                    .mimeType(asset.getMimeType())
+                                    .fallbackSource(asset.getFallbackSource())
+                                    .normalizedQuery(asset.getNormalizedQuery())
+                                    .selectedFromCandidateIndex(asset.getSelectedFromCandidateIndex())
+                                    .cacheHit(asset.getCacheHit())
+                                    .build();
+                        }
+                    }
+                    PresentationAssetResources.AssetResource result = uploadAssetWithRetry(asset, presentationId, 3, true);
+                    if (hasText(cacheKey) && result != null && hasText(result.getFileToken())) {
+                        uploadedFileTokenCache.put(cacheKey, result.getFileToken());
+                    }
+                    return result;
+                });
         Map<String, PresentationAssetResources.AssetResource> uploadedByKey = new LinkedHashMap<>();
         for (int i = 0; i < uniqueAssets.size(); i++) {
             uploadedByKey.put(sharedBackgroundUploadKey(uniqueAssets.get(i)), uploaded.get(i));
@@ -3353,7 +3391,7 @@ public class PresentationWorkflowNodes {
                         .build());
     }
 
-    private List<PresentationAssetResources.AssetResource> uploadAssetList(
+private List<PresentationAssetResources.AssetResource> uploadAssetList(
             String presentationId,
             List<PresentationAssetResources.AssetResource> assets) {
         if (assets == null || assets.isEmpty()) {
@@ -3367,8 +3405,58 @@ public class PresentationWorkflowNodes {
                 validAssets,
                 concurrencySettings.imageUploadConcurrency(),
                 asset -> {
-                    return uploadAssetWithRetry(asset, presentationId, 1, false);
+                    String cacheKey = buildUploadCacheKey(asset);
+                    if (hasText(cacheKey) && uploadedFileTokenCache.containsKey(cacheKey)) {
+                        String cachedToken = uploadedFileTokenCache.get(cacheKey);
+                        if (hasText(cachedToken)) {
+                            return PresentationAssetResources.AssetResource.builder()
+                                    .assetId(asset.getAssetId())
+                                    .sourceRef(asset.getSourceRef())
+                                    .candidateUrls(asset.getCandidateUrls())
+                                    .sourceUrl(asset.getSourceUrl())
+                                    .sourceSite(asset.getSourceSite())
+                                    .assetType(asset.getAssetType())
+                                    .localTempPath(asset.getLocalTempPath())
+                                    .downloadStatus("UPLOADED")
+                                    .fileToken(cachedToken)
+                                    .purpose(asset.getPurpose())
+                                    .mimeType(asset.getMimeType())
+                                    .fallbackSource(asset.getFallbackSource())
+                                    .normalizedQuery(asset.getNormalizedQuery())
+                                    .selectedFromCandidateIndex(asset.getSelectedFromCandidateIndex())
+                                    .cacheHit(asset.getCacheHit())
+                                    .build();
+                        }
+                    }
+                    PresentationAssetResources.AssetResource result = uploadAssetWithRetry(asset, presentationId, 3, true);
+                    if (hasText(cacheKey) && result != null && hasText(result.getFileToken())) {
+                        uploadedFileTokenCache.put(cacheKey, result.getFileToken());
+                    } else if (result != null && !hasText(result.getFileToken())) {
+                        log.warn("ppt.asset.upload.missing-token presentationId={} assetId={} assetType={} sourceUrl={} downloadStatus={}",
+                                presentationId,
+                                blankToDefault(asset.getAssetId(), ""),
+                                blankToDefault(asset.getAssetType(), ""),
+                                blankToDefault(asset.getSourceUrl(), ""),
+                                blankToDefault(result.getDownloadStatus(), ""));
+                    }
+                    return result;
                 });
+    }
+
+    private String buildUploadCacheKey(PresentationAssetResources.AssetResource asset) {
+        if (asset == null) {
+            return "";
+        }
+        if (hasText(asset.getSourceUrl())) {
+            return "url:" + asset.getSourceUrl();
+        }
+        if (hasText(asset.getAssetId())) {
+            return "id:" + asset.getAssetId();
+        }
+        if (hasText(asset.getLocalTempPath())) {
+            return "path:" + asset.getLocalTempPath();
+        }
+        return "";
     }
 
     private PresentationAssetResources.AssetResource uploadAssetWithRetry(
@@ -3613,18 +3701,13 @@ public class PresentationWorkflowNodes {
         return PresentationImageResources.builder().resources(pages).build();
     }
 
-    private PresentationImageResources.ResourceItem resolveSharedDeckResource(
+private PresentationImageResources.ResourceItem resolveSharedDeckResource(
             List<PresentationAssetPlan.SlideAssetPlan> slides,
             AssetResolutionContext resolutionContext,
             boolean coverGroup) {
         if (slides == null || slides.isEmpty()) {
             return null;
         }
-        PresentationAssetPlan.SlideAssetPlan anchor = slides.stream()
-                .filter(Objects::nonNull)
-                .filter(slide -> coverGroup ? isCoverGroupPage(slide) : usesSharedBackground(slide))
-                .findFirst()
-                .orElse(slides.get(0));
         String deckTopic = resolveDeckTopic(slides);
         PresentationAssetPlan.AssetTask task = PresentationAssetPlan.AssetTask.builder()
                 .query(deckTopic)
@@ -3632,10 +3715,13 @@ public class PresentationWorkflowNodes {
                 .preferredSourceType(coverGroup ? "DECK_SHARED_COVER_GROUP" : "DECK_SHARED_BACKGROUND")
                 .preferredDomains(List.of())
                 .build();
-        SearchQuerySpec querySpec = buildStableSearchQuery(anchor, task, "image");
-        String normalizedQuery = querySpec.normalizedQuery();
-        List<String> candidates = searchPexelsCandidates(normalizedQuery, resolutionContext);
+        String normalizedQuery = normalizeSearchQuery(deckTopic);
+        boolean coverOnly = coverGroup;
+        List<String> candidates = searchPexelsCandidates(normalizedQuery, resolutionContext, coverOnly);
         if (candidates.isEmpty()) {
+            if (coverGroup) {
+                logCoverGroupBackgroundDisabled("deck-shared", "COVER_GROUP", "no-qualified-cover-background");
+            }
             return null;
         }
         return PresentationImageResources.ResourceItem.builder()
@@ -3645,9 +3731,9 @@ public class PresentationWorkflowNodes {
                 .sourceSite("pexels.com")
                 .assetType("image")
                 .purpose(task.getPurpose())
-                .queryKey(querySpec.queryKey())
-                .searchCategory(querySpec.searchCategory())
-                .searchSubject(querySpec.searchSubject())
+                .queryKey("shared-background")
+                .searchCategory("")
+                .searchSubject("")
                 .mimeType("")
                 .fallbackSource("")
                 .normalizedQuery(normalizedQuery)
@@ -3772,6 +3858,9 @@ public class PresentationWorkflowNodes {
         if ("illustration".equalsIgnoreCase(assetType)) {
             candidates = candidates.stream().filter(this::isDirectVisualAssetUrl).toList();
         }
+if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSelectedUrl())) {
+            candidates = List.of(item.getSelectedUrl());
+        }
         return reorderCandidates(candidates, item, resolutionContext);
     }
 
@@ -3788,6 +3877,13 @@ public class PresentationWorkflowNodes {
     }
 
     private List<String> searchPexelsCandidates(String normalizedQuery, AssetResolutionContext resolutionContext) {
+        return searchPexelsCandidates(normalizedQuery, resolutionContext, false);
+    }
+
+    private List<String> searchPexelsCandidates(
+            String normalizedQuery,
+            AssetResolutionContext resolutionContext,
+            boolean coverBackgroundOnly) {
         if (!hasText(normalizedQuery)) {
             return List.of();
         }
@@ -3818,10 +3914,13 @@ public class PresentationWorkflowNodes {
                 if (photo == null || photo.getSrc() == null) {
                     continue;
                 }
-                addIfSafeCandidate(candidates, photo.getSrc().getMedium());
-                addIfSafeCandidate(candidates, photo.getSrc().getLarge());
-                addIfSafeCandidate(candidates, photo.getSrc().getLarge2x());
+                if (coverBackgroundOnly && !isQualifiedCoverBackgroundPhoto(photo)) {
+                    continue;
+                }
                 addIfSafeCandidate(candidates, photo.getSrc().getOriginal());
+                addIfSafeCandidate(candidates, photo.getSrc().getLarge2x());
+                addIfSafeCandidate(candidates, photo.getSrc().getLarge());
+                addIfSafeCandidate(candidates, photo.getSrc().getMedium());
                 if (candidates.size() >= 6) {
                     break;
                 }
@@ -3830,6 +3929,22 @@ public class PresentationWorkflowNodes {
         } catch (Exception exception) {
             return List.of();
         }
+    }
+
+    private boolean isQualifiedCoverBackgroundPhoto(PexelsSearchResponse.PexelsPhoto photo) {
+        if (photo == null) {
+            return false;
+        }
+        Integer width = photo.getWidth();
+        Integer height = photo.getHeight();
+        if (width == null || height == null || width <= 0 || height <= 0) {
+            return false;
+        }
+        if (width < 1600 || height < 900) {
+            return false;
+        }
+        double ratio = width.doubleValue() / height.doubleValue();
+        return ratio >= 1.55d;
     }
 
     private void addIfSafeCandidate(List<String> candidates, String url) {
@@ -4473,17 +4588,16 @@ public class PresentationWorkflowNodes {
         if (slide == null) {
             return java.util.Optional.empty();
         }
+        String pageType = blankToDefault(slide.getPageType(), "");
+        if (isCoverGroupPage(slide) && !"COVER".equalsIgnoreCase(pageType)) {
+            logCoverGroupBackgroundDisabled(slide.getSlideId(), pageType, "policy-disabled");
+            return java.util.Optional.empty();
+        }
         TemplateImagePolicy policy = templateImagePolicy(slide);
         if (policy.contentSlots() <= 0 && policy.backgroundSlots() <= 0) {
             return java.util.Optional.empty();
         }
         java.util.Optional<PresentationAssetResources.SlideAssetResource> slideAssets = resolveSlideAssets(slide.getSlideId(), resources);
-        String pageType = blankToDefault(slide.getPageType(), "");
-        if ("THANKS".equalsIgnoreCase(pageType)) {
-            return resolveSlideAssets("slide-1", resources)
-                    .map(PresentationAssetResources.SlideAssetResource::getCoverGroupImage)
-                    .filter(this::isRenderableAsset);
-        }
         if (isCoverGroupPage(slide)) {
             java.util.Optional<PresentationAssetResources.AssetResource> coverGroupImage = slideAssets
                     .map(PresentationAssetResources.SlideAssetResource::getCoverGroupImage)
@@ -4491,15 +4605,12 @@ public class PresentationWorkflowNodes {
             if (coverGroupImage.isPresent()) {
                 return coverGroupImage;
             }
+            logCoverGroupBackgroundDisabled(slide.getSlideId(), pageType, "no-renderable-cover-background");
+            return java.util.Optional.empty();
         }
         java.util.Optional<PresentationAssetResources.AssetResource> direct = resolvePrimaryContentImage(slide, slideAssets.orElse(null));
         if (direct.isPresent()) {
             return direct;
-        }
-        if ("THANKS".equalsIgnoreCase(pageType) || "TOC".equalsIgnoreCase(pageType)) {
-            return resolveSlideAssets("slide-1", resources)
-                    .map(PresentationAssetResources.SlideAssetResource::getCoverGroupImage)
-                    .filter(this::isRenderableAsset);
         }
         return java.util.Optional.empty();
     }
@@ -4725,9 +4836,13 @@ public class PresentationWorkflowNodes {
             PresentationElementIR backgroundElement,
             PresentationGenerationOptions options) {
         String backgroundImage = "";
-        String rightImage = "";
+        String rightImageSrc = "";
+        String rightImageAlt = "";
+        String rightImageAlpha = "0";
         String sideImage = "";
-        String contentImage = "";
+        String contentImageSrc = "";
+        String contentImageAlt = "";
+        String contentImageAlpha = "0";
         StyleProfile profile = styleProfile(effectiveThemeFamily(options));
         String timelineItemsXml = "stacked-steps".equals(blankToDefault(plan.getTemplateVariant(), ""))
                 ? stackedTimelineItems(extractBodyPointsFromPlan(plan), profile, "action".equalsIgnoreCase(blankToDefault(plan.getVisualEmphasis(), "")))
@@ -4756,50 +4871,41 @@ public class PresentationWorkflowNodes {
         if (image != null && image.getAssetRef() != null) {
             String src = resolveRenderableImageSrc(image);
             if (hasText(src)) {
-                if ("cover".equals(layout)
-                        || "TRANSITION".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))
-                        || "TOC".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
+                if ("cover".equals(layout) && "COVER".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
                     backgroundImage = """
                             <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
                             """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "背景图")));
                     backgroundSourceKind = "hero-image";
                     injectedBackgroundToken = src;
-                } else if ("THANKS".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
-                    backgroundImage = """
-                            <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
-                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "结束页背景图")));
-                    backgroundSourceKind = "hero-image";
-                    injectedBackgroundToken = src;
-                } else if (hasText(injectedBackgroundToken)) {
-                    // Shared background already occupies the slide background; keep this image in its content slot only.
                 } else if ("two-column".equals(layout) || "comparison".equals(layout)) {
-                    rightImage = """
-                            <img src="%s" topLeftX="468" topLeftY="160" width="396" height="252" alpha="1" alt="%s">
-                              <border color="rgba(0,0,0,0.08)" width="1"/>
-                            </img>
-                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "配图")));
+                    rightImageSrc = src;
+                    rightImageAlt = escapeXml(blankToDefault(image.getAssetRef().getAltText(), "配图"));
+                    rightImageAlpha = "1";
                 } else if ("section".equals(layout)) {
-                    contentImage = """
-                            <img src="%s" topLeftX="640" topLeftY="168" width="228" height="204" alpha="1" alt="%s">
-                              <border color="rgba(0,0,0,0.08)" width="1"/>
-                            </img>
-                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "正文配图")));
+                    contentImageSrc = src;
+                    contentImageAlt = escapeXml(blankToDefault(image.getAssetRef().getAltText(), "正文配图"));
+                    contentImageAlpha = "1";
                 } else {
-                    contentImage = """
-                            <img src="%s" topLeftX="640" topLeftY="168" width="228" height="204" alpha="1" alt="%s">
-                              <border color="rgba(0,0,0,0.08)" width="1"/>
-                            </img>
-                            """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "正文配图")));
+                    contentImageSrc = src;
+                    contentImageAlt = escapeXml(blankToDefault(image.getAssetRef().getAltText(), "正文配图"));
+                    contentImageAlpha = "1";
                 }
             }
         }
-        logSlideImageInjection(plan, layout, backgroundSourceKind, injectedBackgroundToken, image, timelineNodeImages);
+        boolean contentImageSlotPresent = hasText(rightImageSrc) || hasText(contentImageSrc);
+        logSlideImageInjection(plan, layout, backgroundSourceKind, injectedBackgroundToken, image, timelineNodeImages, contentImageSlotPresent);
         warnUnexpectedBackgroundInjection(plan, backgroundSourceKind, injectedBackgroundToken);
         String xml = baseXml
                 .replace("{{BACKGROUND_IMAGE}}", backgroundImage)
-                .replace("{{RIGHT_IMAGE}}", rightImage)
+                .replace("{{RIGHT_IMAGE}}", "")
+                .replace("{{RIGHT_IMAGE_SRC}}", rightImageSrc)
+                .replace("{{RIGHT_IMAGE_ALT}}", rightImageAlt)
+                .replace("{{RIGHT_IMAGE_ALPHA}}", rightImageAlpha)
                 .replace("{{SIDE_IMAGE}}", sideImage)
-                .replace("{{CONTENT_IMAGE}}", contentImage)
+                .replace("{{CONTENT_IMAGE}}", "")
+                .replace("{{CONTENT_IMAGE_SRC}}", contentImageSrc)
+                .replace("{{CONTENT_IMAGE_ALT}}", contentImageAlt)
+                .replace("{{CONTENT_IMAGE_ALPHA}}", contentImageAlpha)
                 .replace("{{TIMELINE_ITEMS}}", blankToDefault(timelineItemsXml, ""));
         return xml;
     }
@@ -4913,7 +5019,8 @@ public class PresentationWorkflowNodes {
             String backgroundSourceKind,
             String injectedBackgroundToken,
             PresentationElementIR image,
-            List<PresentationElementIR> timelineNodeImages) {
+            List<PresentationElementIR> timelineNodeImages,
+            boolean contentImageSlotPresent) {
         System.err.println("ppt.slide.image.injection"
                 + " slideId=" + blankToDefault(plan == null ? null : plan.getSlideId(), "unknown")
                 + " pageType=" + blankToDefault(plan == null ? null : plan.getPageType(), "")
@@ -4926,6 +5033,19 @@ public class PresentationWorkflowNodes {
                 .map(this::resolveRenderableImageSrc)
                 .filter(this::hasText)
                 .count()));
+        System.err.println("ppt.slide.content-image.debug"
+                + " slideId=" + blankToDefault(plan == null ? null : plan.getSlideId(), "unknown")
+                + " pageType=" + blankToDefault(plan == null ? null : plan.getPageType(), "")
+                + " layout=" + blankToDefault(layout, "")
+                + " contentImageToken=" + blankToDefault(resolveRenderableImageSrc(image), "")
+                + " contentImageSlotPresent=" + contentImageSlotPresent);
+    }
+
+    private void logCoverGroupBackgroundDisabled(String slideId, String pageType, String reason) {
+        System.err.println("ppt.cover-group.background.disabled"
+                + " slideId=" + blankToDefault(slideId, "unknown")
+                + " pageType=" + blankToDefault(pageType, "")
+                + " reason=" + blankToDefault(reason, "unknown"));
     }
 
     private void warnUnexpectedBackgroundInjection(
@@ -4956,8 +5076,14 @@ public class PresentationWorkflowNodes {
         return blankToDefault(xml, "")
                 .replace("{{BACKGROUND_IMAGE}}", "")
                 .replace("{{RIGHT_IMAGE}}", "")
+                .replace("{{RIGHT_IMAGE_SRC}}", "")
+                .replace("{{RIGHT_IMAGE_ALT}}", "")
+                .replace("{{RIGHT_IMAGE_ALPHA}}", "0")
                 .replace("{{SIDE_IMAGE}}", "")
                 .replace("{{CONTENT_IMAGE}}", "")
+                .replace("{{CONTENT_IMAGE_SRC}}", "")
+                .replace("{{CONTENT_IMAGE_ALT}}", "")
+                .replace("{{CONTENT_IMAGE_ALPHA}}", "0")
                 .replace("{{TIMELINE_ITEMS}}", "");
     }
 
