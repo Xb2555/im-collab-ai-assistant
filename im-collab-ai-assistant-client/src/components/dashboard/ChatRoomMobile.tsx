@@ -98,7 +98,13 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  
+  // 👇 === 新增分页与滚动相关状态 === 👇
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const pageTokenRef = useRef<string | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const lastMessageIdRef = useRef<string | null>(null); // 核心：用于防止加载历史时乱跳
+  // 👆 =============================== 👆
   // ✨ 移动端专属状态
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
@@ -116,9 +122,86 @@ export function ChatRoomMobile({ onOpenHistory, onSwitchToWorkspace }: ChatRoomM
     messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
+  // ✨ 核心修复 1：只在最新消息（尾部）变化时才滚到底部，防止加载上方历史时画面乱跳
+  // ✨ 核心修复 1：只在最新消息（尾部）变化时才滚到底部，防止加载上方历史时画面乱跳
   useEffect(() => {
-    scrollToBottom('smooth');
+    if (messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      const currentLastId = getStableMessageId(lastMsg);
+      if (lastMessageIdRef.current !== currentLastId) {
+        // ✨ 关键修复 2：判断是否为首次进入该群聊
+        const isFirstLoad = lastMessageIdRef.current === null;
+        
+        // 如果是首次进入，必须瞬间滚动到底部（'auto'）。
+        // 因为如果是平滑滚动（'smooth'），从 0 慢慢滚到底部的过程中，一定会误触 scrollTop <= 50 的加载历史机制！
+        scrollToBottom(isFirstLoad ? 'auto' : 'smooth');
+        
+        lastMessageIdRef.current = currentLastId;
+      }
+    }
   }, [messages]);
+
+  // ✨ 核心逻辑 2：滚动触顶检测
+  const handleScroll = async (e: React.UIEvent<HTMLDivElement>) => {
+    const container = e.currentTarget;
+    // 当距离顶部小于 50px 时，触发加载
+    if (container.scrollTop <= 50 && hasMore && !isLoadingMore && !isLoadingHistory) {
+      loadMoreHistory(container);
+    }
+  };
+
+  // ✨ 核心逻辑 3：上拉加载历史请求
+  const loadMoreHistory = async (container: HTMLDivElement) => {
+    if (!activeChatId || !pageTokenRef.current) return;
+    
+    setIsLoadingMore(true);
+
+    try {
+      const res = await imApi.getChatHistory({
+        containerIdType: 'chat',
+        containerId: activeChatId,
+        sortType: 'ByCreateTimeDesc',
+        pageSize: 20,
+        pageToken: pageTokenRef.current,
+      });
+
+      setHasMore(res.hasMore);
+      pageTokenRef.current = res.pageToken || null;
+
+      const formattedHistory = res.items.reverse().map((item: any) => ({
+        eventId: item.messageId || crypto.randomUUID(),
+        senderOpenId: item.senderId,
+        senderType: item.senderType,
+        senderName: item.senderName,
+        senderAvatar: item.senderAvatar,
+        content: parseFeishuContent(item.content, item.msgType),
+        createTime: item.createTime,
+      }));
+
+      // ✨ 优化点 1：必须在 setMessages 的前一刻记录高度，保证绝对精准
+      const previousScrollHeight = container.scrollHeight; 
+
+      setMessages(prev => {
+        const newMessages = [...formattedHistory];
+        prev.forEach(m => {
+          if (!newMessages.some(nm => getStableMessageId(nm) === getStableMessageId(m))) {
+            newMessages.push(m);
+          }
+        });
+        return newMessages.sort((a, b) => Number(a.createTime) - Number(b.createTime));
+      });
+
+      // ✨ 优化点 2：使用 requestAnimationFrame 确保在浏览器把新 DOM 渲染在屏幕上后，立刻顶回滚动条
+      requestAnimationFrame(() => {
+        container.scrollTop = container.scrollHeight - previousScrollHeight;
+      });
+
+    } catch (err) {
+      console.warn('加载更多历史消息失败', err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
   //  ======================= 
 //  ============ 插入补拉方法 ============ 
   const loadLatestHistory = async () => {
@@ -302,6 +385,9 @@ try {
   // 3. 聊天室历史记录与 SSE 流 (与桌面端逻辑一致)
   useEffect(() => {
     if (!activeChatId || !accessToken) return;
+    // ✨ 关键修复 1：切换群聊时，必须清空上一个群聊的最后一条消息记忆！
+    // 这样下面的监听器才知道这是一个“全新进入的群聊”
+    lastMessageIdRef.current = null;
     if (abortControllerRef.current) abortControllerRef.current.abort();
     abortControllerRef.current = new AbortController();
     const ctrl = abortControllerRef.current;
@@ -318,6 +404,10 @@ try {
           signal: ctrl.signal,
         });
         if (ctrl.signal.aborted) return;
+
+        // ✨ 记录飞书返回的游标，为向上滚动加载做准备
+        setHasMore(historyRes.hasMore);
+        pageTokenRef.current = historyRes.pageToken || null;
         const formattedHistory = historyRes.items.reverse().map((item: any) => ({
           eventId: item.messageId,
           senderOpenId: item.senderId,
@@ -419,7 +509,16 @@ try {
   return (
     <div className="flex flex-col h-full bg-zinc-50/50 relative">
       {/* 消息列表区 */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div 
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto p-4 space-y-4"
+      >
+        {isLoadingMore && (
+          <div className="flex justify-center py-2 shrink-0">
+            <Loader2 className="h-4 w-4 animate-spin text-zinc-400" />
+          </div>
+        )}
         {isLoadingHistory ? (
           <div className="flex justify-center py-4"><Loader2 className="h-5 w-5 animate-spin text-zinc-400" /></div>
         ) : messages.length === 0 ? (
