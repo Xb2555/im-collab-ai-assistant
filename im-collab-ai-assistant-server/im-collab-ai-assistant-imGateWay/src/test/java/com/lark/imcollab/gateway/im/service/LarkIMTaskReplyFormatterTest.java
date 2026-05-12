@@ -4,16 +4,19 @@ import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.PromptSlotState;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -324,13 +327,83 @@ class LarkIMTaskReplyFormatterTest {
                                 .preview("已补充项目总结")
                                 .build()
                 ))
+                .events(List.of(
+                        TaskEventRecord.builder()
+                                .type(TaskEventTypeEnum.ARTIFACT_UPDATED)
+                                .payloadJson("\"已补充项目总结\"")
+                                .createdAt(Instant.parse("2026-05-12T12:00:00Z"))
+                                .build()
+                ))
                 .build();
 
         String text = formatter.status(snapshot);
 
         assertThat(text)
                 .contains("已有产物：1 个", "[DOC] 9191飞书文档", "迭代记录：1 条")
-                .doesNotContain("文档迭代结果 v1");
+                .contains("[DOC] 已补充项目总结")
+                .doesNotContain("文档迭代结果 v1")
+                .doesNotContain("\n2. 已补充项目总结");
+    }
+
+    @Test
+    void completedStatusPrefersConcreteDocIterationContentOverGenericRevisionSummary() {
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(
+                        ArtifactRecord.builder()
+                                .type(ArtifactTypeEnum.DOC)
+                                .title("9191项目启动会纪要")
+                                .url("https://example.feishu.cn/docx/doc-token")
+                                .build(),
+                        ArtifactRecord.builder()
+                                .type(ArtifactTypeEnum.SUMMARY)
+                                .title("文档迭代结果 v2")
+                                .preview("已插入新增内容，新增块数：1，revision: 3 -> 3\n\n### 关于老飞宇66的补充说明")
+                                .build()
+                ))
+                .events(List.of(
+                        TaskEventRecord.builder()
+                                .type(TaskEventTypeEnum.ARTIFACT_UPDATED)
+                                .payloadJson("\"已插入新增内容，新增块数：1，revision: 3 -> 3\"")
+                                .createdAt(Instant.parse("2026-05-12T12:00:00Z"))
+                                .build()
+                ))
+                .build();
+
+        String text = formatter.status(snapshot);
+
+        assertThat(text)
+                .contains("迭代记录：1 条")
+                .contains("[DOC] 新增小节：关于老飞宇66的补充说明")
+                .doesNotContain("[DOC] 已插入新增内容，新增块数：1，revision: 3 -> 3")
+                .doesNotContain("revision: 3 -> 3");
+    }
+
+    @Test
+    void completedStatusShowsPptIterationEventDetails() {
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(
+                        ArtifactRecord.builder()
+                                .type(ArtifactTypeEnum.PPT)
+                                .title("北京旅游全攻略")
+                                .url("https://example.feishu.cn/slides/ppt-token")
+                                .build()
+                ))
+                .events(List.of(
+                        TaskEventRecord.builder()
+                                .type(TaskEventTypeEnum.ARTIFACT_UPDATED)
+                                .payloadJson("\"已在第 2 页后新增一页：罗非鱼66\"")
+                                .createdAt(Instant.parse("2026-05-12T12:00:00Z"))
+                                .build()
+                ))
+                .build();
+
+        String text = formatter.status(snapshot);
+
+        assertThat(text)
+                .contains("已有产物：1 个", "[PPT] 北京旅游全攻略", "迭代记录：1 条")
+                .contains("[PPT] 已在第 2 页后新增一页：罗非鱼66");
     }
 
     @Test

@@ -6,9 +6,11 @@ import com.lark.imcollab.common.model.entity.PromptSlotState;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
+import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import com.lark.imcollab.common.util.PlanCapabilityHints;
 import com.lark.imcollab.common.util.TriggerGuidanceResolver;
@@ -16,7 +18,9 @@ import com.lark.imcollab.common.model.vo.TriggerGuidanceVO;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 @Component
 public class LarkIMTaskReplyFormatter {
@@ -100,9 +104,8 @@ public class LarkIMTaskReplyFormatter {
         List<ArtifactRecord> primaryArtifacts = defaultList(snapshot.getArtifacts()).stream()
                 .filter(this::visiblePrimaryArtifact)
                 .toList();
-        long iterationRecordCount = defaultList(snapshot.getArtifacts()).stream()
-                .filter(this::visibleIterationRecordArtifact)
-                .count();
+        List<IterationRecordView> iterationRecords = iterationRecords(snapshot);
+        long iterationRecordCount = iterationRecords.size();
         long completed = steps.stream()
                 .filter(step -> step != null && step.getStatus() == StepStatusEnum.COMPLETED)
                 .count();
@@ -135,6 +138,7 @@ public class LarkIMTaskReplyFormatter {
         }
         if (iterationRecordCount > 0) {
             builder.append("\n📝 迭代记录：").append(iterationRecordCount).append(" 条");
+            appendIterationRecords(builder, iterationRecords);
         }
         return builder.toString();
     }
@@ -167,6 +171,235 @@ public class LarkIMTaskReplyFormatter {
         }
         String title = firstNonBlank(artifact.getTitle(), artifact.getPreview(), "");
         return title.startsWith("文档迭代结果") || title.startsWith("文档迭代待审批计划");
+    }
+
+    private List<IterationRecordView> iterationRecords(TaskRuntimeSnapshot snapshot) {
+        List<IterationRecordView> records = new ArrayList<>();
+        java.util.Set<String> docSummaryDetails = new java.util.HashSet<>();
+        boolean hasDocSummaryRecord = false;
+        for (ArtifactRecord artifact : defaultList(snapshot == null ? null : snapshot.getArtifacts())) {
+            if (!visibleIterationRecordArtifact(artifact)) {
+                continue;
+            }
+            hasDocSummaryRecord = true;
+            String detail = summarizeIterationDetail(artifact.getPreview(), true);
+            if (!hasText(detail)) {
+                continue;
+            }
+            docSummaryDetails.add(compact(detail));
+            records.add(new IterationRecordView(
+                    "DOC",
+                    detail,
+                    artifact.getUpdatedAt() == null ? artifact.getCreatedAt() : artifact.getUpdatedAt()
+            ));
+        }
+        for (TaskEventRecord event : defaultList(snapshot == null ? null : snapshot.getEvents())) {
+            if (event == null || event.getType() != TaskEventTypeEnum.ARTIFACT_UPDATED) {
+                continue;
+            }
+            String detail = summarizeIterationDetail(decodePayloadText(event.getPayloadJson()), false);
+            if (!hasText(detail)) {
+                continue;
+            }
+            String inferredType = inferIterationTypeLabel(detail);
+            if (hasDocSummaryRecord && isGenericDocIterationLine(detail) && !"PPT".equals(inferredType)) {
+                continue;
+            }
+            if (docSummaryDetails.contains(compact(detail))) {
+                continue;
+            }
+            records.add(new IterationRecordView(
+                    inferredType,
+                    detail,
+                    event.getCreatedAt()
+            ));
+        }
+        return records.stream()
+                .filter(record -> hasText(record.detail()))
+                .collect(java.util.stream.Collectors.toMap(
+                        record -> compact(firstNonBlank(record.typeLabel(), "")) + "|" + compact(record.detail()),
+                        record -> record,
+                        (left, right) -> moreRecent(left, right),
+                        java.util.LinkedHashMap::new
+                ))
+                .values().stream()
+                .sorted(Comparator.comparing(IterationRecordView::createdAt,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
+    }
+
+    private IterationRecordView moreRecent(IterationRecordView left, IterationRecordView right) {
+        if (left == null) {
+            return right;
+        }
+        if (right == null) {
+            return left;
+        }
+        if (left.createdAt() == null) {
+            return right;
+        }
+        if (right.createdAt() == null) {
+            return left;
+        }
+        return right.createdAt().isAfter(left.createdAt()) ? right : left;
+    }
+
+    private void appendIterationRecords(StringBuilder builder, List<IterationRecordView> records) {
+        for (int index = 0; index < records.size(); index++) {
+            IterationRecordView record = records.get(index);
+            builder.append("\n").append(index + 1).append(". ");
+            if (hasText(record.typeLabel())) {
+                builder.append("[").append(record.typeLabel()).append("] ");
+            }
+            builder.append(record.detail());
+        }
+    }
+
+    private String summarizeIterationDetail(String raw, boolean preferConcreteContent) {
+        if (!hasText(raw)) {
+            return null;
+        }
+        String normalized = raw.trim()
+                .replace("\r\n", "\n")
+                .replace('\r', '\n');
+        String[] paragraphs = normalized.split("\\n\\s*\\n");
+        List<String> candidates = new ArrayList<>();
+        for (String paragraph : paragraphs) {
+            String line = cleanIterationLine(firstNonBlankLine(paragraph));
+            if (hasText(line)) {
+                candidates.add(line.trim());
+            }
+        }
+        String genericCandidate = candidates.stream()
+                .filter(this::isGenericDocIterationLine)
+                .findFirst()
+                .orElse(null);
+        String concreteCandidate = candidates.stream()
+                .filter(candidate -> !isGenericDocIterationLine(candidate))
+                .findFirst()
+                .orElse(null);
+        if (preferConcreteContent) {
+            String formatted = formatDocIterationDetail(genericCandidate, concreteCandidate);
+            if (hasText(formatted)) {
+                return truncateIterationDetail(formatted);
+            }
+        }
+        if (!candidates.isEmpty()) {
+            return truncateIterationDetail(candidates.get(0));
+        }
+        return truncateIterationDetail(normalized.replace('\n', ' ').trim());
+    }
+
+    private String formatDocIterationDetail(String genericCandidate, String concreteCandidate) {
+        if (!hasText(concreteCandidate)) {
+            return genericCandidate;
+        }
+        if (!hasText(genericCandidate)) {
+            return concreteCandidate;
+        }
+        if (genericCandidate.startsWith("已插入新增内容")) {
+            return (looksLikeSectionTitle(concreteCandidate) ? "新增小节：" : "新增内容：") + concreteCandidate;
+        }
+        if (genericCandidate.startsWith("已完成文档改写")) {
+            return (looksLikeSectionTitle(concreteCandidate) ? "改写小节：" : "改写内容：") + concreteCandidate;
+        }
+        if (genericCandidate.startsWith("已删除目标片段")) {
+            return (looksLikeSectionTitle(concreteCandidate) ? "删除小节：" : "删除内容：") + concreteCandidate;
+        }
+        if (genericCandidate.startsWith("已生成受控编辑计划")
+                || genericCandidate.startsWith("已根据反馈重建受控编辑计划")
+                || genericCandidate.startsWith("已生成待确认计划")) {
+            return "待确认修改：" + concreteCandidate;
+        }
+        return concreteCandidate;
+    }
+
+    private boolean looksLikeSectionTitle(String text) {
+        if (!hasText(text)) {
+            return false;
+        }
+        String normalized = text.trim();
+        return normalized.startsWith("关于")
+                || normalized.startsWith("第")
+                || normalized.contains("说明")
+                || normalized.contains("章节")
+                || normalized.contains("小节")
+                || normalized.contains("补充");
+    }
+
+    private String cleanIterationLine(String line) {
+        if (!hasText(line)) {
+            return null;
+        }
+        return line.trim()
+                .replaceFirst("^#{1,6}\\s*", "")
+                .replaceFirst("^[-*]\\s*", "")
+                .trim();
+    }
+
+    private boolean isGenericDocIterationLine(String line) {
+        if (!hasText(line)) {
+            return false;
+        }
+        String normalized = line.trim();
+        return normalized.startsWith("已插入新增内容")
+                || normalized.startsWith("已完成文档改写")
+                || normalized.startsWith("已删除目标片段")
+                || normalized.startsWith("已生成受控编辑计划")
+                || normalized.startsWith("已根据反馈重建受控编辑计划")
+                || normalized.startsWith("已生成待确认计划")
+                || normalized.startsWith("已删除目标片段")
+                || normalized.contains("revision:");
+    }
+
+    private String firstNonBlankLine(String text) {
+        if (!hasText(text)) {
+            return null;
+        }
+        for (String line : text.split("\\n")) {
+            if (hasText(line)) {
+                return line.trim();
+            }
+        }
+        return null;
+    }
+
+    private String truncateIterationDetail(String detail) {
+        if (!hasText(detail)) {
+            return null;
+        }
+        String normalized = detail.replaceAll("\\s+", " ").trim();
+        return normalized.length() <= 80 ? normalized : normalized.substring(0, 80) + "...";
+    }
+
+    private String decodePayloadText(String payloadJson) {
+        if (!hasText(payloadJson)) {
+            return null;
+        }
+        String text = payloadJson.trim();
+        if (text.length() >= 2 && text.startsWith("\"") && text.endsWith("\"")) {
+            text = text.substring(1, text.length() - 1);
+        }
+        return text.replace("\\n", "\n")
+                .replace("\\r", "\r")
+                .replace("\\t", "\t")
+                .replace("\\\"", "\"")
+                .replace("\\/", "/")
+                .trim();
+    }
+
+    private String inferIterationTypeLabel(String detail) {
+        if (!hasText(detail)) {
+            return null;
+        }
+        String normalized = detail.toUpperCase(Locale.ROOT);
+        if (normalized.contains("PPT") || detail.contains("第 ") && detail.contains("页")) {
+            return "PPT";
+        }
+        if (normalized.contains("DOC") || detail.contains("文档")) {
+            return "DOC";
+        }
+        return null;
     }
 
     private boolean visibleArtifact(ArtifactRecord artifact) {
@@ -342,6 +575,13 @@ public class LarkIMTaskReplyFormatter {
         return text.replaceFirst("^[^\\p{IsHan}\\p{L}\\p{N}]+\\s*", "").trim();
     }
 
+    private String compact(String value) {
+        if (!hasText(value)) {
+            return "";
+        }
+        return value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    }
+
     private void appendEditHint(StringBuilder builder, List<UserPlanCard> cards) {
         List<String> suggestions = suggestEdits(cards);
         if (suggestions.isEmpty()) {
@@ -426,6 +666,13 @@ public class LarkIMTaskReplyFormatter {
             case "READY", "PENDING", "WAITING", "TODO" -> "待完成";
             default -> "待完成";
         };
+    }
+
+    private record IterationRecordView(
+            String typeLabel,
+            String detail,
+            java.time.Instant createdAt
+    ) {
     }
 
     private boolean startsWithSequenceWord(String title) {
