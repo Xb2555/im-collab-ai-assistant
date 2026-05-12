@@ -9,8 +9,11 @@ import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.planner.config.PlannerProperties;
+import com.lark.imcollab.planner.intent.IntentDecisionGuard;
 import com.lark.imcollab.planner.intent.IntentRoutingResult;
+import com.lark.imcollab.planner.intent.IntentRouterService;
 import com.lark.imcollab.planner.intent.LlmIntentClassifier;
+import com.lark.imcollab.planner.intent.HardRuleIntentClassifier;
 import com.lark.imcollab.planner.service.CompletedArtifactIntentRecoveryService;
 import com.lark.imcollab.planner.service.ConversationTaskStateService;
 import com.lark.imcollab.planner.service.CurrentTaskContinuationArbiter;
@@ -43,7 +46,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
     private final PlannerConversationService plannerConversationService;
     private final TaskSessionResolver taskSessionResolver;
     private final PlannerSessionService plannerSessionService;
-    private final LlmIntentClassifier llmIntentClassifier;
+    private final IntentRouterService intentRouterService;
     private final ConversationTaskStateService conversationTaskStateService;
     private final PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher;
     private final CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService;
@@ -54,7 +57,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             PlannerConversationService plannerConversationService,
             TaskSessionResolver taskSessionResolver,
             PlannerSessionService plannerSessionService,
-            LlmIntentClassifier llmIntentClassifier,
+            IntentRouterService intentRouterService,
             ConversationTaskStateService conversationTaskStateService,
             PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
             CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService,
@@ -64,7 +67,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         this.plannerConversationService = plannerConversationService;
         this.taskSessionResolver = taskSessionResolver;
         this.plannerSessionService = plannerSessionService;
-        this.llmIntentClassifier = llmIntentClassifier;
+        this.intentRouterService = intentRouterService;
         this.conversationTaskStateService = conversationTaskStateService;
         this.pendingFollowUpRecommendationMatcher = pendingFollowUpRecommendationMatcher;
         this.completedArtifactIntentRecoveryService = completedArtifactIntentRecoveryService;
@@ -80,7 +83,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             ConversationTaskStateService conversationTaskStateService,
             PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher
     ) {
-        this(plannerConversationService, taskSessionResolver, plannerSessionService, llmIntentClassifier,
+        this(plannerConversationService, taskSessionResolver, plannerSessionService, buildPreviewIntentRouter(llmIntentClassifier, new PlannerProperties()),
                 conversationTaskStateService, pendingFollowUpRecommendationMatcher,
                 new CompletedArtifactIntentRecoveryService(taskSessionResolver),
                 pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher, new PlannerProperties()),
@@ -96,7 +99,7 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             PendingFollowUpRecommendationMatcher pendingFollowUpRecommendationMatcher,
             CompletedArtifactIntentRecoveryService completedArtifactIntentRecoveryService
     ) {
-        this(plannerConversationService, taskSessionResolver, plannerSessionService, llmIntentClassifier,
+        this(plannerConversationService, taskSessionResolver, plannerSessionService, buildPreviewIntentRouter(llmIntentClassifier, new PlannerProperties()),
                 conversationTaskStateService, pendingFollowUpRecommendationMatcher,
                 completedArtifactIntentRecoveryService,
                 pendingFollowUpRecommendationMatcher == null ? null : new PendingFollowUpConflictArbiter(pendingFollowUpRecommendationMatcher, new PlannerProperties()),
@@ -119,11 +122,12 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (hasPendingSelection(session)) {
             return "";
         }
-        Optional<IntentRoutingResult> result = llmIntentClassifier.classify(session, effectiveInput, resolution.existingSession());
-        if (result.isEmpty()) {
+        IntentRoutingResult routingResult = intentRouterService == null
+                ? null
+                : intentRouterService.classify(session, effectiveInput, resolution.existingSession());
+        if (routingResult == null) {
             return "";
         }
-        IntentRoutingResult routingResult = result.get();
         if (routingResult.type() == TaskCommandTypeEnum.QUERY_STATUS
                 && "COMPLETED_TASKS".equalsIgnoreCase(routingResult.readOnlyView())) {
             return "";
@@ -161,6 +165,19 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             return followUpPreview;
         }
         return immediateReceipt(routingResult.type(), routingResult.adjustmentTarget(), session, workspaceContext);
+    }
+
+    private static IntentRouterService buildPreviewIntentRouter(
+            LlmIntentClassifier llmIntentClassifier,
+            PlannerProperties plannerProperties
+    ) {
+        PlannerProperties properties = plannerProperties == null ? new PlannerProperties() : plannerProperties;
+        return new IntentRouterService(
+                new HardRuleIntentClassifier(),
+                llmIntentClassifier,
+                new IntentDecisionGuard(properties),
+                properties
+        );
     }
 
     @Override

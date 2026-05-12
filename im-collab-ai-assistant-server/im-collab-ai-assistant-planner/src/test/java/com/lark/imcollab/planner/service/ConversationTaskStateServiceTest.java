@@ -59,4 +59,39 @@ class ConversationTaskStateServiceTest {
         assertThat(existing.getActiveTaskId()).isEqualTo("task-new");
         verify(stateStore).saveConversationTaskState(any(ConversationTaskState.class));
     }
+
+    @Test
+    void planReadyForSameCompletedTaskAlsoClearsPendingFollowUpRecommendations() {
+        ConversationTaskState existing = ConversationTaskState.builder()
+                .conversationKey("LARK:chat-1")
+                .activeTaskId("task-completed")
+                .lastCompletedTaskId("task-completed")
+                .pendingFollowUpRecommendations(List.of(PendingFollowUpRecommendation.builder()
+                        .recommendationId("rec-summary")
+                        .targetTaskId("task-completed")
+                        .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                        .sourceArtifactType(ArtifactTypeEnum.DOC)
+                        .build()))
+                .pendingFollowUpAwaitingSelection(true)
+                .build();
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-completed")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .inputContext(TaskInputContext.builder()
+                        .chatId("chat-1")
+                        .build())
+                .intakeState(TaskIntakeState.builder()
+                        .continuationKey("LARK:chat-1")
+                        .build())
+                .build();
+
+        when(stateStore.findConversationTaskState("LARK:chat-1")).thenReturn(Optional.of(existing));
+
+        service.syncFromSession(session);
+
+        assertThat(existing.getPendingFollowUpRecommendations()).isEmpty();
+        assertThat(existing.isPendingFollowUpAwaitingSelection()).isFalse();
+        assertThat(existing.getActiveTaskId()).isEqualTo("task-completed");
+        verify(stateStore).saveConversationTaskState(any(ConversationTaskState.class));
+    }
 }

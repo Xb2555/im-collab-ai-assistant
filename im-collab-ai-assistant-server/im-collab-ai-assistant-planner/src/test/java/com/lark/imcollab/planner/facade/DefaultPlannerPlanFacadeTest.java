@@ -116,6 +116,42 @@ class DefaultPlannerPlanFacadeTest {
     }
 
     @Test
+    void metaUnknownQuestionDoesNotReturnAdjustPlanReceiptInCompletedPhase() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+
+        String reply = facade.previewImmediateReply("你是谁", context, null, null);
+
+        assertThat(reply).isEmpty();
+        verifyNoInteractions(classifier);
+        verifyNoInteractions(matcher);
+    }
+
+    @Test
     void adjustPlanImmediateReplyCanPreviewPendingFollowUpRecommendation() {
         PlannerConversationService conversationService = mock(PlannerConversationService.class);
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);

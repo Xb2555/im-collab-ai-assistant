@@ -124,10 +124,7 @@ public class ConversationTaskStateService {
         if (phase == PlanningPhaseEnum.EXECUTING) {
             state.setActiveTaskId(session.getTaskId());
             state.setExecutingTaskId(session.getTaskId());
-            if (!sameTaskAsLastCompleted(state, session.getTaskId())) {
-                state.setPendingFollowUpRecommendations(List.of());
-                state.setPendingFollowUpAwaitingSelection(false);
-            }
+            clearPendingFollowUpsForActiveTask(state);
         } else if (phase == PlanningPhaseEnum.COMPLETED) {
             state.setActiveTaskId(session.getTaskId());
             state.setLastCompletedTaskId(session.getTaskId());
@@ -137,24 +134,31 @@ public class ConversationTaskStateService {
             if (session.getTaskId().equals(state.getExecutingTaskId())) {
                 state.setExecutingTaskId(null);
             }
+            clearPendingFollowUpsForActiveTask(state);
         } else if (phase == PlanningPhaseEnum.FAILED || phase == PlanningPhaseEnum.ABORTED) {
             state.setActiveTaskId(session.getTaskId());
             if (session.getTaskId().equals(state.getExecutingTaskId())) {
                 state.setExecutingTaskId(null);
             }
+            clearPendingFollowUpsForActiveTask(state);
         } else if (phase == PlanningPhaseEnum.PLAN_READY) {
             state.setActiveTaskId(session.getTaskId());
             if (session.getTaskId().equals(state.getExecutingTaskId())) {
                 state.setExecutingTaskId(null);
             }
-            if (!sameTaskAsLastCompleted(state, session.getTaskId())) {
-                state.setPendingFollowUpRecommendations(List.of());
-                state.setPendingFollowUpAwaitingSelection(false);
-            }
+            clearPendingFollowUpsForActiveTask(state);
         } else if (shouldTrackAsActive(session)) {
             state.setActiveTaskId(session.getTaskId());
         }
         save(state);
+    }
+
+    private void clearPendingFollowUpsForActiveTask(ConversationTaskState state) {
+        if (state == null) {
+            return;
+        }
+        state.setPendingFollowUpRecommendations(List.of());
+        state.setPendingFollowUpAwaitingSelection(false);
     }
 
     private boolean sameTaskAsLastCompleted(ConversationTaskState state, String taskId) {
