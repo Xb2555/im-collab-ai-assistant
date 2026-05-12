@@ -362,19 +362,24 @@ public class PlannerConversationService {
                     recoveryResult.reason());
         }
         clearPendingFollowUpRecommendationsIfExplicitNewTask(resolution, intakeDecision);
-        PlanTaskSession earlyCompletedArtifactAdjustment = tryRouteCurrentCompletedArtifactAdjustment(
-                taskId,
-                resolution,
-                session,
-                intakeDecision,
-                workspaceContext,
-                graphInstruction
-        );
+        boolean allowCompletedArtifactProbe = supportsCompletedArtifactProbe(intakeDecision);
+        PlanTaskSession earlyCompletedArtifactAdjustment = allowCompletedArtifactProbe
+                ? tryRouteCurrentCompletedArtifactAdjustment(
+                        taskId,
+                        resolution,
+                        session,
+                        intakeDecision,
+                        workspaceContext,
+                        graphInstruction
+                )
+                : null;
         if (earlyCompletedArtifactAdjustment != null) {
             return earlyCompletedArtifactAdjustment;
         }
         CompletedArtifactIntentRecoveryService.DirectRouteEvaluation directRouteEvaluation =
-                completedArtifactIntentRecoveryService == null
+                !allowCompletedArtifactProbe
+                        ? CompletedArtifactIntentRecoveryService.DirectRouteEvaluation.none("intake type does not support completed artifact probe")
+                        : completedArtifactIntentRecoveryService == null
                         ? CompletedArtifactIntentRecoveryService.DirectRouteEvaluation.none("recovery service unavailable")
                         : completedArtifactIntentRecoveryService.evaluateCurrentCompletedArtifactRoute(
                                 session,
@@ -1878,6 +1883,16 @@ public class PlannerConversationService {
             return true;
         }
         return sessionResolver.inferEditableArtifact(session.getTaskId(), instruction).isPresent();
+    }
+
+    private boolean supportsCompletedArtifactProbe(TaskIntakeDecision intakeDecision) {
+        if (intakeDecision == null || intakeDecision.intakeType() == null) {
+            return false;
+        }
+        return switch (intakeDecision.intakeType()) {
+            case NEW_TASK, PLAN_ADJUSTMENT, CLARIFICATION_REPLY -> true;
+            default -> false;
+        };
     }
 
     private String routeInstructionToEditableArtifact(String taskId, String instruction) {

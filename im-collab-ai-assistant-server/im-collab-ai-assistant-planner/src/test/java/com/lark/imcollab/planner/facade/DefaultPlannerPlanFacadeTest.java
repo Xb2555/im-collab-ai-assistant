@@ -1,5 +1,6 @@
 package com.lark.imcollab.planner.facade;
 
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.PendingTaskCandidate;
@@ -149,6 +150,65 @@ class DefaultPlannerPlanFacadeTest {
         assertThat(reply).isEmpty();
         verifyNoInteractions(classifier);
         verifyNoInteractions(matcher);
+    }
+
+    @Test
+    void metaUnknownQuestionDoesNotEnterCompletedArtifactPreviewRouting() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(mock(DocumentEditIntentFacade.class)),
+                provider(mock(PresentationEditIntentFacade.class))
+        );
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                recoveryService
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(resolver.isTaskCurrentInConversation("task-1", context)).thenReturn(true);
+        when(resolver.resolveEditableArtifacts("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("doc-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .title("9191项目飞书文档")
+                        .url("https://doc.example.com")
+                        .build(),
+                ArtifactRecord.builder()
+                        .artifactId("ppt-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.PPT)
+                        .title("9191项目汇报")
+                        .url("https://ppt.example.com")
+                        .build()
+        ));
+
+        String reply = facade.previewImmediateReply("你是谁", context, null, null);
+
+        assertThat(reply).isBlank();
+        verifyNoInteractions(classifier, matcher, conversationTaskStateService);
+        verify(resolver, never()).resolveEditableArtifacts("task-1");
     }
 
     @Test

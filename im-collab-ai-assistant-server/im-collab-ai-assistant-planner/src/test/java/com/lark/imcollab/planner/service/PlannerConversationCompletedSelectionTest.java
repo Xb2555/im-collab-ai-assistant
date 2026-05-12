@@ -144,6 +144,13 @@ class PlannerConversationCompletedSelectionTest {
         TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
         PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
         PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
         WorkspaceContext context = WorkspaceContext.builder()
                 .inputSource("LARK_PRIVATE_CHAT")
                 .chatId("chat-1")
@@ -168,7 +175,16 @@ class PlannerConversationCompletedSelectionTest {
                 sessionService,
                 taskBridgeService,
                 memoryService,
-                graphRunner
+                graphRunner,
+                null,
+                null,
+                null,
+                recoveryService,
+                null,
+                null,
+                null,
+                null,
+                null
         );
 
         PlanTaskSession result = service.handlePlanRequest("我想看看这个会话里已完成的任务", context, null, null);
@@ -183,6 +199,7 @@ class PlannerConversationCompletedSelectionTest {
                 .contains("更新于 2026-05-10 11:30")
                 .contains("回复编号即可");
         verify(graphRunner, never()).run(any(), any(), any(), any(), any());
+        verifyNoInteractions(documentEditIntentFacade, presentationEditIntentFacade);
     }
 
     @Test

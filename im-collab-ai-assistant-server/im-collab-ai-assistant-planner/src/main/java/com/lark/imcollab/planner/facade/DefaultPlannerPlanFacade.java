@@ -132,6 +132,9 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
                 && "COMPLETED_TASKS".equalsIgnoreCase(routingResult.readOnlyView())) {
             return "";
         }
+        if (!supportsTaskMutationPreview(routingResult)) {
+            return "";
+        }
         CompletedArtifactIntentRecoveryService.RecoveryResult recoveryResult =
                 completedArtifactIntentRecoveryService == null
                         ? CompletedArtifactIntentRecoveryService.RecoveryResult.none()
@@ -165,6 +168,16 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
             return followUpPreview;
         }
         return immediateReceipt(routingResult.type(), routingResult.adjustmentTarget(), session, workspaceContext);
+    }
+
+    private boolean supportsTaskMutationPreview(IntentRoutingResult routingResult) {
+        if (routingResult == null || routingResult.type() == null) {
+            return false;
+        }
+        return switch (routingResult.type()) {
+            case START_TASK, ADJUST_PLAN, ANSWER_CLARIFICATION, CONFIRM_ACTION -> true;
+            default -> false;
+        };
     }
 
     private static IntentRouterService buildPreviewIntentRouter(
