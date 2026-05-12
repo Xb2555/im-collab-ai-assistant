@@ -638,7 +638,10 @@ public class PlanningNodeService {
             return false;
         }
         String normalized = planningInput.toLowerCase(Locale.ROOT);
-        return normalized.contains("selected messages:");
+        return normalized.contains("selected messages:")
+                || normalized.contains("source artifacts:")
+                || normalized.contains("doc refs:")
+                || normalized.contains("attachment refs:");
     }
 
     private List<String> defaultTools(PlanCardTypeEnum type) {

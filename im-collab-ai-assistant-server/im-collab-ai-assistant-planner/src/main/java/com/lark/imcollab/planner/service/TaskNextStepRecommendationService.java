@@ -149,7 +149,7 @@ public class TaskNextStepRecommendationService {
                     FollowUpModeEnum.CONTINUE_CURRENT_TASK,
                     session == null ? null : session.getTaskId(),
                     source == null ? null : source.getArtifactId(),
-                    source == null ? null : source.getType(),
+                    null,
                     "保留现有产物，新增一段可直接发送的任务摘要。",
                     "KEEP_EXISTING_CREATE_NEW",
                     priority

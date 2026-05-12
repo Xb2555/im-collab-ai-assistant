@@ -11,6 +11,7 @@ import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskCommandTypeEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
+import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.intent.IntentRoutingResult;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,20 +27,31 @@ public class CompletedArtifactIntentRecoveryService {
     private final TaskSessionResolver sessionResolver;
     private final ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider;
     private final ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider;
+    private final RoutingEvidenceExtractor routingEvidenceExtractor;
 
     @Autowired
     public CompletedArtifactIntentRecoveryService(
             TaskSessionResolver sessionResolver,
             ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider,
-            ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider
+            ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider,
+            PlannerProperties plannerProperties
     ) {
         this.sessionResolver = sessionResolver;
         this.documentEditIntentFacadeProvider = documentEditIntentFacadeProvider;
         this.presentationEditIntentFacadeProvider = presentationEditIntentFacadeProvider;
+        this.routingEvidenceExtractor = new RoutingEvidenceExtractor(plannerProperties);
+    }
+
+    public CompletedArtifactIntentRecoveryService(
+            TaskSessionResolver sessionResolver,
+            ObjectProvider<DocumentEditIntentFacade> documentEditIntentFacadeProvider,
+            ObjectProvider<PresentationEditIntentFacade> presentationEditIntentFacadeProvider
+    ) {
+        this(sessionResolver, documentEditIntentFacadeProvider, presentationEditIntentFacadeProvider, new PlannerProperties());
     }
 
     public CompletedArtifactIntentRecoveryService(TaskSessionResolver sessionResolver) {
-        this(sessionResolver, null, null);
+        this(sessionResolver, null, null, new PlannerProperties());
     }
 
     public RecoveryResult recoverTaskIntake(
@@ -114,11 +126,9 @@ public class CompletedArtifactIntentRecoveryService {
         if (!isCurrentCompletedTaskActive(session, workspaceContext)) {
             return DirectRouteEvaluation.none("current completed task is not active");
         }
-        if (looksLikeExplicitFreshTaskRequest(instruction)) {
-            return DirectRouteEvaluation.none("explicit fresh-task request");
-        }
-        if (looksLikeNewCompletedDeliverableRequest(instruction)) {
-            return DirectRouteEvaluation.none("looks like new deliverable request");
+        String rejectionReason = softCompletedArtifactEditRejectionReason(instruction);
+        if (rejectionReason != null) {
+            return DirectRouteEvaluation.none(rejectionReason);
         }
         return directRouteEvaluation(session, workspaceContext, instruction);
     }
@@ -139,11 +149,9 @@ public class CompletedArtifactIntentRecoveryService {
         if (!isCurrentCompletedTaskActive(session, workspaceContext)) {
             return RecoveryEvaluation.none("current completed task is not active");
         }
-        if (looksLikeExplicitFreshTaskRequest(instruction)) {
-            return RecoveryEvaluation.none("explicit fresh-task request");
-        }
-        if (looksLikeNewCompletedDeliverableRequest(instruction)) {
-            return RecoveryEvaluation.none("looks like new deliverable request");
+        String rejectionReason = softCompletedArtifactEditRejectionReason(instruction);
+        if (rejectionReason != null) {
+            return RecoveryEvaluation.none(rejectionReason);
         }
         DirectRouteEvaluation directRouteEvaluation = directRouteEvaluation(session, workspaceContext, instruction);
         if (directRouteEvaluation.type() == DirectRouteType.NONE) {
@@ -164,6 +172,10 @@ public class CompletedArtifactIntentRecoveryService {
             WorkspaceContext workspaceContext,
             String instruction
     ) {
+        String rejectionReason = softCompletedArtifactEditRejectionReason(instruction);
+        if (rejectionReason != null) {
+            return DirectRouteEvaluation.none(rejectionReason);
+        }
         List<ArtifactRecord> editableArtifacts = sessionResolver.resolveEditableArtifacts(session.getTaskId());
         if (editableArtifacts.isEmpty()) {
             return DirectRouteEvaluation.none("no editable artifacts");
@@ -182,12 +194,54 @@ public class CompletedArtifactIntentRecoveryService {
             return resolveDirectRouteByType(ArtifactTypeEnum.PPT, pptRecoverable, pptCandidates, "explicit PPT edit");
         }
         if (docRecoverable == pptRecoverable) {
-            return DirectRouteEvaluation.none(docRecoverable ? "both DOC and PPT semantics matched" : "no concrete edit semantics matched");
+            return inferredDirectRouteEvaluation(session, instruction, explicitType, docCandidates, pptCandidates)
+                    .orElseGet(() -> DirectRouteEvaluation.none(docRecoverable ? "both DOC and PPT semantics matched" : "no concrete edit semantics matched"));
         }
         if (docRecoverable) {
             return resolveDirectRouteByType(ArtifactTypeEnum.DOC, true, docCandidates, "implicit DOC edit");
         }
         return resolveDirectRouteByType(ArtifactTypeEnum.PPT, true, pptCandidates, "implicit PPT edit");
+    }
+
+    private Optional<DirectRouteEvaluation> inferredDirectRouteEvaluation(
+            PlanTaskSession session,
+            String instruction,
+            ArtifactTypeEnum explicitType,
+            List<ArtifactRecord> docCandidates,
+            List<ArtifactRecord> pptCandidates
+    ) {
+        if (session == null || !hasText(session.getTaskId()) || !hasText(instruction)) {
+            return Optional.empty();
+        }
+        return sessionResolver.inferEditableArtifact(session.getTaskId(), instruction)
+                .filter(artifact -> explicitType == null || artifact.getType() == explicitType)
+                .map(ArtifactRecord::getType)
+                .map(type -> {
+                    List<ArtifactRecord> candidates = type == ArtifactTypeEnum.DOC ? docCandidates : pptCandidates;
+                    return resolveDirectRouteByType(type, !candidates.isEmpty(), candidates, "soft inferred " + type.name() + " edit");
+                })
+                .filter(evaluation -> evaluation.type() != DirectRouteType.NONE);
+    }
+
+    boolean isSoftCompletedArtifactEditCandidate(String instruction) {
+        return softCompletedArtifactEditRejectionReason(instruction) == null;
+    }
+
+    String softCompletedArtifactEditRejectionReason(String instruction) {
+        if (looksLikeExplicitFreshTaskRequest(instruction)) {
+            return "explicit fresh-task request";
+        }
+        RoutingEvidence evidence = routingEvidenceExtractor.extract(instruction);
+        if (evidence.ambiguousMaterialOrganizationLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()) {
+            return "ambiguous material organization request";
+        }
+        if (evidence.newDeliverableLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()) {
+            return "looks like new deliverable request";
+        }
+        if (evidence.freshTaskLevel() == SignalLevel.HIGH) {
+            return "explicit fresh-task request";
+        }
+        return null;
     }
 
     private DirectRouteEvaluation resolveDirectRouteByType(
@@ -245,26 +299,15 @@ public class CompletedArtifactIntentRecoveryService {
     }
 
     private boolean looksLikeExplicitFreshTaskRequest(String instruction) {
-        if (!hasText(instruction)) {
-            return false;
-        }
-        String normalized = instruction.toLowerCase(Locale.ROOT);
-        return normalized.contains("新建一个任务")
-                || normalized.contains("新开一个任务")
-                || normalized.contains("另起一个任务")
-                || normalized.contains("重新来一份")
-                || normalized.contains("重新生成一版")
-                || normalized.contains("忽略上一个任务");
+        return routingEvidenceExtractor.looksLikeExplicitFreshTask(instruction);
     }
 
     private boolean looksLikeNewCompletedDeliverableRequest(String instruction) {
-        if (!hasText(instruction)) {
-            return false;
-        }
-        String lower = instruction.toLowerCase(Locale.ROOT);
-        return (lower.contains("生成") || lower.contains("整理") || lower.contains("做一版") || lower.contains("输出") || lower.contains("补一份"))
-                && (lower.contains("ppt") || lower.contains("演示稿") || lower.contains("幻灯片")
-                || lower.contains("摘要") || lower.contains("总结") || lower.contains("文档") || lower.contains("报告"));
+        return routingEvidenceExtractor.looksLikeNewCompletedDeliverableRequest(instruction);
+    }
+
+    private boolean looksLikeAmbiguousMaterialOrganizationRequest(String instruction) {
+        return routingEvidenceExtractor.looksLikeAmbiguousMaterialOrganizationRequest(instruction);
     }
 
     private String intakeType(TaskIntakeDecision decision) {

@@ -160,6 +160,53 @@ class LarkIMPlannerReviewNotifierTest {
     }
 
     @Test
+    void reviewNoticeDoesNotRenderDocumentIterationRecordAsSummaryBody() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("d2f254d0-48b7-4520-a652-a454a291cbdb")
+                .inputContext(TaskInputContext.builder()
+                        .chatType("p2p")
+                        .senderOpenId("ou-user")
+                        .build())
+                .build();
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().taskId("task-1").status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(
+                        ArtifactRecord.builder()
+                                .artifactId("doc-1")
+                                .type(ArtifactTypeEnum.DOC)
+                                .title("9191项目启动会纪要")
+                                .url("https://doc.example")
+                                .build(),
+                        ArtifactRecord.builder()
+                                .artifactId("ppt-1")
+                                .type(ArtifactTypeEnum.PPT)
+                                .title("9191项目启动汇报")
+                                .url("https://slides.example")
+                                .build(),
+                        ArtifactRecord.builder()
+                                .artifactId("iteration-1")
+                                .type(ArtifactTypeEnum.SUMMARY)
+                                .title("文档迭代结果 v1")
+                                .preview("已插入新增内容，新增块数：1，revision: 2 -> 2\n\n### 关于 GGBond 的补充说明")
+                                .build()))
+                .build();
+
+        notifier.notifyExecutionReviewed(session, snapshot, TaskResultEvaluation.builder()
+                .verdict(ResultVerdictEnum.PASS)
+                .build());
+
+        ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
+        verify(replyTool).sendPrivateText(
+                org.mockito.ArgumentMatchers.eq("ou-user"),
+                textCaptor.capture(),
+                org.mockito.ArgumentMatchers.anyString()
+        );
+        assertThat(textCaptor.getValue())
+                .contains("9191项目启动会纪要", "9191项目启动汇报", "迭代记录：1 条")
+                .doesNotContain("SUMMARY（文档迭代结果 v1）", "已插入新增内容", "关于 GGBond 的补充说明");
+    }
+
+    @Test
     void reviewNoticeIncludesNextStepRecommendations() {
         PlanTaskSession session = PlanTaskSession.builder()
                 .taskId("d2f254d0-48b7-4520-a652-a454a291cbdb")

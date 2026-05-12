@@ -104,6 +104,38 @@ planner:
   quality:
     pass-threshold: ${PLANNER_QUALITY_PASS_THRESHOLD:70}
     max-replan-attempts: ${PLANNER_QUALITY_MAX_REPLAN_ATTEMPTS:2}
+  routing:
+    signal-low-upper-bound: ${PLANNER_ROUTING_SIGNAL_LOW_UPPER_BOUND:34}
+    signal-medium-upper-bound: ${PLANNER_ROUTING_SIGNAL_MEDIUM_UPPER_BOUND:69}
+    fresh-task-explicit-score: ${PLANNER_ROUTING_FRESH_TASK_EXPLICIT_SCORE:100}
+    fresh-task-reset-score: ${PLANNER_ROUTING_FRESH_TASK_RESET_SCORE:85}
+    current-task-reference-strong-score: ${PLANNER_ROUTING_CURRENT_TASK_REFERENCE_STRONG_SCORE:80}
+    current-artifact-reference-score: ${PLANNER_ROUTING_CURRENT_ARTIFACT_REFERENCE_SCORE:70}
+    continuation-keyword-score: ${PLANNER_ROUTING_CONTINUATION_KEYWORD_SCORE:20}
+    continuation-audience-score: ${PLANNER_ROUTING_CONTINUATION_AUDIENCE_SCORE:25}
+    continuation-intent-cap: ${PLANNER_ROUTING_CONTINUATION_INTENT_CAP:100}
+    artifact-edit-anchor-score: ${PLANNER_ROUTING_ARTIFACT_EDIT_ANCHOR_SCORE:90}
+    artifact-edit-mutation-score: ${PLANNER_ROUTING_ARTIFACT_EDIT_MUTATION_SCORE:35}
+    artifact-edit-strong-threshold: ${PLANNER_ROUTING_ARTIFACT_EDIT_STRONG_THRESHOLD:70}
+    new-deliverable-action-score: ${PLANNER_ROUTING_NEW_DELIVERABLE_ACTION_SCORE:80}
+    new-deliverable-mention-only-score: ${PLANNER_ROUTING_NEW_DELIVERABLE_MENTION_ONLY_SCORE:35}
+    new-deliverable-mention-with-edit-anchor-score: ${PLANNER_ROUTING_NEW_DELIVERABLE_MENTION_WITH_EDIT_ANCHOR_SCORE:20}
+    ambiguous-material-base-score: ${PLANNER_ROUTING_AMBIGUOUS_MATERIAL_BASE_SCORE:75}
+    ambiguous-material-with-deliverable-score: ${PLANNER_ROUTING_AMBIGUOUS_MATERIAL_WITH_DELIVERABLE_SCORE:20}
+    affinity-deliverable-medium-score: ${PLANNER_ROUTING_AFFINITY_DELIVERABLE_MEDIUM_SCORE:35}
+    affinity-deliverable-high-score: ${PLANNER_ROUTING_AFFINITY_DELIVERABLE_HIGH_SCORE:70}
+    affinity-source-medium-score: ${PLANNER_ROUTING_AFFINITY_SOURCE_MEDIUM_SCORE:30}
+    affinity-source-high-score: ${PLANNER_ROUTING_AFFINITY_SOURCE_HIGH_SCORE:60}
+    affinity-continuation-medium-score: ${PLANNER_ROUTING_AFFINITY_CONTINUATION_MEDIUM_SCORE:10}
+    affinity-continuation-high-score: ${PLANNER_ROUTING_AFFINITY_CONTINUATION_HIGH_SCORE:20}
+    affinity-current-task-medium-score: ${PLANNER_ROUTING_AFFINITY_CURRENT_TASK_MEDIUM_SCORE:10}
+    affinity-current-task-high-score: ${PLANNER_ROUTING_AFFINITY_CURRENT_TASK_HIGH_SCORE:20}
+    semantic-candidate-min-score: ${PLANNER_ROUTING_SEMANTIC_CANDIDATE_MIN_SCORE:50}
+    semantic-unique-gap: ${PLANNER_ROUTING_SEMANTIC_UNIQUE_GAP:25}
+    proceed-current-task-min-score: ${PLANNER_ROUTING_PROCEED_CURRENT_TASK_MIN_SCORE:75}
+    proceed-new-task-min-score: ${PLANNER_ROUTING_PROCEED_NEW_TASK_MIN_SCORE:70}
+    continue-current-task-min-score: ${PLANNER_ROUTING_CONTINUE_CURRENT_TASK_MIN_SCORE:40}
+    artifact-edit-preference-min-score: ${PLANNER_ROUTING_ARTIFACT_EDIT_PREFERENCE_MIN_SCORE:70}
   summarization:
     max-tokens-before-summary: ${PLANNER_SUMMARY_MAX_TOKENS:6000}
     messages-to-keep: ${PLANNER_SUMMARY_MESSAGES_TO_KEEP:20}

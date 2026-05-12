@@ -4,16 +4,19 @@ import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
 import com.lark.imcollab.common.model.entity.PromptSlotState;
 import com.lark.imcollab.common.model.entity.ArtifactRecord;
+import com.lark.imcollab.common.model.entity.TaskEventRecord;
 import com.lark.imcollab.common.model.entity.TaskRecord;
 import com.lark.imcollab.common.model.entity.TaskRuntimeSnapshot;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
+import com.lark.imcollab.common.model.enums.TaskEventTypeEnum;
 import com.lark.imcollab.common.model.entity.UserPlanCard;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.StepStatusEnum;
 import com.lark.imcollab.common.model.enums.TaskStatusEnum;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,7 +43,7 @@ class LarkIMTaskReplyFormatterTest {
         String text = formatter.planReady(session);
 
         assertThat(text).contains("我准备这样推进", "你确认没问题我就开工");
-        assertThat(text).contains("生成技术方案文档", "生成汇报 PPT");
+        assertThat(text).contains("生成技术方案文档（待完成）", "生成汇报 PPT（待完成）");
         assertThat(text).contains("你还可以指定");
         assertThat(text).contains("你也可以直接这样说");
         assertThat(text).contains("开始执行：按当前计划继续");
@@ -67,8 +70,8 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.planReady(session);
 
-        assertThat(text).contains("1. 先生成技术方案文档（含 Mermaid 架构图）");
-        assertThat(text).contains("2. 再生成汇报 PPT 初稿");
+        assertThat(text).contains("1. 先生成技术方案文档（含 Mermaid 架构图）（待完成）");
+        assertThat(text).contains("2. 再生成汇报 PPT 初稿（待完成）");
         assertThat(text).doesNotContain("先技术方案文档", "再汇报 PPT 初稿");
     }
 
@@ -84,7 +87,7 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.planReady(session);
 
-        assertThat(text).contains("1. 先生成老板汇报 PPT 初稿");
+        assertThat(text).contains("1. 先生成老板汇报 PPT 初稿（待完成）");
         assertThat(text).doesNotContain("1. 再生成老板汇报 PPT 初稿");
     }
 
@@ -104,9 +107,9 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.planReady(session);
 
-        assertThat(text).contains("1. 先生成技术方案文档");
-        assertThat(text).contains("2. 再生成可直接发群的进展摘要");
-        assertThat(text).contains("3. 最后生成5页以内中文汇报PPT");
+        assertThat(text).contains("1. 先生成技术方案文档（待完成）");
+        assertThat(text).contains("2. 再生成可直接发群的进展摘要（待完成）");
+        assertThat(text).contains("3. 最后生成5页以内中文汇报PPT（待完成）");
         assertThat(text).doesNotContain("2. 最后生成可直接发群的进展摘要");
     }
 
@@ -155,6 +158,42 @@ class LarkIMTaskReplyFormatterTest {
         String text = formatter.planAdjusted(session);
 
         assertThat(text).contains("从头重做：整任务重跑，并丢弃当前已完成产物");
+        assertThat(text).contains("1. 先生成技术方案文档（已完成）");
+        assertThat(text).contains("2. 再生成汇报 PPT（待完成）");
+    }
+
+    @Test
+    void planAdjustedShowsRunningStatusOnCurrentStep() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.PLAN_READY)
+                .planCards(List.of(
+                        UserPlanCard.builder()
+                                .cardId("card-001")
+                                .title("生成技术方案文档")
+                                .type(PlanCardTypeEnum.DOC)
+                                .status("COMPLETED")
+                                .build(),
+                        UserPlanCard.builder()
+                                .cardId("card-002")
+                                .title("生成汇报 PPT")
+                                .type(PlanCardTypeEnum.PPT)
+                                .status("RUNNING")
+                                .build(),
+                        UserPlanCard.builder()
+                                .cardId("card-003")
+                                .title("生成可直接发送的摘要")
+                                .type(PlanCardTypeEnum.SUMMARY)
+                                .status("PENDING")
+                                .build()
+                ))
+                .build();
+
+        String text = formatter.planAdjusted(session);
+
+        assertThat(text).contains("1. 先生成技术方案文档（已完成）");
+        assertThat(text).contains("2. 再生成汇报 PPT（正在执行）");
+        assertThat(text).contains("3. 最后生成可直接发送的摘要（待完成）");
     }
 
     @Test
@@ -288,13 +327,83 @@ class LarkIMTaskReplyFormatterTest {
                                 .preview("已补充项目总结")
                                 .build()
                 ))
+                .events(List.of(
+                        TaskEventRecord.builder()
+                                .type(TaskEventTypeEnum.ARTIFACT_UPDATED)
+                                .payloadJson("\"已补充项目总结\"")
+                                .createdAt(Instant.parse("2026-05-12T12:00:00Z"))
+                                .build()
+                ))
                 .build();
 
         String text = formatter.status(snapshot);
 
         assertThat(text)
                 .contains("已有产物：1 个", "[DOC] 9191飞书文档", "迭代记录：1 条")
-                .doesNotContain("文档迭代结果 v1");
+                .contains("[DOC] 已补充项目总结")
+                .doesNotContain("文档迭代结果 v1")
+                .doesNotContain("\n2. 已补充项目总结");
+    }
+
+    @Test
+    void completedStatusPrefersConcreteDocIterationContentOverGenericRevisionSummary() {
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(
+                        ArtifactRecord.builder()
+                                .type(ArtifactTypeEnum.DOC)
+                                .title("9191项目启动会纪要")
+                                .url("https://example.feishu.cn/docx/doc-token")
+                                .build(),
+                        ArtifactRecord.builder()
+                                .type(ArtifactTypeEnum.SUMMARY)
+                                .title("文档迭代结果 v2")
+                                .preview("已插入新增内容，新增块数：1，revision: 3 -> 3\n\n### 关于老飞宇66的补充说明")
+                                .build()
+                ))
+                .events(List.of(
+                        TaskEventRecord.builder()
+                                .type(TaskEventTypeEnum.ARTIFACT_UPDATED)
+                                .payloadJson("\"已插入新增内容，新增块数：1，revision: 3 -> 3\"")
+                                .createdAt(Instant.parse("2026-05-12T12:00:00Z"))
+                                .build()
+                ))
+                .build();
+
+        String text = formatter.status(snapshot);
+
+        assertThat(text)
+                .contains("迭代记录：1 条")
+                .contains("[DOC] 新增小节：关于老飞宇66的补充说明")
+                .doesNotContain("[DOC] 已插入新增内容，新增块数：1，revision: 3 -> 3")
+                .doesNotContain("revision: 3 -> 3");
+    }
+
+    @Test
+    void completedStatusShowsPptIterationEventDetails() {
+        TaskRuntimeSnapshot snapshot = TaskRuntimeSnapshot.builder()
+                .task(TaskRecord.builder().status(TaskStatusEnum.COMPLETED).build())
+                .artifacts(List.of(
+                        ArtifactRecord.builder()
+                                .type(ArtifactTypeEnum.PPT)
+                                .title("北京旅游全攻略")
+                                .url("https://example.feishu.cn/slides/ppt-token")
+                                .build()
+                ))
+                .events(List.of(
+                        TaskEventRecord.builder()
+                                .type(TaskEventTypeEnum.ARTIFACT_UPDATED)
+                                .payloadJson("\"已在第 2 页后新增一页：罗非鱼66\"")
+                                .createdAt(Instant.parse("2026-05-12T12:00:00Z"))
+                                .build()
+                ))
+                .build();
+
+        String text = formatter.status(snapshot);
+
+        assertThat(text)
+                .contains("已有产物：1 个", "[PPT] 北京旅游全攻略", "迭代记录：1 条")
+                .contains("[PPT] 已在第 2 页后新增一页：罗非鱼66");
     }
 
     @Test

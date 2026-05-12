@@ -298,8 +298,17 @@ public class LarkIMPlannerReviewNotifier implements TaskUserNotificationFacade {
     private List<ArtifactRecord> summaryArtifacts(List<ArtifactRecord> artifacts) {
         return artifacts == null ? List.of() : artifacts.stream()
                 .filter(artifact -> artifact != null && artifact.getType() == ArtifactTypeEnum.SUMMARY)
+                .filter(artifact -> !isIterationRecordSummary(artifact))
                 .filter(artifact -> hasText(artifact.getPreview()))
                 .toList();
+    }
+
+    private boolean isIterationRecordSummary(ArtifactRecord artifact) {
+        if (artifact == null || artifact.getType() != ArtifactTypeEnum.SUMMARY) {
+            return false;
+        }
+        String title = firstNonBlank(artifact.getTitle(), artifact.getPreview(), "");
+        return title.startsWith("文档迭代结果") || title.startsWith("文档迭代待审批计划");
     }
 
     private TaskRuntimeSnapshot shareableStatusSnapshot(TaskRuntimeSnapshot snapshot) {

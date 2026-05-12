@@ -22,6 +22,7 @@ public class PlannerProperties {
     private Memory memory = new Memory();
     private Graph graph = new Graph();
     private ContextCollection contextCollection = new ContextCollection();
+    private Routing routing = new Routing();
 
     public void initDefaults() {
         if (disambiguation.getTermPolicies() != null && !disambiguation.getTermPolicies().isEmpty()) {
@@ -156,5 +157,40 @@ public class PlannerProperties {
         private int maxImMessages = 30;
         private int maxDocChars = 8000;
         private int defaultLookbackMinutes = 120;
+    }
+
+    @Data
+    public static class Routing {
+        private int signalLowUpperBound = 34;
+        private int signalMediumUpperBound = 69;
+        private int freshTaskExplicitScore = 100;
+        private int freshTaskResetScore = 85;
+        private int currentTaskReferenceStrongScore = 80;
+        private int currentArtifactReferenceScore = 70;
+        private int continuationKeywordScore = 20;
+        private int continuationAudienceScore = 25;
+        private int continuationIntentCap = 100;
+        private int artifactEditAnchorScore = 90;
+        private int artifactEditMutationScore = 35;
+        private int artifactEditStrongThreshold = 70;
+        private int newDeliverableActionScore = 80;
+        private int newDeliverableMentionOnlyScore = 35;
+        private int newDeliverableMentionWithEditAnchorScore = 20;
+        private int ambiguousMaterialBaseScore = 75;
+        private int ambiguousMaterialWithDeliverableScore = 20;
+        private int affinityDeliverableMediumScore = 35;
+        private int affinityDeliverableHighScore = 70;
+        private int affinitySourceMediumScore = 30;
+        private int affinitySourceHighScore = 60;
+        private int affinityContinuationMediumScore = 10;
+        private int affinityContinuationHighScore = 20;
+        private int affinityCurrentTaskMediumScore = 10;
+        private int affinityCurrentTaskHighScore = 20;
+        private int semanticCandidateMinScore = 50;
+        private int semanticUniqueGap = 25;
+        private int proceedCurrentTaskMinScore = 75;
+        private int proceedNewTaskMinScore = 70;
+        private int continueCurrentTaskMinScore = 40;
+        private int artifactEditPreferenceMinScore = 70;
     }
 }

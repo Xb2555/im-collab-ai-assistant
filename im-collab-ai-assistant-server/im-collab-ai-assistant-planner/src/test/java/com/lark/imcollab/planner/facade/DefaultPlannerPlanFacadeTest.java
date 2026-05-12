@@ -1,10 +1,15 @@
 package com.lark.imcollab.planner.facade;
 
+import com.lark.imcollab.common.model.entity.ArtifactRecord;
 import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.PendingTaskCandidate;
+import com.lark.imcollab.common.model.entity.PendingTaskSelection;
 import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
+import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.FollowUpModeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
@@ -22,6 +27,7 @@ import com.lark.imcollab.planner.service.TaskSessionResolution;
 import com.lark.imcollab.planner.service.TaskSessionResolver;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -33,6 +39,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class DefaultPlannerPlanFacadeTest {
@@ -93,7 +100,7 @@ class DefaultPlannerPlanFacadeTest {
         when(matcher.classifyCarryForwardCandidate(
                 "帮我生成一份飞书文档，标题必须包含 IMMEDIATE_PREVIEW_FIX。",
                 List.of(recommendation)
-        )).thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        )).thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED);
         when(matcher.match("帮我生成一份飞书文档，标题必须包含 IMMEDIATE_PREVIEW_FIX。", List.of(recommendation), false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.none());
 
@@ -107,6 +114,101 @@ class DefaultPlannerPlanFacadeTest {
         assertThat(reply).isEqualTo("🧭 需求我接住了，我先理一下重点，稍后给你一个可执行的计划。");
         verify(matcher).classifyCarryForwardCandidate("帮我生成一份飞书文档，标题必须包含 IMMEDIATE_PREVIEW_FIX。", List.of(recommendation));
         verify(matcher).match("帮我生成一份飞书文档，标题必须包含 IMMEDIATE_PREVIEW_FIX。", List.of(recommendation), false, true);
+    }
+
+    @Test
+    void metaUnknownQuestionDoesNotReturnAdjustPlanReceiptInCompletedPhase() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+
+        String reply = facade.previewImmediateReply("你是谁", context, null, null);
+
+        assertThat(reply).isEmpty();
+        verifyNoInteractions(classifier);
+        verifyNoInteractions(matcher);
+    }
+
+    @Test
+    void metaUnknownQuestionDoesNotEnterCompletedArtifactPreviewRouting() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(mock(DocumentEditIntentFacade.class)),
+                provider(mock(PresentationEditIntentFacade.class))
+        );
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                recoveryService
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(resolver.isTaskCurrentInConversation("task-1", context)).thenReturn(true);
+        when(resolver.resolveEditableArtifacts("task-1")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("doc-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.DOC)
+                        .title("9191项目飞书文档")
+                        .url("https://doc.example.com")
+                        .build(),
+                ArtifactRecord.builder()
+                        .artifactId("ppt-1")
+                        .taskId("task-1")
+                        .type(ArtifactTypeEnum.PPT)
+                        .title("9191项目汇报")
+                        .url("https://ppt.example.com")
+                        .build()
+        ));
+
+        String reply = facade.previewImmediateReply("你是谁", context, null, null);
+
+        assertThat(reply).isBlank();
+        verifyNoInteractions(classifier, matcher, conversationTaskStateService);
+        verify(resolver, never()).resolveEditableArtifacts("task-1");
     }
 
     @Test
@@ -298,13 +400,13 @@ class DefaultPlannerPlanFacadeTest {
                         .build()
         ));
         when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
-                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
         when(matcher.match(input, List.of(recommendation), false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
 
         String reply = facade.previewImmediateReply(input, context, null, null);
 
-        assertThat(reply).isEqualTo("🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。");
+        assertThat(reply).contains("这个后续动作我接住了");
         verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
         verify(matcher).match(input, List.of(recommendation), false, true);
     }
@@ -372,7 +474,7 @@ class DefaultPlannerPlanFacadeTest {
                         .build()
         ));
         when(matcher.classifyCarryForwardCandidate(input, recommendations))
-                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
         when(matcher.match(input, recommendations, false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(pptRecommendation));
 
@@ -381,6 +483,148 @@ class DefaultPlannerPlanFacadeTest {
         assertThat(reply).isEqualTo("🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。");
         verify(matcher).classifyCarryForwardCandidate(input, recommendations);
         verify(matcher).match(input, recommendations, false, true);
+    }
+
+    @Test
+    void previewSuppressesImmediateReplyWhenExecutionMustAskNewOrCurrentChoice() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation pptRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_PPT")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.PPT)
+                .suggestedUserInstruction("基于这份文档生成一版汇报PPT")
+                .plannerInstruction("保留现有文档，基于该文档新增一份汇报PPT初稿。")
+                .build();
+        PendingFollowUpRecommendation summaryRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_SUMMARY")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.SUMMARY)
+                .suggestedUserInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .plannerInstruction("保留现有产物，新增一段可直接发送的任务摘要。")
+                .build();
+        List<PendingFollowUpRecommendation> recommendations = List.of(pptRecommendation, summaryRecommendation);
+        String input = "帮我整理一份材料";
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(classifier.classify(completed, input, true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.START_TASK,
+                        0.88d,
+                        "llm classified as standalone task",
+                        input,
+                        false
+                )));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-1")
+                        .lastCompletedTaskId("task-1")
+                        .pendingFollowUpRecommendations(recommendations)
+                        .build()
+        ));
+        when(matcher.classifyCarryForwardCandidate(input, recommendations))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED);
+        when(matcher.match(input, recommendations, false, true))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.none());
+
+        String reply = facade.previewImmediateReply(input, context, null, null);
+
+        assertThat(reply).isEmpty();
+        verify(matcher).classifyCarryForwardCandidate(input, recommendations);
+        verify(matcher).match(input, recommendations, false, true);
+    }
+
+    @Test
+    void previewSuppressesImmediateReplyWhenAdjustmentStillNeedsNewOrCurrentChoice() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        PendingFollowUpRecommendation summaryRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_SUMMARY")
+                .targetTaskId("task-1")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.SUMMARY)
+                .suggestedUserInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .plannerInstruction("保留现有产物，新增一段可直接发送的任务摘要。")
+                .build();
+        List<PendingFollowUpRecommendation> recommendations = List.of(summaryRecommendation);
+        String input = "整理一下材料";
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(classifier.classify(completed, input, true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.ADJUST_PLAN,
+                        0.88d,
+                        "llm classified as adjustment",
+                        input,
+                        false,
+                        null,
+                        AdjustmentTargetEnum.COMPLETED_ARTIFACT
+                )));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-1")
+                        .lastCompletedTaskId("task-1")
+                        .pendingFollowUpRecommendations(recommendations)
+                        .build()
+        ));
+        when(matcher.classifyCarryForwardCandidate(input, recommendations))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED);
+        when(matcher.match(input, recommendations, false, false))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.none());
+
+        String reply = facade.previewImmediateReply(input, context, null, null);
+
+        assertThat(reply).isEmpty();
+        verify(matcher).classifyCarryForwardCandidate(input, recommendations);
+        verify(matcher).match(input, recommendations, false, false);
     }
 
     @Test
@@ -437,13 +681,13 @@ class DefaultPlannerPlanFacadeTest {
                         .build()
         ));
         when(matcher.classifyCarryForwardCandidate(input, List.of(recommendation)))
-                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
         when(matcher.match(input, List.of(recommendation), false, true))
                 .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(recommendation));
 
         String reply = facade.previewImmediateReply(input, context, null, null);
 
-        assertThat(reply).isEqualTo("🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。");
+        assertThat(reply).contains("这个后续动作我接住了");
         verify(matcher).classifyCarryForwardCandidate(input, List.of(recommendation));
         verify(matcher).match(input, List.of(recommendation), false, true);
     }
@@ -602,6 +846,86 @@ class DefaultPlannerPlanFacadeTest {
     }
 
     @Test
+    void previewImmediateReplyUsesSharedInferredArtifactRouteForCompletedPptInsertEdit() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                recoveryService
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        String input = "在第一页后面加一页关于罗非鱼66的内容，随意编造即可";
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-ppt")).thenReturn(completed);
+        when(classifier.classify(completed, input, true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.START_TASK,
+                        0.92d,
+                        "llm classified as standalone task",
+                        input,
+                        false
+                )));
+        when(resolver.conversationState(context)).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-ppt")
+                        .lastCompletedTaskId("task-ppt")
+                        .build()
+        ));
+        when(resolver.resolveEditableArtifacts("task-ppt")).thenReturn(List.of(
+                com.lark.imcollab.common.model.entity.ArtifactRecord.builder()
+                        .artifactId("artifact-ppt-1")
+                        .taskId("task-ppt")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .build()));
+        when(resolver.isTaskCurrentInConversation("task-ppt", context)).thenReturn(true);
+        when(presentationEditIntentFacade.resolve(eq(input), eq(context)))
+                .thenReturn(com.lark.imcollab.common.model.entity.PresentationEditIntent.builder()
+                        .clarificationNeeded(true)
+                        .clarificationHint("请明确新增页标题和正文")
+                        .build());
+        when(resolver.inferEditableArtifact("task-ppt", input))
+                .thenReturn(Optional.of(com.lark.imcollab.common.model.entity.ArtifactRecord.builder()
+                        .artifactId("artifact-ppt-1")
+                        .taskId("task-ppt")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .build()));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.empty());
+
+        String reply = facade.previewImmediateReply(input, context, null, null);
+
+        assertThat(reply).isEqualTo("🔄 这条调整我收到了，我先顺着当前任务梳理一下，再把更新结果回给你。");
+        verify(matcher, never()).match(anyString(), any(), anyBoolean(), anyBoolean());
+    }
+
+    @Test
     void previewImmediateReplyDoesNotTreatObviousNewTaskAsFollowUp() {
         PlannerConversationService conversationService = mock(PlannerConversationService.class);
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);
@@ -664,7 +988,176 @@ class DefaultPlannerPlanFacadeTest {
         );
 
         assertThat(reply).isEqualTo("🧭 需求我接住了，我先理一下重点，稍后给你一个可执行的计划。");
-        verify(matcher, never()).match(anyString(), any(), anyBoolean(), anyBoolean());
+        verify(matcher).match("帮我生成一份飞书文档，标题必须包含 9191，分2小节。", List.of(recommendation), false, true);
+    }
+
+    @Test
+    void previewImmediateReplyTreatsBareSummaryAsCurrentTaskFollowUpWhenCompletedTaskIsExplicitlySelected() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                new CompletedArtifactIntentRecoveryService(resolver)
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(com.lark.imcollab.common.model.entity.TaskIntakeState.builder()
+                        .readOnlyView("COMPLETED_TASKS")
+                        .build())
+                .build();
+        PendingFollowUpRecommendation docRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_DOC")
+                .targetTaskId("task-ppt")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.DOC)
+                .sourceArtifactType(ArtifactTypeEnum.PPT)
+                .plannerInstruction("保留现有 PPT，补一份配套文档。")
+                .suggestedUserInstruction("基于这份PPT补一份配套文档")
+                .build();
+        PendingFollowUpRecommendation summaryRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_SHAREABLE_SUMMARY")
+                .targetTaskId("task-ppt")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.SUMMARY)
+                .plannerInstruction("保留现有产物，新增一段可直接发送的任务摘要。")
+                .suggestedUserInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-ppt")).thenReturn(completed);
+        when(classifier.classify(completed, "帮我生成一份摘要", true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.START_TASK,
+                        0.92d,
+                        "bare summary request",
+                        "帮我生成一份摘要",
+                        false
+                )));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-ppt")
+                        .lastCompletedTaskId("task-ppt")
+                        .pendingFollowUpRecommendations(List.of(docRecommendation, summaryRecommendation))
+                        .build()
+        ));
+        when(matcher.classifyCarryForwardCandidate("帮我生成一份摘要", List.of(docRecommendation, summaryRecommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
+        when(matcher.match("帮我生成一份摘要", List.of(docRecommendation, summaryRecommendation), false, true))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(summaryRecommendation));
+
+        String reply = facade.previewImmediateReply("帮我生成一份摘要", context, null, null);
+
+        assertThat(reply).isEqualTo("🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。");
+    }
+
+    @Test
+    void previewImmediateReplySuppressesReceiptWhileWaitingForCompletedTaskSelection() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                new CompletedArtifactIntentRecoveryService(resolver)
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession selector = PlanTaskSession.builder()
+                .taskId("selector-task")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .intakeState(TaskIntakeState.builder()
+                        .pendingTaskSelection(PendingTaskSelection.builder()
+                                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                                .selectionPurpose("COMPLETED_TASK_LIST")
+                                .candidates(List.of(PendingTaskCandidate.builder()
+                                        .taskId("task-1")
+                                        .title("示例任务")
+                                        .build()))
+                                .expiresAt(Instant.now().plusSeconds(60))
+                                .build())
+                        .build())
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("selector-task", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("selector-task")).thenReturn(selector);
+
+        String reply = facade.previewImmediateReply("5", context, null, null);
+
+        assertThat(reply).isBlank();
+        verifyNoInteractions(classifier);
+    }
+
+    @Test
+    void previewImmediateReplySuppressesReceiptForCompletedTaskListBrowse() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                new CompletedArtifactIntentRecoveryService(resolver)
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(classifier.classify(completed, "已完成任务列表", true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.QUERY_STATUS,
+                        0.95d,
+                        "completed task browsing request",
+                        "已完成任务列表",
+                        false,
+                        "COMPLETED_TASKS",
+                        null
+                )));
+
+        String reply = facade.previewImmediateReply("已完成任务列表", context, null, null);
+
+        assertThat(reply).isBlank();
+        verify(classifier).classify(completed, "已完成任务列表", true);
+        verifyNoInteractions(matcher, conversationTaskStateService);
     }
 
     private static <T> org.springframework.beans.factory.ObjectProvider<T> provider(T facade) {

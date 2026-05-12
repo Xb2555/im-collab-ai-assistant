@@ -49,7 +49,7 @@ class PendingFollowUpRecommendationMatcherTest {
     }
 
     @Test
-    void classifyCarryForwardCandidateDefersObviousNewTaskToLlm() {
+    void classifyCarryForwardCandidateTreatsObviousNewTaskAsUnrelated() {
         PendingFollowUpRecommendation recommendation = recommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要");
 
         PendingFollowUpRecommendationMatcher.CarryForwardHint hint = matcher.classifyCarryForwardCandidate(
@@ -57,7 +57,7 @@ class PendingFollowUpRecommendationMatcherTest {
                 List.of(recommendation)
         );
 
-        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.UNRELATED);
     }
 
     @Test
@@ -73,7 +73,7 @@ class PendingFollowUpRecommendationMatcherTest {
     }
 
     @Test
-    void classifyCarryForwardCandidateDefersSingleRecommendationToLlm() {
+    void classifyCarryForwardCandidateMarksSingleRecommendationAsSemanticWorthLlm() {
         PendingFollowUpRecommendation recommendation = recommendation("rec-ppt", "基于这份文档生成一版汇报PPT");
 
         PendingFollowUpRecommendationMatcher.CarryForwardHint hint = matcher.classifyCarryForwardCandidate(
@@ -81,11 +81,11 @@ class PendingFollowUpRecommendationMatcherTest {
                 List.of(recommendation)
         );
 
-        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
     }
 
     @Test
-    void classifyCarryForwardCandidateDefersImplicitCurrentTaskSummaryRequestToLlm() {
+    void classifyCarryForwardCandidateMarksImplicitCurrentTaskSummaryRequestAsSemanticWorthLlm() {
         PendingFollowUpRecommendation recommendation = summaryRecommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要");
 
         PendingFollowUpRecommendationMatcher.CarryForwardHint hint = matcher.classifyCarryForwardCandidate(
@@ -93,7 +93,19 @@ class PendingFollowUpRecommendationMatcherTest {
                 List.of(recommendation)
         );
 
-        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
+    }
+
+    @Test
+    void classifyCarryForwardCandidateMarksBareSummaryRequestAsSemanticWorthLlm() {
+        PendingFollowUpRecommendation recommendation = summaryRecommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要");
+
+        PendingFollowUpRecommendationMatcher.CarryForwardHint hint = matcher.classifyCarryForwardCandidate(
+                "帮我生成摘要",
+                List.of(recommendation)
+        );
+
+        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
     }
 
     @Test
@@ -109,7 +121,7 @@ class PendingFollowUpRecommendationMatcherTest {
     }
 
     @Test
-    void classifyCarryForwardCandidateDefersMultipleRecommendationsToLlmWhenNeeded() {
+    void classifyCarryForwardCandidateMarksUniqueSemanticMatchAmongMultipleRecommendations() {
         PendingFollowUpRecommendationMatcher.CarryForwardHint hint = matcher.classifyCarryForwardCandidate(
                 "帮我再根据当前文档生成汇报ppt，要求4页，每页60字",
                 List.of(
@@ -118,11 +130,11 @@ class PendingFollowUpRecommendationMatcherTest {
                 )
         );
 
-        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
     }
 
     @Test
-    void classifyCarryForwardCandidateAlsoDefersAmbiguousMultipleRecommendationsToLlm() {
+    void classifyCarryForwardCandidateMarksAmbiguousMultipleRecommendationsAsRelatedButAmbiguous() {
         PendingFollowUpRecommendationMatcher.CarryForwardHint hint = matcher.classifyCarryForwardCandidate(
                 "帮我根据这个文档生成一个给老板汇报的ppt",
                 List.of(
@@ -131,7 +143,7 @@ class PendingFollowUpRecommendationMatcherTest {
                 )
         );
 
-        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.DEFER_TO_LLM);
+        assertThat(hint).isEqualTo(PendingFollowUpRecommendationMatcher.CarryForwardHint.RELATED_BUT_AMBIGUOUS);
     }
 
     @Test
@@ -232,21 +244,65 @@ class PendingFollowUpRecommendationMatcherTest {
     }
 
     @Test
-    void usesLlmToSelectSemanticMatch() {
-        when(choiceResolver.chooseOne(anyString(), eq(List.of("rec-ppt", "rec-summary", "NONE")), anyString()))
-                .thenReturn("rec-ppt");
-
+    void uniqueSemanticMatchAmongMultipleRecommendationsSelectsDirectly() {
         PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
                 "再帮我基于这个文档生成一版汇报用ppt，要求要5页",
                 List.of(
                         recommendation("rec-ppt", "基于这份文档生成一版汇报PPT"),
-                        recommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要")
+                        summaryRecommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要")
                 ),
                 false
         );
 
         assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.SELECTED);
         assertThat(result.recommendation().getRecommendationId()).isEqualTo("rec-ppt");
+    }
+
+    @Test
+    void taskLevelSummaryWordingMatchesSummaryRecommendationEvenWhenCurrentArtifactIsPpt() {
+        PendingFollowUpRecommendation summary = summaryRecommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要");
+        summary.setSourceArtifactType(ArtifactTypeEnum.PPT);
+        PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
+                "根据这个任务内容生成一下汇报总结，我要发给老板",
+                List.of(
+                        documentRecommendation("rec-doc", "基于这份PPT补一份配套文档"),
+                        summary
+                ),
+                false,
+                true
+        );
+
+        assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.SELECTED);
+        assertThat(result.recommendation().getRecommendationId()).isEqualTo("rec-summary");
+    }
+
+    @Test
+    void bareSummaryRequestSelectsUniqueSummaryRecommendationBeforeLlm() {
+        PendingFollowUpRecommendation summary = summaryRecommendation("rec-summary", "基于当前任务内容生成一段可直接发送的摘要");
+        summary.setSourceArtifactType(ArtifactTypeEnum.PPT);
+
+        PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
+                "帮我生成摘要",
+                List.of(summary),
+                false
+        );
+
+        assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.SELECTED);
+        assertThat(result.recommendation().getRecommendationId()).isEqualTo("rec-summary");
+    }
+
+    @Test
+    void ambiguousSemanticMatchAmongMultipleRecommendationsAsksSelection() {
+        PendingFollowUpRecommendationMatcher.MatchResult result = matcher.match(
+                "帮我根据这个文档生成一个给老板汇报的ppt",
+                List.of(
+                        recommendation("rec-ppt-1", "基于这份文档生成一版汇报PPT"),
+                        recommendation("rec-ppt-2", "再基于这份文档生成一版老板汇报PPT")
+                ),
+                false
+        );
+
+        assertThat(result.type()).isEqualTo(PendingFollowUpRecommendationMatcher.Type.ASK_SELECTION);
     }
 
     private PendingFollowUpRecommendation recommendation(String id, String instruction) {
