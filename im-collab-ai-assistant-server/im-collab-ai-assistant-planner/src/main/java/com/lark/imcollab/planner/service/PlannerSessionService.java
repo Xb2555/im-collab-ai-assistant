@@ -220,7 +220,6 @@ public class PlannerSessionService {
                 .timestamp(Instant.now())
                 .build();
         stateRepository.appendEvent(event);
-        log.info("[{}] Event: {} v{}", taskId, status, version);
     }
 
     private List<AgentTaskPlanCard> applyRuntimeStepStatus(String taskId, List<AgentTaskPlanCard> subtasks) {

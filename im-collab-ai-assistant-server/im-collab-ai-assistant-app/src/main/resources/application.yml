@@ -119,6 +119,13 @@ knife4j:
 
 logging:
   level:
+    com.lark.imcollab.harness.presentation.service.PresentationWorkflowNodes: DEBUG
     root: INFO
     com.lark.imcollab: INFO
     com.lark.oapi: WARN
+
+presentation:
+  debug:
+    image-pipeline: true
+
+
