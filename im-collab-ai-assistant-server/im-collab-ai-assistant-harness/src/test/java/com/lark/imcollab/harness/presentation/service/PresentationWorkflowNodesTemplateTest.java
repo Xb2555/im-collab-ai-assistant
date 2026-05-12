@@ -249,7 +249,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void fallbackOutlineDoesNotForceTransitionPageWhenPageBudgetIsTight() throws Exception {
+    void fallbackOutlineKeepsTransitionPageWhenPageBudgetAllowsSectionStructure() throws Exception {
         PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
                 mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
 
@@ -257,15 +257,15 @@ class PresentationWorkflowNodesTemplateTest {
         method.setAccessible(true);
         var outline = (com.lark.imcollab.harness.presentation.model.PresentationOutline) method.invoke(localNodes,
                 com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
-                        .title("方案汇报")
-                        .audience("团队")
-                        .style("business-light")
-                        .pageCount(6)
-                        .goal("汇报方案")
-                        .keyMessages(List.of("背景", "方案", "风险", "下一步"))
-                        .build());
+                .title("方案汇报")
+                .audience("团队")
+                .style("business-light")
+                .pageCount(11)
+                .goal("汇报方案")
+                .keyMessages(List.of("背景", "方案", "风险", "下一步"))
+                .build());
 
-        assertThat(outline.getSlides().stream().anyMatch(slide -> "TRANSITION".equals(slide.getPageType()))).isFalse();
+        assertThat(outline.getSlides().stream().anyMatch(slide -> "TRANSITION".equals(slide.getPageType()))).isTrue();
     }
 
     @Test
@@ -277,21 +277,22 @@ class PresentationWorkflowNodesTemplateTest {
         method.setAccessible(true);
         var outline = (com.lark.imcollab.harness.presentation.model.PresentationOutline) method.invoke(localNodes,
                 com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
-                        .title("方案汇报")
-                        .audience("团队")
-                        .style("business-light")
-                        .pageCount(5)
-                        .goal("汇报方案")
-                        .keyMessages(List.of("背景", "方案", "风险", "下一步"))
-                        .build());
+                .title("方案汇报")
+                .audience("团队")
+                .style("business-light")
+                .pageCount(7)
+                .goal("汇报方案")
+                .keyMessages(List.of("背景", "方案"))
+                .build());
 
-        assertThat(outline.getSlides()).hasSize(6);
+        assertThat(outline.getSlides()).hasSize(7);
         assertThat(outline.getSlides().get(0).getTemplateVariant()).isEqualTo("hero-band");
         assertThat(outline.getSlides().get(1).getPageType()).isEqualTo("TOC");
-        assertThat(outline.getSlides().get(2).getPageType()).isEqualTo("CONTENT");
-        assertThat(outline.getSlides().get(3).getPageType()).isEqualTo("TIMELINE");
-        assertThat(outline.getSlides().get(5).getPageType()).isEqualTo("THANKS");
-        assertThat(outline.getSlides().get(5).getTemplateVariant()).isEqualTo("next-step-board");
+        assertThat(outline.getSlides().get(2).getPageType()).isEqualTo("TRANSITION");
+        assertThat(outline.getSlides().get(3).getPageType()).isEqualTo("CONTENT");
+        assertThat(outline.getSlides().get(4).getPageType()).isEqualTo("TRANSITION");
+        assertThat(outline.getSlides().get(6).getPageType()).isEqualTo("THANKS");
+        assertThat(outline.getSlides().get(6).getTemplateVariant()).isEqualTo("next-step-board");
     }
 
     @Test
@@ -1301,5 +1302,73 @@ class PresentationWorkflowNodesTemplateTest {
         PresentationSlidePlan tocSlide = outline.getSlides().get(1);
         assertThat(tocSlide.getKeyPoints())
                 .containsExactly("背景分析", "实施路径", "方案对比", "指标跟踪");
+    }
+
+    @Test
+    void normalizeOutlinePreservesTransitionsAndOnlyTrimsContentSlides() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "normalizeOutline",
+                PresentationOutline.class,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationOutline outline = PresentationOutline.builder()
+                .title("方案汇报")
+                .slides(List.of(
+                        PresentationSlidePlan.builder().title("封面").layout("cover").pageType("COVER").build(),
+                        PresentationSlidePlan.builder().title("目录").layout("section").pageType("TOC").build(),
+                        PresentationSlidePlan.builder().title("背景").layout("section").pageType("TRANSITION").sectionId("s1").sectionTitle("背景").sectionOrder(1).build(),
+                        PresentationSlidePlan.builder().title("背景正文1").layout("two-column").pageType("CONTENT").sectionId("s1").sectionTitle("背景").sectionOrder(1).build(),
+                        PresentationSlidePlan.builder().title("背景正文2").layout("two-column").pageType("CONTENT").sectionId("s1").sectionTitle("背景").sectionOrder(1).build(),
+                        PresentationSlidePlan.builder().title("方案").layout("section").pageType("TRANSITION").sectionId("s2").sectionTitle("方案").sectionOrder(2).build(),
+                        PresentationSlidePlan.builder().title("方案正文").layout("timeline").pageType("TIMELINE").sectionId("s2").sectionTitle("方案").sectionOrder(2).build(),
+                        PresentationSlidePlan.builder().title("感谢聆听").layout("summary").pageType("THANKS").build()))
+                .build();
+
+        com.lark.imcollab.harness.presentation.model.PresentationStoryline storyline =
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                        .title("方案汇报")
+                        .goal("统一方案")
+                        .audience("团队")
+                        .style("business-light")
+                        .keyMessages(List.of("背景", "方案"))
+                        .pageCount(7)
+                        .build();
+
+        method.invoke(nodes, outline, storyline, PresentationGenerationOptions.builder()
+                .pageCount(7)
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .includeToc(true)
+                .includeTransitions(true)
+                .build());
+
+        assertThat(outline.getSlides()).hasSize(7);
+        assertThat(outline.getSlides().stream().filter(slide -> "TRANSITION".equalsIgnoreCase(slide.getPageType()))).hasSize(2);
+        assertThat(outline.getSlides().get(2).getPageType()).isEqualTo("TRANSITION");
+        assertThat(outline.getSlides().get(3).getPageType()).isEqualTo("CONTENT");
+        assertThat(outline.getSlides().get(4).getPageType()).isEqualTo("TRANSITION");
+        assertThat(outline.getSlides().get(5).getPageType()).isIn("CONTENT", "TIMELINE", "COMPARISON", "CHART");
+        assertThat(outline.getSlides().get(6).getPageType()).isEqualTo("THANKS");
+    }
+
+    @Test
+    void resolveGenerationOptionsDisablesTocAndTransitionsWhenUserExplicitlyRequestsSo() {
+        PresentationExecutionSupport support = mock(PresentationExecutionSupport.class);
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                support, AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, null, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
+
+        PresentationGenerationOptions options = localNodes.resolveGenerationOptions(
+                "task-4",
+                Task.builder().rawInstruction("生成一份8页PPT，不要目录页，也不要过渡页").build(),
+                new OverAllState(Map.of()));
+
+        assertThat(options.isIncludeToc()).isFalse();
+        assertThat(options.isIncludeTransitions()).isFalse();
     }
 }

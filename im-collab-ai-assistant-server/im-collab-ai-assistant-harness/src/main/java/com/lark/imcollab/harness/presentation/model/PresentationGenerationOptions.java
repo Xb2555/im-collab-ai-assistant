@@ -22,4 +22,8 @@ public class PresentationGenerationOptions implements Serializable {
     private boolean speakerNotes;
     private String templateDiversity;
     private boolean allowVariantMixing;
+    @Builder.Default
+    private boolean includeToc = true;
+    @Builder.Default
+    private boolean includeTransitions = true;
 }

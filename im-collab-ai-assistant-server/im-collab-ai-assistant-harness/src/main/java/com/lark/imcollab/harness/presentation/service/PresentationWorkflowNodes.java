@@ -272,6 +272,15 @@ public class PresentationWorkflowNodes {
                 %s
                 输入上下文：
                 %s
+                
+                大纲生成硬约束：
+                1. 默认必须保留封面页、结尾致谢页。
+                2. 目录页默认必须保留，只有 includeToc=false 时才允许省略。
+                3. 过渡页默认按一级章节生成，每个一级章节 1 张；只有 includeTransitions=false 时才允许省略。
+                4. 如果用户指定总页数，先扣除封面/目录/致谢固定页（目录关闭时不扣目录），再扣除过渡页预算，剩余页数全部分配给各章节正文。
+                5. 每个过渡页后面至少要跟随 1 张正文页，正文页类型只能是 CONTENT/TIMELINE/COMPARISON/CHART 之一。
+                6. 超出页数预算时，优先压缩正文页数量或合并正文内容，不能删除封面、目录、过渡页、致谢页。
+                7. 输出必须给出每一页的 pageType、layout、templateVariant、title、keyPoints；如果属于章节页，还必须给出 sectionId、sectionTitle、sectionOrder。
                 """.formatted(instruction(state), support.writeJson(generationOptions(state)), support.writeJson(storyline), state.value(PresentationStateKeys.UPSTREAM_CONTEXT, ""));
         PresentationOutline outline = invokeOutline(prompt, storyline, taskId);
         normalizeOutline(outline, storyline, generationOptions(state));
@@ -895,7 +904,9 @@ public class PresentationWorkflowNodes {
         outline.setStyle(effectiveThemeFamily(options, blankToDefault(outline.getStyle(), storyline.getStyle())));
         List<PresentationSlidePlan> slides = outline.getSlides() == null ? List.of() : new ArrayList<>(outline.getSlides());
         if (slides.isEmpty()) {
-            slides = fallbackOutline(storyline).getSlides();
+            slides = buildStructuredFallbackSlides(storyline,
+                    normalizeKeyPoints(storyline.getKeyMessages(), List.of(storyline.getGoal())),
+                    options);
         }
         PresentationCoverMeta coverMeta = resolveCoverMeta(storyline);
         int requestedPageCount = options == null ? 0 : options.getPageCount();
@@ -903,13 +914,8 @@ public class PresentationWorkflowNodes {
                 requestedPageCount > 0 ? requestedPageCount : storyline.getPageCount() <= 0 ? slides.size() : storyline.getPageCount()));
         slides = slides.stream()
                 .filter(Objects::nonNull)
-                .limit(targetCount)
                 .collect(Collectors.toCollection(ArrayList::new));
-        while (slides.size() < targetCount) {
-            int index = slides.size() + 1;
-            slides.add(defaultSlide(index, targetCount, storyline.getKeyMessages(), options));
-        }
-        slides = repairOutlineStructure(slides, storyline, targetCount, coverMeta);
+        slides = repairOutlineStructure(slides, storyline, targetCount, coverMeta, options);
         List<String> tocPoints = deriveTocPointsFromOutline(slides, storyline);
         for (int i = 0; i < slides.size(); i++) {
             PresentationSlidePlan slide = slides.get(i);
@@ -963,7 +969,13 @@ public class PresentationWorkflowNodes {
 
     private PresentationOutline fallbackOutline(PresentationStoryline storyline) {
         List<String> keyMessages = normalizeKeyPoints(storyline.getKeyMessages(), List.of(storyline.getGoal()));
-        List<PresentationSlidePlan> slides = buildStructuredFallbackSlides(storyline, keyMessages);
+        List<PresentationSlidePlan> slides = buildStructuredFallbackSlides(
+                storyline,
+                keyMessages,
+                PresentationGenerationOptions.builder()
+                        .includeToc(true)
+                        .includeTransitions(true)
+                        .build());
         return PresentationOutline.builder()
                 .title(storyline.getTitle())
                 .audience(storyline.getAudience())
@@ -972,12 +984,19 @@ public class PresentationWorkflowNodes {
                 .build();
     }
 
-    private List<PresentationSlidePlan> buildStructuredFallbackSlides(PresentationStoryline storyline, List<String> keyMessages) {
+    private List<PresentationSlidePlan> buildStructuredFallbackSlides(
+            PresentationStoryline storyline,
+            List<String> keyMessages,
+            PresentationGenerationOptions options) {
         int requested = Math.max(6, Math.min(MAX_SLIDES,
                 storyline.getPageCount() <= 0 ? defaultAutoPageCount(storyline) : storyline.getPageCount()));
         List<PresentationSlidePlan> slides = new ArrayList<>();
         PresentationCoverMeta coverMeta = resolveCoverMeta(storyline);
-        SlideBudget budget = allocateSlideBudget(requested, keyMessages.size());
+        SlideBudget budget = allocateSlideBudget(
+                requested,
+                keyMessages.size(),
+                options == null || options.isIncludeToc(),
+                options == null || options.isIncludeTransitions());
         String coverSubtitle = firstNonBlank(
                 keyMessages.isEmpty() ? null : keyMessages.get(0),
                 storyline.getGoal(),
@@ -998,18 +1017,20 @@ public class PresentationWorkflowNodes {
                 .visualEmphasis("title")
                 .speakerNotes("介绍标题与汇报目标。")
                 .build());
-        slides.add(PresentationSlidePlan.builder()
-                .slideId("slide-2")
-                .index(2)
-                .title("目录")
-                .keyPoints(keyMessages.stream().limit(Math.min(6, keyMessages.size())).toList())
-                .layout("section")
-                .pageType("TOC")
-                .pageSubType("TOC.AGENDA")
-                .templateVariant("headline-panel")
-                .visualEmphasis("balance")
-                .speakerNotes("说明本次汇报的章节结构。")
-                .build());
+        if (options == null || options.isIncludeToc()) {
+            slides.add(PresentationSlidePlan.builder()
+                    .slideId("slide-2")
+                    .index(2)
+                    .title("目录")
+                    .keyPoints(keyMessages.stream().limit(Math.min(6, keyMessages.size())).toList())
+                    .layout("section")
+                    .pageType("TOC")
+                    .pageSubType("TOC.AGENDA")
+                    .templateVariant("headline-panel")
+                    .visualEmphasis("balance")
+                    .speakerNotes("说明本次汇报的章节结构。")
+                    .build());
+        }
         List<String> normalizedSections = keyMessages == null ? List.of() : keyMessages.stream()
                 .filter(this::hasText)
                 .toList();
@@ -1020,7 +1041,7 @@ public class PresentationWorkflowNodes {
             int sectionOrder = i + 1;
             String sectionId = "section-" + sectionOrder;
             String sectionTitle = compactSlidePoint(normalizedSections.get(Math.min(i, normalizedSections.size() - 1)), 14);
-            if (transitionBudget > 0) {
+            if ((options == null || options.isIncludeTransitions()) && transitionBudget > 0) {
                 slides.add(PresentationSlidePlan.builder()
                         .slideId("slide-" + (slides.size() + 1))
                         .index(slides.size() + 1)
@@ -1131,7 +1152,10 @@ public class PresentationWorkflowNodes {
         }
         boolean hasToc = slides.stream().anyMatch(slide -> "TOC".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
         boolean hasThanks = slides.stream().anyMatch(slide -> "THANKS".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
-        return !hasToc || !hasThanks;
+        boolean hasTransition = slides.stream().anyMatch(slide -> "TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
+        boolean requireToc = options == null || options.isIncludeToc();
+        boolean requireTransitions = options == null || options.isIncludeTransitions();
+        return (requireToc && !hasToc) || !hasThanks || (requireTransitions && !hasTransition);
     }
 
     private PresentationSlidePlan defaultSlide(int index, int total, List<String> keyMessages, PresentationGenerationOptions options) {
@@ -1202,6 +1226,8 @@ public class PresentationWorkflowNodes {
                 .speakerNotes(resolveSpeakerNotes(merged))
                 .templateDiversity(resolveTemplateDiversity(merged))
                 .allowVariantMixing(resolveAllowVariantMixing(merged))
+                .includeToc(resolveIncludeToc(merged))
+                .includeTransitions(resolveIncludeTransitions(merged))
                 .build();
     }
 
@@ -1241,6 +1267,22 @@ public class PresentationWorkflowNodes {
             options.setTemplateDiversity("balanced");
         }
         return options;
+    }
+
+    private boolean resolveIncludeToc(String text) {
+        String normalized = normalize(text);
+        if (normalized.matches(".*(不要目录|不用目录|去掉目录|取消目录|无目录).*")) {
+            return false;
+        }
+        return true;
+    }
+
+    private boolean resolveIncludeTransitions(String text) {
+        String normalized = normalize(text);
+        if (normalized.matches(".*(不要过渡页|不要过度页|不用过渡页|去掉过渡页|取消过渡页|无过渡页|不要章节过渡).*")) {
+            return false;
+        }
+        return true;
     }
 
     private int resolvePageCount(String text) {
@@ -1767,20 +1809,25 @@ public class PresentationWorkflowNodes {
                 .toList();
     }
 
-    private SlideBudget allocateSlideBudget(int requested, int sectionCount) {
-        int safeRequested = Math.max(6, Math.min(MAX_SLIDES, requested));
+    private SlideBudget allocateSlideBudget(int requested, int sectionCount, boolean includeToc, boolean includeTransitions) {
+        int safeRequested = Math.max(4, Math.min(MAX_SLIDES, requested));
         int safeSections = Math.max(1, sectionCount);
-        int fixedSlides = 3;
-        int transitionSlides = Math.min(safeSections, Math.max(0, safeRequested - fixedSlides - safeSections));
-        int remaining = Math.max(0, safeRequested - fixedSlides - transitionSlides);
-        int contentSlides = Math.min(safeSections, remaining);
-        remaining = Math.max(0, remaining - contentSlides);
-        int flexibleSlides = remaining;
-        if (contentSlides < safeSections) {
-            transitionSlides = Math.max(0, transitionSlides - (safeSections - contentSlides));
-            contentSlides = Math.min(safeSections, safeRequested - fixedSlides - transitionSlides);
-            flexibleSlides = Math.max(0, safeRequested - fixedSlides - transitionSlides - contentSlides);
+        int fixedSlides = 2 + (includeToc ? 1 : 0);
+        int transitionSlides = includeTransitions ? safeSections : 0;
+        int minimumContentSlides = safeSections;
+        int minimumTotal = fixedSlides + transitionSlides + minimumContentSlides;
+        if (minimumTotal > safeRequested && transitionSlides > 0) {
+            transitionSlides = Math.max(0, safeRequested - fixedSlides - minimumContentSlides);
         }
+        int remainingAfterStructure = Math.max(0, safeRequested - fixedSlides - transitionSlides);
+        int contentSlides = Math.min(Math.max(1, safeSections), remainingAfterStructure);
+        if (includeTransitions && contentSlides < transitionSlides) {
+            contentSlides = transitionSlides;
+        }
+        if (contentSlides > remainingAfterStructure) {
+            contentSlides = remainingAfterStructure;
+        }
+        int flexibleSlides = Math.max(0, safeRequested - fixedSlides - transitionSlides - contentSlides);
         return new SlideBudget(fixedSlides, transitionSlides, contentSlides, flexibleSlides);
     }
 
@@ -1806,50 +1853,29 @@ public class PresentationWorkflowNodes {
             List<PresentationSlidePlan> slides,
             PresentationStoryline storyline,
             int targetCount,
-            PresentationCoverMeta coverMeta) {
+            PresentationCoverMeta coverMeta,
+            PresentationGenerationOptions options) {
         if (slides == null || slides.isEmpty()) {
-            return fallbackOutline(storyline).getSlides();
+            return buildStructuredFallbackSlides(
+                    storyline,
+                    normalizeKeyPoints(storyline.getKeyMessages(), List.of(storyline.getGoal())),
+                    options);
         }
-        List<PresentationSlidePlan> repaired = new ArrayList<>(slides);
-        if (repaired.size() >= 2) {
-            PresentationSlidePlan last = repaired.get(repaired.size() - 1);
-            PresentationSlidePlan beforeLast = repaired.get(repaired.size() - 2);
-            if ("TRANSITION".equalsIgnoreCase(blankToDefault(beforeLast.getPageType(), ""))
-                    && !"CONTENT".equalsIgnoreCase(blankToDefault(last.getPageType(), ""))
-                    && !"TIMELINE".equalsIgnoreCase(blankToDefault(last.getPageType(), ""))
-                    && !"COMPARISON".equalsIgnoreCase(blankToDefault(last.getPageType(), ""))
-                    && !"CHART".equalsIgnoreCase(blankToDefault(last.getPageType(), ""))) {
-                int insertIndex = repaired.size() - 1;
-                PresentationSlidePlan transition = beforeLast;
-                repaired.add(insertIndex, PresentationSlidePlan.builder()
-                        .slideId("slide-" + (insertIndex + 1))
-                        .index(insertIndex + 1)
-                        .title(blankToDefault(transition.getSectionTitle(), transition.getTitle()))
-                        .keyPoints(normalizeKeyPointsForDensity(storyline.getKeyMessages(), List.of(blankToDefault(transition.getSectionTitle(), transition.getTitle())), "standard"))
-                        .layout("two-column")
-                        .pageType("CONTENT")
-                        .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
-                        .sectionId(transition.getSectionId())
-                        .sectionTitle(blankToDefault(transition.getSectionTitle(), transition.getTitle()))
-                        .sectionOrder(transition.getSectionOrder())
-                        .templateVariant("dual-cards")
-                        .visualEmphasis("balance")
-                        .speakerNotes("围绕章节重点展开。")
-                        .build());
-            }
+        List<PresentationSlidePlan> repaired = new ArrayList<>(slides.stream().filter(Objects::nonNull).toList());
+        boolean includeToc = options == null || options.isIncludeToc();
+        boolean includeTransitions = options == null || options.isIncludeTransitions();
+        ensureStructuralSlides(repaired, storyline, coverMeta, includeToc);
+        if (includeTransitions) {
+            ensureTransitionFollowedByContent(repaired, storyline);
+        } else {
+            repaired.removeIf(slide -> "TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
         }
-        if (repaired.size() > targetCount && targetCount > 0) {
-            while (repaired.size() > targetCount) {
-                int removableIndex = findRemovableSlideIndex(repaired);
-                if (removableIndex < 0) {
-                    repaired = new ArrayList<>(repaired.subList(0, targetCount));
-                    break;
-                }
-                repaired.remove(removableIndex);
-            }
+        moveThanksToTail(repaired);
+        if (targetCount > 0 && repaired.size() > targetCount) {
+            trimContentSlidesToTarget(repaired, targetCount);
         }
-        if (!repaired.isEmpty()) {
-            forceThanksAtTail(repaired, targetCount);
+        if (targetCount > 0 && repaired.size() < targetCount) {
+            fillContentSlidesToTarget(repaired, targetCount, storyline, options);
         }
         if (!repaired.isEmpty()) {
             repaired.get(0).setKeyPoints(List.of(
@@ -1862,7 +1888,24 @@ public class PresentationWorkflowNodes {
         return repaired;
     }
 
-    private void forceThanksAtTail(List<PresentationSlidePlan> slides, int targetCount) {
+    private void ensureStructuralSlides(
+            List<PresentationSlidePlan> slides,
+            PresentationStoryline storyline,
+            PresentationCoverMeta coverMeta,
+            boolean includeToc) {
+        if (slides == null || slides.isEmpty()) {
+            return;
+        }
+        upsertCoverSlide(slides, storyline, coverMeta);
+        if (includeToc) {
+            upsertTocSlide(slides, storyline);
+        } else {
+            slides.removeIf(slide -> "TOC".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
+        }
+        moveThanksToTail(slides);
+    }
+
+    private void moveThanksToTail(List<PresentationSlidePlan> slides) {
         if (slides == null || slides.isEmpty()) {
             return;
         }
@@ -1883,20 +1926,167 @@ public class PresentationWorkflowNodes {
                 .visualEmphasis("action")
                 .speakerNotes("结束致谢。")
                 .build();
-        if (!slides.isEmpty() && "TRANSITION".equalsIgnoreCase(blankToDefault(slides.get(slides.size() - 1).getPageType(), ""))) {
-            slides.remove(slides.size() - 1);
-        }
         slides.add(thanks);
-        if (targetCount > 0 && slides.size() > targetCount) {
-            while (slides.size() > targetCount) {
-                int removableIndex = findRemovableSlideIndex(slides);
-                if (removableIndex < 0 || removableIndex >= slides.size() - 1) {
-                    slides.remove(Math.max(0, slides.size() - 2));
-                } else {
-                    slides.remove(removableIndex);
-                }
+    }
+
+    private void ensureTransitionFollowedByContent(List<PresentationSlidePlan> slides, PresentationStoryline storyline) {
+        for (int i = 0; i < slides.size(); i++) {
+            PresentationSlidePlan slide = slides.get(i);
+            if (!"TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), ""))) {
+                continue;
+            }
+            if (i + 1 < slides.size() && isContentPage(slides.get(i + 1))) {
+                continue;
+            }
+            int contentIndex = findNextContentSlideForSection(slides, i + 1, slide.getSectionId());
+            if (contentIndex > i + 1) {
+                PresentationSlidePlan contentSlide = slides.remove(contentIndex);
+                slides.add(i + 1, contentSlide);
+                continue;
+            }
+            slides.add(i + 1, buildMinimalContentSlide(slide, storyline));
+            i++;
+        }
+    }
+
+    private void trimContentSlidesToTarget(List<PresentationSlidePlan> slides, int targetCount) {
+        while (slides.size() > targetCount) {
+            int removableIndex = findRemovableSlideIndex(slides);
+            if (removableIndex < 0) {
+                break;
+            }
+            slides.remove(removableIndex);
+        }
+    }
+
+    private void fillContentSlidesToTarget(
+            List<PresentationSlidePlan> slides,
+            int targetCount,
+            PresentationStoryline storyline,
+            PresentationGenerationOptions options) {
+        while (slides.size() < targetCount) {
+            PresentationSlidePlan anchor = findLastBusinessSlideBeforeThanks(slides);
+            slides.add(Math.max(0, slides.size() - 1), buildExpansionContentSlide(anchor, storyline, options, slides.size() + 1));
+        }
+    }
+
+    private void upsertCoverSlide(List<PresentationSlidePlan> slides, PresentationStoryline storyline, PresentationCoverMeta coverMeta) {
+        PresentationSlidePlan cover = slides.stream()
+                .filter(slide -> "COVER".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")))
+                .findFirst()
+                .orElse(PresentationSlidePlan.builder()
+                        .title(storyline.getTitle())
+                        .layout("cover")
+                        .pageType("COVER")
+                        .pageSubType("COVER.HERO")
+                        .templateVariant("hero-band")
+                        .visualEmphasis("title")
+                        .speakerNotes("介绍标题与汇报目标。")
+                        .build());
+        slides.removeIf(slide -> "COVER".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
+        cover.setTitle(firstNonBlank(cover.getTitle(), storyline.getTitle(), "汇报 PPT"));
+        cover.setKeyPoints(List.of(
+                firstNonBlank(cover.getKeyPoints() == null || cover.getKeyPoints().isEmpty() ? null : cover.getKeyPoints().get(0),
+                        storyline.getGoal(),
+                        "围绕主题进行结构化汇报"),
+                "汇报人：" + coverMeta.presenter(),
+                "汇报时间：" + coverMeta.reportDate()));
+        slides.add(0, cover);
+    }
+
+    private void upsertTocSlide(List<PresentationSlidePlan> slides, PresentationStoryline storyline) {
+        PresentationSlidePlan toc = slides.stream()
+                .filter(slide -> "TOC".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")))
+                .findFirst()
+                .orElse(PresentationSlidePlan.builder()
+                        .title("目录")
+                        .layout("section")
+                        .pageType("TOC")
+                        .pageSubType("TOC.AGENDA")
+                        .templateVariant("headline-panel")
+                        .visualEmphasis("balance")
+                        .speakerNotes("说明本次汇报的章节结构。")
+                        .build());
+        slides.removeIf(slide -> "TOC".equalsIgnoreCase(blankToDefault(slide.getPageType(), "")));
+        toc.setKeyPoints(normalizeKeyPoints(storyline.getKeyMessages(), List.of(storyline.getGoal())));
+        slides.add(Math.min(1, slides.size()), toc);
+    }
+
+    private int findNextContentSlideForSection(List<PresentationSlidePlan> slides, int startIndex, String sectionId) {
+        for (int i = startIndex; i < slides.size(); i++) {
+            PresentationSlidePlan candidate = slides.get(i);
+            if (!isContentPage(candidate)) {
+                continue;
+            }
+            if (!hasText(sectionId) || Objects.equals(blankToDefault(sectionId, ""), blankToDefault(candidate.getSectionId(), ""))) {
+                return i;
             }
         }
+        return -1;
+    }
+
+    private PresentationSlidePlan buildMinimalContentSlide(PresentationSlidePlan transition, PresentationStoryline storyline) {
+        String title = blankToDefault(transition.getSectionTitle(), transition.getTitle());
+        return PresentationSlidePlan.builder()
+                .title(title)
+                .keyPoints(normalizeKeyPointsForDensity(storyline.getKeyMessages(), List.of(title), "standard"))
+                .layout("two-column")
+                .pageType("CONTENT")
+                .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                .sectionId(transition.getSectionId())
+                .sectionTitle(title)
+                .sectionOrder(transition.getSectionOrder())
+                .templateVariant("dual-cards")
+                .visualEmphasis("balance")
+                .speakerNotes("围绕章节重点展开。")
+                .build();
+    }
+
+    private PresentationSlidePlan findLastBusinessSlideBeforeThanks(List<PresentationSlidePlan> slides) {
+        for (int i = slides.size() - 1; i >= 0; i--) {
+            PresentationSlidePlan slide = slides.get(i);
+            if (isContentPage(slide)) {
+                return slide;
+            }
+        }
+        for (int i = slides.size() - 1; i >= 0; i--) {
+            PresentationSlidePlan slide = slides.get(i);
+            if ("TRANSITION".equalsIgnoreCase(blankToDefault(slide.getPageType(), ""))) {
+                return slide;
+            }
+        }
+        return null;
+    }
+
+    private PresentationSlidePlan buildExpansionContentSlide(
+            PresentationSlidePlan anchor,
+            PresentationStoryline storyline,
+            PresentationGenerationOptions options,
+            int index) {
+        String title = anchor == null ? "核心内容" : firstNonBlank(anchor.getSectionTitle(), anchor.getTitle(), "核心内容");
+        Integer sectionOrder = anchor == null || anchor.getSectionOrder() == null ? 1 : anchor.getSectionOrder();
+        return PresentationSlidePlan.builder()
+                .slideId("slide-" + index)
+                .title(title + " - 补充展开")
+                .keyPoints(normalizeKeyPointsForDensity(storyline.getKeyMessages(), List.of(title), options == null ? "standard" : options.getDensity()))
+                .layout("two-column")
+                .pageType("CONTENT")
+                .pageSubType("CONTENT.HALF_IMAGE_HALF_TEXT")
+                .sectionId(anchor == null ? "section-1" : blankToDefault(anchor.getSectionId(), "section-1"))
+                .sectionTitle(title)
+                .sectionOrder(sectionOrder)
+                .templateVariant("dual-cards")
+                .visualEmphasis("balance")
+                .speakerNotes("补充章节内容。")
+                .build();
+    }
+
+    private boolean isContentPage(PresentationSlidePlan slide) {
+        String pageType = blankToDefault(slide == null ? null : slide.getPageType(), "");
+        return "CONTENT".equalsIgnoreCase(pageType)
+                || "TIMELINE".equalsIgnoreCase(pageType)
+                || "COMPARISON".equalsIgnoreCase(pageType)
+                || "CHART".equalsIgnoreCase(pageType);
     }
 
     private List<String> normalizeSlideKeyPoints(
@@ -1972,15 +2162,46 @@ public class PresentationWorkflowNodes {
 
     private int findRemovableSlideIndex(List<PresentationSlidePlan> slides) {
         for (int i = slides.size() - 2; i >= 1; i--) {
-            String pageType = blankToDefault(slides.get(i).getPageType(), "");
+            PresentationSlidePlan slide = slides.get(i);
+            String pageType = blankToDefault(slide.getPageType(), "");
             if (!"TRANSITION".equalsIgnoreCase(pageType)
                     && !"TOC".equalsIgnoreCase(pageType)
                     && !"COVER".equalsIgnoreCase(pageType)
-                    && !"THANKS".equalsIgnoreCase(pageType)) {
+                    && !"THANKS".equalsIgnoreCase(pageType)
+                    && !isRequiredTransitionFollower(slides, i)) {
                 return i;
             }
         }
         return -1;
+    }
+
+    private boolean isRequiredTransitionFollower(List<PresentationSlidePlan> slides, int index) {
+        if (slides == null || index <= 0 || index >= slides.size()) {
+            return false;
+        }
+        PresentationSlidePlan current = slides.get(index);
+        if (!isContentPage(current)) {
+            return false;
+        }
+        PresentationSlidePlan previous = slides.get(index - 1);
+        if (!"TRANSITION".equalsIgnoreCase(blankToDefault(previous.getPageType(), ""))) {
+            return false;
+        }
+        if (!Objects.equals(blankToDefault(previous.getSectionId(), ""), blankToDefault(current.getSectionId(), ""))) {
+            return false;
+        }
+        for (int i = index + 1; i < slides.size(); i++) {
+            PresentationSlidePlan candidate = slides.get(i);
+            if (isContentPage(candidate)
+                    && Objects.equals(blankToDefault(candidate.getSectionId(), ""), blankToDefault(current.getSectionId(), ""))) {
+                return false;
+            }
+            if ("TRANSITION".equalsIgnoreCase(blankToDefault(candidate.getPageType(), ""))
+                    || "THANKS".equalsIgnoreCase(blankToDefault(candidate.getPageType(), ""))) {
+                break;
+            }
+        }
+        return true;
     }
 
     private String normalizeSlideTitle(String title, int index, int total) {
