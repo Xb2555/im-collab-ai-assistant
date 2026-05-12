@@ -95,9 +95,9 @@ export default function Login() {
     }
   };
 
-  const handleWebDirectLogin = () => {
-    window.location.href = 'https://api.yiiie.cn/api/auth/lark/login';
-  };
+  // const handleWebDirectLogin = () => {
+  //   window.location.href = 'https://api.yiiie.cn/api/auth/lark/login';
+  // };
 
   return (
     // 1. 底色改为极其干净的冷白灰
@@ -165,6 +165,7 @@ export default function Login() {
                   : '授权飞书账号登录'}
               </Button>
 
+              {/*
               {isWebPlatform && (
                 <button
                   type="button"
@@ -175,6 +176,7 @@ export default function Login() {
                   在浏览器中直接登录
                 </button>
               )}
+              */}
 
               {!isWebPlatform && authStep !== 'idle' && (
                 <div className="text-center text-xs text-zinc-500">

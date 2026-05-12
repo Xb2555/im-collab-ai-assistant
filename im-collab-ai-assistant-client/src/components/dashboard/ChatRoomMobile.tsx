@@ -79,6 +79,11 @@ const parseFeishuContent = (rawContent: string | null | undefined, msgType?: str
   }
 };
 
+const getStableMessageId = (msg: any): string | null => {
+  // 必须优先使用 messageId (om_...) 对齐 HTTP 接口的响应
+  return msg?.messageId || msg?.eventId || null;
+};
+
 interface ChatRoomMobileProps {
   onOpenHistory: () => void;
   onSwitchToWorkspace?: () => void; // ✨ 新增跳转回调
@@ -349,9 +354,46 @@ try {
               try {
                 const msgData = JSON.parse(event.data);
                 if (msgData.state === 'connected') return;
+
                 setMessages((prev) => {
-                  if (prev.some((m) => m.eventId === msgData.eventId || m.messageId === msgData.messageId)) return prev;
-                  return [...prev, { ...msgData, content: parseFeishuContent(msgData.content, msgData.messageType || msgData.msgType) }];
+                  // 1. 常规去重：使用刚写的 getStableMessageId 统一校验
+                  const incomingStableId = getStableMessageId(msgData);
+                  if (incomingStableId && prev.some((m) => getStableMessageId(m) === incomingStableId)) return prev;
+
+                  const parsedContent = parseFeishuContent(msgData.content, msgData.messageType || msgData.msgType);
+                  // 💡 强制把本地的 eventId 设为飞书标准的 messageId
+                  const newEventId = msgData.messageId || msgData.eventId || `sse-${crypto.randomUUID()}`;
+                  
+                  const parsedMsg = {
+                    ...msgData,
+                    eventId: newEventId,
+                    content: parsedContent,
+                  };
+
+                  // 2. 特征狙击：查找是否有本地正在发送的假消息
+                  const currentUserOpenId = (user as any)?.openId || (user as any)?.userId || (user as any)?.id;
+                  const isMyMessage = msgData.senderOpenId === currentUserOpenId || msgData.senderId === currentUserOpenId;
+
+                  if (isMyMessage) {
+                    // 倒序查找，找到内容完全一致且还在 temp- 状态的消息
+                    let tempMsgIndex = -1;
+                    for (let i = prev.length - 1; i >= 0; i--) {
+                      if (prev[i].eventId.startsWith('temp-') && prev[i].content === parsedContent) {
+                        tempMsgIndex = i;
+                        break;
+                      }
+                    }
+                    
+                    if (tempMsgIndex !== -1) {
+                      // 狸猫换太子：将临时消息替换为 SSE 传来的真消息
+                      const newMessages = [...prev];
+                      newMessages[tempMsgIndex] = { ...newMessages[tempMsgIndex], ...parsedMsg, isOptimistic: false };
+                      return newMessages;
+                    }
+                  }
+
+                  // 3. 作为新消息安全追加
+                  return [...prev, parsedMsg];
                 });
               } catch (e) {
                 console.debug('JSON解析失败:', e);

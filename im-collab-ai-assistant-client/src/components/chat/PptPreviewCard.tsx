@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { Presentation, ExternalLink, Loader2, StopCircle, RefreshCw, Wand2,AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { browserLauncher } from '@/services/os/launcher/browser';
+import { isMobileNative } from '@/services/api/client'; // ✨ 引入移动端环境判断
 
 // 1. 修改接口定义 (大概在第 14 行)
 interface PptPreviewCardProps {
@@ -67,13 +68,26 @@ export const PptPreviewCard = React.memo(function PptPreviewCard({
         </div>
       </div>
 
-      <div className="relative w-full h-[220px] sm:h-[300px] bg-zinc-50 flex flex-col items-center justify-center shrink-0 transform-gpu overflow-hidden">
+     {/* 将桌面端高度提升至 500px，触发飞书引擎自动放大缩放比例 */}
+<div className="relative w-full h-[300px] lg:h-[520px] bg-zinc-50 flex flex-col items-center justify-center shrink-0 transform-gpu overflow-hidden">
         {(status === 'EXECUTING' || isReplanning) && !pptUrl ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-400 space-y-3 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px]">
             <Loader2 className="h-6 w-6 animate-spin text-orange-400" />
             <p className="text-xs">{isReplanning ? 'Agent 正在为您修改幻灯片...' : 'Agent 正在排版幻灯片...'}</p>
           </div>
+        ) : isMobileNative ? (
+          // ✨ 移动端原生环境：用优雅的引导按钮替代必定踩坑的 Iframe
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-orange-50/30 space-y-3 p-6 text-center border-y border-orange-100/50">
+            <div className="h-12 w-12 bg-orange-100 text-orange-500 rounded-full flex items-center justify-center shadow-sm">
+              <Presentation className="h-6 w-6" />
+            </div>
+            <p className="text-xs text-zinc-500 font-medium leading-relaxed">受限于移动端系统安全策略<br/>请直接前往飞书 App 预览和编辑完整幻灯片</p>
+            <Button size="sm" onClick={handleOpenFeishu} className="bg-orange-500 hover:bg-orange-600 text-white shadow-sm mt-2 rounded-full px-5">
+               <ExternalLink className="h-3.5 w-3.5 mr-1.5" /> 唤起飞书 App
+            </Button>
+          </div>
         ) : (
+          // 桌面端保持原样渲染 Iframe
           <iframe 
             src={pptUrl ? `${pptUrl}?from=embed` : 'about:blank'} 
             className="w-full h-full border-none bg-white transform-gpu" 

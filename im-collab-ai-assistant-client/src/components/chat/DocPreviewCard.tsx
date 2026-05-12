@@ -9,6 +9,7 @@ import { browserLauncher } from '@/services/os/launcher/browser';
 import { useTaskStore } from '@/store/useTaskStore';
 import { plannerApi } from '@/services/api/planner';
 import { toast } from 'sonner';
+import { isMobileNative } from '@/services/api/client'; // ✨ 引入移动端环境判断
 
 type IterationPlan = {
   semanticAction: string;
@@ -186,11 +187,24 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
       </div>
 
       {/* 2. 中间 Iframe 预览区 ✨ 优化：使用响应式高度，并限制沙盒权限缓解卡顿 */}
-      <div className="relative w-full h-[220px] sm:h-[300px] bg-zinc-100/50 shrink-0 transform-gpu overflow-hidden" style={{ WebkitOverflowScrolling: 'touch' }}>
+      {/* 2. 中间 Iframe 预览区 */}
+      {/* 文档类产物建议在桌面端直接给到 600px-700px，体验接近原生阅读器 */}
+<div className="relative w-full h-[400px] lg:h-[700px] bg-zinc-100/50 shrink-0 transform-gpu overflow-hidden" style={{ WebkitOverflowScrolling: 'touch' }}>
         {(status === 'GENERATING' || isReplanning) && !docUrl ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-400 space-y-3 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px]">
             <Loader2 className="h-6 w-6 animate-spin text-blue-400" />
             <p className="text-xs">{isReplanning ? 'Agent 正在为您重新规划和撰写新版文档...' : 'Agent 正在努力撰写文档...'}</p>
+          </div>
+        ) : isMobileNative ? (
+          // ✨ 移动端原生环境：用优雅的引导按钮替代必定踩坑的 Iframe
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-blue-50/30 space-y-3 p-6 text-center border-y border-blue-100/50">
+            <div className="h-12 w-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center shadow-sm">
+              <FileText className="h-6 w-6" />
+            </div>
+            <p className="text-xs text-zinc-500 font-medium leading-relaxed">受限于移动端系统安全策略<br/>请直接前往飞书 App 预览完整云文档</p>
+            <Button size="sm" onClick={handleOpenFeishu} className="bg-blue-600 hover:bg-blue-700 text-white shadow-sm mt-2 rounded-full px-5">
+               <ExternalLink className="h-3.5 w-3.5 mr-1.5" /> 唤起飞书 App
+            </Button>
           </div>
         ) : (
           <>
@@ -199,7 +213,6 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
               className="w-full h-full border-none bg-white transform-gpu" 
               title="Feishu Doc Preview" 
               loading="lazy" 
-              // ✨ 性能核心：通过 sandbox 限制飞书不需要的功能，大幅降低内存消耗和卡顿
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
             />
             {isReplanning && (

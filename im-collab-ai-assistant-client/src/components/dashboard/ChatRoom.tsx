@@ -11,6 +11,10 @@ import { Button } from '@/components/ui/button';
 import { Loader2, UserPlus, Bot, History } from 'lucide-react';
 import { InviteMemberModal } from '@/components/chat/InviteMemberModal';
 
+const getStableMessageId = (msg: any): string | null => {
+  return msg?.messageId || msg?.eventId || null; 
+};
+
 // 提取出原有的 parseFeishuContent 辅助函数
 const parseFeishuContent = (rawContent: string | null | undefined, msgType?: string) => {
   if (!rawContent) return '';
@@ -317,23 +321,51 @@ try {
             }
           },
           onmessage(event) {
-            // ✨ 增加一条控制台日志，用来抓内鬼（验证Nginx是否卡了消息）
             console.log('[SSE 接收消息]', event.event, event.data);
             
-            // ✨ 放宽校验，兼容 event 为空或为 message 的情况
             if (!event.event || event.event === 'message') {
               try {
                 const msgData = JSON.parse(event.data);
                 if (msgData.state === 'connected') return;
 
                 setMessages((prev) => {
-                  // 如果已经存在（比如被刚才的乐观更新补拉拿到了），直接忽略去重
-                  if (prev.some((m) => m.eventId === msgData.eventId || m.messageId === msgData.messageId)) return prev;
+                  // 1. 常规去重：如果真实 ID 已经存在，直接忽略
+                  const incomingStableId = getStableMessageId(msgData);
+                  if (incomingStableId && prev.some((m) => getStableMessageId(m) === incomingStableId)) return prev;
 
+                  const parsedContent = parseFeishuContent(msgData.content, msgData.messageType || msgData.msgType);
+                  // 💡 强制把 eventId 设为正确的 messageId
+                  const newEventId = msgData.messageId || msgData.eventId || `sse-${crypto.randomUUID()}`;
+                  
                   const parsedMsg = {
                     ...msgData,
-                    content: parseFeishuContent(msgData.content, msgData.messageType || msgData.msgType),
+                    eventId: newEventId,
+                    content: parsedContent,
                   };
+
+                  // 2. 特征狙击：查找是否有本地正在发送的临时消息
+                  const currentUserOpenId = (user as any)?.openId || (user as any)?.userId || (user as any)?.id;
+                  const isMyMessage = msgData.senderOpenId === currentUserOpenId || msgData.senderId === currentUserOpenId;
+
+                  if (isMyMessage) {
+                    // 倒序查找（防止连发），找到内容完全一致且还在 temp- 状态的假消息
+                    let tempMsgIndex = -1;
+                    for (let i = prev.length - 1; i >= 0; i--) {
+                      if (prev[i].eventId.startsWith('temp-') && prev[i].content === parsedContent) {
+                        tempMsgIndex = i;
+                        break;
+                      }
+                    }
+                    
+                    if (tempMsgIndex !== -1) {
+                      // 狸猫换太子：将临时消息平滑替换为 SSE 传来的真消息（消除视觉闪烁）
+                      const newMessages = [...prev];
+                      newMessages[tempMsgIndex] = { ...newMessages[tempMsgIndex], ...parsedMsg, isOptimistic: false };
+                      return newMessages;
+                    }
+                  }
+
+                  // 3. 如果不是自己的，或者没找到对应的假消息，作为新消息追加
                   return [...prev, parsedMsg];
                 });
               } catch (parseError) {
@@ -414,7 +446,7 @@ try {
               : (isBot ? 'Agent Pilot' : (resolvedName || '未知成员'));
 
             return (
-              <div key={index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} group mb-4`}>
+              <div key={msg.eventId || msg.messageId || index} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} group mb-4`}>
                 {/* 统一的 flex 容器，通过 reverse 自动处理左右对称 */}
                 <div className={`flex items-start max-w-[90%] gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
                   
