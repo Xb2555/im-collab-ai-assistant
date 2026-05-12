@@ -116,11 +116,18 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         }
         TaskSessionResolution resolution = taskSessionResolver.resolve(taskId, workspaceContext);
         PlanTaskSession session = resolution.existingSession() ? safeGet(resolution.taskId()) : null;
+        if (hasPendingSelection(session)) {
+            return "";
+        }
         Optional<IntentRoutingResult> result = llmIntentClassifier.classify(session, effectiveInput, resolution.existingSession());
         if (result.isEmpty()) {
             return "";
         }
         IntentRoutingResult routingResult = result.get();
+        if (routingResult.type() == TaskCommandTypeEnum.QUERY_STATUS
+                && "COMPLETED_TASKS".equalsIgnoreCase(routingResult.readOnlyView())) {
+            return "";
+        }
         CompletedArtifactIntentRecoveryService.RecoveryResult recoveryResult =
                 completedArtifactIntentRecoveryService == null
                         ? CompletedArtifactIntentRecoveryService.RecoveryResult.none()

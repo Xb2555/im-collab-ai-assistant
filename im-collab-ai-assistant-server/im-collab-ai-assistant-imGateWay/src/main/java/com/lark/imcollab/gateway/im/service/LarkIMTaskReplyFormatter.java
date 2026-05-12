@@ -281,7 +281,7 @@ public class LarkIMTaskReplyFormatter {
 
     private void appendCardSummary(StringBuilder builder, List<UserPlanCard> cards) {
         if (cards.isEmpty()) {
-            builder.append("\n1. 先理解你的需求并生成可执行步骤");
+            builder.append("\n1. 先理解你的需求并生成可执行步骤（待完成）");
             return;
         }
         int limit = Math.min(MAX_IM_STEPS, cards.size());
@@ -290,10 +290,14 @@ public class LarkIMTaskReplyFormatter {
             if (card == null) {
                 continue;
             }
-            builder.append("\n").append(index + 1).append(". ").append(toNaturalStep(card, index, limit));
+            builder.append("\n").append(index + 1).append(". ")
+                    .append(toNaturalStep(card, index, limit))
+                    .append(stepStatusSuffix(card));
         }
         if (cards.size() > limit) {
-            builder.append("\n").append(limit + 1).append(". 还有 ").append(cards.size() - limit).append(" 个后续步骤会继续串起来");
+            builder.append("\n").append(limit + 1).append(". 还有 ")
+                    .append(cards.size() - limit)
+                    .append(" 个后续步骤（待完成）会继续串起来");
         }
     }
 
@@ -403,6 +407,25 @@ public class LarkIMTaskReplyFormatter {
             return "最后" + title;
         }
         return "再" + title;
+    }
+
+    private String stepStatusSuffix(UserPlanCard card) {
+        return "（" + readableCardStatus(card == null ? null : card.getStatus()) + "）";
+    }
+
+    private String readableCardStatus(String status) {
+        if (!hasText(status)) {
+            return "待完成";
+        }
+        return switch (status.trim().toUpperCase()) {
+            case "RUNNING" -> "正在执行";
+            case "COMPLETED" -> "已完成";
+            case "FAILED" -> "失败";
+            case "SKIPPED" -> "已跳过";
+            case "CANCELLED", "CANCELED" -> "已取消";
+            case "READY", "PENDING", "WAITING", "TODO" -> "待完成";
+            default -> "待完成";
+        };
     }
 
     private boolean startsWithSequenceWord(String title) {

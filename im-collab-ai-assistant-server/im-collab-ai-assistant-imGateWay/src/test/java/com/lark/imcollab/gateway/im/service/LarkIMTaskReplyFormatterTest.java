@@ -40,7 +40,7 @@ class LarkIMTaskReplyFormatterTest {
         String text = formatter.planReady(session);
 
         assertThat(text).contains("我准备这样推进", "你确认没问题我就开工");
-        assertThat(text).contains("生成技术方案文档", "生成汇报 PPT");
+        assertThat(text).contains("生成技术方案文档（待完成）", "生成汇报 PPT（待完成）");
         assertThat(text).contains("你还可以指定");
         assertThat(text).contains("你也可以直接这样说");
         assertThat(text).contains("开始执行：按当前计划继续");
@@ -67,8 +67,8 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.planReady(session);
 
-        assertThat(text).contains("1. 先生成技术方案文档（含 Mermaid 架构图）");
-        assertThat(text).contains("2. 再生成汇报 PPT 初稿");
+        assertThat(text).contains("1. 先生成技术方案文档（含 Mermaid 架构图）（待完成）");
+        assertThat(text).contains("2. 再生成汇报 PPT 初稿（待完成）");
         assertThat(text).doesNotContain("先技术方案文档", "再汇报 PPT 初稿");
     }
 
@@ -84,7 +84,7 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.planReady(session);
 
-        assertThat(text).contains("1. 先生成老板汇报 PPT 初稿");
+        assertThat(text).contains("1. 先生成老板汇报 PPT 初稿（待完成）");
         assertThat(text).doesNotContain("1. 再生成老板汇报 PPT 初稿");
     }
 
@@ -104,9 +104,9 @@ class LarkIMTaskReplyFormatterTest {
 
         String text = formatter.planReady(session);
 
-        assertThat(text).contains("1. 先生成技术方案文档");
-        assertThat(text).contains("2. 再生成可直接发群的进展摘要");
-        assertThat(text).contains("3. 最后生成5页以内中文汇报PPT");
+        assertThat(text).contains("1. 先生成技术方案文档（待完成）");
+        assertThat(text).contains("2. 再生成可直接发群的进展摘要（待完成）");
+        assertThat(text).contains("3. 最后生成5页以内中文汇报PPT（待完成）");
         assertThat(text).doesNotContain("2. 最后生成可直接发群的进展摘要");
     }
 
@@ -155,6 +155,42 @@ class LarkIMTaskReplyFormatterTest {
         String text = formatter.planAdjusted(session);
 
         assertThat(text).contains("从头重做：整任务重跑，并丢弃当前已完成产物");
+        assertThat(text).contains("1. 先生成技术方案文档（已完成）");
+        assertThat(text).contains("2. 再生成汇报 PPT（待完成）");
+    }
+
+    @Test
+    void planAdjustedShowsRunningStatusOnCurrentStep() {
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(com.lark.imcollab.common.model.enums.PlanningPhaseEnum.PLAN_READY)
+                .planCards(List.of(
+                        UserPlanCard.builder()
+                                .cardId("card-001")
+                                .title("生成技术方案文档")
+                                .type(PlanCardTypeEnum.DOC)
+                                .status("COMPLETED")
+                                .build(),
+                        UserPlanCard.builder()
+                                .cardId("card-002")
+                                .title("生成汇报 PPT")
+                                .type(PlanCardTypeEnum.PPT)
+                                .status("RUNNING")
+                                .build(),
+                        UserPlanCard.builder()
+                                .cardId("card-003")
+                                .title("生成可直接发送的摘要")
+                                .type(PlanCardTypeEnum.SUMMARY)
+                                .status("PENDING")
+                                .build()
+                ))
+                .build();
+
+        String text = formatter.planAdjusted(session);
+
+        assertThat(text).contains("1. 先生成技术方案文档（已完成）");
+        assertThat(text).contains("2. 再生成汇报 PPT（正在执行）");
+        assertThat(text).contains("3. 最后生成可直接发送的摘要（待完成）");
     }
 
     @Test

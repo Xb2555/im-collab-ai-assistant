@@ -2,8 +2,11 @@ package com.lark.imcollab.planner.facade;
 
 import com.lark.imcollab.common.model.entity.ConversationTaskState;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.PendingTaskCandidate;
+import com.lark.imcollab.common.model.entity.PendingTaskSelection;
 import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
+import com.lark.imcollab.common.model.entity.TaskIntakeState;
 import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
@@ -23,6 +26,7 @@ import com.lark.imcollab.planner.service.TaskSessionResolution;
 import com.lark.imcollab.planner.service.TaskSessionResolver;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -34,6 +38,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class DefaultPlannerPlanFacadeTest {
@@ -883,6 +888,100 @@ class DefaultPlannerPlanFacadeTest {
         String reply = facade.previewImmediateReply("帮我生成一份摘要", context, null, null);
 
         assertThat(reply).isEqualTo("🔄 这个后续动作我接住了，我会先把当前任务扩展一下，再把更新后的计划回给你。");
+    }
+
+    @Test
+    void previewImmediateReplySuppressesReceiptWhileWaitingForCompletedTaskSelection() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                new CompletedArtifactIntentRecoveryService(resolver)
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession selector = PlanTaskSession.builder()
+                .taskId("selector-task")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .intakeState(TaskIntakeState.builder()
+                        .pendingTaskSelection(PendingTaskSelection.builder()
+                                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                                .selectionPurpose("COMPLETED_TASK_LIST")
+                                .candidates(List.of(PendingTaskCandidate.builder()
+                                        .taskId("task-1")
+                                        .title("示例任务")
+                                        .build()))
+                                .expiresAt(Instant.now().plusSeconds(60))
+                                .build())
+                        .build())
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("selector-task", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("selector-task")).thenReturn(selector);
+
+        String reply = facade.previewImmediateReply("5", context, null, null);
+
+        assertThat(reply).isBlank();
+        verifyNoInteractions(classifier);
+    }
+
+    @Test
+    void previewImmediateReplySuppressesReceiptForCompletedTaskListBrowse() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                new CompletedArtifactIntentRecoveryService(resolver)
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-1")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-1", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-1")).thenReturn(completed);
+        when(classifier.classify(completed, "已完成任务列表", true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.QUERY_STATUS,
+                        0.95d,
+                        "completed task browsing request",
+                        "已完成任务列表",
+                        false,
+                        "COMPLETED_TASKS",
+                        null
+                )));
+
+        String reply = facade.previewImmediateReply("已完成任务列表", context, null, null);
+
+        assertThat(reply).isBlank();
+        verify(classifier).classify(completed, "已完成任务列表", true);
+        verifyNoInteractions(matcher, conversationTaskStateService);
     }
 
     private static <T> org.springframework.beans.factory.ObjectProvider<T> provider(T facade) {
