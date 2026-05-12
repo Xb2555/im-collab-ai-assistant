@@ -17,6 +17,8 @@ import com.lark.imcollab.harness.presentation.model.PresentationImagePlan;
 import com.lark.imcollab.harness.presentation.model.PresentationOutline;
 import com.lark.imcollab.harness.presentation.model.PresentationSlideXml;
 import com.lark.imcollab.harness.presentation.support.PresentationExecutionSupport;
+import com.lark.imcollab.skills.lark.slides.LarkSlidesMediaUploadResult;
+import com.lark.imcollab.skills.lark.slides.LarkSlidesTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.harness.presentation.model.PresentationGenerationOptions;
 import com.lark.imcollab.harness.presentation.model.PresentationSlidePlan;
@@ -33,7 +35,10 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class PresentationWorkflowNodesTemplateTest {
@@ -420,7 +425,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .build());
 
         assertThat(xml).contains("src=\"boxcnSharedBackground\"");
-        assertThat(xml).contains("src=\"boxcnContentImage\"");
+        assertThat(xml).doesNotContain("src=\"boxcnContentImage\"");
     }
 
     @Test
@@ -877,8 +882,8 @@ class PresentationWorkflowNodesTemplateTest {
                 .build());
 
         assertThat(xml).contains("src=\"boxcnSharedBackground\"");
-        assertThat(xml).contains("src=\"boxcnTimelineImage\"");
-        assertThat(xml).contains("topLeftY=\"328\" width=\"110\" height=\"82\"");
+        assertThat(xml).doesNotContain("src=\"boxcnTimelineImage\"");
+        assertThat(xml).doesNotContain("topLeftY=\"328\" width=\"110\" height=\"82\"");
         assertThat(xml).doesNotContain("{{TIMELINE_ITEMS}}");
     }
 
@@ -992,6 +997,57 @@ class PresentationWorkflowNodesTemplateTest {
 
         assertThat(err.toString()).contains("ppt.timeline.image.missing");
         assertThat(err.toString()).contains("slideId=slide-5");
+        assertThat(err.toString()).doesNotContain("heroImageToken=boxcnTimelineImage");
+    }
+
+    @Test
+    void compileSlideXmlDoesNotFallbackToHeroImageForTimelineNodesWhenNodeAssetsMissing() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR slideIr = PresentationSlideIR.builder()
+                .slideId("slide-5")
+                .pageIndex(5)
+                .slideRole("timeline")
+                .pageType("TIMELINE")
+                .pageSubType("TIMELINE.HORIZONTAL")
+                .title("推进路线")
+                .visualIntent("action")
+                .elements(List.of(
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-title")
+                                .elementKind(PresentationElementKind.TITLE)
+                                .layoutBox(PresentationLayoutSpec.builder().templateVariant("horizontal-milestones").build())
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-body")
+                                .elementKind(PresentationElementKind.BODY)
+                                .textContent("阶段一；阶段二；阶段三")
+                                .build(),
+                        PresentationElementIR.builder()
+                                .elementId("slide-5-image")
+                                .elementKind(PresentationElementKind.IMAGE)
+                                .semanticRole("hero-image")
+                                .assetRef(PresentationAssetRef.builder().fileToken("boxcnTimelineImage").altText("时间轴内容图").build())
+                                .build()))
+                .build();
+
+        String xml = (String) method.invoke(nodes, slideIr, 7, PresentationGenerationOptions.builder()
+                .style("business-light")
+                .themeFamily("business-light")
+                .density("standard")
+                .speakerNotes(false)
+                .templateDiversity("balanced")
+                .allowVariantMixing(true)
+                .build());
+
+        assertThat(xml).doesNotContain("src=\"boxcnTimelineImage\" topLeftX=\"72\"");
+        assertThat(xml).doesNotContain("width=\"110\" height=\"82\"");
+        assertThat(xml).contains("<ellipse topLeftX=\"110\" topLeftY=\"262\" width=\"36\" height=\"36\">");
     }
 
     @Test
@@ -1302,6 +1358,64 @@ class PresentationWorkflowNodesTemplateTest {
         PresentationSlidePlan tocSlide = outline.getSlides().get(1);
         assertThat(tocSlide.getKeyPoints())
                 .containsExactly("背景分析", "实施路径", "方案对比", "指标跟踪");
+    }
+
+    @Test
+    void uploadResolvedAssetsReusesSharedBackgroundUploadAcrossSlides() throws Exception {
+        LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
+        when(slidesTool.uploadMedia(anyString(), anyString())).thenReturn(LarkSlidesMediaUploadResult.builder()
+                .presentationId("slides-1")
+                .fileToken("boxcnSharedBackground")
+                .build());
+        PresentationWorkflowNodes localNodes = new PresentationWorkflowNodes(
+                mock(PresentationExecutionSupport.class), AGENT, AGENT, AGENT, AGENT, AGENT, AGENT, slidesTool, new ObjectMapper(), EXECUTOR, CONCURRENCY_SETTINGS, "");
+
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "uploadResolvedAssets",
+                String.class,
+                PresentationAssetResources.class);
+        method.setAccessible(true);
+
+        PresentationAssetResources resources = PresentationAssetResources.builder()
+                .slides(List.of(
+                        PresentationAssetResources.SlideAssetResource.builder()
+                                .slideId("slide-4")
+                                .sharedBackgroundImage(PresentationAssetResources.AssetResource.builder()
+                                        .assetId("bg-1")
+                                        .assetType("shared-background-image")
+                                        .sourceUrl("https://example.com/background.jpg")
+                                        .localTempPath("C:\\temp\\background.jpg")
+                                        .downloadStatus("DOWNLOADED")
+                                        .build())
+                                .images(List.of())
+                                .timelineNodeImages(List.of())
+                                .illustrations(List.of())
+                                .diagrams(List.of())
+                                .charts(List.of())
+                                .build(),
+                        PresentationAssetResources.SlideAssetResource.builder()
+                                .slideId("slide-5")
+                                .sharedBackgroundImage(PresentationAssetResources.AssetResource.builder()
+                                        .assetId("bg-2")
+                                        .assetType("shared-background-image")
+                                        .sourceUrl("https://example.com/background.jpg")
+                                        .localTempPath("C:\\temp\\background.jpg")
+                                        .downloadStatus("DOWNLOADED")
+                                        .build())
+                                .images(List.of())
+                                .timelineNodeImages(List.of())
+                                .illustrations(List.of())
+                                .diagrams(List.of())
+                                .charts(List.of())
+                                .build()))
+                .build();
+
+        PresentationAssetResources uploaded = (PresentationAssetResources) method.invoke(localNodes, "slides-1", resources);
+
+        verify(slidesTool, times(1)).uploadMedia("slides-1", "C:\\temp\\background.jpg");
+        assertThat(uploaded.getSlides()).hasSize(2);
+        assertThat(uploaded.getSlides()).allSatisfy(slide ->
+                assertThat(slide.getSharedBackgroundImage().getFileToken()).isEqualTo("boxcnSharedBackground"));
     }
 
     @Test

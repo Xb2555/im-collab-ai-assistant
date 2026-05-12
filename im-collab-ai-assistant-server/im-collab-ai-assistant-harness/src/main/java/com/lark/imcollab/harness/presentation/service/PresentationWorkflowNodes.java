@@ -3255,6 +3255,8 @@ public class PresentationWorkflowNodes {
         List<PresentationAssetResources.SlideAssetResource> slides = resources.getSlides().stream()
                 .filter(Objects::nonNull)
                 .toList();
+        Map<String, PresentationAssetResources.AssetResource> sharedBackgroundUploads =
+                uploadSharedBackgroundAssets(presentationId, slides);
         List<PresentationAssetResources.SlideAssetResource> uploadedSlides = parallelMapOrdered(
                 "upload-resolved-assets",
                 slides,
@@ -3262,7 +3264,7 @@ public class PresentationWorkflowNodes {
                 slide -> PresentationAssetResources.SlideAssetResource.builder()
                         .slideId(slide.getSlideId())
                         .coverGroupImage(uploadAsset(slide.getCoverGroupImage(), presentationId))
-                        .sharedBackgroundImage(uploadAsset(slide.getSharedBackgroundImage(), presentationId))
+                        .sharedBackgroundImage(resolveUploadedSharedBackground(slide, sharedBackgroundUploads))
                         .images(uploadAssetList(presentationId, slide.getImages()))
                         .timelineNodeImages(uploadTimelineNodeAssetList(presentationId, slide.getTimelineNodeImages()))
                         .illustrations(uploadAssetList(presentationId, slide.getIllustrations()))
@@ -3271,6 +3273,57 @@ public class PresentationWorkflowNodes {
                         .build());
         printTimelineImageStats("upload", uploadedSlides);
         return PresentationAssetResources.builder().slides(uploadedSlides).build();
+    }
+
+    private Map<String, PresentationAssetResources.AssetResource> uploadSharedBackgroundAssets(
+            String presentationId,
+            List<PresentationAssetResources.SlideAssetResource> slides) {
+        List<PresentationAssetResources.AssetResource> uniqueAssets = slides == null ? List.of() : slides.stream()
+                .map(PresentationAssetResources.SlideAssetResource::getSharedBackgroundImage)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(
+                        this::sharedBackgroundUploadKey,
+                        asset -> asset,
+                        (left, right) -> left,
+                        LinkedHashMap::new))
+                .values()
+                .stream()
+                .toList();
+        if (uniqueAssets.isEmpty()) {
+            return Map.of();
+        }
+        List<PresentationAssetResources.AssetResource> uploaded = parallelMapOrdered(
+                "upload-shared-background-assets",
+                uniqueAssets,
+                1,
+                asset -> uploadAssetWithRetry(asset, presentationId, 3, true));
+        Map<String, PresentationAssetResources.AssetResource> uploadedByKey = new LinkedHashMap<>();
+        for (int i = 0; i < uniqueAssets.size(); i++) {
+            uploadedByKey.put(sharedBackgroundUploadKey(uniqueAssets.get(i)), uploaded.get(i));
+        }
+        return uploadedByKey;
+    }
+
+    private PresentationAssetResources.AssetResource resolveUploadedSharedBackground(
+            PresentationAssetResources.SlideAssetResource slide,
+            Map<String, PresentationAssetResources.AssetResource> uploadedByKey) {
+        if (slide == null || slide.getSharedBackgroundImage() == null || uploadedByKey == null || uploadedByKey.isEmpty()) {
+            return slide == null ? null : slide.getSharedBackgroundImage();
+        }
+        return uploadedByKey.getOrDefault(
+                sharedBackgroundUploadKey(slide.getSharedBackgroundImage()),
+                slide.getSharedBackgroundImage());
+    }
+
+    private String sharedBackgroundUploadKey(PresentationAssetResources.AssetResource asset) {
+        if (asset == null) {
+            return "";
+        }
+        return firstNonBlank(
+                blankToDefault(asset.getSourceUrl(), ""),
+                blankToDefault(asset.getLocalTempPath(), ""),
+                blankToDefault(asset.getAssetId(), ""),
+                blankToDefault(asset.getSourceRef(), ""));
     }
 
     private PresentationAssetResources.AssetResource uploadAsset(
@@ -3314,35 +3367,76 @@ public class PresentationWorkflowNodes {
                 validAssets,
                 concurrencySettings.imageUploadConcurrency(),
                 asset -> {
-                    String fileToken = blankToDefault(asset.getFileToken(), "");
-                    String downloadStatus = blankToDefault(asset.getDownloadStatus(), "SKIPPED");
-                    if (hasText(asset.getLocalTempPath())) {
-                        try {
-                            LarkSlidesMediaUploadResult uploadResult = larkSlidesTool.uploadMedia(presentationId, asset.getLocalTempPath());
-                            fileToken = blankToDefault(uploadResult.getFileToken(), "");
-                            downloadStatus = hasText(fileToken) ? "UPLOADED" : "UPLOAD_FAILED";
-                        } catch (Exception exception) {
-                            downloadStatus = "UPLOAD_FAILED";
-                        }
-                    }
-                    return PresentationAssetResources.AssetResource.builder()
-                            .assetId(asset.getAssetId())
-                            .sourceRef(asset.getSourceRef())
-                            .candidateUrls(asset.getCandidateUrls())
-                            .sourceUrl(asset.getSourceUrl())
-                            .sourceSite(asset.getSourceSite())
-                            .assetType(asset.getAssetType())
-                            .localTempPath(asset.getLocalTempPath())
-                            .downloadStatus(downloadStatus)
-                            .fileToken(fileToken)
-                            .purpose(asset.getPurpose())
-                            .mimeType(asset.getMimeType())
-                            .fallbackSource(asset.getFallbackSource())
-                            .normalizedQuery(asset.getNormalizedQuery())
-                            .selectedFromCandidateIndex(asset.getSelectedFromCandidateIndex())
-                            .cacheHit(asset.getCacheHit())
-                            .build();
+                    return uploadAssetWithRetry(asset, presentationId, 1, false);
                 });
+    }
+
+    private PresentationAssetResources.AssetResource uploadAssetWithRetry(
+            PresentationAssetResources.AssetResource asset,
+            String presentationId,
+            int maxAttempts,
+            boolean retryOnRateLimit) {
+        String fileToken = blankToDefault(asset.getFileToken(), "");
+        String downloadStatus = blankToDefault(asset.getDownloadStatus(), "SKIPPED");
+        if (hasText(asset.getLocalTempPath())) {
+            int attempts = Math.max(1, maxAttempts);
+            RuntimeException lastException = null;
+            for (int attempt = 1; attempt <= attempts; attempt++) {
+                try {
+                    LarkSlidesMediaUploadResult uploadResult = larkSlidesTool.uploadMedia(presentationId, asset.getLocalTempPath());
+                    fileToken = blankToDefault(uploadResult.getFileToken(), "");
+                    downloadStatus = hasText(fileToken) ? "UPLOADED" : "UPLOAD_FAILED";
+                    if (hasText(fileToken)) {
+                        lastException = null;
+                        break;
+                    }
+                } catch (RuntimeException exception) {
+                    lastException = exception;
+                    downloadStatus = "UPLOAD_FAILED";
+                    if (!retryOnRateLimit || !isSlidesRateLimitError(exception) || attempt == attempts) {
+                        break;
+                    }
+                    sleepQuietly(Math.min(1200L * attempt, 3000L));
+                }
+            }
+            if (!hasText(fileToken) && lastException != null && retryOnRateLimit && isSlidesRateLimitError(lastException)) {
+                log.warn("ppt.shared.background.upload.failed presentationId={} assetId={} sourceUrl={} error={}",
+                        presentationId,
+                        blankToDefault(asset.getAssetId(), ""),
+                        blankToDefault(asset.getSourceUrl(), ""),
+                        truncate(lastException.getMessage(), 200));
+            }
+        }
+        return PresentationAssetResources.AssetResource.builder()
+                .assetId(asset.getAssetId())
+                .sourceRef(asset.getSourceRef())
+                .candidateUrls(asset.getCandidateUrls())
+                .sourceUrl(asset.getSourceUrl())
+                .sourceSite(asset.getSourceSite())
+                .assetType(asset.getAssetType())
+                .localTempPath(asset.getLocalTempPath())
+                .downloadStatus(downloadStatus)
+                .fileToken(fileToken)
+                .purpose(asset.getPurpose())
+                .mimeType(asset.getMimeType())
+                .fallbackSource(asset.getFallbackSource())
+                .normalizedQuery(asset.getNormalizedQuery())
+                .selectedFromCandidateIndex(asset.getSelectedFromCandidateIndex())
+                .cacheHit(asset.getCacheHit())
+                .build();
+    }
+
+    private boolean isSlidesRateLimitError(RuntimeException exception) {
+        String message = exception == null ? "" : blankToDefault(exception.getMessage(), "");
+        return message.contains("99991400") || message.toLowerCase(java.util.Locale.ROOT).contains("frequency limit");
+    }
+
+    private void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(Math.max(0L, millis));
+        } catch (InterruptedException interruptedException) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private List<PresentationAssetResources.AssetResource> resolveDiagramAssets(
@@ -4657,17 +4751,6 @@ public class PresentationWorkflowNodes {
                         timelineNodeImages,
                         "action".equalsIgnoreCase(blankToDefault(plan.getVisualEmphasis(), "")),
                         blankToDefault(plan.getTemplateVariant(), ""));
-            } else if (image != null && image.getAssetRef() != null && hasText(resolveRenderableImageSrc(image))) {
-                String timelineAltText = escapeXml(blankToDefault(image.getAssetRef().getAltText(), "节点配图"));
-                String src = resolveRenderableImageSrc(image);
-                timelineItemsXml = "stacked-steps".equals(blankToDefault(plan.getTemplateVariant(), ""))
-                        ? stackedTimelineItems(
-                        extractBodyPointsFromPlan(plan),
-                        profile,
-                        "action".equalsIgnoreCase(blankToDefault(plan.getVisualEmphasis(), "")),
-                        src,
-                        timelineAltText)
-                        : timelineItems(extractBodyPointsFromPlan(plan), profile, src, timelineAltText);
             }
         }
         if (image != null && image.getAssetRef() != null) {
@@ -4687,6 +4770,8 @@ public class PresentationWorkflowNodes {
                             """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "结束页背景图")));
                     backgroundSourceKind = "hero-image";
                     injectedBackgroundToken = src;
+                } else if (hasText(injectedBackgroundToken)) {
+                    // Shared background already occupies the slide background; keep this image in its content slot only.
                 } else if ("two-column".equals(layout) || "comparison".equals(layout)) {
                     rightImage = """
                             <img src="%s" topLeftX="468" topLeftY="160" width="396" height="252" alpha="1" alt="%s">
