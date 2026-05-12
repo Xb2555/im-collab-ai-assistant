@@ -2932,6 +2932,17 @@ public class PresentationWorkflowNodes {
         }
         List<PresentationAssetPlan.AssetTask> tasks = safeAssetTasks(pagePlan.getContentImageTasks(), slide, "timeline-content");
         if (tasks.isEmpty()) {
+            tasks = safeAssetTasks(pagePlan.getContentImageTasks(), slide, "content");
+        }
+        if (tasks.isEmpty()) {
+            String slideTitle = firstNonBlank(slide.getTitle(), slide.getSectionTitle(), "时间轴");
+            tasks = List.of(PresentationAssetPlan.AssetTask.builder()
+                    .query(slideTitle)
+                    .purpose("时间轴节点配图")
+                    .preferredSourceType("CONTENT_IMAGE")
+                    .build());
+        }
+        if (tasks.isEmpty()) {
             return List.of();
         }
         List<String> nodeTexts = normalizeTimelineNodeTexts(slide);
@@ -5052,7 +5063,7 @@ if ("shared-background-image".equalsIgnoreCase(assetType) && hasText(item.getSel
         if (image != null && image.getAssetRef() != null) {
             String src = resolveRenderableImageSrc(image);
             if (hasText(src)) {
-                if ("cover".equals(layout) && "COVER".equalsIgnoreCase(blankToDefault(plan.getPageType(), ""))) {
+                if (isCoverGroupPage(plan)) {
                     backgroundImage = """
                             <img src="%s" topLeftX="0" topLeftY="0" width="960" height="540" alpha="1" alt="%s"/>
                             """.formatted(src, escapeXml(blankToDefault(image.getAssetRef().getAltText(), "背景图")));

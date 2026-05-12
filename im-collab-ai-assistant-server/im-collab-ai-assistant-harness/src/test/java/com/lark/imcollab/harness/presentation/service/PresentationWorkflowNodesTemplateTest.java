@@ -448,7 +448,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .build());
 
         assertThat(xml).contains("src=\"boxcnSharedBackground\"");
-        assertThat(xml).doesNotContain("src=\"boxcnContentImage\"");
+        assertThat(xml).contains("src=\"boxcnContentImage\"");
     }
 
     @Test
@@ -501,7 +501,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void compileSlideXmlUsesCoverStyleTemplateForThanksPage() throws Exception {
+    void compileSlideXmlUsesBackgroundImageForThanksPage() throws Exception {
         Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "compileSlideXml",
                 PresentationSlideIR.class,
@@ -545,7 +545,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .allowVariantMixing(true)
                 .build());
 
-        assertThat(xml).doesNotContain("src=\"boxcnThanksBackground\"");
+        assertThat(xml).contains("src=\"boxcnThanksBackground\"");
         assertThat(xml).contains("感谢聆听");
         assertThat(xml).contains("Thank you for listening");
         assertThat(xml).contains("topLeftX=\"88\" topLeftY=\"82\" width=\"748\" height=\"320\"");
@@ -600,7 +600,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void compileSlideXmlDisablesBackgroundImageForTocPage() throws Exception {
+    void compileSlideXmlUsesBackgroundImageForTocPage() throws Exception {
         Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "compileSlideXml",
                 PresentationSlideIR.class,
@@ -644,11 +644,11 @@ class PresentationWorkflowNodesTemplateTest {
                 .allowVariantMixing(true)
                 .build());
 
-        assertThat(xml).doesNotContain("src=\"boxcnTocBackground\"");
+        assertThat(xml).contains("src=\"boxcnTocBackground\"");
     }
 
     @Test
-    void compileSlideXmlDisablesBackgroundImageForTransitionPage() throws Exception {
+    void compileSlideXmlUsesBackgroundImageForTransitionPage() throws Exception {
         Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "compileSlideXml",
                 PresentationSlideIR.class,
@@ -692,7 +692,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .allowVariantMixing(true)
                 .build());
 
-        assertThat(xml).doesNotContain("src=\"boxcnTransitionBackground\"");
+        assertThat(xml).contains("src=\"boxcnTransitionBackground\"");
     }
 
     @Test
@@ -744,7 +744,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void resolveSlideImageUsesCoverGroupImageOnlyForCover() throws Exception {
+    void resolveSlideImageUsesCoverGroupImageForCoverGroupPages() throws Exception {
         Method resolveSlideImage = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "resolveSlideImage",
                 PresentationSlidePlan.class,
@@ -821,10 +821,13 @@ class PresentationWorkflowNodesTemplateTest {
                         .build(), resources);
 
         assertThat(cover).isPresent();
-        assertThat(toc).isEmpty();
-        assertThat(thanks).isEmpty();
-        assertThat(transition).isEmpty();
+        assertThat(toc).isPresent();
+        assertThat(thanks).isPresent();
+        assertThat(transition).isPresent();
         assertThat(cover.get().getFileToken()).isEqualTo("boxcnCoverGroup");
+        assertThat(toc.get().getFileToken()).isEqualTo("boxcnCoverGroup");
+        assertThat(thanks.get().getFileToken()).isEqualTo("boxcnCoverGroup");
+        assertThat(transition.get().getFileToken()).isEqualTo("boxcnCoverGroup");
     }
 
     @Test
@@ -1110,7 +1113,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .build());
 
         assertThat(xml).doesNotContain("{{CONTENT_IMAGE}}");
-        assertThat(xml).contains("<img src=\"\" topLeftX=\"640\" topLeftY=\"168\" width=\"228\" height=\"204\" alpha=\"0\" alt=\"\">");
+        assertThat(xml).doesNotContain("<img src=\"\" topLeftX=\"640\" topLeftY=\"168\" width=\"228\" height=\"204\" alpha=\"0\" alt=\"\">");
         assertThat(xml).contains("topLeftX=\"82\" topLeftY=\"164\" width=\"748\" height=\"250\"");
     }
 
@@ -1153,7 +1156,7 @@ class PresentationWorkflowNodesTemplateTest {
                 .allowVariantMixing(true)
                 .build());
 
-        assertThat(xml).contains("<img src=\"\" topLeftX=\"468\" topLeftY=\"160\" width=\"396\" height=\"252\" alpha=\"0\" alt=\"\">");
+        assertThat(xml).doesNotContain("<img src=\"\" topLeftX=\"468\" topLeftY=\"160\" width=\"396\" height=\"252\" alpha=\"0\" alt=\"\">");
         assertThat(xml).doesNotContain("{{RIGHT_IMAGE}}");
     }
 
@@ -1228,7 +1231,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void buildSlideIrDoesNotInjectCoverBackgroundForTocTransitionAndThanks() throws Exception {
+    void buildSlideIrInjectsCoverBackgroundForCoverGroupPages() throws Exception {
         Method buildSlideIr = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "buildSlideIr",
                 PresentationSlidePlan.class,
@@ -1255,8 +1258,8 @@ class PresentationWorkflowNodesTemplateTest {
                 PresentationSlidePlan.builder().slideId("slide-4").index(4).title("感谢").layout("summary").pageType("THANKS").build())) {
             PresentationSlideIR slideIr = (PresentationSlideIR) buildSlideIr.invoke(nodes, slide, defaultOptions(), resources);
             String xml = (String) compileSlideXml.invoke(nodes, slideIr, 6, defaultOptions());
-            assertThat(xml).doesNotContain("boxcnCoverBackground");
-            assertThat(xml).doesNotContain("<img src=\"boxcnCoverBackground\"");
+            assertThat(xml).contains("boxcnCoverBackground");
+            assertThat(xml).contains("<img src=\"boxcnCoverBackground\"");
         }
     }
 
@@ -1371,7 +1374,7 @@ class PresentationWorkflowNodesTemplateTest {
 
             assertThat(timelineWithImage).isEqualTo(2);
             assertThat(timelineWithoutImage).isEqualTo(1);
-            assertThat(tocSlots).isEqualTo(0);
+            assertThat(tocSlots).isEqualTo(1);
         }
 
         @Test
@@ -1626,6 +1629,79 @@ class PresentationWorkflowNodesTemplateTest {
         assertThat(backgroundSlots.invoke(tocPolicy)).isEqualTo(1);
         assertThat(backgroundSlots.invoke(transitionPolicy)).isEqualTo(1);
         assertThat(backgroundSlots.invoke(thanksPolicy)).isEqualTo(1);
+    }
+
+    @Test
+    void compileSlideXmlUsesHeroImageAsBackgroundForCoverGroupPages() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        String xml = (String) method.invoke(nodes, PresentationSlideIR.builder()
+                        .slideId("slide-2")
+                        .pageIndex(2)
+                        .slideRole("section")
+                        .pageType("TOC")
+                        .title("目录")
+                        .visualIntent("balance")
+                        .elements(List.of(
+                                PresentationElementIR.builder()
+                                        .elementId("slide-2-title")
+                                        .elementKind(com.lark.imcollab.common.model.enums.PresentationElementKind.TITLE)
+                                        .layoutBox(PresentationLayoutSpec.builder().templateVariant("rail-notes").build())
+                                        .semanticRole("title")
+                                        .textContent("目录")
+                                        .build(),
+                                PresentationElementIR.builder()
+                                        .elementId("slide-2-image")
+                                        .elementKind(com.lark.imcollab.common.model.enums.PresentationElementKind.IMAGE)
+                                        .semanticRole("hero-image")
+                                        .assetRef(PresentationAssetRef.builder()
+                                                .fileToken("boxcnTocBackground")
+                                                .altText("目录背景")
+                                                .build())
+                                        .build()))
+                        .build(),
+                8,
+                defaultOptions());
+
+        assertThat(xml).contains("<img src=\"boxcnTocBackground\"");
+    }
+
+    @Test
+    void selectTimelineImageTasksFallsBackToSlideTitleWhenNoExplicitTimelineTasksExist() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "selectTimelineImageTasks",
+                PresentationImagePlan.PageImagePlan.class,
+                PresentationSlidePlan.class);
+        method.setAccessible(true);
+
+        PresentationImagePlan.PageImagePlan pagePlan = PresentationImagePlan.PageImagePlan.builder()
+                .contentImageTasks(List.of())
+                .build();
+        PresentationSlidePlan slide = PresentationSlidePlan.builder()
+                .slideId("slide-6")
+                .title("经典行程")
+                .layout("timeline")
+                .pageType("TIMELINE")
+                .templateVariant("horizontal-milestones")
+                .keyPoints(List.of("上午游西湖", "中午品尝杭帮菜", "下午前往灵隐寺"))
+                .build();
+
+        @SuppressWarnings("unchecked")
+        List<PresentationAssetPlan.TimelineImageTask> tasks =
+                (List<PresentationAssetPlan.TimelineImageTask>) method.invoke(nodes, pagePlan, slide);
+
+        assertThat(tasks).hasSize(3);
+        assertThat(tasks).allSatisfy(task -> {
+            assertThat(task.getAssetTask()).isNotNull();
+            assertThat(task.getAssetTask().getPreferredSourceType()).isEqualTo("CONTENT_IMAGE");
+            assertThat(task.getAssetTask().getPurpose()).contains("时间轴节点配图");
+            assertThat(task.getAssetTask().getQuery()).contains("经典行程");
+        });
     }
 
     @Test
