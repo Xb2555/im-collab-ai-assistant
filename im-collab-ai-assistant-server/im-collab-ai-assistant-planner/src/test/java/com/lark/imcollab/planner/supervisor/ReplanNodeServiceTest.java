@@ -639,6 +639,86 @@ class ReplanNodeServiceTest {
     }
 
     @Test
+    void completedArtifactTargetTakesPrecedenceOverKeepExistingCreateNewPolicy() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        String instruction = "在第二页后面加一页，关于罗非鱼66的内容\n目标产物ID：artifact-ppt-1\n产物策略：KEEP_EXISTING_CREATE_NEW";
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve(eq(instruction), any()))
+                .thenReturn(PresentationEditIntent.builder()
+                        .clarificationNeeded(false)
+                        .actionType(PresentationEditActionType.INSERT_SLIDE)
+                        .intentType(PresentationIterationIntentType.INSERT)
+                        .insertAfterPageIndex(2)
+                        .slideTitle("罗非鱼66")
+                        .slideBody("内容随意编造")
+                        .operations(List.of(PresentationEditOperation.builder()
+                                .actionType(PresentationEditActionType.INSERT_SLIDE)
+                                .insertAfterPageIndex(2)
+                                .slideTitle("罗非鱼66")
+                                .slideBody("内容随意编造")
+                                .build()))
+                        .build());
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .summary("已在第 2 页后新增一页：罗非鱼66")
+                .modifiedSlides(List.of("3"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", instruction, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已在第 2 页后新增一页：罗非鱼66");
+        verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
+        verify(adjustmentInterpreter, never()).interpret(any(), anyString(), any());
+        verify(planningNodeService, never()).plan(anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
+    void completedArtifactTargetUsesSoftEditFallbackForNaturalPptInsertInstruction() {
+        PlanTaskSession session = completedSession();
+        ArtifactRecord artifact = pptArtifact();
+        TaskRecord task = TaskRecord.builder()
+                .taskId("task-1")
+                .status(TaskStatusEnum.COMPLETED)
+                .progress(100)
+                .build();
+        String instruction = "在第二页加一页，关于罗非鱼66的内容\n目标产物ID：artifact-ppt-1";
+        when(sessionService.getOrCreate("task-1")).thenReturn(session);
+        when(stateStore.findArtifactsByTaskId("task-1")).thenReturn(List.of(artifact));
+        when(stateStore.findTask("task-1")).thenReturn(Optional.of(task));
+        when(presentationEditIntentFacade.resolve(eq(instruction), any()))
+                .thenReturn(PresentationEditIntent.builder()
+                        .clarificationNeeded(true)
+                        .clarificationHint("请明确新增页标题和正文")
+                        .build());
+        when(presentationIterationFacade.edit(any(PresentationIterationRequest.class))).thenReturn(PresentationIterationVO.builder()
+                .taskId("task-1")
+                .artifactId("artifact-ppt-1")
+                .presentationId("slides-token")
+                .summary("已在第 2 页后新增一页：罗非鱼66")
+                .modifiedSlides(List.of("3"))
+                .build());
+
+        PlanTaskSession result = service.replan("task-1", instruction, null);
+
+        assertThat(result.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(result.getIntakeState().getAssistantReply()).isEqualTo("已在第 2 页后新增一页：罗非鱼66");
+        verify(presentationIterationFacade).edit(any(PresentationIterationRequest.class));
+        verify(adjustmentInterpreter, never()).interpret(any(), anyString(), any());
+        verify(planningNodeService, never()).plan(anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
     void completedNaturalPptTitleEditUsesResolvedIntentWithoutClarification() {
         PlanTaskSession session = completedSession();
         ArtifactRecord artifact = pptArtifact();

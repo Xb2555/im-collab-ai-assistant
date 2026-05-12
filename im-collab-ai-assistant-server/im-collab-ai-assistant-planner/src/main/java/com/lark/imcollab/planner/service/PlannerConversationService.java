@@ -913,6 +913,7 @@ public class PlannerConversationService {
         TaskIntakeState intakeState = selected.getIntakeState() == null
                 ? TaskIntakeState.builder().build()
                 : selected.getIntakeState();
+        resetCompletedTaskContinuationState(intakeState);
         intakeState.setIntakeType(TaskIntakeTypeEnum.STATUS_QUERY);
         intakeState.setContinuedConversation(true);
         intakeState.setContinuationKey(resolution == null ? null : resolution.continuationKey());
@@ -927,7 +928,13 @@ public class PlannerConversationService {
         intakeState.setAssistantReply(selectedCompletedTaskReply(candidate, restoredRecommendations));
         intakeState.setReadOnlyView("COMPLETED_TASKS");
         selected.setIntakeState(intakeState);
-        log.info("read_only_skipped_session_persist taskId={} planningPhase={} intakeType={} readOnlyView={} conversationKey={}",
+        selected.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        selected.setTransitionReason("completed task selected from list");
+        saveWithoutVersionChangeBestEffort(selected, current -> {
+            current.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+            current.setTransitionReason("completed task selected from list");
+        }, "selected_completed_task_reply");
+        log.info("read_only_completed_task_persisted taskId={} planningPhase={} intakeType={} readOnlyView={} conversationKey={}",
                 selected.getTaskId(),
                 selected.getPlanningPhase(),
                 intakeState.getIntakeType(),
@@ -1220,6 +1227,7 @@ public class PlannerConversationService {
         TaskIntakeState intakeState = response.getIntakeState() == null
                 ? TaskIntakeState.builder().build()
                 : response.getIntakeState();
+        resetCompletedTaskContinuationState(intakeState);
         intakeState.setIntakeType(TaskIntakeTypeEnum.STATUS_QUERY);
         intakeState.setContinuedConversation(true);
         intakeState.setContinuationKey(resolution == null ? null : resolution.continuationKey());
@@ -1230,14 +1238,38 @@ public class PlannerConversationService {
         intakeState.setRoutingReason("current completed task resumed from continuation choice");
         intakeState.setAssistantReply(buildCurrentTaskActionSelectionReply(choice, recommendations));
         intakeState.setReadOnlyView("COMPLETED_TASKS");
-        intakeState.setPendingInteractionType(null);
-        intakeState.setPendingCurrentTaskContinuationChoice(null);
-        intakeState.setPendingFollowUpConflictChoice(null);
         response.setIntakeState(intakeState);
+        response.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+        response.setTransitionReason("completed task resumed from continuation choice");
+        saveWithoutVersionChangeBestEffort(response, current -> {
+            current.setPlanningPhase(PlanningPhaseEnum.COMPLETED);
+            current.setTransitionReason("completed task resumed from continuation choice");
+        }, "resume_completed_task_from_choice");
         if (conversationTaskStateService != null) {
             conversationTaskStateService.syncFromSession(response);
         }
         return response;
+    }
+
+    private void resetCompletedTaskContinuationState(TaskIntakeState intakeState) {
+        if (intakeState == null) {
+            return;
+        }
+        intakeState.setPendingInteractionType(null);
+        intakeState.setPendingTaskSelection(null);
+        intakeState.setPendingArtifactSelection(null);
+        intakeState.setPendingFollowUpConflictChoice(null);
+        intakeState.setPendingCurrentTaskContinuationChoice(null);
+        intakeState.setPendingAdjustmentInstruction(null);
+        intakeState.setPendingDocumentIterationTaskId(null);
+        intakeState.setPendingDocumentArtifactId(null);
+        intakeState.setPendingDocumentDocUrl(null);
+        intakeState.setPendingDocumentApprovalSummary(null);
+        intakeState.setPendingDocumentApprovalMode(null);
+        intakeState.setResumeOriginalExecutionAvailable(false);
+        intakeState.setReplanScope(null);
+        intakeState.setReplanAnchorCardId(null);
+        intakeState.setPreserveExistingArtifactsOnExecution(false);
     }
 
     private String buildCurrentTaskActionSelectionReply(

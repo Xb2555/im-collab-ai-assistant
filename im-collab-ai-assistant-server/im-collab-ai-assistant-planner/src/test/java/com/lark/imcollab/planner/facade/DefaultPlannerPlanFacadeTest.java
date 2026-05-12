@@ -750,6 +750,86 @@ class DefaultPlannerPlanFacadeTest {
     }
 
     @Test
+    void previewImmediateReplyUsesSharedInferredArtifactRouteForCompletedPptInsertEdit() {
+        PlannerConversationService conversationService = mock(PlannerConversationService.class);
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        LlmIntentClassifier classifier = mock(LlmIntentClassifier.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
+        DefaultPlannerPlanFacade facade = new DefaultPlannerPlanFacade(
+                conversationService,
+                resolver,
+                sessionService,
+                classifier,
+                conversationTaskStateService,
+                matcher,
+                recoveryService
+        );
+
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        String input = "在第一页后面加一页关于罗非鱼66的内容，随意编造即可";
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-ppt")).thenReturn(completed);
+        when(classifier.classify(completed, input, true))
+                .thenReturn(Optional.of(new IntentRoutingResult(
+                        TaskCommandTypeEnum.START_TASK,
+                        0.92d,
+                        "llm classified as standalone task",
+                        input,
+                        false
+                )));
+        when(resolver.conversationState(context)).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-ppt")
+                        .lastCompletedTaskId("task-ppt")
+                        .build()
+        ));
+        when(resolver.resolveEditableArtifacts("task-ppt")).thenReturn(List.of(
+                com.lark.imcollab.common.model.entity.ArtifactRecord.builder()
+                        .artifactId("artifact-ppt-1")
+                        .taskId("task-ppt")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .build()));
+        when(resolver.isTaskCurrentInConversation("task-ppt", context)).thenReturn(true);
+        when(presentationEditIntentFacade.resolve(eq(input), eq(context)))
+                .thenReturn(com.lark.imcollab.common.model.entity.PresentationEditIntent.builder()
+                        .clarificationNeeded(true)
+                        .clarificationHint("请明确新增页标题和正文")
+                        .build());
+        when(resolver.inferEditableArtifact("task-ppt", input))
+                .thenReturn(Optional.of(com.lark.imcollab.common.model.entity.ArtifactRecord.builder()
+                        .artifactId("artifact-ppt-1")
+                        .taskId("task-ppt")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .build()));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.empty());
+
+        String reply = facade.previewImmediateReply(input, context, null, null);
+
+        assertThat(reply).isEqualTo("🔄 这条调整我收到了，我先顺着当前任务梳理一下，再把更新结果回给你。");
+        verify(matcher, never()).match(anyString(), any(), anyBoolean(), anyBoolean());
+    }
+
+    @Test
     void previewImmediateReplyDoesNotTreatObviousNewTaskAsFollowUp() {
         PlannerConversationService conversationService = mock(PlannerConversationService.class);
         TaskSessionResolver resolver = mock(TaskSessionResolver.class);

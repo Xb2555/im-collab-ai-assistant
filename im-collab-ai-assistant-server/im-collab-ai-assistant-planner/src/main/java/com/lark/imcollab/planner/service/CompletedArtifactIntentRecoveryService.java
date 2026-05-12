@@ -194,12 +194,33 @@ public class CompletedArtifactIntentRecoveryService {
             return resolveDirectRouteByType(ArtifactTypeEnum.PPT, pptRecoverable, pptCandidates, "explicit PPT edit");
         }
         if (docRecoverable == pptRecoverable) {
-            return DirectRouteEvaluation.none(docRecoverable ? "both DOC and PPT semantics matched" : "no concrete edit semantics matched");
+            return inferredDirectRouteEvaluation(session, instruction, explicitType, docCandidates, pptCandidates)
+                    .orElseGet(() -> DirectRouteEvaluation.none(docRecoverable ? "both DOC and PPT semantics matched" : "no concrete edit semantics matched"));
         }
         if (docRecoverable) {
             return resolveDirectRouteByType(ArtifactTypeEnum.DOC, true, docCandidates, "implicit DOC edit");
         }
         return resolveDirectRouteByType(ArtifactTypeEnum.PPT, true, pptCandidates, "implicit PPT edit");
+    }
+
+    private Optional<DirectRouteEvaluation> inferredDirectRouteEvaluation(
+            PlanTaskSession session,
+            String instruction,
+            ArtifactTypeEnum explicitType,
+            List<ArtifactRecord> docCandidates,
+            List<ArtifactRecord> pptCandidates
+    ) {
+        if (session == null || !hasText(session.getTaskId()) || !hasText(instruction)) {
+            return Optional.empty();
+        }
+        return sessionResolver.inferEditableArtifact(session.getTaskId(), instruction)
+                .filter(artifact -> explicitType == null || artifact.getType() == explicitType)
+                .map(ArtifactRecord::getType)
+                .map(type -> {
+                    List<ArtifactRecord> candidates = type == ArtifactTypeEnum.DOC ? docCandidates : pptCandidates;
+                    return resolveDirectRouteByType(type, !candidates.isEmpty(), candidates, "soft inferred " + type.name() + " edit");
+                })
+                .filter(evaluation -> evaluation.type() != DirectRouteType.NONE);
     }
 
     boolean isSoftCompletedArtifactEditCandidate(String instruction) {

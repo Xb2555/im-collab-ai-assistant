@@ -3,6 +3,7 @@ package com.lark.imcollab.planner.service;
 import com.lark.imcollab.common.model.entity.PendingTaskCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactCandidate;
 import com.lark.imcollab.common.model.entity.PendingArtifactSelection;
+import com.lark.imcollab.common.model.entity.PendingCurrentTaskContinuationChoice;
 import com.lark.imcollab.common.model.entity.PendingFollowUpRecommendation;
 import com.lark.imcollab.common.model.entity.PendingTaskSelection;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
@@ -16,6 +17,7 @@ import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.AdjustmentTargetEnum;
 import com.lark.imcollab.common.model.enums.ArtifactTypeEnum;
 import com.lark.imcollab.common.model.enums.FollowUpModeEnum;
+import com.lark.imcollab.common.model.enums.PendingInteractionTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanCardTypeEnum;
 import com.lark.imcollab.common.model.enums.PlanningPhaseEnum;
 import com.lark.imcollab.common.model.enums.TaskIntakeTypeEnum;
@@ -38,6 +40,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -237,6 +240,216 @@ class PlannerConversationCompletedSelectionTest {
         assertThat(result).isSameAs(completed);
         verify(graphRunner).run(any(), eq("task-ppt"), eq("把第二页标题改成项目总结\n目标产物ID：artifact-ppt-9"), eq(context), isNull());
         verify(taskBridgeService).ensureTask(completed);
+    }
+
+    @Test
+    void completedTaskListSelectionClearsStalePendingStateBeforeNextArtifactEdit() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession selector = PlanTaskSession.builder()
+                .taskId("selector-task")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .intakeState(TaskIntakeState.builder()
+                        .pendingTaskSelection(PendingTaskSelection.builder()
+                                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                                .selectionPurpose("COMPLETED_TASK_LIST")
+                                .originalInstruction("已完成任务列表")
+                                .candidates(List.of(candidate("task-ppt", "北京旅游PPT")))
+                                .expiresAt(Instant.now().plusSeconds(60))
+                                .build())
+                        .build())
+                .build();
+        PlanTaskSession selected = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.ASK_USER)
+                .intakeState(TaskIntakeState.builder()
+                        .pendingInteractionType(PendingInteractionTypeEnum.CURRENT_TASK_CONTINUATION_CHOICE)
+                        .pendingCurrentTaskContinuationChoice(PendingCurrentTaskContinuationChoice.builder()
+                                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                                .originalInstruction("帮我整理一份材料")
+                                .targetTaskId("task-ppt")
+                                .expiresAt(Instant.now().plusSeconds(60))
+                                .build())
+                        .pendingAdjustmentInstruction("旧的挂起修改")
+                        .assistantReply("旧的待确认文案")
+                        .build())
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(
+                new TaskSessionResolution("selector-task", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"),
+                new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root")
+        );
+        when(sessionService.get("selector-task")).thenReturn(selector);
+        when(sessionService.get("task-ppt")).thenReturn(selected);
+        when(intakeService.decide(selected, "在第二页加一页，关于罗非鱼66的内容", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.PLAN_ADJUSTMENT,
+                        "在第二页加一页，关于罗非鱼66的内容",
+                        "completed artifact edit",
+                        null
+                ));
+        when(resolver.isTaskCurrentInConversation("task-ppt", context)).thenReturn(true);
+        when(resolver.hasEditableArtifacts("task-ppt")).thenReturn(true);
+        when(resolver.inferEditableArtifact("task-ppt", "在第二页加一页，关于罗非鱼66的内容"))
+                .thenReturn(Optional.of(ArtifactRecord.builder()
+                        .artifactId("artifact-ppt-1")
+                        .taskId("task-ppt")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .build()));
+        PlanTaskSession adjusted = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(graphRunner.run(any(), eq("task-ppt"),
+                eq("在第二页加一页，关于罗非鱼66的内容\n目标产物ID：artifact-ppt-1"),
+                eq(context), isNull()))
+                .thenReturn(adjusted);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner
+        );
+
+        PlanTaskSession selectedReply = service.handlePlanRequest("1", context, null, null);
+        PlanTaskSession result = service.handlePlanRequest("在第二页加一页，关于罗非鱼66的内容", context, null, null);
+
+        assertThat(selectedReply.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(selectedReply.getIntakeState().getPendingInteractionType()).isNull();
+        assertThat(selectedReply.getIntakeState().getPendingCurrentTaskContinuationChoice()).isNull();
+        assertThat(selectedReply.getIntakeState().getPendingAdjustmentInstruction()).isNull();
+        assertThat(result).isSameAs(adjusted);
+        verify(sessionService, atLeastOnce()).saveWithoutVersionChange(selected);
+        verify(graphRunner).run(any(), eq("task-ppt"),
+                eq("在第二页加一页，关于罗非鱼66的内容\n目标产物ID：artifact-ppt-1"),
+                eq(context), isNull());
+    }
+
+    @Test
+    void completedTaskListSelectionStillAllowsFollowUpRecommendationExecution() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        FollowUpRecommendationExecutionService followUpRecommendationExecutionService = mock(FollowUpRecommendationExecutionService.class);
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PendingFollowUpRecommendation summaryRecommendation = PendingFollowUpRecommendation.builder()
+                .recommendationId("GENERATE_SHAREABLE_SUMMARY")
+                .targetTaskId("task-ppt")
+                .followUpMode(FollowUpModeEnum.CONTINUE_CURRENT_TASK)
+                .targetDeliverable(ArtifactTypeEnum.SUMMARY)
+                .plannerInstruction("保留现有产物，新增一段可直接发送的任务摘要。")
+                .suggestedUserInstruction("基于当前任务内容生成一段可直接发送的摘要")
+                .build();
+        PlanTaskSession selector = PlanTaskSession.builder()
+                .taskId("selector-task")
+                .planningPhase(PlanningPhaseEnum.INTAKE)
+                .intakeState(TaskIntakeState.builder()
+                        .pendingTaskSelection(PendingTaskSelection.builder()
+                                .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                                .selectionPurpose("COMPLETED_TASK_LIST")
+                                .originalInstruction("已完成任务列表")
+                                .candidates(List.of(candidate("task-ppt", "北京旅游PPT")))
+                                .expiresAt(Instant.now().plusSeconds(60))
+                                .build())
+                        .build())
+                .build();
+        PlanTaskSession selected = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .intakeState(TaskIntakeState.builder().build())
+                .build();
+        PlanTaskSession followUp = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.PLAN_READY)
+                .build();
+        when(resolver.resolve(null, context)).thenReturn(
+                new TaskSessionResolution("selector-task", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"),
+                new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root")
+        );
+        when(sessionService.get("selector-task")).thenReturn(selector);
+        when(sessionService.get("task-ppt")).thenReturn(selected);
+        when(conversationTaskStateService.restorePendingFollowUpRecommendationsForTask(
+                "LARK_PRIVATE_CHAT:chat-1:chat-root",
+                "task-ppt"
+        )).thenReturn(List.of(summaryRecommendation));
+        when(intakeService.decide(selected, "帮我生成一份摘要", null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.NEW_TASK,
+                        "帮我生成一份摘要",
+                        "upstream start task for bare summary",
+                        null
+                ));
+        when(conversationTaskStateService.find("LARK_PRIVATE_CHAT:chat-1:chat-root")).thenReturn(Optional.of(
+                ConversationTaskState.builder()
+                        .conversationKey("LARK_PRIVATE_CHAT:chat-1:chat-root")
+                        .activeTaskId("task-ppt")
+                        .lastCompletedTaskId("task-ppt")
+                        .pendingFollowUpRecommendations(List.of(summaryRecommendation))
+                        .build()
+        ));
+        when(matcher.classifyCarryForwardCandidate("帮我生成一份摘要", List.of(summaryRecommendation)))
+                .thenReturn(PendingFollowUpRecommendationMatcher.CarryForwardHint.SEMANTIC_MATCH_WORTH_LLM);
+        when(matcher.match("帮我生成一份摘要", List.of(summaryRecommendation), false, true))
+                .thenReturn(PendingFollowUpRecommendationMatcher.MatchResult.selected(summaryRecommendation));
+        when(followUpRecommendationExecutionService.executePendingRecommendation(
+                summaryRecommendation,
+                context,
+                "帮我生成一份摘要",
+                "LARK_PRIVATE_CHAT:chat-1:chat-root"
+        )).thenReturn(followUp);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner,
+                null,
+                null,
+                null,
+                new CompletedArtifactIntentRecoveryService(resolver),
+                null,
+                conversationTaskStateService,
+                matcher,
+                followUpRecommendationExecutionService,
+                null,
+                new PendingFollowUpConflictArbiter(matcher, new PlannerProperties()),
+                new PlannerProperties()
+        );
+
+        PlanTaskSession selectedReply = service.handlePlanRequest("1", context, null, null);
+        PlanTaskSession result = service.handlePlanRequest("帮我生成一份摘要", context, null, null);
+
+        assertThat(selectedReply.getPlanningPhase()).isEqualTo(PlanningPhaseEnum.COMPLETED);
+        assertThat(selectedReply.getIntakeState().getAssistantReply()).contains("推荐下一步");
+        assertThat(result).isSameAs(followUp);
+        verify(sessionService, atLeastOnce()).saveWithoutVersionChange(selected);
+        verify(followUpRecommendationExecutionService).executePendingRecommendation(
+                summaryRecommendation,
+                context,
+                "帮我生成一份摘要",
+                "LARK_PRIVATE_CHAT:chat-1:chat-root"
+        );
     }
 
     @Test
@@ -1153,6 +1366,100 @@ class PlannerConversationCompletedSelectionTest {
         assertThat(result).isSameAs(adjusted);
         verify(graphRunner).run(any(), eq("task-ppt"),
                 eq("改PPT，第二页的内容概览多加一小点\n目标产物ID：artifact-ppt-1"),
+                eq(context), isNull());
+        verifyNoInteractions(matcher);
+        verify(taskBridgeService).ensureTask(adjusted);
+    }
+
+    @Test
+    void completedCurrentTaskPptInsertEditRecoversFromStandaloneTaskViaSharedInference() {
+        TaskSessionResolver resolver = mock(TaskSessionResolver.class);
+        TaskIntakeService intakeService = mock(TaskIntakeService.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskBridgeService taskBridgeService = mock(TaskBridgeService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerSupervisorGraphRunner graphRunner = mock(PlannerSupervisorGraphRunner.class);
+        ConversationTaskStateService conversationTaskStateService = mock(ConversationTaskStateService.class);
+        PendingFollowUpRecommendationMatcher matcher = mock(PendingFollowUpRecommendationMatcher.class);
+        DocumentEditIntentFacade documentEditIntentFacade = mock(DocumentEditIntentFacade.class);
+        PresentationEditIntentFacade presentationEditIntentFacade = mock(PresentationEditIntentFacade.class);
+        CompletedArtifactIntentRecoveryService recoveryService = new CompletedArtifactIntentRecoveryService(
+                resolver,
+                provider(documentEditIntentFacade),
+                provider(presentationEditIntentFacade)
+        );
+        WorkspaceContext context = WorkspaceContext.builder()
+                .inputSource("LARK_PRIVATE_CHAT")
+                .chatId("chat-1")
+                .senderOpenId("ou-1")
+                .build();
+        PlanTaskSession completed = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        String input = "在第一页后面加一页关于罗非鱼66的内容，随意编造即可";
+        when(resolver.resolve(null, context)).thenReturn(new TaskSessionResolution("task-ppt", true, "LARK_PRIVATE_CHAT:chat-1:chat-root"));
+        when(sessionService.get("task-ppt")).thenReturn(completed);
+        when(intakeService.decide(completed, input, null, true))
+                .thenReturn(new TaskIntakeDecision(
+                        TaskIntakeTypeEnum.NEW_TASK,
+                        input,
+                        "llm classified as standalone task",
+                        null
+                ));
+        when(resolver.isTaskCurrentInConversation("task-ppt", context)).thenReturn(true);
+        when(resolver.hasEditableArtifacts("task-ppt")).thenReturn(true);
+        when(resolver.resolveEditableArtifacts("task-ppt")).thenReturn(List.of(
+                ArtifactRecord.builder()
+                        .artifactId("artifact-ppt-1")
+                        .taskId("task-ppt")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .build()
+        ));
+        when(presentationEditIntentFacade.resolve(eq(input), eq(context)))
+                .thenReturn(com.lark.imcollab.common.model.entity.PresentationEditIntent.builder()
+                        .clarificationNeeded(true)
+                        .clarificationHint("请明确新增页标题和正文")
+                        .build());
+        when(resolver.inferEditableArtifact("task-ppt", input))
+                .thenReturn(java.util.Optional.of(ArtifactRecord.builder()
+                        .artifactId("artifact-ppt-1")
+                        .taskId("task-ppt")
+                        .type(ArtifactTypeEnum.PPT)
+                        .url("https://slides.example/1")
+                        .build()));
+        PlanTaskSession adjusted = PlanTaskSession.builder()
+                .taskId("task-ppt")
+                .planningPhase(PlanningPhaseEnum.COMPLETED)
+                .build();
+        when(graphRunner.run(any(), eq("task-ppt"),
+                eq("在第一页后面加一页关于罗非鱼66的内容，随意编造即可\n目标产物ID：artifact-ppt-1"),
+                eq(context), isNull()))
+                .thenReturn(adjusted);
+        PlannerConversationService service = new PlannerConversationService(
+                resolver,
+                intakeService,
+                sessionService,
+                taskBridgeService,
+                memoryService,
+                graphRunner,
+                null,
+                null,
+                null,
+                recoveryService,
+                null,
+                conversationTaskStateService,
+                matcher,
+                null,
+                null
+        );
+
+        PlanTaskSession result = service.handlePlanRequest(input, context, null, null);
+
+        assertThat(result).isSameAs(adjusted);
+        verify(graphRunner).run(any(), eq("task-ppt"),
+                eq("在第一页后面加一页关于罗非鱼66的内容，随意编造即可\n目标产物ID：artifact-ppt-1"),
                 eq(context), isNull());
         verifyNoInteractions(matcher);
         verify(taskBridgeService).ensureTask(adjusted);

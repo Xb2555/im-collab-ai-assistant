@@ -44,6 +44,9 @@ import com.lark.imcollab.planner.replan.PlanPatchOperation;
 import com.lark.imcollab.planner.service.PlanQualityService;
 import com.lark.imcollab.planner.service.PlannerSessionService;
 import com.lark.imcollab.planner.service.ReplanScopeService;
+import com.lark.imcollab.planner.service.RoutingEvidence;
+import com.lark.imcollab.planner.service.RoutingEvidenceExtractor;
+import com.lark.imcollab.planner.service.SignalLevel;
 import com.lark.imcollab.planner.service.TaskRuntimeService;
 import com.lark.imcollab.store.planner.PlannerStateStore;
 import org.springframework.beans.factory.ObjectProvider;
@@ -70,6 +73,7 @@ public class ReplanNodeService {
     private static final Pattern FEISHU_AT_TAG = Pattern.compile("<at\\b[^>]*>.*?</at>", Pattern.CASE_INSENSITIVE);
     private static final Pattern FEISHU_MENTION_TOKEN = Pattern.compile("@_user_\\d+");
     private static final Pattern SINGLE_DIGIT_SELECTION = Pattern.compile("(?<!\\d)([1-5])(?!\\d)");
+    private final RoutingEvidenceExtractor routingEvidenceExtractor = new RoutingEvidenceExtractor();
     private final PlannerSessionService sessionService;
     private final PlanAdjustmentInterpreter adjustmentInterpreter;
     private final PlannerPatchTool patchTool;
@@ -592,13 +596,6 @@ public class ReplanNodeService {
     ) {
         String instruction = normalize(adjustmentInstruction);
         String taskId = session.getTaskId();
-        if (shouldExtendCompletedTask(session, instruction)) {
-            return applyCompletedTaskPatch(session, instruction, workspaceContext);
-        }
-        if (wantsNewArtifact(instruction) || wantsOverallReplan(instruction)) {
-            return planningNodeService.plan(taskId, instruction, workspaceContext, instruction);
-        }
-
         boolean asksPpt = containsAny(instruction, "ppt", "演示稿", "幻灯片");
         boolean asksDoc = containsAny(instruction, "文档", "doc");
         List<ArtifactRecord> allEditableArtifacts = editableArtifacts(taskId, false, false);
@@ -618,6 +615,12 @@ public class ReplanNodeService {
         }
         if (targetArtifact.isPresent()) {
             return editExistingArtifact(session, targetArtifact.get(), instruction, workspaceContext);
+        }
+        if (shouldExtendCompletedTask(session, instruction)) {
+            return applyCompletedTaskPatch(session, instruction, workspaceContext);
+        }
+        if (wantsNewArtifact(instruction) || wantsOverallReplan(instruction)) {
+            return planningNodeService.plan(taskId, instruction, workspaceContext, instruction);
         }
         return askCompletedAdjustmentQuestion(
                 session,
@@ -764,22 +767,40 @@ public class ReplanNodeService {
         }
         persistArtifactEditSourceScope(session, preparedContext.workspaceContext());
         if (artifact.getType() == ArtifactTypeEnum.PPT) {
-            if (!hasConcretePptEditInstruction(instruction, preparedContext.workspaceContext())) {
+            boolean concretePptEdit = hasConcretePptEditInstruction(instruction, preparedContext.workspaceContext());
+            if (!concretePptEdit
+                    && !isSoftCompletedArtifactEditInstruction(instruction, artifact.getType())) {
                 return askCompletedAdjustmentQuestion(
                         session,
                         instruction,
                         "可以改现有 PPT。你可以一次说明一个或多个页面要怎么改，比如“把第2页标题改成采购风险与建议”“在第2页后插入一页，标题为风险应对，正文为里程碑、风险、预算”“删除第3页”“把第4页移到第2页后”。"
                 );
             }
+            if (!concretePptEdit) {
+                log.info("completed_artifact_soft_edit_fallback taskId={} artifactId={} artifactType={} instruction='{}'",
+                        session == null ? null : session.getTaskId(),
+                        artifact.getArtifactId(),
+                        artifact.getType(),
+                        instruction);
+            }
             return editExistingPpt(session, artifact, instruction, preparedContext.workspaceContext());
         }
         if (artifact.getType() == ArtifactTypeEnum.DOC) {
-            if (!hasConcreteDocEditInstruction(instruction, preparedContext.workspaceContext())) {
+            boolean concreteDocEdit = hasConcreteDocEditInstruction(instruction, preparedContext.workspaceContext());
+            if (!concreteDocEdit
+                    && !isSoftCompletedArtifactEditInstruction(instruction, artifact.getType())) {
                 return askCompletedAdjustmentQuestion(
                         session,
                         instruction,
                         "可以改现有文档。你想补哪一段、改哪个章节，或插入什么内容？比如“在 1.2 后补充一段风险分析”。"
                 );
+            }
+            if (!concreteDocEdit) {
+                log.info("completed_artifact_soft_edit_fallback taskId={} artifactId={} artifactType={} instruction='{}'",
+                        session == null ? null : session.getTaskId(),
+                        artifact.getArtifactId(),
+                        artifact.getType(),
+                        instruction);
             }
             return editExistingDoc(session, artifact, instruction, preparedContext.workspaceContext());
         }
@@ -1116,6 +1137,56 @@ public class ReplanNodeService {
         }
         DocumentEditIntent intent = facade.resolve(instruction, workspaceContext);
         return intent != null && !intent.isClarificationNeeded();
+    }
+
+    private boolean isSoftCompletedArtifactEditInstruction(String instruction, ArtifactTypeEnum artifactType) {
+        if (!hasText(instruction) || artifactType == null) {
+            return false;
+        }
+        RoutingEvidence evidence = routingEvidenceExtractor.extract(instruction);
+        if (evidence.freshTaskLevel() == SignalLevel.HIGH) {
+            return false;
+        }
+        if (evidence.ambiguousMaterialOrganizationLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()) {
+            return false;
+        }
+        if (evidence.newDeliverableLevel().ordinal() >= SignalLevel.MEDIUM.ordinal()) {
+            return false;
+        }
+        if (evidence.artifactEditLevel().ordinal() < SignalLevel.MEDIUM.ordinal()) {
+            return false;
+        }
+        return switch (artifactType) {
+            case PPT -> looksLikeSoftPresentationEdit(evidence);
+            case DOC -> looksLikeSoftDocumentEdit(evidence);
+            default -> false;
+        };
+    }
+
+    private boolean looksLikeSoftPresentationEdit(RoutingEvidence evidence) {
+        String normalized = evidence == null ? null : evidence.normalizedInput();
+        if (!hasText(normalized)) {
+            return false;
+        }
+        return normalized.contains("页")
+                || normalized.contains("封面")
+                || normalized.contains("版式")
+                || normalized.contains("插入")
+                || normalized.contains("新增")
+                || normalized.contains("添加");
+    }
+
+    private boolean looksLikeSoftDocumentEdit(RoutingEvidence evidence) {
+        String normalized = evidence == null ? null : evidence.normalizedInput();
+        if (!hasText(normalized)) {
+            return false;
+        }
+        return normalized.contains("段")
+                || normalized.contains("节")
+                || normalized.contains("章节")
+                || normalized.contains("小节")
+                || normalized.contains("正文")
+                || normalized.contains("标题");
     }
 
     private ContextPreparation prepareWorkspaceContextForArtifactEdit(

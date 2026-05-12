@@ -153,12 +153,6 @@ public class DefaultPlannerPlanFacade implements PlannerPlanFacade {
         if (directRouteEvaluation.type() != CompletedArtifactIntentRecoveryService.DirectRouteType.NONE) {
             return immediateReceipt(TaskCommandTypeEnum.ADJUST_PLAN, AdjustmentTargetEnum.COMPLETED_ARTIFACT, session, workspaceContext);
         }
-        RoutingEvidence evidence = routingEvidenceExtractor.extract(effectiveInput);
-        if (evidence.artifactEditLevel().ordinal() >= com.lark.imcollab.planner.service.SignalLevel.MEDIUM.ordinal()
-                && evidence.newDeliverableLevel().ordinal() < com.lark.imcollab.planner.service.SignalLevel.MEDIUM.ordinal()
-                && evidence.ambiguousMaterialOrganizationLevel().ordinal() < com.lark.imcollab.planner.service.SignalLevel.MEDIUM.ordinal()) {
-            return immediateReceipt(TaskCommandTypeEnum.ADJUST_PLAN, AdjustmentTargetEnum.COMPLETED_ARTIFACT, session, workspaceContext);
-        }
         String followUpPreview = previewPendingFollowUpImmediateReply(session, resolution, effectiveInput, routingResult);
         if (SUPPRESS_IMMEDIATE_REPLY.equals(followUpPreview)) {
             return "";
