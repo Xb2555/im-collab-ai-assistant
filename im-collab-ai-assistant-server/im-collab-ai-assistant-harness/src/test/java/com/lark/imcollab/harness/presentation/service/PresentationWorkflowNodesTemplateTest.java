@@ -10,6 +10,7 @@ import com.lark.imcollab.common.model.entity.PresentationSlideIR;
 import com.lark.imcollab.common.model.enums.PresentationElementKind;
 import com.lark.imcollab.common.model.entity.TaskStepRecord;
 import com.lark.imcollab.harness.presentation.config.PresentationConcurrencySettings;
+import com.lark.imcollab.harness.presentation.config.PresentationAssetSettings;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetPlan;
 import com.lark.imcollab.harness.presentation.model.PresentationAssetResources;
 import com.lark.imcollab.harness.presentation.model.PresentationImageResources;
@@ -1282,7 +1283,7 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
-    void buildSlideIrForTocEmitsDisabledBackgroundLog() throws Exception {
+    void buildSlideIrForTocUsesCoverGroupBackground() throws Exception {
         Method buildSlideIr = PresentationWorkflowNodes.class.getDeclaredMethod(
                 "buildSlideIr",
                 PresentationSlidePlan.class,
@@ -1290,29 +1291,21 @@ class PresentationWorkflowNodesTemplateTest {
                 PresentationAssetResources.class);
         buildSlideIr.setAccessible(true);
 
-        ByteArrayOutputStream err = new ByteArrayOutputStream();
-        PrintStream originalErr = System.err;
-        System.setErr(new PrintStream(err));
-        try {
-            buildSlideIr.invoke(nodes,
-                    PresentationSlidePlan.builder()
-                            .slideId("slide-2")
-                            .index(2)
-                            .title("目录")
-                            .layout("section")
-                            .pageType("TOC")
-                            .build(),
-                    defaultOptions(),
-                    PresentationAssetResources.builder()
-                            .slides(List.of(slideAsset("slide-2", "boxcnCoverBackground")))
-                            .build());
-        } finally {
-            System.setErr(originalErr);
-        }
+        PresentationSlideIR ir = (PresentationSlideIR) buildSlideIr.invoke(nodes,
+                PresentationSlidePlan.builder()
+                        .slideId("slide-2")
+                        .index(2)
+                        .title("目录")
+                        .layout("section")
+                        .pageType("TOC")
+                        .build(),
+                defaultOptions(),
+                PresentationAssetResources.builder()
+                        .slides(List.of(slideAsset("slide-2", "boxcnCoverBackground")))
+                        .build());
 
-        assertThat(err.toString()).contains("ppt.cover-group.background.disabled");
-        assertThat(err.toString()).contains("slideId=slide-2");
-        assertThat(err.toString()).contains("reason=policy-disabled");
+        assertThat(ir.getElements()).extracting(PresentationElementIR::getSemanticRole)
+                .contains("hero-image");
     }
 
     @Nested
@@ -1539,6 +1532,103 @@ class PresentationWorkflowNodesTemplateTest {
     }
 
     @Test
+    void upsertTocSlideUsesDerivedBusinessSectionTitles() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "upsertTocSlide",
+                List.class,
+                com.lark.imcollab.harness.presentation.model.PresentationStoryline.class);
+        method.setAccessible(true);
+
+        List<PresentationSlidePlan> slides = new java.util.ArrayList<>(List.of(
+                PresentationSlidePlan.builder().title("封面").layout("cover").pageType("COVER").build(),
+                PresentationSlidePlan.builder().title("目录").layout("section").pageType("TOC").build(),
+                PresentationSlidePlan.builder().title("章节过渡").layout("section").pageType("TRANSITION").sectionId("s1").sectionTitle("章节过渡").build(),
+                PresentationSlidePlan.builder().title("景点推荐").layout("two-column").pageType("CONTENT").sectionId("s1").sectionTitle("景点推荐").build(),
+                PresentationSlidePlan.builder().title("行程规划").layout("timeline").pageType("TIMELINE").sectionId("s2").sectionTitle("行程规划").build(),
+                PresentationSlidePlan.builder().title("感谢").layout("summary").pageType("THANKS").build()));
+
+        method.invoke(nodes, slides, com.lark.imcollab.harness.presentation.model.PresentationStoryline.builder()
+                .goal("旧目标")
+                .keyMessages(List.of("旧目录A", "旧目录B"))
+                .build());
+
+        PresentationSlidePlan toc = slides.stream()
+                .filter(slide -> "TOC".equalsIgnoreCase(slide.getPageType()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(toc.getKeyPoints()).containsExactly("景点推荐", "行程规划");
+    }
+
+    @Test
+    void compileSlideXmlForTwoColumnIncludesRenderableContentImageTag() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "compileSlideXml",
+                PresentationSlideIR.class,
+                int.class,
+                PresentationGenerationOptions.class);
+        method.setAccessible(true);
+
+        String xml = (String) method.invoke(nodes,
+                PresentationSlideIR.builder()
+                        .slideId("slide-4")
+                        .pageIndex(4)
+                        .slideRole("two-column")
+                        .pageType("CONTENT")
+                        .title("核心景点")
+                        .visualIntent("balance")
+                        .elements(List.of(
+                                PresentationElementIR.builder()
+                                        .elementId("slide-4-title")
+                                        .elementKind(com.lark.imcollab.common.model.enums.PresentationElementKind.TITLE)
+                                        .semanticRole("title")
+                                        .textContent("核心景点")
+                                        .build(),
+                                PresentationElementIR.builder()
+                                        .elementId("slide-4-body")
+                                        .elementKind(com.lark.imcollab.common.model.enums.PresentationElementKind.BODY)
+                                        .semanticRole("body")
+                                        .textContent("西湖；灵隐寺")
+                                        .build(),
+                                PresentationElementIR.builder()
+                                        .elementId("slide-4-image")
+                                        .elementKind(com.lark.imcollab.common.model.enums.PresentationElementKind.IMAGE)
+                                        .semanticRole("hero-image")
+                                        .assetRef(PresentationAssetRef.builder().fileToken("boxcnContent").build())
+                                        .build(),
+                                PresentationElementIR.builder()
+                                        .elementId("slide-4-background-image")
+                                        .elementKind(com.lark.imcollab.common.model.enums.PresentationElementKind.IMAGE)
+                                        .semanticRole("background-image")
+                                        .assetRef(PresentationAssetRef.builder().fileToken("boxcnBackground").build())
+                                        .build()))
+                        .build(),
+                8,
+                defaultOptions());
+
+        assertThat(xml).contains("<img src=\"boxcnBackground\"");
+        assertThat(xml).contains("<img src=\"boxcnContent\"");
+    }
+
+    @Test
+    void templateImagePolicyAllowsBackgroundForCoverGroupPages() throws Exception {
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "templateImagePolicy",
+                PresentationSlidePlan.class);
+        method.setAccessible(true);
+
+        Object tocPolicy = method.invoke(nodes, PresentationSlidePlan.builder().pageType("TOC").layout("section").build());
+        Object transitionPolicy = method.invoke(nodes, PresentationSlidePlan.builder().pageType("TRANSITION").layout("section").build());
+        Object thanksPolicy = method.invoke(nodes, PresentationSlidePlan.builder().pageType("THANKS").layout("summary").build());
+
+        Method backgroundSlots = tocPolicy.getClass().getDeclaredMethod("backgroundSlots");
+        backgroundSlots.setAccessible(true);
+
+        assertThat(backgroundSlots.invoke(tocPolicy)).isEqualTo(1);
+        assertThat(backgroundSlots.invoke(transitionPolicy)).isEqualTo(1);
+        assertThat(backgroundSlots.invoke(thanksPolicy)).isEqualTo(1);
+    }
+
+    @Test
     void uploadResolvedAssetsReusesSharedBackgroundUploadAcrossSlides() throws Exception {
         LarkSlidesTool slidesTool = mock(LarkSlidesTool.class);
         when(slidesTool.uploadMedia(anyString(), anyString())).thenReturn(LarkSlidesMediaUploadResult.builder()
@@ -1641,6 +1731,64 @@ class PresentationWorkflowNodesTemplateTest {
         verify(slidesTool, times(2)).uploadMedia("slides-1", "C:\\temp\\content.jpg");
         assertThat(uploaded.getSlides().get(0).getImages()).hasSize(1);
         assertThat(uploaded.getSlides().get(0).getImages().get(0).getFileToken()).isEqualTo("boxcnContentImage");
+    }
+
+    @Test
+    void imagePipelineDebugModeDoesNotBreakSlideCompilation() throws Exception {
+        PresentationWorkflowNodes debugNodes = new PresentationWorkflowNodes(
+                mock(PresentationExecutionSupport.class),
+                AGENT,
+                AGENT,
+                AGENT,
+                AGENT,
+                AGENT,
+                AGENT,
+                null,
+                new ObjectMapper(),
+                EXECUTOR,
+                CONCURRENCY_SETTINGS,
+                new PresentationAssetSettings(1, 2, 7, 500, 10),
+                true,
+                "");
+
+        Method method = PresentationWorkflowNodes.class.getDeclaredMethod(
+                "buildSlideIr",
+                PresentationSlidePlan.class,
+                PresentationGenerationOptions.class,
+                PresentationAssetResources.class);
+        method.setAccessible(true);
+
+        PresentationSlideIR ir = (PresentationSlideIR) method.invoke(debugNodes,
+                PresentationSlidePlan.builder()
+                        .slideId("slide-4")
+                        .index(4)
+                        .title("核心景点一览")
+                        .layout("two-column")
+                        .pageType("CONTENT")
+                        .templateVariant("dual-cards")
+                        .keyPoints(List.of("西湖", "灵隐寺"))
+                        .build(),
+                defaultOptions(),
+                PresentationAssetResources.builder()
+                        .slides(List.of(PresentationAssetResources.SlideAssetResource.builder()
+                                .slideId("slide-4")
+                                .sharedBackgroundImage(PresentationAssetResources.AssetResource.builder()
+                                        .fileToken("boxcnBackground")
+                                        .build())
+                                .images(List.of(PresentationAssetResources.AssetResource.builder()
+                                        .fileToken("boxcnContent")
+                                        .purpose("正文配图")
+                                        .build()))
+                                .timelineNodeImages(List.of())
+                                .illustrations(List.of())
+                                .diagrams(List.of())
+                                .charts(List.of())
+                                .build()))
+                        .build());
+
+        assertThat(ir).isNotNull();
+        assertThat(ir.getElements()).extracting(PresentationElementIR::getSemanticRole)
+                .contains("hero-image", "background-image");
     }
 
     @Test
