@@ -110,7 +110,7 @@ public class DocumentEditStrategyPlanner {
             case INSERT_WHITEBOARD_AFTER_ANCHOR -> strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentAnchorType.BLOCK,
                     DocumentPatchOperationType.BLOCK_INSERT_AFTER,
                     ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT).build(),
-                    true, DocumentRiskLevel.HIGH);
+                    false, DocumentRiskLevel.MEDIUM);
             case UPDATE_WHITEBOARD_CONTENT -> strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentAnchorType.MEDIA,
                     DocumentPatchOperationType.BLOCK_REPLACE,
                     ExpectedDocumentState.builder().stateType(DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT).build(),

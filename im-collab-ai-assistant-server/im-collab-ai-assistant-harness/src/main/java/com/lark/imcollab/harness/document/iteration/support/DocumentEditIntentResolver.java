@@ -174,6 +174,7 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
             return clarificationIntent(null, "意图解析结果为空，请重新描述要对文档执行的操作");
         }
         intent = normalizeAppendSectionToDocumentEnd(intent);
+        intent = normalizeRichMediaInsertIntent(intent);
         intent = normalizeSectionInsertIntent(intent);
         intent = normalizeSectionInlineInsertIntent(intent);
         intent = normalizeSectionAnchorIntent(intent);
@@ -215,22 +216,42 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         if (intent == null) {
             return null;
         }
-        if (workspaceContext == null || workspaceContext.getAttachmentRefs() == null || workspaceContext.getAttachmentRefs().isEmpty()) {
+        if (workspaceContext == null) {
             return intent;
         }
         MediaAssetSpec currentSpec = intent.getAssetSpec();
         if (currentSpec == null) {
-            if (intent.getSemanticAction() != DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR) {
+            if (intent.getSemanticAction() != DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR
+                    && intent.getSemanticAction() != DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR) {
                 return intent;
             }
             currentSpec = MediaAssetSpec.builder()
-                    .assetType(MediaAssetType.IMAGE)
+                    .assetType(intent.getSemanticAction() == DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR
+                            ? MediaAssetType.WHITEBOARD
+                            : MediaAssetType.IMAGE)
                     .build();
+        }
+        if (currentSpec.getAssetType() == MediaAssetType.WHITEBOARD) {
+            if (!hasText(currentSpec.getGenerationPrompt())) {
+                String contextPrompt = deriveWhiteboardPrompt(intent, workspaceContext);
+                if (hasText(contextPrompt)) {
+                    currentSpec.setGenerationPrompt(contextPrompt);
+                }
+            }
+            intent.setAssetSpec(currentSpec);
+            return intent;
         }
         if (currentSpec.getAssetType() != MediaAssetType.IMAGE) {
             return intent;
         }
         if (hasText(currentSpec.getSourceRef())) {
+            return intent;
+        }
+        if (workspaceContext.getAttachmentRefs() == null || workspaceContext.getAttachmentRefs().isEmpty()) {
+            if (currentSpec.getSourceType() == null && hasText(currentSpec.getGenerationPrompt())) {
+                currentSpec.setSourceType(MediaAssetSourceType.SEARCH);
+                intent.setAssetSpec(currentSpec);
+            }
             return intent;
         }
         String firstAttachment = workspaceContext.getAttachmentRefs().stream()
@@ -246,6 +267,14 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         }
         intent.setAssetSpec(currentSpec);
         return intent;
+    }
+
+    private String deriveWhiteboardPrompt(DocumentEditIntent intent, WorkspaceContext workspaceContext) {
+        String workspaceSummary = summarizeWorkspaceContext(workspaceContext);
+        if (hasText(workspaceSummary) && !"无".equals(workspaceSummary)) {
+            return workspaceSummary;
+        }
+        return intent == null ? null : intent.getUserInstruction();
     }
 
     private String buildPrompt(String instruction, WorkspaceContext workspaceContext) {
@@ -316,6 +345,8 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
                 9. 如果既不能稳定识别章节，也没有真实可引用原文，返回 clarificationNeeded=true，不要编造 anchorSpec。
                 10. 如果用户明确要求“在文档里加/补/新增一个小节或章节”，即使没有给锚点，也应优先识别为 APPEND_SECTION_TO_DOCUMENT_END，而不是要求再次澄清。
                 11. 如果用户说“关于前10分钟的消息总结”“基于最近聊天记录补一节总结”之类，历史消息只是写作素材来源，不等于锚点缺失；只要新增位置默认是文末追加，就不要因为没有章节锚点而澄清。
+                12. 用户要求插入“图片/照片/配图”时，优先使用 INSERT_IMAGE_AFTER_ANCHOR + assetType=IMAGE。
+                13. 用户要求插入“架构图/数据流转图/流程图”时，优先使用 INSERT_WHITEBOARD_AFTER_ANCHOR + assetType=WHITEBOARD，不要降级为图片。
 
                 已有上下文素材：
                 %s
@@ -540,6 +571,12 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
         if (!hasText(instruction)) {
             return currentAction;
         }
+        if (looksLikeWhiteboardInsert(instruction)) {
+            return DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR;
+        }
+        if (looksLikeImageInsert(instruction)) {
+            return DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR;
+        }
         if (INSERT_AFTER_PATTERN.matcher(instruction).find()) {
             return DocumentSemanticActionType.INSERT_BLOCK_AFTER_ANCHOR;
         }
@@ -547,6 +584,49 @@ public class DocumentEditIntentResolver implements DocumentEditIntentFacade {
             return DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION;
         }
         return currentAction == null ? DocumentSemanticActionType.INSERT_SECTION_BEFORE_SECTION : currentAction;
+    }
+
+    private DocumentEditIntent normalizeRichMediaInsertIntent(DocumentEditIntent intent) {
+        if (intent == null || !hasText(intent.getUserInstruction()) || intent.getIntentType() != DocumentIterationIntentType.INSERT_MEDIA) {
+            return intent;
+        }
+        DocumentSemanticActionType normalizedAction = normalizeRichMediaSemanticAction(intent.getUserInstruction(), intent.getSemanticAction());
+        if (normalizedAction == intent.getSemanticAction()) {
+            return intent;
+        }
+        log.info("DOC_ITER_INTENT normalize_rich_media instruction='{}' fromAction={} toAction={}",
+                intent.getUserInstruction(), intent.getSemanticAction(), normalizedAction);
+        intent.setSemanticAction(normalizedAction);
+        if (intent.getAssetSpec() == null) {
+            intent.setAssetSpec(MediaAssetSpec.builder()
+                    .assetType(normalizedAction == DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR
+                            ? MediaAssetType.WHITEBOARD
+                            : MediaAssetType.IMAGE)
+                    .build());
+        } else {
+            intent.getAssetSpec().setAssetType(normalizedAction == DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR
+                    ? MediaAssetType.WHITEBOARD
+                    : MediaAssetType.IMAGE);
+        }
+        return intent;
+    }
+
+    private DocumentSemanticActionType normalizeRichMediaSemanticAction(String instruction, DocumentSemanticActionType currentAction) {
+        if (looksLikeWhiteboardInsert(instruction)) {
+            return DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR;
+        }
+        if (looksLikeImageInsert(instruction)) {
+            return DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR;
+        }
+        return currentAction;
+    }
+
+    private boolean looksLikeImageInsert(String instruction) {
+        return hasText(instruction) && instruction.matches(".*(图片|照片|配图).*");
+    }
+
+    private boolean looksLikeWhiteboardInsert(String instruction) {
+        return hasText(instruction) && instruction.matches(".*(架构图|数据流转图|流程图).*");
     }
 
     private boolean isExplicitSectionInsertInstruction(String instruction) {

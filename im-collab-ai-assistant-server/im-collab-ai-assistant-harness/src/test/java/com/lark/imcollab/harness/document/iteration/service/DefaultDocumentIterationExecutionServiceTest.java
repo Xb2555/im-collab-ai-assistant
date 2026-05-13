@@ -23,10 +23,13 @@ import com.lark.imcollab.common.model.enums.DocumentPatchOperationType;
 import com.lark.imcollab.common.model.enums.DocumentRiskLevel;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
 import com.lark.imcollab.common.model.enums.DocumentStrategyType;
+import com.lark.imcollab.common.model.enums.MediaAssetSourceType;
+import com.lark.imcollab.common.model.enums.MediaAssetType;
 import com.lark.imcollab.common.model.vo.DocumentIterationVO;
 import com.lark.imcollab.harness.document.iteration.support.DocumentAnchorResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditIntentResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditStrategyPlanner;
+import com.lark.imcollab.harness.document.iteration.support.DocumentImageSearchQueryService;
 import com.lark.imcollab.harness.document.iteration.support.DocumentIterationRuntimeSupport;
 import com.lark.imcollab.harness.document.iteration.support.DocumentOwnershipGuard;
 import com.lark.imcollab.harness.document.iteration.support.DocumentPatchCompiler;
@@ -49,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
@@ -71,6 +75,7 @@ class DefaultDocumentIterationExecutionServiceTest {
     @Mock private RichContentExecutionPlanner richContentExecutionPlanner;
     @Mock private RichContentExecutionEngine richContentExecutionEngine;
     @Mock private RichContentTargetStateVerifier richContentTargetStateVerifier;
+    @Mock private DocumentImageSearchQueryService documentImageSearchQueryService;
 
     private DefaultDocumentIterationExecutionService service;
 
@@ -80,7 +85,8 @@ class DefaultDocumentIterationExecutionServiceTest {
                 ownershipGuard, intentResolver, snapshotBuilder, anchorResolver,
                 strategyPlanner, patchCompiler, patchExecutor, targetStateVerifier,
                 runtimeSupport, assetResolutionFacade, richContentExecutionPlanner,
-                richContentExecutionEngine, richContentTargetStateVerifier
+                richContentExecutionEngine, richContentTargetStateVerifier,
+                documentImageSearchQueryService
         );
     }
 
@@ -217,6 +223,56 @@ class DefaultDocumentIterationExecutionServiceTest {
         assertThat(response.getRecognizedIntent()).isEqualTo(DocumentIterationIntentType.UPDATE_CONTENT);
         verify(snapshotBuilder).fetchSectionDetail(afterSnapshot, "heading-2-2", "https://example.feishu.cn/docx/doc123");
         verify(targetStateVerifier).verify(eq(plan), eq(beforeSnapshot), eq(afterSnapshot));
+    }
+
+    @Test
+    void imageInsertWithoutAttachmentUsesSearchPromptFromInstruction() {
+        Artifact artifact = ownedArtifact();
+        DocumentEditIntent intent = intent(DocumentIterationIntentType.INSERT_MEDIA, DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR);
+        intent.setAssetSpec(com.lark.imcollab.common.model.entity.MediaAssetSpec.builder()
+                .assetType(MediaAssetType.IMAGE)
+                .build());
+        DocumentStructureSnapshot snapshot = snapshot();
+        ResolvedDocumentAnchor anchor = anchor();
+        DocumentEditStrategy strategy = strategy(DocumentStrategyType.MEDIA_INSERT_AFTER, DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT);
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .taskId("doc-iter-1")
+                .intentType(DocumentIterationIntentType.INSERT_MEDIA)
+                .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                .resolvedAnchor(anchor)
+                .structureSnapshot(snapshot)
+                .expectedState(strategy.getExpectedState())
+                .strategyType(strategy.getStrategyType())
+                .generatedContent("插入图片")
+                .reasoningSummary("image insert")
+                .toolCommandType(DocumentPatchOperationType.BLOCK_INSERT_AFTER)
+                .riskLevel(DocumentRiskLevel.MEDIUM)
+                .build();
+
+        when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
+        when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
+        when(intentResolver.resolve(anyString(), any())).thenReturn(intent);
+        when(snapshotBuilder.build(any())).thenReturn(snapshot);
+        when(anchorResolver.resolve(any(), eq(snapshot), eq(intent))).thenReturn(anchor);
+        when(strategyPlanner.plan(eq(intent), eq(anchor))).thenReturn(strategy);
+        when(patchCompiler.compile(anyString(), eq(intent), eq(snapshot), eq(anchor), eq(strategy))).thenReturn(plan);
+        when(documentImageSearchQueryService.deriveQuery(anyString())).thenReturn("Great Wall of China");
+        when(assetResolutionFacade.resolve(any())).thenReturn(com.lark.imcollab.common.model.entity.ResolvedAsset.builder()
+                .assetType(MediaAssetType.IMAGE)
+                .assetRef("https://images.pexels.com/test.jpg")
+                .requiresUpload(false)
+                .build());
+
+        service.execute(DocumentIterationRequest.builder()
+                .docUrl("https://example.feishu.cn/docx/doc123")
+                .instruction("只传文档url和2.1后插入一张长城的图片")
+                .workspaceContext(new WorkspaceContext())
+                .build());
+
+        verify(assetResolutionFacade).resolve(argThat(spec -> spec != null
+                && spec.getAssetType() == MediaAssetType.IMAGE
+                && spec.getSourceType() == MediaAssetSourceType.SEARCH
+                && "Great Wall of China".equals(spec.getGenerationPrompt())));
     }
 
     @Test
@@ -377,11 +433,43 @@ class DefaultDocumentIterationExecutionServiceTest {
     }
 
     @Test
-    void unsupportedRichActionFallsBackToApprovalInsteadOfExecution() {
+    void whiteboardInsertExecutesThroughRichContentEngine() {
         Artifact artifact = ownedArtifact();
         DocumentEditIntent intent = intent(DocumentIterationIntentType.INSERT_MEDIA, DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR);
-        DocumentStructureSnapshot snapshot = snapshot();
-        ResolvedDocumentAnchor anchor = anchor();
+        intent.setAssetSpec(com.lark.imcollab.common.model.entity.MediaAssetSpec.builder()
+                .assetType(MediaAssetType.WHITEBOARD)
+                .generationPrompt("画一个系统架构图")
+                .build());
+        DocumentStructureSnapshot snapshot = DocumentStructureSnapshot.builder()
+                .docId("doc123")
+                .revisionId(1L)
+                .blockIndex(java.util.Map.of(
+                        "heading-3-3-2", com.lark.imcollab.common.model.entity.DocumentStructureNode.builder()
+                                .blockId("heading-3-3-2")
+                                .titleText("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                                .plainText("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                                .build(),
+                        "body-3-3-2-1", com.lark.imcollab.common.model.entity.DocumentStructureNode.builder()
+                                .blockId("body-3-3-2-1")
+                                .plainText("场景 A 到场景 F 可独立演示，也可自由组合。")
+                                .build()))
+                .sectionBlockIds(java.util.Map.of("heading-3-3-2", java.util.List.of("heading-3-3-2", "body-3-3-2-1")))
+                .build();
+        DocumentStructureSnapshot afterSnapshot = DocumentStructureSnapshot.builder()
+                .docId("doc123")
+                .revisionId(2L)
+                .build();
+        ResolvedDocumentAnchor anchor = ResolvedDocumentAnchor.builder()
+                .anchorType(DocumentAnchorType.BLOCK)
+                .preview("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                .insertionBlockId("anchor-1")
+                .sectionAnchor(DocumentSectionAnchor.builder()
+                        .headingBlockId("heading-3-3-2")
+                        .headingNumber("3.3.2")
+                        .headingText("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                        .allBlockIds(java.util.List.of("heading-3-3-2", "body-3-3-2-1"))
+                        .build())
+                .build();
         DocumentEditStrategy strategy = strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .taskId("doc-iter-1")
@@ -395,19 +483,97 @@ class DefaultDocumentIterationExecutionServiceTest {
                 .reasoningSummary("rich media")
                 .requiresApproval(false)
                 .build();
+        ExecutionPlan richPlan = ExecutionPlan.builder()
+                .steps(List.of())
+                .requiresApproval(false)
+                .build();
 
         when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
         when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
         when(intentResolver.resolve(anyString(), any())).thenReturn(intent);
-        when(snapshotBuilder.build(any())).thenReturn(snapshot);
+        when(snapshotBuilder.build(any())).thenReturn(snapshot, afterSnapshot);
         when(anchorResolver.resolve(any(), eq(snapshot), eq(intent))).thenReturn(anchor);
         when(strategyPlanner.plan(eq(intent), eq(anchor))).thenReturn(strategy);
         when(patchCompiler.compile(anyString(), eq(intent), eq(snapshot), eq(anchor), eq(strategy))).thenReturn(plan);
+        when(assetResolutionFacade.resolve(any())).thenReturn(com.lark.imcollab.common.model.entity.ResolvedAsset.builder()
+                .assetType(MediaAssetType.WHITEBOARD)
+                .assetRef("flowchart TD;A-->B")
+                .build());
+        when(richContentExecutionPlanner.plan(eq(intent), eq(anchor), eq(strategy), any())).thenReturn(richPlan);
+        when(richContentExecutionEngine.execute(anyString(), any())).thenReturn(com.lark.imcollab.common.model.entity.RichContentExecutionResult.builder()
+                .createdBlockIds(List.of("wb-block-1"))
+                .beforeRevision(1L)
+                .afterRevision(2L)
+                .build());
 
         DocumentIterationVO response = service.execute(request());
 
-        assertThat(response.getPlanningPhase()).isEqualTo("WAITING_APPROVAL");
-        verify(richContentExecutionEngine, never()).execute(anyString(), any());
+        assertThat(response.getPlanningPhase()).isEqualTo("COMPLETED");
+        assertThat(response.isRequireInput()).isFalse();
+        verify(assetResolutionFacade).resolve(argThat(spec -> spec != null
+                && spec.getAssetType() == MediaAssetType.WHITEBOARD
+                && spec.getGenerationPrompt() != null
+                && spec.getGenerationPrompt().contains("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                && spec.getGenerationPrompt().contains("场景 A 到场景 F 可独立演示")));
+        verify(richContentExecutionEngine).execute(anyString(), any());
+        verify(richContentTargetStateVerifier).verify(eq(plan), any(), eq(snapshot), any());
+    }
+
+    @Test
+    void whiteboardSemanticStillExecutesWhenIntentTypeIsInsert() {
+        Artifact artifact = ownedArtifact();
+        DocumentEditIntent intent = intent(DocumentIterationIntentType.INSERT, DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR);
+        intent.setAssetSpec(com.lark.imcollab.common.model.entity.MediaAssetSpec.builder()
+                .assetType(MediaAssetType.WHITEBOARD)
+                .generationPrompt("画一个模块编排图")
+                .build());
+        DocumentStructureSnapshot snapshot = snapshot();
+        DocumentStructureSnapshot afterSnapshot = DocumentStructureSnapshot.builder()
+                .docId("doc123")
+                .revisionId(2L)
+                .build();
+        ResolvedDocumentAnchor anchor = anchor();
+        DocumentEditStrategy strategy = strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT);
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .taskId("doc-iter-1")
+                .intentType(DocumentIterationIntentType.INSERT)
+                .semanticAction(DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR)
+                .resolvedAnchor(anchor)
+                .structureSnapshot(snapshot)
+                .expectedState(strategy.getExpectedState())
+                .strategyType(strategy.getStrategyType())
+                .generatedContent("")
+                .reasoningSummary("rich media")
+                .requiresApproval(false)
+                .build();
+        ExecutionPlan richPlan = ExecutionPlan.builder()
+                .steps(List.of())
+                .requiresApproval(false)
+                .build();
+
+        when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
+        when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
+        when(intentResolver.resolve(anyString(), any())).thenReturn(intent);
+        when(snapshotBuilder.build(any())).thenReturn(snapshot, afterSnapshot);
+        when(anchorResolver.resolve(any(), eq(snapshot), eq(intent))).thenReturn(anchor);
+        when(strategyPlanner.plan(eq(intent), eq(anchor))).thenReturn(strategy);
+        when(patchCompiler.compile(anyString(), eq(intent), eq(snapshot), eq(anchor), eq(strategy))).thenReturn(plan);
+        when(assetResolutionFacade.resolve(any())).thenReturn(com.lark.imcollab.common.model.entity.ResolvedAsset.builder()
+                .assetType(MediaAssetType.WHITEBOARD)
+                .assetRef("flowchart TD;A-->B")
+                .build());
+        when(richContentExecutionPlanner.plan(eq(intent), eq(anchor), eq(strategy), any())).thenReturn(richPlan);
+        when(richContentExecutionEngine.execute(anyString(), any())).thenReturn(com.lark.imcollab.common.model.entity.RichContentExecutionResult.builder()
+                .createdBlockIds(List.of("wb-block-1"))
+                .beforeRevision(1L)
+                .afterRevision(2L)
+                .build());
+
+        DocumentIterationVO response = service.execute(request());
+
+        assertThat(response.getPlanningPhase()).isEqualTo("COMPLETED");
+        verify(assetResolutionFacade).resolve(any());
+        verify(richContentExecutionEngine).execute(anyString(), any());
     }
 
     @Test
@@ -448,6 +614,56 @@ class DefaultDocumentIterationExecutionServiceTest {
         assertThat(response.getPlanningPhase()).isEqualTo("WAITING_APPROVAL");
         verify(runtimeSupport).waitForApproval(any(), any(), eq(replanned), any(), eq("ou-user"));
         verify(patchExecutor, never()).execute(anyString(), any());
+    }
+
+    @Test
+    void decideModifiedImageInstructionDerivesSearchPromptBeforeWaitingAgain() {
+        PendingDocumentIteration pending = PendingDocumentIteration.builder()
+                .taskId("doc-iter-1")
+                .stepId("step-1")
+                .docUrl("https://example.feishu.cn/docx/doc123")
+                .artifactTaskId("task-1")
+                .intentType(DocumentIterationIntentType.INSERT_MEDIA)
+                .editPlan(DocumentEditPlan.builder().intentType(DocumentIterationIntentType.INSERT_MEDIA).build())
+                .originalRequest(request())
+                .build();
+        DocumentEditIntent revisedIntent = intent(DocumentIterationIntentType.INSERT_MEDIA, DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR);
+        revisedIntent.setAssetSpec(com.lark.imcollab.common.model.entity.MediaAssetSpec.builder()
+                .assetType(MediaAssetType.IMAGE)
+                .build());
+        DocumentStructureSnapshot snapshot = snapshot();
+        ResolvedDocumentAnchor anchor = anchor();
+        DocumentEditStrategy strategy = strategy(DocumentStrategyType.MEDIA_INSERT_AFTER, DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT);
+        DocumentEditPlan replanned = DocumentEditPlan.builder()
+                .taskId("doc-iter-1")
+                .intentType(DocumentIterationIntentType.INSERT_MEDIA)
+                .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                .generatedContent("插入图片")
+                .reasoningSummary("still waiting")
+                .requiresApproval(true)
+                .riskLevel(DocumentRiskLevel.MEDIUM)
+                .build();
+
+        when(runtimeSupport.findPending("doc-iter-1")).thenReturn(java.util.Optional.of(pending));
+        when(ownershipGuard.assertEditable(anyString(), anyString(), eq("task-1"))).thenReturn(ownedArtifact());
+        when(intentResolver.resolve(eq("请在 2.1 后加一张故宫图片"), any())).thenReturn(revisedIntent);
+        when(documentImageSearchQueryService.deriveQuery("请在 2.1 后加一张故宫图片")).thenReturn("Forbidden City");
+        when(snapshotBuilder.build(any())).thenReturn(snapshot);
+        when(anchorResolver.resolve(any(), eq(snapshot), eq(revisedIntent))).thenReturn(anchor);
+        when(strategyPlanner.plan(eq(revisedIntent), eq(anchor))).thenReturn(strategy);
+        when(patchCompiler.compile(eq("doc-iter-1"), eq(revisedIntent), eq(snapshot), eq(anchor), eq(strategy))).thenReturn(replanned);
+        when(assetResolutionFacade.resolve(any())).thenReturn(com.lark.imcollab.common.model.entity.ResolvedAsset.builder()
+                .assetType(MediaAssetType.IMAGE)
+                .assetRef("https://images.pexels.com/forbidden-city.jpg")
+                .build());
+
+        DocumentIterationVO response = service.decide("doc-iter-1", new DocumentIterationApprovalRequest("MODIFY", "请在 2.1 后加一张故宫图片"), "ou-user");
+
+        assertThat(response.getPlanningPhase()).isEqualTo("WAITING_APPROVAL");
+        verify(assetResolutionFacade).resolve(argThat(spec -> spec != null
+                && spec.getAssetType() == MediaAssetType.IMAGE
+                && spec.getSourceType() == MediaAssetSourceType.SEARCH
+                && "Forbidden City".equals(spec.getGenerationPrompt())));
     }
 
     @Test
