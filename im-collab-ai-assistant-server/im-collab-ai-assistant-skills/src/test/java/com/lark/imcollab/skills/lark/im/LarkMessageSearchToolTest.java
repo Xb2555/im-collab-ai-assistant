@@ -169,7 +169,206 @@ class LarkMessageSearchToolTest {
         assertThat(commands.get(0).arguments()).contains("+chat-messages-list", "--chat-id", "oc_1");
         assertThat(commands.get(1).arguments()).contains("+messages-search", "--query", "智能工作流项目");
         assertThat(result.items()).extracting(LarkMessageSearchItem::messageId)
-                .containsExactly("om_sys", "om_hit_1", "om_hit_2", "om_hit_3", "om_other");
+                .containsExactly("om_sys", "om_hit_1", "om_hit_3", "om_other", "om_hit_2");
+        assertThat(result.windowItemCount()).isEqualTo(2);
+        assertThat(result.primaryHitCount()).isEqualTo(4);
+    }
+
+    @Test
+    void lowRecallKeywordSearchTriggersExpandedQueries() {
+        List<CliCommand> commands = new ArrayList<>();
+        ArrayDeque<String> outputs = new ArrayDeque<>(List.of(
+                """
+                {"data":{"messages":[
+                  {"message_id":"om_1","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:06","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"Q3智能体项目需要补充风险评估"}
+                ],"has_more":false}}
+                """,
+                """
+                {"data":{"messages":[
+                  {"message_id":"om_2","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:07","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"智能体联调今天完成"}
+                ],"has_more":false}}
+                """,
+                """
+                {"data":{"messages":[
+                  {"message_id":"om_3","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:08","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"Q3阶段先交付多端同步能力"}
+                ],"has_more":false}}
+                """
+        ));
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            return new CliCommandResult(0, outputs.removeFirst());
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkMessageSearchTool tool = new LarkMessageSearchTool(
+                new LarkCliClient(executor, properties, objectMapper),
+                properties,
+                (userQuery, originalQuery, startTime, endTime, maxQueries) -> List.of("智能体", "Q3"),
+                item -> false
+        );
+
+        LarkMessageSearchResult result = tool.searchMessages("Q3智能体项目", "oc_1", null, null, 50, 5);
+
+        assertThat(commands).hasSize(3);
+        assertThat(commands.get(0).arguments()).contains("+messages-search", "--query", "Q3智能体项目");
+        assertThat(commands.get(1).arguments()).contains("+messages-search", "--query", "智能体");
+        assertThat(commands.get(2).arguments()).contains("+messages-search", "--query", "Q3");
+        assertThat(result.expandedQueryPlan().expandedQueries()).containsExactly("智能体", "Q3");
+        assertThat(result.expandedHitCount()).isEqualTo(2);
+        assertThat(result.items()).extracting(LarkMessageSearchItem::messageId)
+                .containsExactly("om_1", "om_2", "om_3");
+    }
+
+    @Test
+    void highRecallKeywordSearchDoesNotTriggerExpandedQueries() {
+        List<CliCommand> commands = new ArrayList<>();
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            return new CliCommandResult(0, """
+                    {"data":{"messages":[
+                      {"message_id":"om_1","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:01","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"采购评审A"},
+                      {"message_id":"om_2","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:02","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"采购评审B"},
+                      {"message_id":"om_3","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:03","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"采购评审C"},
+                      {"message_id":"om_4","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:04","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"采购评审D"},
+                      {"message_id":"om_5","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:05","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"采购评审E"}
+                    ],"has_more":false}}
+                    """);
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkMessageSearchTool tool = new LarkMessageSearchTool(
+                new LarkCliClient(executor, properties, objectMapper),
+                properties,
+                (userQuery, originalQuery, startTime, endTime, maxQueries) -> List.of("不该触发"),
+                item -> false
+        );
+
+        LarkMessageSearchResult result = tool.searchMessages("采购评审", "oc_1", null, null, 50, 5);
+
+        assertThat(commands).hasSize(1);
+        assertThat(result.expandedQueryPlan().expandedQueries()).isEmpty();
+        assertThat(result.primaryHitCount()).isEqualTo(5);
+    }
+
+    @Test
+    void highRawHitButLowEffectiveHitStillTriggersExpandedQueries() {
+        List<CliCommand> commands = new ArrayList<>();
+        ArrayDeque<String> outputs = new ArrayDeque<>(List.of(
+                """
+                {"data":{"messages":[
+                  {"message_id":"om_1","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:01","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"@飞书IM- test 根据Q3智能工作流项目的消息来制作汇报用ppt","mentions":[{"key":"u1","id":"ou_bot","id_type":"open_id","name":"飞书IM- test"}]},
+                  {"message_id":"om_2","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:02","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"@飞书IM- test 根据Q3智能工作流项目的消息来制作汇报用ppt","mentions":[{"key":"u1","id":"ou_bot","id_type":"open_id","name":"飞书IM- test"}]},
+                  {"message_id":"om_3","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:03","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"@飞书IM- test 根据Q3智能工作流项目的消息来制作汇报用ppt","mentions":[{"key":"u1","id":"ou_bot","id_type":"open_id","name":"飞书IM- test"}]},
+                  {"message_id":"om_4","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:04","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"@飞书IM- test 根据Q3智能工作流项目的消息来制作汇报用ppt","mentions":[{"key":"u1","id":"ou_bot","id_type":"open_id","name":"飞书IM- test"}]},
+                  {"message_id":"om_5","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:05","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"@飞书IM- test 根据Q3智能工作流项目的消息来制作汇报用ppt","mentions":[{"key":"u1","id":"ou_bot","id_type":"open_id","name":"飞书IM- test"}]}
+                ],"has_more":false}}
+                """,
+                """
+                {"data":{"messages":[
+                  {"message_id":"om_real","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:06","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"智能工作流项目需要尽快同步营销方案"}
+                ],"has_more":false}}
+                """
+        ));
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            return new CliCommandResult(0, outputs.removeFirst());
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkMessageSearchTool tool = new LarkMessageSearchTool(
+                new LarkCliClient(executor, properties, objectMapper),
+                properties,
+                (userQuery, originalQuery, startTime, endTime, maxQueries) -> List.of("智能工作流"),
+                item -> item != null && item.content() != null && item.content().startsWith("@")
+        );
+
+        LarkMessageSearchResult result = tool.searchMessages("Q3智能工作流项目", "oc_1", null, null, 50, 5);
+
+        assertThat(commands).hasSize(2);
+        assertThat(commands.get(1).arguments()).contains("+messages-search", "--query", "智能工作流");
+        assertThat(result.primaryHitCount()).isEqualTo(5);
+        assertThat(result.filteredPrimaryHitCount()).isZero();
+        assertThat(result.expandedQueryPlan().expandedQueries()).containsExactly("智能工作流");
+    }
+
+    @Test
+    void queryMissWithinTimeWindowStillKeepsWindowPrimarySet() {
+        List<CliCommand> commands = new ArrayList<>();
+        ArrayDeque<String> outputs = new ArrayDeque<>(List.of(
+                """
+                {"data":{"items":[
+                  {"message_id":"om_1","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:04","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"body":{"content":"Q3智能工作流项目已完成联调"}},
+                  {"message_id":"om_2","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:05","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"body":{"content":"明天继续补权限收口"}}
+                ],"has_more":false}}
+                """,
+                """
+                {"data":{"messages":[],"has_more":false}}
+                """
+        ));
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            return new CliCommandResult(0, outputs.removeFirst());
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkMessageSearchTool tool = new LarkMessageSearchTool(
+                new LarkCliClient(executor, properties, objectMapper),
+                properties,
+                (userQuery, originalQuery, startTime, endTime, maxQueries) -> List.of(),
+                item -> false
+        );
+
+        LarkMessageSearchResult result = tool.searchMessages(
+                "Q3智能体项目",
+                "oc_1",
+                "2026-05-07T02:00:00+08:00",
+                "2026-05-07T02:06:59+08:00",
+                50,
+                5
+        );
+
+        assertThat(commands).hasSize(2);
+        assertThat(result.primaryHitCount()).isZero();
+        assertThat(result.windowItemCount()).isEqualTo(2);
+        assertThat(result.items()).extracting(LarkMessageSearchItem::messageId)
+                .containsExactly("om_1", "om_2");
+    }
+
+    @Test
+    void contextNeighborMessagesArePromotedBelowDirectHits() {
+        List<CliCommand> commands = new ArrayList<>();
+        ArrayDeque<String> outputs = new ArrayDeque<>(List.of(
+                """
+                {"data":{"items":[
+                  {"message_id":"om_1","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:04","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"body":{"content":"前置上下文"}},
+                  {"message_id":"om_2","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:05","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"body":{"content":"Q3智能工作流项目已完成联调"}},
+                  {"message_id":"om_3","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:06","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"body":{"content":"后置上下文"}}
+                ],"has_more":false}}
+                """,
+                """
+                {"data":{"messages":[
+                  {"message_id":"om_2","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:05","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"Q3智能工作流项目已完成联调"}
+                ],"has_more":false}}
+                """
+        ));
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            return new CliCommandResult(0, outputs.removeFirst());
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkMessageSearchTool tool = new LarkMessageSearchTool(
+                new LarkCliClient(executor, properties, objectMapper),
+                properties
+        );
+
+        LarkMessageSearchResult result = tool.searchMessages(
+                "智能工作流项目",
+                "oc_1",
+                "2026-05-07T02:00:00+08:00",
+                "2026-05-07T02:06:59+08:00",
+                50,
+                5
+        );
+
+        assertThat(result.contextExpandedCount()).isEqualTo(2);
+        assertThat(result.items()).extracting(LarkMessageSearchItem::messageId)
+                .containsExactly("om_2", "om_1", "om_3");
     }
 
     @Test

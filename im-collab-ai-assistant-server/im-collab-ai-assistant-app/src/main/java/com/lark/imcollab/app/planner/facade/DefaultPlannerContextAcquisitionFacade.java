@@ -10,8 +10,10 @@ import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.skills.lark.doc.LarkDocFetchResult;
 import com.lark.imcollab.skills.lark.doc.LarkDocTool;
 import com.lark.imcollab.skills.lark.im.LarkMessageSearchItem;
+import com.lark.imcollab.skills.lark.im.LarkMentionTargetIdentityService;
 import com.lark.imcollab.skills.lark.im.LarkMessageSearchResult;
 import com.lark.imcollab.skills.lark.im.LarkMessageSearchTool;
+import com.lark.imcollab.skills.lark.im.RankedMessageCandidate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -33,17 +35,20 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
     private final LarkDocTool docTool;
     private final PlannerProperties plannerProperties;
     private final ContextMessageSelectionService messageSelectionService;
+    private final LarkMentionTargetIdentityService mentionTargetIdentityService;
 
     public DefaultPlannerContextAcquisitionFacade(
             LarkMessageSearchTool messageSearchTool,
             LarkDocTool docTool,
             PlannerProperties plannerProperties,
-            ContextMessageSelectionService messageSelectionService
+            ContextMessageSelectionService messageSelectionService,
+            LarkMentionTargetIdentityService mentionTargetIdentityService
     ) {
         this.messageSearchTool = messageSearchTool;
         this.docTool = docTool;
         this.plannerProperties = plannerProperties;
         this.messageSelectionService = messageSelectionService;
+        this.mentionTargetIdentityService = mentionTargetIdentityService;
     }
 
     @Override
@@ -131,17 +136,51 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                 pageSize,
                 pageLimit
         );
-        int rawItemCount = result == null || result.items() == null ? 0 : result.items().size();
-        log.info("IM_CONTEXT_SEARCH_RESULT mode={} chatId={} query='{}' rawItemCount={}",
+        int mergedItemCount = result == null ? 0 : result.mergedItemCount();
+        log.info("IM_CONTEXT_SEARCH_RESULT mode={} chatId={} query='{}' rawItemCount={} rawItemCountPhase={} primaryHitCount={} filteredPrimaryHitCount={} windowItemCount={} expandedQueries={} expandedHitCount={} contextExpandedCount={} mergedItemCount={}",
                 hasText(query) ? "keyword" : "chat-window",
                 chatId,
                 firstNonBlank(query),
-                rawItemCount);
+                mergedItemCount,
+                "merged-before-filter",
+                result == null ? 0 : result.primaryHitCount(),
+                result == null ? 0 : result.filteredPrimaryHitCount(),
+                result == null ? 0 : result.windowItemCount(),
+                result == null || result.expandedQueryPlan() == null ? List.of() : result.expandedQueryPlan().expandedQueries(),
+                result == null ? 0 : result.expandedHitCount(),
+                result == null ? 0 : result.contextExpandedCount(),
+                mergedItemCount);
         if (result == null || result.items() == null || result.items().isEmpty()) {
             return;
         }
         sourceRefs.add(buildImSearchSourceRef(chatId, query, range));
-        List<LarkMessageSearchItem> candidates = result.items().stream()
+        List<LarkMessageSearchItem> rankedItems = result.rankedCandidates().isEmpty()
+                ? result.items()
+                : result.rankedCandidates().stream()
+                .map(RankedMessageCandidate::message)
+                .toList();
+        for (LarkMessageSearchItem item : rankedItems) {
+            if (item == null) {
+                continue;
+            }
+            boolean botMentionHit = mentionTargetIdentityService.isLeadingBotMentionCommand(item);
+            log.info("IM_CONTEXT_SEARCH_CANDIDATE chatId={} query='{}' messageId={} senderType={} msgType={} deleted={} botMentionHit={} mentionIds={} mentionNames={} content='{}'",
+                    chatId,
+                    firstNonBlank(query),
+                    firstNonBlank(item.messageId()),
+                    firstNonBlank(item.senderType()),
+                    firstNonBlank(item.msgType()),
+                    item.deleted(),
+                    botMentionHit,
+                    item.mentions() == null ? List.of() : item.mentions().stream()
+                            .map(mention -> mention == null ? "" : firstNonBlank(mention.id()))
+                            .toList(),
+                    item.mentions() == null ? List.of() : item.mentions().stream()
+                            .map(mention -> mention == null ? "" : firstNonBlank(mention.name()))
+                            .toList(),
+                    truncate(item.content(), 200));
+        }
+        List<LarkMessageSearchItem> candidates = rankedItems.stream()
                 .filter(item -> item != null
                         && !item.deleted()
                         && item.content() != null
@@ -149,6 +188,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                         && !"system".equalsIgnoreCase(item.msgType())
                         && !"app".equalsIgnoreCase(item.senderType())
                         && !"bot".equalsIgnoreCase(item.senderType())
+                        && !mentionTargetIdentityService.isLeadingBotMentionCommand(item)
                         && (workspaceContext == null
                         || workspaceContext.getMessageId() == null
                         || !workspaceContext.getMessageId().equals(item.messageId()))
@@ -162,7 +202,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                     .toList();
         }
         int selectedCount = Math.min(candidates.size(), maxMessages);
-        log.info("IM_CONTEXT_SEARCH_FILTERED chatId={} query='{}' candidateCount={} selectedCount={} explicitMessageIds={}",
+        log.info("IM_CONTEXT_SEARCH_FILTERED chatId={} query='{}' filteredCandidateCount={} finalSelectedCount={} explicitMessageIds={}",
                 chatId,
                 firstNonBlank(query),
                 candidates.size(),
