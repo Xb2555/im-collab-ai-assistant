@@ -66,9 +66,9 @@ public class RichContentExecutionPlanner {
     }
 
     private void buildWhiteboardInsertSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
-        steps.add(step("CREATE_WHITEBOARD", "lark_doc_create_whiteboard", asset.getAssetRef()));
+        steps.add(step("CREATE_WHITEBOARD", "lark_doc_create_whiteboard",
+                new WhiteboardCreateInput(resolveInsertionBlockId(anchor))));
         steps.add(step("UPDATE_WHITEBOARD", "lark_doc_whiteboard_update", resolveCreateThenUpdateWhiteboardInput(asset)));
-        steps.add(step("INSERT_WHITEBOARD_REF", "lark_doc_block_insert_after", resolveInsertionBlockId(anchor)));
     }
 
     private String resolveInsertionBlockId(ResolvedDocumentAnchor anchor) {
@@ -112,5 +112,6 @@ public class RichContentExecutionPlanner {
                 .build();
     }
 
+    public record WhiteboardCreateInput(String anchorBlockId) {}
     public record WhiteboardUpdateInput(String blockId, String dsl) {}
 }

@@ -34,8 +34,7 @@ public class UpdateWhiteboardStepHandler implements ExecutionStepHandler {
         if (blockId == null || blockId.isBlank()) {
             throw new IllegalStateException("UPDATE_WHITEBOARD: blockId is required");
         }
-        LarkDocUpdateResult result = writeGateway.updateByCommand(
-                docRef, "whiteboard_update", input.dsl(), "whiteboard", blockId, null, null);
+        LarkDocUpdateResult result = writeGateway.updateWhiteboard(blockId, input.dsl(), "mermaid");
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("UPDATE_WHITEBOARD: update failed");
         }

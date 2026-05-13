@@ -128,7 +128,9 @@ class RichContentExecutionPlannerTest {
 
         assertThat(executionPlan.getSteps())
                 .extracting(step -> step.getStepType())
-                .containsExactly("CREATE_WHITEBOARD", "UPDATE_WHITEBOARD", "INSERT_WHITEBOARD_REF");
+                .containsExactly("CREATE_WHITEBOARD", "UPDATE_WHITEBOARD");
+        assertThat(executionPlan.getSteps().get(0).getInput())
+                .isEqualTo(new RichContentExecutionPlanner.WhiteboardCreateInput("anchor-9"));
     }
 
     @Test

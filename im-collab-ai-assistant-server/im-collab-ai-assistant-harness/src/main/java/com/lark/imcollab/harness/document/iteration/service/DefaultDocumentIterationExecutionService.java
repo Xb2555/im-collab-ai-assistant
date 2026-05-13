@@ -116,9 +116,11 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                 throw new AiAssistantException(BusinessCode.PARAMS_ERROR, editIntent.getClarificationHint());
             }
             fillRichMediaSearchPrompt(request, editIntent);
+            enrichWhiteboardGenerationPrompt(editIntent, null, null);
             validateRichMediaPrerequisites(request, editIntent);
             DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
             ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, editIntent);
+            enrichWhiteboardGenerationPrompt(editIntent, anchor, snapshot);
             DocumentEditStrategy strategy = strategyPlanner.plan(editIntent, anchor);
             DocumentEditPlan editPlan = patchCompiler.compile(runtime.getTaskId(), editIntent, snapshot, anchor, strategy);
             log.info("DOC_ITER_PLAN compiled taskId={} intentType={} action={} anchorType={} targetPreview='{}' strategyType={} toolCommandType={} requiresApproval={} riskLevel={}",
@@ -190,9 +192,11 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                         revisedIntent == null ? null : revisedIntent.getSemanticAction());
                 DocumentIterationRequest revisedRequest = copyRequest(pending.getOriginalRequest(), revisedInstruction);
                 fillRichMediaSearchPrompt(revisedRequest, revisedIntent);
+                enrichWhiteboardGenerationPrompt(revisedIntent, null, null);
                 validateRichMediaPrerequisites(revisedRequest, revisedIntent);
                 DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
                 ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, revisedIntent);
+                enrichWhiteboardGenerationPrompt(revisedIntent, anchor, snapshot);
                 DocumentEditStrategy strategy = strategyPlanner.plan(revisedIntent, anchor);
                 plan = patchCompiler.compile(taskId, revisedIntent, snapshot, anchor, strategy);
                 enrichRichMediaPlan(revisedIntent, anchor, strategy, plan);
@@ -435,7 +439,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
     }
 
     private void validateRichMediaPrerequisites(DocumentIterationRequest request, DocumentEditIntent editIntent) {
-        if (editIntent == null || editIntent.getIntentType() != DocumentIterationIntentType.INSERT_MEDIA) {
+        if (editIntent == null || !isRichMediaSemantic(editIntent.getSemanticAction())) {
             return;
         }
         if (editIntent.getAssetSpec() == null || editIntent.getAssetSpec().getAssetType() == null) {
@@ -464,7 +468,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
 
     private void fillRichMediaSearchPrompt(DocumentIterationRequest request, DocumentEditIntent editIntent) {
         if (editIntent == null
-                || editIntent.getIntentType() != DocumentIterationIntentType.INSERT_MEDIA
+                || !isRichMediaSemantic(editIntent.getSemanticAction())
                 || editIntent.getAssetSpec() == null
                 || editIntent.getAssetSpec().getAssetType() != com.lark.imcollab.common.model.enums.MediaAssetType.IMAGE) {
             return;
@@ -510,6 +514,87 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         } else {
             editPlan.setRequiresApproval(true);
         }
+    }
+
+    private void enrichWhiteboardGenerationPrompt(
+            DocumentEditIntent editIntent,
+            ResolvedDocumentAnchor anchor,
+            DocumentStructureSnapshot snapshot
+    ) {
+        if (editIntent == null
+                || editIntent.getAssetSpec() == null
+                || editIntent.getAssetSpec().getAssetType() != com.lark.imcollab.common.model.enums.MediaAssetType.WHITEBOARD
+                || hasText(editIntent.getAssetSpec().getWhiteboardDsl())) {
+            return;
+        }
+        String basePrompt = defaultIfBlank(editIntent.getAssetSpec().getGenerationPrompt(), editIntent.getUserInstruction());
+        if (!hasText(basePrompt)) {
+            return;
+        }
+        String contextualPrompt = buildWhiteboardContextPrompt(basePrompt, anchor, snapshot);
+        editIntent.getAssetSpec().setGenerationPrompt(contextualPrompt);
+    }
+
+    private String buildWhiteboardContextPrompt(
+            String basePrompt,
+            ResolvedDocumentAnchor anchor,
+            DocumentStructureSnapshot snapshot
+    ) {
+        StringBuilder prompt = new StringBuilder(basePrompt.trim());
+        String headingLine = resolveAnchorHeadingLine(anchor);
+        String sectionSummary = summarizeAnchorSection(anchor, snapshot);
+        if (hasText(headingLine) || hasText(sectionSummary)) {
+            prompt.append("\n\n请严格围绕以下目标章节生成 Mermaid：");
+        }
+        if (hasText(headingLine)) {
+            prompt.append("\n目标章节：").append(headingLine);
+        }
+        if (hasText(sectionSummary)) {
+            prompt.append("\n章节内容摘要：").append(sectionSummary);
+        }
+        prompt.append("\n只输出与该章节直接相关的 Mermaid 架构/流程，不要泛化成整篇文档总览图。");
+        return prompt.toString();
+    }
+
+    private String resolveAnchorHeadingLine(ResolvedDocumentAnchor anchor) {
+        if (anchor == null || anchor.getSectionAnchor() == null) {
+            return anchor == null ? null : anchor.getPreview();
+        }
+        String headingNumber = anchor.getSectionAnchor().getHeadingNumber();
+        String headingText = anchor.getSectionAnchor().getHeadingText();
+        if (hasText(headingNumber) && hasText(headingText) && !headingText.startsWith(headingNumber)) {
+            return headingNumber + " " + headingText;
+        }
+        return defaultIfBlank(headingText, anchor.getPreview());
+    }
+
+    private String summarizeAnchorSection(ResolvedDocumentAnchor anchor, DocumentStructureSnapshot snapshot) {
+        if (anchor == null || snapshot == null || snapshot.getBlockIndex() == null) {
+            return null;
+        }
+        java.util.List<String> blockIds = null;
+        if (anchor.getSectionAnchor() != null && anchor.getSectionAnchor().getAllBlockIds() != null && !anchor.getSectionAnchor().getAllBlockIds().isEmpty()) {
+            blockIds = anchor.getSectionAnchor().getAllBlockIds();
+        } else if (anchor.getBlockAnchor() != null && hasText(anchor.getBlockAnchor().getTopLevelAncestorId())
+                && snapshot.getSectionBlockIds() != null) {
+            blockIds = snapshot.getSectionBlockIds().get(anchor.getBlockAnchor().getTopLevelAncestorId());
+        }
+        if (blockIds == null || blockIds.isEmpty()) {
+            return null;
+        }
+        String joined = blockIds.stream()
+                .map(id -> snapshot.getBlockIndex().get(id))
+                .filter(java.util.Objects::nonNull)
+                .map(node -> defaultIfBlank(node.getPlainText(), node.getTitleText()))
+                .filter(this::hasText)
+                .map(String::trim)
+                .limit(8)
+                .reduce((left, right) -> left + "；" + right)
+                .orElse(null);
+        if (!hasText(joined)) {
+            return null;
+        }
+        return joined.length() <= 600 ? joined : joined.substring(0, 600);
     }
 
     private String defaultIfBlank(String value, String defaultValue) {

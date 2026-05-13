@@ -440,12 +440,36 @@ class DefaultDocumentIterationExecutionServiceTest {
                 .assetType(MediaAssetType.WHITEBOARD)
                 .generationPrompt("画一个系统架构图")
                 .build());
-        DocumentStructureSnapshot snapshot = snapshot();
+        DocumentStructureSnapshot snapshot = DocumentStructureSnapshot.builder()
+                .docId("doc123")
+                .revisionId(1L)
+                .blockIndex(java.util.Map.of(
+                        "heading-3-3-2", com.lark.imcollab.common.model.entity.DocumentStructureNode.builder()
+                                .blockId("heading-3-3-2")
+                                .titleText("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                                .plainText("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                                .build(),
+                        "body-3-3-2-1", com.lark.imcollab.common.model.entity.DocumentStructureNode.builder()
+                                .blockId("body-3-3-2-1")
+                                .plainText("场景 A 到场景 F 可独立演示，也可自由组合。")
+                                .build()))
+                .sectionBlockIds(java.util.Map.of("heading-3-3-2", java.util.List.of("heading-3-3-2", "body-3-3-2-1")))
+                .build();
         DocumentStructureSnapshot afterSnapshot = DocumentStructureSnapshot.builder()
                 .docId("doc123")
                 .revisionId(2L)
                 .build();
-        ResolvedDocumentAnchor anchor = anchor();
+        ResolvedDocumentAnchor anchor = ResolvedDocumentAnchor.builder()
+                .anchorType(DocumentAnchorType.BLOCK)
+                .preview("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                .insertionBlockId("anchor-1")
+                .sectionAnchor(DocumentSectionAnchor.builder()
+                        .headingBlockId("heading-3-3-2")
+                        .headingNumber("3.3.2")
+                        .headingText("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                        .allBlockIds(java.util.List.of("heading-3-3-2", "body-3-3-2-1"))
+                        .build())
+                .build();
         DocumentEditStrategy strategy = strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT);
         DocumentEditPlan plan = DocumentEditPlan.builder()
                 .taskId("doc-iter-1")
@@ -486,8 +510,70 @@ class DefaultDocumentIterationExecutionServiceTest {
 
         assertThat(response.getPlanningPhase()).isEqualTo("COMPLETED");
         assertThat(response.isRequireInput()).isFalse();
+        verify(assetResolutionFacade).resolve(argThat(spec -> spec != null
+                && spec.getAssetType() == MediaAssetType.WHITEBOARD
+                && spec.getGenerationPrompt() != null
+                && spec.getGenerationPrompt().contains("3.3.2 Agent 驱动的模块化场景与可组合编排")
+                && spec.getGenerationPrompt().contains("场景 A 到场景 F 可独立演示")));
         verify(richContentExecutionEngine).execute(anyString(), any());
         verify(richContentTargetStateVerifier).verify(eq(plan), any(), eq(snapshot), any());
+    }
+
+    @Test
+    void whiteboardSemanticStillExecutesWhenIntentTypeIsInsert() {
+        Artifact artifact = ownedArtifact();
+        DocumentEditIntent intent = intent(DocumentIterationIntentType.INSERT, DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR);
+        intent.setAssetSpec(com.lark.imcollab.common.model.entity.MediaAssetSpec.builder()
+                .assetType(MediaAssetType.WHITEBOARD)
+                .generationPrompt("画一个模块编排图")
+                .build());
+        DocumentStructureSnapshot snapshot = snapshot();
+        DocumentStructureSnapshot afterSnapshot = DocumentStructureSnapshot.builder()
+                .docId("doc123")
+                .revisionId(2L)
+                .build();
+        ResolvedDocumentAnchor anchor = anchor();
+        DocumentEditStrategy strategy = strategy(DocumentStrategyType.WHITEBOARD_INSERT_AFTER, DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT);
+        DocumentEditPlan plan = DocumentEditPlan.builder()
+                .taskId("doc-iter-1")
+                .intentType(DocumentIterationIntentType.INSERT)
+                .semanticAction(DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR)
+                .resolvedAnchor(anchor)
+                .structureSnapshot(snapshot)
+                .expectedState(strategy.getExpectedState())
+                .strategyType(strategy.getStrategyType())
+                .generatedContent("")
+                .reasoningSummary("rich media")
+                .requiresApproval(false)
+                .build();
+        ExecutionPlan richPlan = ExecutionPlan.builder()
+                .steps(List.of())
+                .requiresApproval(false)
+                .build();
+
+        when(runtimeSupport.start(any())).thenReturn(new DocumentIterationRuntimeSupport.RuntimeContext("doc-iter-1", "step-1"));
+        when(ownershipGuard.assertEditable(anyString(), anyString(), isNull())).thenReturn(artifact);
+        when(intentResolver.resolve(anyString(), any())).thenReturn(intent);
+        when(snapshotBuilder.build(any())).thenReturn(snapshot, afterSnapshot);
+        when(anchorResolver.resolve(any(), eq(snapshot), eq(intent))).thenReturn(anchor);
+        when(strategyPlanner.plan(eq(intent), eq(anchor))).thenReturn(strategy);
+        when(patchCompiler.compile(anyString(), eq(intent), eq(snapshot), eq(anchor), eq(strategy))).thenReturn(plan);
+        when(assetResolutionFacade.resolve(any())).thenReturn(com.lark.imcollab.common.model.entity.ResolvedAsset.builder()
+                .assetType(MediaAssetType.WHITEBOARD)
+                .assetRef("flowchart TD;A-->B")
+                .build());
+        when(richContentExecutionPlanner.plan(eq(intent), eq(anchor), eq(strategy), any())).thenReturn(richPlan);
+        when(richContentExecutionEngine.execute(anyString(), any())).thenReturn(com.lark.imcollab.common.model.entity.RichContentExecutionResult.builder()
+                .createdBlockIds(List.of("wb-block-1"))
+                .beforeRevision(1L)
+                .afterRevision(2L)
+                .build());
+
+        DocumentIterationVO response = service.execute(request());
+
+        assertThat(response.getPlanningPhase()).isEqualTo("COMPLETED");
+        verify(assetResolutionFacade).resolve(any());
+        verify(richContentExecutionEngine).execute(anyString(), any());
     }
 
     @Test
