@@ -50,6 +50,12 @@ public class PlannerContextTool {
                     "empty instruction"
             );
         }
+        if (hasEmbeddedInstructionMaterial(instruction)) {
+            return ContextSufficiencyResult.sufficient(
+                    "instruction=" + instruction,
+                    "embedded instruction context accepted for planner"
+            );
+        }
         if (!hasCollectedContext) {
             return ContextSufficiencyResult.insufficient(
                     List.of("source_context"),
@@ -91,5 +97,50 @@ public class PlannerContextTool {
 
     private String normalize(String value) {
         return value == null ? "" : value.trim().replaceAll("\\s+", "");
+    }
+
+    private boolean hasEmbeddedInstructionMaterial(String instruction) {
+        if (instruction == null) {
+            return false;
+        }
+        String normalized = instruction.trim();
+        int delimiter = Math.max(normalized.lastIndexOf('：'), normalized.lastIndexOf(':'));
+        if (delimiter >= 0 && delimiter < normalized.length() - 1) {
+            String trailing = normalized.substring(delimiter + 1).trim();
+            if (hasCompactInlineMaterial(trailing)) {
+                return true;
+            }
+        }
+        return hasStructuredInlineMaterial(normalized);
+    }
+
+    private boolean hasCompactInlineMaterial(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.trim();
+        return !normalized.contains("@_user_")
+                && !normalized.contains("<at")
+                && normalized.length() >= 16;
+    }
+
+    private boolean hasStructuredInlineMaterial(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.trim();
+        if (normalized.length() < 40) {
+            return false;
+        }
+        int hitCount = 0;
+        for (String marker : List.of(
+                "人物对象", "定位", "主要内容方向", "主播风格", "内容特点", "可提炼标签",
+                "输出目标", "结构要求", "受众", "风格要求", "约束", "第1页", "第2页"
+        )) {
+            if (normalized.contains(marker)) {
+                hitCount++;
+            }
+        }
+        return hitCount >= 2 || normalized.contains("\n");
     }
 }

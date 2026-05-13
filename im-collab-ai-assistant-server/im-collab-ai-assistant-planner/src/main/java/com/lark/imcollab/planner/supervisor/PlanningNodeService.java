@@ -51,6 +51,7 @@ public class PlanningNodeService {
     private final PlannerConversationMemoryService memoryService;
     private final PlannerQuestionTool questionTool;
     private final ContextAcquisitionNodeService contextAcquisitionNodeService;
+    private final ContextNodeService contextNodeService;
     private final ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver;
     private final ReactAgent clarificationSourceMaterialJudgeAgent;
     private final ObjectMapper objectMapper;
@@ -65,6 +66,7 @@ public class PlanningNodeService {
             PlannerConversationMemoryService memoryService,
             PlannerQuestionTool questionTool,
             ContextAcquisitionNodeService contextAcquisitionNodeService,
+            ContextNodeService contextNodeService,
             ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver,
             @Qualifier("clarificationSourceMaterialJudgeAgent") ReactAgent clarificationSourceMaterialJudgeAgent,
             ObjectMapper objectMapper
@@ -77,6 +79,7 @@ public class PlanningNodeService {
         this.memoryService = memoryService;
         this.questionTool = questionTool;
         this.contextAcquisitionNodeService = contextAcquisitionNodeService;
+        this.contextNodeService = contextNodeService;
         this.acquisitionPlanTimeWindowResolver = acquisitionPlanTimeWindowResolver;
         this.clarificationSourceMaterialJudgeAgent = clarificationSourceMaterialJudgeAgent;
         this.objectMapper = objectMapper;
@@ -93,7 +96,7 @@ public class PlanningNodeService {
             ObjectMapper objectMapper
     ) {
         this(intentAgent, planningAgent, sessionService, qualityService, projectionService, memoryService,
-                questionTool, null, null, null, objectMapper);
+                questionTool, null, null, null, null, objectMapper);
     }
 
     PlanningNodeService(
@@ -109,7 +112,25 @@ public class PlanningNodeService {
             ObjectMapper objectMapper
     ) {
         this(intentAgent, planningAgent, sessionService, qualityService, projectionService, memoryService,
-                questionTool, contextAcquisitionNodeService, null, clarificationSourceMaterialJudgeAgent, objectMapper);
+                questionTool, contextAcquisitionNodeService, null, null, clarificationSourceMaterialJudgeAgent, objectMapper);
+    }
+
+    PlanningNodeService(
+            ReactAgent intentAgent,
+            ReactAgent planningAgent,
+            PlannerSessionService sessionService,
+            PlanQualityService qualityService,
+            TaskRuntimeProjectionService projectionService,
+            PlannerConversationMemoryService memoryService,
+            PlannerQuestionTool questionTool,
+            ContextAcquisitionNodeService contextAcquisitionNodeService,
+            ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver,
+            ReactAgent clarificationSourceMaterialJudgeAgent,
+            ObjectMapper objectMapper
+    ) {
+        this(intentAgent, planningAgent, sessionService, qualityService, projectionService, memoryService,
+                questionTool, contextAcquisitionNodeService, null, acquisitionPlanTimeWindowResolver,
+                clarificationSourceMaterialJudgeAgent, objectMapper);
     }
 
     public PlanTaskSession plan(String taskId, String rawInstruction, WorkspaceContext workspaceContext, String userFeedback) {
@@ -144,16 +165,27 @@ public class PlanningNodeService {
         } else if (intent.get().getSourceScope() != null) {
             log.info("Skip intent source collection because clarification feedback provides usable context: taskId={}", taskId);
         }
-        if (intentCollection != null) {
+        ContextCollectionOutcome clarificationCollection = null;
+        if (intentCollection == null && shouldTryClarificationCollection(workspaceContext, intent.get(), userFeedback)) {
+            clarificationCollection = collectContextFromClarificationFeedback(
+                    session,
+                    taskId,
+                    rawInstruction,
+                    workspaceContext,
+                    userFeedback
+            );
+        }
+        ContextCollectionOutcome effectiveCollection = intentCollection != null ? intentCollection : clarificationCollection;
+        if (effectiveCollection != null) {
             session = refreshSession(taskId, session);
-            if (intentCollection.contextResult() != null && !intentCollection.contextResult().sufficient()) {
+            if (effectiveCollection.contextResult() != null && !effectiveCollection.contextResult().sufficient()) {
                 questionTool.askUser(session, List.of(firstNonBlank(
-                        intentCollection.contextResult().clarificationQuestion(),
+                        effectiveCollection.contextResult().clarificationQuestion(),
                         "我还需要你提供要整理的聊天内容或文档链接。"
                 )));
                 return sessionService.get(taskId);
             }
-            workspaceContext = intentCollection.workspaceContext();
+            workspaceContext = effectiveCollection.workspaceContext();
             workspacePromptContext = renderWorkspaceContext(workspaceContext, rawInstruction);
             planningInput = buildPlanningInput(session, rawInstruction, workspaceContext, userFeedback, conversationMemory);
         }
@@ -253,6 +285,49 @@ public class PlanningNodeService {
             plan = acquisitionPlanTimeWindowResolver.ensureExecutable(taskId, rawInstruction, workspaceContext, plan);
         }
         return contextAcquisitionNodeService.collect(taskId, rawInstruction, workspaceContext, plan);
+    }
+
+    private boolean shouldTryClarificationCollection(
+            WorkspaceContext workspaceContext,
+            IntentSnapshot intentSnapshot,
+            String userFeedback
+    ) {
+        return contextNodeService != null
+                && hasText(userFeedback)
+                && !hasWorkspaceContextMaterial(workspaceContext)
+                && hasSupportedDeliverable(intentSnapshot)
+                && workspaceContext != null
+                && (hasText(workspaceContext.getChatId()) || hasText(workspaceContext.getThreadId()));
+    }
+
+    private ContextCollectionOutcome collectContextFromClarificationFeedback(
+            PlanTaskSession session,
+            String taskId,
+            String rawInstruction,
+            WorkspaceContext workspaceContext,
+            String userFeedback
+    ) {
+        String clarificationInstruction = buildClarificationCollectionInstruction(rawInstruction, userFeedback);
+        ContextSufficiencyResult result = contextNodeService.check(session, taskId, clarificationInstruction, workspaceContext);
+        if (result == null) {
+            return null;
+        }
+        if (result.collectionRequired() && result.acquisitionPlan() != null && contextAcquisitionNodeService != null) {
+            log.info("Clarification feedback triggered additional context collection: taskId={} reason={}",
+                    taskId,
+                    firstNonBlank(result.reason(), "clarification feedback source collection"));
+            return contextAcquisitionNodeService.collect(taskId, clarificationInstruction, workspaceContext, result.acquisitionPlan());
+        }
+        if (!result.sufficient()) {
+            return new ContextCollectionOutcome(result, workspaceContext);
+        }
+        return new ContextCollectionOutcome(result, workspaceContext);
+    }
+
+    private String buildClarificationCollectionInstruction(String rawInstruction, String userFeedback) {
+        return firstNonBlank(rawInstruction, "")
+                + "\n补充说明："
+                + firstNonBlank(userFeedback, "");
     }
 
     private String resolveIntentSourceTimeRange(
@@ -505,8 +580,8 @@ public class PlanningNodeService {
             return false;
         }
         if (hasSupportedDeliverable(intentSnapshot)
-                && (hasSubstantialClarificationAnswer(session)
-                || hasEmbeddedTaskMaterial(planningInput)
+                && (hasEmbeddedTaskMaterial(planningInput)
+                || latestClarificationAnswer(session).map(this::hasInlineSourceMaterial).orElse(false)
                 || hasWorkspaceMaterial(planningInput))) {
             return false;
         }
@@ -594,9 +669,10 @@ public class PlanningNodeService {
         String normalized = value.trim();
         int delimiter = Math.max(normalized.lastIndexOf('：'), normalized.lastIndexOf(':'));
         if (delimiter >= 0 && delimiter < normalized.length() - 1) {
-            return hasSubstantialInlineMaterial(normalized.substring(delimiter + 1));
+            String trailing = normalized.substring(delimiter + 1);
+            return hasSubstantialInlineMaterial(trailing) || hasCompactInlineMaterial(trailing);
         }
-        return hasSubstantialInlineMaterial(normalized);
+        return hasSubstantialInlineMaterial(normalized) || hasCompactInlineMaterial(normalized);
     }
 
     private Optional<String> latestClarificationAnswer(PlanTaskSession session) {
@@ -618,17 +694,6 @@ public class PlanningNodeService {
                 && intentSnapshot.getDeliverableTargets() != null
                 && intentSnapshot.getDeliverableTargets().stream()
                 .anyMatch(target -> toPlanCardType(target).isPresent());
-    }
-
-    private boolean hasSubstantialClarificationAnswer(PlanTaskSession session) {
-        if (session == null || session.getClarificationAnswers() == null) {
-            return false;
-        }
-        return session.getClarificationAnswers().stream()
-                .filter(this::hasText)
-                .map(String::trim)
-                .mapToInt(String::length)
-                .sum() >= 12;
     }
 
     private String buildMissingSlotQuestion(IntentSnapshot intentSnapshot) {
@@ -739,6 +804,16 @@ public class PlanningNodeService {
             return true;
         }
         return normalized.length() >= 48;
+    }
+
+    private boolean hasCompactInlineMaterial(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalized = value.trim();
+        return !normalized.contains("@_user_")
+                && !normalized.contains("<at")
+                && normalized.length() >= 16;
     }
 
     private boolean hasWorkspaceMaterial(String planningInput) {
