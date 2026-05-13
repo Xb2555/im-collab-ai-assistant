@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.AgentTaskPlanCard;
+import com.lark.imcollab.common.model.entity.ClarificationSourceMaterialAssessment;
 import com.lark.imcollab.common.model.entity.ContextAcquisitionPlan;
 import com.lark.imcollab.common.model.entity.ContextSourceRequest;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
@@ -50,6 +51,7 @@ public class PlanningNodeService {
     private final PlannerConversationMemoryService memoryService;
     private final PlannerQuestionTool questionTool;
     private final ContextAcquisitionNodeService contextAcquisitionNodeService;
+    private final ReactAgent clarificationSourceMaterialJudgeAgent;
     private final ObjectMapper objectMapper;
 
     @Autowired
@@ -62,6 +64,7 @@ public class PlanningNodeService {
             PlannerConversationMemoryService memoryService,
             PlannerQuestionTool questionTool,
             ContextAcquisitionNodeService contextAcquisitionNodeService,
+            @Qualifier("clarificationSourceMaterialJudgeAgent") ReactAgent clarificationSourceMaterialJudgeAgent,
             ObjectMapper objectMapper
     ) {
         this.intentAgent = intentAgent;
@@ -72,6 +75,7 @@ public class PlanningNodeService {
         this.memoryService = memoryService;
         this.questionTool = questionTool;
         this.contextAcquisitionNodeService = contextAcquisitionNodeService;
+        this.clarificationSourceMaterialJudgeAgent = clarificationSourceMaterialJudgeAgent;
         this.objectMapper = objectMapper;
     }
 
@@ -86,7 +90,7 @@ public class PlanningNodeService {
             ObjectMapper objectMapper
     ) {
         this(intentAgent, planningAgent, sessionService, qualityService, projectionService, memoryService,
-                questionTool, null, objectMapper);
+                questionTool, null, null, objectMapper);
     }
 
     public PlanTaskSession plan(String taskId, String rawInstruction, WorkspaceContext workspaceContext, String userFeedback) {
@@ -466,43 +470,99 @@ public class PlanningNodeService {
             IntentSnapshot intentSnapshot,
             String userFeedback
     ) {
-        if (looksLikeSourceReferenceSupplement(userFeedback)) {
+        if (!requiresExternalSourceCollection(intentSnapshot)) {
             return false;
         }
-        return hasSupportedDeliverable(intentSnapshot)
-                && (hasSubstantialClarificationAnswer(session) || hasSubstantialFeedbackMaterial(userFeedback));
+        if (!hasSupportedDeliverable(intentSnapshot)) {
+            return false;
+        }
+        Optional<ClarificationSourceMaterialAssessment> assessment = assessClarificationSourceMaterial(
+                session,
+                intentSnapshot,
+                userFeedback
+        );
+        if (assessment.isPresent()) {
+            return assessment.get().isCanReplaceExternalSourceCollection();
+        }
+        return hasInlineSourceMaterial(userFeedback) || latestClarificationAnswer(session)
+                .map(this::hasInlineSourceMaterial)
+                .orElse(false);
     }
 
-    private boolean hasSubstantialFeedbackMaterial(String userFeedback) {
-        if (!hasText(userFeedback)) {
-            return false;
+    private Optional<ClarificationSourceMaterialAssessment> assessClarificationSourceMaterial(
+            PlanTaskSession session,
+            IntentSnapshot intentSnapshot,
+            String userFeedback
+    ) {
+        if (clarificationSourceMaterialJudgeAgent == null || intentSnapshot == null) {
+            return Optional.empty();
         }
-        String normalized = userFeedback.trim();
-        return normalized.length() >= 12 || (normalized.contains("\n") && normalized.length() >= 8);
+        String prompt = """
+                Task source scope:
+                %s
+
+                Original instruction:
+                %s
+
+                Latest user feedback:
+                %s
+
+                Existing clarification answers:
+                %s
+                """.formatted(
+                toJson(intentSnapshot.getSourceScope()),
+                firstNonBlank(session == null ? null : session.getRawInstruction(), intentSnapshot.getUserGoal()),
+                firstNonBlank(userFeedback, ""),
+                session == null || session.getClarificationAnswers() == null ? "[]" : toJson(session.getClarificationAnswers())
+        );
+        return invokeAgent(
+                clarificationSourceMaterialJudgeAgent,
+                prompt,
+                config(
+                        session == null ? "unknown-task" : session.getTaskId(),
+                        "clarification-source-material-judge",
+                        session == null ? PlanTaskSession.builder().taskId("unknown-task").build() : session,
+                        firstNonBlank(session == null ? null : session.getRawInstruction(), intentSnapshot.getUserGoal()),
+                        prompt,
+                        ""
+                ),
+                ClarificationSourceMaterialAssessment.class
+        );
     }
 
-    private boolean looksLikeSourceReferenceSupplement(String userFeedback) {
-        if (!hasText(userFeedback)) {
+    private boolean requiresExternalSourceCollection(IntentSnapshot intentSnapshot) {
+        if (intentSnapshot == null || intentSnapshot.getSourceScope() == null) {
             return false;
         }
-        String normalized = compact(userFeedback);
-        boolean mentionsConversationMaterial = containsAny(normalized,
-                "消息", "聊天记录", "群聊记录", "讨论记录", "对话记录", "内容来源", "来源", "材料");
-        boolean mentionsRetrievalAction = containsAny(normalized,
-                "拉取", "取", "基于", "从刚才", "从最近", "最近10分钟", "前10分钟", "前5分钟", "前30分钟", "历史消息");
-        return mentionsConversationMaterial && mentionsRetrievalAction;
+        WorkspaceContext sourceScope = intentSnapshot.getSourceScope();
+        return hasIntentSourceRequest(sourceScope)
+                || (sourceScope.getDocRefs() != null && !sourceScope.getDocRefs().isEmpty());
     }
 
-    private boolean containsAny(String value, String... needles) {
-        if (!hasText(value) || needles == null) {
+    private boolean hasInlineSourceMaterial(String value) {
+        if (!hasText(value)) {
             return false;
         }
-        for (String needle : needles) {
-            if (hasText(needle) && value.contains(needle)) {
-                return true;
-            }
+        String normalized = value.trim();
+        int delimiter = Math.max(normalized.lastIndexOf('：'), normalized.lastIndexOf(':'));
+        if (delimiter >= 0 && delimiter < normalized.length() - 1) {
+            return hasSubstantialInlineMaterial(normalized.substring(delimiter + 1));
         }
-        return false;
+        return hasSubstantialInlineMaterial(normalized);
+    }
+
+    private Optional<String> latestClarificationAnswer(PlanTaskSession session) {
+        if (session == null || session.getClarificationAnswers() == null) {
+            return Optional.empty();
+        }
+        List<String> answers = session.getClarificationAnswers().stream()
+                .filter(this::hasText)
+                .map(String::trim)
+                .toList();
+        if (answers.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(answers.get(answers.size() - 1));
     }
 
     private boolean hasSupportedDeliverable(IntentSnapshot intentSnapshot) {

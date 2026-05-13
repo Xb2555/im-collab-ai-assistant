@@ -3,6 +3,7 @@ package com.lark.imcollab.planner.config;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.AgentTool;
 import com.alibaba.cloud.ai.graph.agent.hook.summarization.SummarizationHook;
+import com.lark.imcollab.common.model.entity.ClarificationSourceMaterialAssessment;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.NextStepRecommendationOutput;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
@@ -265,6 +266,34 @@ public class AgentFrameworkConfig {
                         sourceType 只能是 IM_MESSAGE_SEARCH 或 LARK_DOC。
                         """)
                 .outputType(com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.class)
+                .model(chatModel)
+                .hooks(summarizationHook)
+                .build();
+    }
+
+    @Bean(name = "clarificationSourceMaterialJudgeAgent")
+    public ReactAgent clarificationSourceMaterialJudgeAgent(ChatModel chatModel, SummarizationHook summarizationHook) {
+        return ReactAgent.builder()
+                .name("clarification-source-material-judge-agent")
+                .description("判断澄清回复是否已经提供了可直接使用的内联源材料")
+                .systemPrompt("""
+                        你是 Planner 的澄清材料判定子 Agent。
+                        你只判断：用户最新澄清回复与已有澄清答案，是否已经提供了足够的“内联源材料”，从而可以跳过外部上下文采集。
+                        外部上下文采集包括：IM_MESSAGE_SEARCH 和 LARK_DOC。
+                        你不生成计划，不执行任务，不给用户回复。
+
+                        判定原则：
+                        - 只有当用户直接贴出了可加工的内容事实时，canReplaceExternalSourceCollection=true。
+                        - 可加工内容事实包括：粘贴的消息正文、纪要片段、事实摘要、明确结论、风险、需求、数据、要点列表、较完整的内容段落。
+                        - 如果用户只是补充任务要求、页数、小节数、风格、受众、是否新建一版、是否继续执行、继续生成什么，这些都不算源材料。
+                        - 如果用户只是引用外部来源但没有贴出内容，例如“根据刚才消息”“基于群聊记录”“按那份文档来”“这里有个链接”，也不算能替代外部采集的内联材料。
+                        - 当 sourceScope 明确要求外部来源时，除非用户确实贴出了可直接加工的材料，否则保守返回 false。
+                        - 如果不确定，返回 false。
+
+                        只输出 JSON：
+                        {"canReplaceExternalSourceCollection":false,"reason":""}
+                        """)
+                .outputType(ClarificationSourceMaterialAssessment.class)
                 .model(chatModel)
                 .hooks(summarizationHook)
                 .build();
