@@ -5,6 +5,7 @@ import com.lark.imcollab.common.model.entity.ResolvedAsset;
 import com.lark.imcollab.common.model.entity.TableModel;
 import com.lark.imcollab.common.model.enums.MediaAssetSourceType;
 import com.lark.imcollab.common.model.enums.MediaAssetType;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
@@ -12,9 +13,27 @@ import org.springframework.stereotype.Component;
 public class AssetResolutionFacade {
 
     private final ChatModel chatModel;
+    private final DocumentImageSearchService documentImageSearchService;
+    private final DocumentMermaidDslService documentMermaidDslService;
 
-    public AssetResolutionFacade(ChatModel chatModel) {
+    @Autowired
+    public AssetResolutionFacade(
+            ChatModel chatModel,
+            DocumentImageSearchService documentImageSearchService,
+            DocumentMermaidDslService documentMermaidDslService
+    ) {
         this.chatModel = chatModel;
+        this.documentImageSearchService = documentImageSearchService;
+        this.documentMermaidDslService = documentMermaidDslService;
+    }
+
+    AssetResolutionFacade(
+            DocumentImageSearchService documentImageSearchService,
+            DocumentMermaidDslService documentMermaidDslService
+    ) {
+        this.chatModel = null;
+        this.documentImageSearchService = documentImageSearchService;
+        this.documentMermaidDslService = documentMermaidDslService;
     }
 
     public ResolvedAsset resolve(MediaAssetSpec spec) {
@@ -32,19 +51,43 @@ public class AssetResolutionFacade {
     }
 
     private ResolvedAsset resolveImage(MediaAssetSpec spec) {
-        boolean requiresUpload = spec.getSourceType() == MediaAssetSourceType.AI_GENERATED
-                || spec.getSourceType() == MediaAssetSourceType.INLINE_DATA;
-        if ((spec.getSourceRef() == null || spec.getSourceRef().isBlank())
-                && (spec.getGenerationPrompt() == null || spec.getGenerationPrompt().isBlank())) {
-            throw new IllegalStateException("IMAGE asset requires sourceRef or generationPrompt");
+        String sourceRef = firstNonBlank(spec.getSourceRef(), spec.getGenerationPrompt());
+        if (spec.getSourceType() == MediaAssetSourceType.ATTACHMENT || spec.getSourceType() == MediaAssetSourceType.EXTERNAL_URL) {
+            if (sourceRef == null || sourceRef.isBlank()) {
+                throw new IllegalStateException("IMAGE asset requires sourceRef");
+            }
+            return ResolvedAsset.builder()
+                    .assetType(MediaAssetType.IMAGE)
+                    .assetRef(sourceRef)
+                    .mimeType(spec.getMimeType())
+                    .caption(spec.getCaption())
+                    .altText(spec.getAltText())
+                    .requiresUpload(false)
+                    .requiresCreation(false)
+                    .build();
+        }
+        if (spec.getSourceType() == MediaAssetSourceType.SEARCH || spec.getSourceType() == null) {
+            String query = firstNonBlank(spec.getGenerationPrompt(), spec.getSourceRef());
+            if (query == null || query.isBlank()) {
+                throw new IllegalStateException("IMAGE asset requires sourceRef or generationPrompt");
+            }
+            return ResolvedAsset.builder()
+                    .assetType(MediaAssetType.IMAGE)
+                    .assetRef(documentImageSearchService.searchFirstImageUrl(query))
+                    .mimeType(spec.getMimeType())
+                    .caption(spec.getCaption())
+                    .altText(spec.getAltText())
+                    .requiresUpload(false)
+                    .requiresCreation(false)
+                    .build();
         }
         return ResolvedAsset.builder()
                 .assetType(MediaAssetType.IMAGE)
-                .assetRef(firstNonBlank(spec.getSourceRef(), spec.getGenerationPrompt()))
+                .assetRef(sourceRef)
                 .mimeType(spec.getMimeType())
                 .caption(spec.getCaption())
                 .altText(spec.getAltText())
-                .requiresUpload(requiresUpload)
+                .requiresUpload(false)
                 .requiresCreation(false)
                 .build();
     }
@@ -66,7 +109,10 @@ public class AssetResolutionFacade {
     }
 
     private ResolvedAsset resolveWhiteboard(MediaAssetSpec spec) {
-        String dsl = firstNonBlank(spec.getWhiteboardDsl(), spec.getSourceRef(), spec.getGenerationPrompt());
+        String dsl = firstNonBlank(spec.getWhiteboardDsl(), spec.getSourceRef());
+        if ((dsl == null || dsl.isBlank()) && spec.getGenerationPrompt() != null && !spec.getGenerationPrompt().isBlank()) {
+            dsl = documentMermaidDslService.generateMermaidDsl(spec.getGenerationPrompt());
+        }
         if (dsl == null || dsl.isBlank()) {
             throw new IllegalStateException("WHITEBOARD asset requires whiteboard DSL");
         }
@@ -79,6 +125,9 @@ public class AssetResolutionFacade {
     }
 
     private TableModel generateTableModel(String prompt) {
+        if (chatModel == null) {
+            return null;
+        }
         String response = chatModel.call(
                 "你是表格结构生成器。根据用户描述，输出 JSON 格式的表格结构：\n"
                 + "{\"columns\":[\"列名1\",\"列名2\"],\"rows\":[[\"值1\",\"值2\"]]}\n"

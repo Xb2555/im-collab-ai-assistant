@@ -8,6 +8,7 @@ import com.lark.imcollab.common.model.dto.DocumentIterationRequest;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
 import com.lark.imcollab.common.model.entity.DocumentEditPlan;
 import com.lark.imcollab.common.model.entity.DocumentEditStrategy;
+import com.lark.imcollab.common.model.entity.MediaAssetSpec;
 import com.lark.imcollab.common.model.entity.PendingDocumentIteration;
 import com.lark.imcollab.common.model.entity.DocumentStructureSnapshot;
 import com.lark.imcollab.common.model.entity.ResolvedDocumentAnchor;
@@ -24,6 +25,7 @@ import com.lark.imcollab.harness.document.iteration.support.AssetResolutionFacad
 import com.lark.imcollab.harness.document.iteration.support.DocumentAnchorResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditIntentResolver;
 import com.lark.imcollab.harness.document.iteration.support.DocumentEditStrategyPlanner;
+import com.lark.imcollab.harness.document.iteration.support.DocumentImageSearchQueryService;
 import com.lark.imcollab.harness.document.iteration.support.DocumentIterationRuntimeSupport;
 import com.lark.imcollab.harness.document.iteration.support.DocumentOwnershipGuard;
 import com.lark.imcollab.harness.document.iteration.support.DocumentPatchCompiler;
@@ -58,6 +60,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
     private final RichContentExecutionPlanner richContentExecutionPlanner;
     private final RichContentExecutionEngine richContentExecutionEngine;
     private final RichContentTargetStateVerifier richContentTargetStateVerifier;
+    private final DocumentImageSearchQueryService documentImageSearchQueryService;
 
     public DefaultDocumentIterationExecutionService(
             DocumentOwnershipGuard ownershipGuard,
@@ -72,7 +75,8 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             AssetResolutionFacade assetResolutionFacade,
             RichContentExecutionPlanner richContentExecutionPlanner,
             RichContentExecutionEngine richContentExecutionEngine,
-            RichContentTargetStateVerifier richContentTargetStateVerifier
+            RichContentTargetStateVerifier richContentTargetStateVerifier,
+            DocumentImageSearchQueryService documentImageSearchQueryService
     ) {
         this.ownershipGuard = ownershipGuard;
         this.intentResolver = intentResolver;
@@ -87,6 +91,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         this.richContentExecutionPlanner = richContentExecutionPlanner;
         this.richContentExecutionEngine = richContentExecutionEngine;
         this.richContentTargetStateVerifier = richContentTargetStateVerifier;
+        this.documentImageSearchQueryService = documentImageSearchQueryService;
     }
 
     @Override
@@ -110,12 +115,11 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
             if (editIntent.isClarificationNeeded()) {
                 throw new AiAssistantException(BusinessCode.PARAMS_ERROR, editIntent.getClarificationHint());
             }
+            fillRichMediaSearchPrompt(request, editIntent);
             validateRichMediaPrerequisites(request, editIntent);
             DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
             ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, editIntent);
             DocumentEditStrategy strategy = strategyPlanner.plan(editIntent, anchor);
-            ResolvedAsset resolvedAsset = isRichMediaSemantic(editIntent.getSemanticAction())
-                    ? assetResolutionFacade.resolve(editIntent.getAssetSpec()) : null;
             DocumentEditPlan editPlan = patchCompiler.compile(runtime.getTaskId(), editIntent, snapshot, anchor, strategy);
             log.info("DOC_ITER_PLAN compiled taskId={} intentType={} action={} anchorType={} targetPreview='{}' strategyType={} toolCommandType={} requiresApproval={} riskLevel={}",
                     runtime.getTaskId(),
@@ -127,16 +131,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                     editPlan.getToolCommandType(),
                     editPlan.isRequiresApproval(),
                     editPlan.getRiskLevel());
-            if (resolvedAsset != null) {
-                ExecutionPlan executionPlan = richContentExecutionPlanner.plan(editIntent, anchor, strategy, resolvedAsset);
-                editPlan.setResolvedAssetSpec(editIntent.getAssetSpec());
-                if (executionPlan != null && isExecutableRichMediaAction(editPlan.getSemanticAction())) {
-                    editPlan.setExecutionPlan(executionPlan);
-                    editPlan.setRequiresApproval(executionPlan.isRequiresApproval());
-                } else if (isRichMediaSemantic(editIntent.getSemanticAction())) {
-                    editPlan.setRequiresApproval(true);
-                }
-            }
+            enrichRichMediaPlan(editIntent, anchor, strategy, editPlan);
             if (editPlan.isRequiresApproval()) {
                 runtimeSupport.waitForApproval(runtime, request, editPlan, ownedArtifact, operator);
                 String summary = "已生成受控编辑计划，等待进一步确认";
@@ -193,10 +188,14 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                         revisedInstruction,
                         revisedIntent == null ? null : revisedIntent.getIntentType(),
                         revisedIntent == null ? null : revisedIntent.getSemanticAction());
+                DocumentIterationRequest revisedRequest = copyRequest(pending.getOriginalRequest(), revisedInstruction);
+                fillRichMediaSearchPrompt(revisedRequest, revisedIntent);
+                validateRichMediaPrerequisites(revisedRequest, revisedIntent);
                 DocumentStructureSnapshot snapshot = snapshotBuilder.build(ownedArtifact);
                 ResolvedDocumentAnchor anchor = anchorResolver.resolve(ownedArtifact, snapshot, revisedIntent);
                 DocumentEditStrategy strategy = strategyPlanner.plan(revisedIntent, anchor);
                 plan = patchCompiler.compile(taskId, revisedIntent, snapshot, anchor, strategy);
+                enrichRichMediaPlan(revisedIntent, anchor, strategy, plan);
                 log.info("DOC_ITER_PLAN recompiled taskId={} action={} anchorType={} targetPreview='{}' strategyType={} requiresApproval={}",
                         taskId,
                         plan.getSemanticAction(),
@@ -205,7 +204,6 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                         plan.getStrategyType(),
                         plan.isRequiresApproval());
                 if (plan.isRequiresApproval()) {
-                    DocumentIterationRequest revisedRequest = copyRequest(pending.getOriginalRequest(), revisedInstruction);
                     runtimeSupport.waitForApproval(runtime, revisedRequest, plan, ownedArtifact, operatorOpenId);
                     String summary = "已根据反馈重建受控编辑计划，等待再次确认";
                     runtimeSupport.saveSummaryArtifact(
@@ -420,7 +418,7 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
         return switch (action) {
             case INSERT_IMAGE_AFTER_ANCHOR,
                  INSERT_TABLE_AFTER_ANCHOR, REWRITE_TABLE_DATA, APPEND_TABLE_ROW,
-                 UPDATE_WHITEBOARD_CONTENT -> true;
+                 INSERT_WHITEBOARD_AFTER_ANCHOR, UPDATE_WHITEBOARD_CONTENT -> true;
             default -> false;
         };
     }
@@ -461,6 +459,56 @@ public class DefaultDocumentIterationExecutionService implements DocumentIterati
                     BusinessCode.PARAMS_ERROR,
                     "插入图片需要提供图片附件、图片链接或生成描述，不能只给出插入位置。"
             );
+        }
+    }
+
+    private void fillRichMediaSearchPrompt(DocumentIterationRequest request, DocumentEditIntent editIntent) {
+        if (editIntent == null
+                || editIntent.getIntentType() != DocumentIterationIntentType.INSERT_MEDIA
+                || editIntent.getAssetSpec() == null
+                || editIntent.getAssetSpec().getAssetType() != com.lark.imcollab.common.model.enums.MediaAssetType.IMAGE) {
+            return;
+        }
+        if (hasText(editIntent.getAssetSpec().getSourceRef()) || hasText(editIntent.getAssetSpec().getGenerationPrompt())) {
+            return;
+        }
+        String prompt = documentImageSearchQueryService == null
+                ? null
+                : documentImageSearchQueryService.deriveQuery(request == null ? null : request.getInstruction());
+        if (!hasText(prompt)) {
+            return;
+        }
+        editIntent.getAssetSpec().setSourceType(com.lark.imcollab.common.model.enums.MediaAssetSourceType.SEARCH);
+        editIntent.getAssetSpec().setGenerationPrompt(prompt);
+    }
+
+    private void enrichRichMediaPlan(
+            DocumentEditIntent editIntent,
+            ResolvedDocumentAnchor anchor,
+            DocumentEditStrategy strategy,
+            DocumentEditPlan editPlan
+    ) {
+        if (editIntent == null || editPlan == null || !isRichMediaSemantic(editIntent.getSemanticAction())) {
+            return;
+        }
+        ResolvedAsset resolvedAsset = assetResolutionFacade.resolve(editIntent.getAssetSpec());
+        MediaAssetSpec resolvedSpec = editIntent.getAssetSpec();
+        if (resolvedSpec == null) {
+            return;
+        }
+        if (resolvedAsset != null && resolvedAsset.getAssetType() == com.lark.imcollab.common.model.enums.MediaAssetType.WHITEBOARD) {
+            resolvedSpec.setWhiteboardDsl(resolvedAsset.getAssetRef());
+            if (resolvedSpec.getSourceType() == null) {
+                resolvedSpec.setSourceType(com.lark.imcollab.common.model.enums.MediaAssetSourceType.AI_GENERATED);
+            }
+        }
+        editPlan.setResolvedAssetSpec(resolvedSpec);
+        ExecutionPlan executionPlan = richContentExecutionPlanner.plan(editIntent, anchor, strategy, resolvedAsset);
+        if (executionPlan != null && isExecutableRichMediaAction(editPlan.getSemanticAction())) {
+            editPlan.setExecutionPlan(executionPlan);
+            editPlan.setRequiresApproval(executionPlan.isRequiresApproval());
+        } else {
+            editPlan.setRequiresApproval(true);
         }
     }
 

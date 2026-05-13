@@ -29,6 +29,7 @@ public class RichContentExecutionPlanner {
             case INSERT_IMAGE_AFTER_ANCHOR -> buildImageInsertSteps(steps, asset, anchor);
             case INSERT_TABLE_AFTER_ANCHOR -> buildTableInsertSteps(steps, asset, anchor);
             case REWRITE_TABLE_DATA, APPEND_TABLE_ROW -> buildTableRewriteSteps(steps, asset, anchor);
+            case INSERT_WHITEBOARD_AFTER_ANCHOR -> buildWhiteboardInsertSteps(steps, asset, anchor);
             case UPDATE_WHITEBOARD_CONTENT -> buildWhiteboardUpdateSteps(steps, asset, anchor);
             default -> {
                 return null;
@@ -43,9 +44,7 @@ public class RichContentExecutionPlanner {
     }
 
     private void buildImageInsertSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
-        if (asset.isRequiresUpload()) {
-            steps.add(step("UPLOAD_IMAGE", "lark_drive_upload", asset.getAssetRef()));
-        }
+        steps.add(step("UPLOAD_IMAGE", "lark_drive_upload", asset.getAssetRef()));
         steps.add(step("INSERT_IMAGE_BLOCK", "lark_doc_block_insert_after",
                 resolveInsertionBlockId(anchor)));
     }
@@ -64,6 +63,12 @@ public class RichContentExecutionPlanner {
 
     private void buildWhiteboardUpdateSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
         steps.add(step("UPDATE_WHITEBOARD", "lark_doc_whiteboard_update", resolveWhiteboardUpdateInput(asset, anchor)));
+    }
+
+    private void buildWhiteboardInsertSteps(List<ExecutionStep> steps, ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
+        steps.add(step("CREATE_WHITEBOARD", "lark_doc_create_whiteboard", asset.getAssetRef()));
+        steps.add(step("UPDATE_WHITEBOARD", "lark_doc_whiteboard_update", resolveCreateThenUpdateWhiteboardInput(asset)));
+        steps.add(step("INSERT_WHITEBOARD_REF", "lark_doc_block_insert_after", resolveInsertionBlockId(anchor)));
     }
 
     private String resolveInsertionBlockId(ResolvedDocumentAnchor anchor) {
@@ -91,6 +96,10 @@ public class RichContentExecutionPlanner {
 
     private WhiteboardUpdateInput resolveWhiteboardUpdateInput(ResolvedAsset asset, ResolvedDocumentAnchor anchor) {
         return new WhiteboardUpdateInput(resolveTargetBlockId(anchor), asset.getAssetRef());
+    }
+
+    private WhiteboardUpdateInput resolveCreateThenUpdateWhiteboardInput(ResolvedAsset asset) {
+        return new WhiteboardUpdateInput(null, asset.getAssetRef());
     }
 
     private ExecutionStep step(String stepType, String toolBinding, Object input) {

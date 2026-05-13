@@ -2,7 +2,6 @@ package com.lark.imcollab.app.planner.utils;
 
 import com.lark.imcollab.common.config.CosClientConfig;
 import com.qcloud.cos.model.PutObjectRequest;
-import com.qcloud.cos.model.PutObjectResult;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
