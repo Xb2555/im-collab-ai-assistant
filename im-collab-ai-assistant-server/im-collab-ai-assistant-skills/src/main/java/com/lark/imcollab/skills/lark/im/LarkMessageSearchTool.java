@@ -9,7 +9,9 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Component
@@ -35,10 +37,59 @@ public class LarkMessageSearchTool {
             Integer pageSize,
             Integer pageLimit
     ) {
+        if (shouldUseHybridSearch(query, chatId, startTime, endTime)) {
+            return searchByKeywordWithinChatWindow(query, chatId, startTime, endTime, pageSize, pageLimit);
+        }
         if (!hasText(query)) {
             return listChatMessages(chatId, startTime, endTime, pageSize, pageLimit);
         }
         return searchByKeyword(query, chatId, startTime, endTime, pageSize, pageLimit);
+    }
+
+    private boolean shouldUseHybridSearch(
+            String query,
+            String chatId,
+            String startTime,
+            String endTime
+    ) {
+        return hasText(query)
+                && hasText(chatId)
+                && (hasText(startTime) || hasText(endTime));
+    }
+
+    private LarkMessageSearchResult searchByKeywordWithinChatWindow(
+            String query,
+            String chatId,
+            String startTime,
+            String endTime,
+            Integer pageSize,
+            Integer pageLimit
+    ) {
+        LarkMessageSearchResult windowResult = listChatMessages(chatId, startTime, endTime, pageSize, pageLimit);
+        LarkMessageSearchResult searchResult = searchByKeyword(query, chatId, startTime, endTime, pageSize, pageLimit);
+        Map<String, LarkMessageSearchItem> merged = new LinkedHashMap<>();
+        if (windowResult != null && windowResult.items() != null) {
+            for (LarkMessageSearchItem item : windowResult.items()) {
+                putIfPresent(merged, item);
+            }
+        }
+        if (searchResult != null && searchResult.items() != null) {
+            for (LarkMessageSearchItem item : searchResult.items()) {
+                putIfPresent(merged, item);
+            }
+        }
+        List<LarkMessageSearchItem> items = new ArrayList<>(merged.values());
+        items.sort(Comparator
+                .comparing((LarkMessageSearchItem item) -> safeText(item.createTime()))
+                .thenComparing(item -> safeText(item.messageId())));
+        return new LarkMessageSearchResult(
+                items,
+                (searchResult != null && searchResult.hasMore()) || (windowResult != null && windowResult.hasMore()),
+                firstNonBlank(
+                        searchResult == null ? null : searchResult.pageToken(),
+                        windowResult == null ? null : windowResult.pageToken()
+                )
+        );
     }
 
     private LarkMessageSearchResult searchByKeyword(
@@ -169,6 +220,16 @@ public class LarkMessageSearchTool {
             }
         }
         return new LarkMessageSearchResult(items, hasMore, pageToken);
+    }
+
+    private void putIfPresent(Map<String, LarkMessageSearchItem> merged, LarkMessageSearchItem item) {
+        if (item == null) {
+            return;
+        }
+        String key = hasText(item.messageId())
+                ? item.messageId().trim()
+                : firstNonBlank(item.createTime(), "") + "|" + firstNonBlank(item.content(), "");
+        merged.putIfAbsent(key, item);
     }
 
     public LarkMessageSearchResult parse(JsonNode root) {

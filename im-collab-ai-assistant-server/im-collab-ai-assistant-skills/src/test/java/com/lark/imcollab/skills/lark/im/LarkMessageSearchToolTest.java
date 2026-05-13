@@ -9,6 +9,7 @@ import com.lark.imcollab.skills.lark.config.LarkCliProperties;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -124,6 +125,51 @@ class LarkMessageSearchToolTest {
                 "--format",
                 "json"
         );
+    }
+
+    @Test
+    void keywordAndTimeWindowUseHybridSearchAndTreatWindowAsPrimarySet() {
+        List<CliCommand> commands = new ArrayList<>();
+        ArrayDeque<String> outputs = new ArrayDeque<>(List.of(
+                """
+                {"data":{"items":[
+                  {"message_id":"om_hit_1","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:06","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"body":{"content":"智能工作流项目马上发版"}},
+                  {"message_id":"om_hit_2","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:07","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"body":{"content":"AI Agent 自动化多端协同是核心亮点"}}
+                ],"has_more":false}}
+                """,
+                """
+                {"data":{"messages":[
+                  {"message_id":"om_sys","msg_type":"system","chat_id":"oc_1","create_time":"2026-05-07 02:05","content":"system message"},
+                  {"message_id":"om_hit_1","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:06","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"智能工作流项目马上发版"},
+                  {"message_id":"om_hit_3","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:08","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"智能工作流项目的营销方案下周要出初稿"},
+                  {"message_id":"om_other","msg_type":"text","chat_id":"oc_1","create_time":"2026-05-07 02:09","sender":{"id":"ou_1","name":"洪徐博","sender_type":"user"},"content":"这个和检索词无关"}
+                ],"has_more":false}}
+                """
+        ));
+        CliCommandExecutor executor = command -> {
+            commands.add(command);
+            return new CliCommandResult(0, outputs.removeFirst());
+        };
+        LarkCliProperties properties = new LarkCliProperties();
+        LarkMessageSearchTool tool = new LarkMessageSearchTool(
+                new LarkCliClient(executor, properties, objectMapper),
+                properties
+        );
+
+        LarkMessageSearchResult result = tool.searchMessages(
+                "智能工作流项目",
+                "oc_1",
+                "2026-05-07T02:00:00+08:00",
+                "2026-05-07T02:10:59+08:00",
+                50,
+                5
+        );
+
+        assertThat(commands).hasSize(2);
+        assertThat(commands.get(0).arguments()).contains("+chat-messages-list", "--chat-id", "oc_1");
+        assertThat(commands.get(1).arguments()).contains("+messages-search", "--query", "智能工作流项目");
+        assertThat(result.items()).extracting(LarkMessageSearchItem::messageId)
+                .containsExactly("om_sys", "om_hit_1", "om_hit_2", "om_hit_3", "om_other");
     }
 
     @Test
