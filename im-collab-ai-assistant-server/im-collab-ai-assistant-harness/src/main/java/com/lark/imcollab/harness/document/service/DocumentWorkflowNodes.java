@@ -239,9 +239,77 @@ public class DocumentWorkflowNodes {
             reviewResult.setMissingItems(appendMissingItem(reviewResult.getMissingItems(), "缺少必需的 Mermaid 图"));
         }
 
+        ReviewResolution resolution = resolveReviewWithAutoSupplement(
+                taskId,
+                rawInstruction,
+                clarifiedInstruction,
+                outline,
+                drafts,
+                mermaid,
+                userFeedback,
+                state,
+                requirement,
+                reviewResult
+        );
+        reviewResult = resolution.reviewResult();
+        List<DocumentSectionDraft> effectiveDrafts = resolution.effectiveDrafts();
+
+        boolean needsHumanReview = reviewResult.getMissingItems() != null && !reviewResult.getMissingItems().isEmpty();
+        if (needsHumanReview && userFeedback.isBlank()) {
+            support.publishApprovalRequest(taskId, null, "文档审核发现问题：" + String.join("；", reviewResult.getMissingItems()));
+            return CompletableFuture.completedFuture(Map.of(
+                    DocumentStateKeys.WAITING_HUMAN_REVIEW, true,
+                    DocumentStateKeys.REVIEW_RESULT, reviewResult,
+                    DocumentStateKeys.SECTION_DRAFTS, effectiveDrafts
+            ));
+        }
+        return CompletableFuture.completedFuture(Map.of(
+                DocumentStateKeys.REVIEW_RESULT, reviewResult,
+                DocumentStateKeys.DONE_REVIEW, true,
+                DocumentStateKeys.WAITING_HUMAN_REVIEW, false,
+                DocumentStateKeys.SECTION_DRAFTS, effectiveDrafts
+        ));
+    }
+
+    private ReviewResolution resolveReviewWithAutoSupplement(
+            String taskId,
+            String rawInstruction,
+            String clarifiedInstruction,
+            DocumentOutline outline,
+            List<DocumentSectionDraft> drafts,
+            String mermaid,
+            String userFeedback,
+            OverAllState state,
+            DiagramRequirement requirement,
+            DocumentReviewResult initialReview
+    ) {
+        DocumentReviewResult reviewResult = initialReview;
         List<DocumentSectionDraft> effectiveDrafts = drafts;
-        boolean autoSupplemented = reviewResult.getSupplementalSections() != null && !reviewResult.getSupplementalSections().isEmpty();
-        if (autoSupplemented) {
+        String supplementRetryPrefix = null;
+        if (shouldRetryForSupplementalSections(reviewResult, userFeedback)) {
+            DocumentReviewResult supplementRetry = evaluateReview(
+                    taskId,
+                    rawInstruction,
+                    clarifiedInstruction,
+                    outline,
+                    drafts,
+                    mermaid,
+                    userFeedback,
+                    state,
+                    "\n补充说明：上一轮审阅只列出了缺项，没有给出可直接合并的补全文字。"
+                            + "请优先把能够根据当前任务目标、已拉取材料和现有章节直接补齐的问题写入 supplementalSections，"
+                            + "只把确实无法自动补齐的问题保留在 missingItems。"
+                            + "\n上一轮缺项：" + String.join("；", safeList(reviewResult == null ? null : reviewResult.getMissingItems()))
+            );
+            if (requirement != null && requirement.isRequired() && (mermaid == null || mermaid.isBlank())) {
+                supplementRetry.setMissingItems(appendMissingItem(supplementRetry.getMissingItems(), "缺少必需的 Mermaid 图"));
+            }
+            if (hasSupplementalSections(supplementRetry)) {
+                reviewResult = supplementRetry;
+                supplementRetryPrefix = "系统检测到审阅结果只列出缺项，已触发自动补齐重试。";
+            }
+        }
+        if (hasSupplementalSections(reviewResult)) {
             effectiveDrafts = mergeSupplementalSections(drafts, reviewResult.getSupplementalSections());
             DocumentReviewResult secondPass = evaluateReview(
                     taskId,
@@ -260,27 +328,13 @@ public class DocumentWorkflowNodes {
             secondPass.setSupplementalSections(List.of());
             secondPass.setSummary(joinSummary(
                     reviewResult.getSummary(),
+                    supplementRetryPrefix,
                     "系统已执行自动补充并完成二次复审，最终是否补齐以发布前完整性校验为准。",
                     secondPass.getSummary()
             ));
             reviewResult = secondPass;
         }
-
-        boolean needsHumanReview = reviewResult.getMissingItems() != null && !reviewResult.getMissingItems().isEmpty();
-        if (needsHumanReview && userFeedback.isBlank()) {
-            support.publishApprovalRequest(taskId, null, "文档审核发现问题：" + String.join("；", reviewResult.getMissingItems()));
-            return CompletableFuture.completedFuture(Map.of(
-                    DocumentStateKeys.WAITING_HUMAN_REVIEW, true,
-                    DocumentStateKeys.REVIEW_RESULT, reviewResult,
-                    DocumentStateKeys.SECTION_DRAFTS, effectiveDrafts
-            ));
-        }
-        return CompletableFuture.completedFuture(Map.of(
-                DocumentStateKeys.REVIEW_RESULT, reviewResult,
-                DocumentStateKeys.DONE_REVIEW, true,
-                DocumentStateKeys.WAITING_HUMAN_REVIEW, false,
-                DocumentStateKeys.SECTION_DRAFTS, effectiveDrafts
-        ));
+        return new ReviewResolution(reviewResult, effectiveDrafts);
     }
 
     public CompletableFuture<Map<String, Object>> writeDocAndSync(OverAllState state, RunnableConfig config) {
@@ -1263,6 +1317,20 @@ public class DocumentWorkflowNodes {
         return String.join(" ", filtered);
     }
 
+    private boolean shouldRetryForSupplementalSections(DocumentReviewResult reviewResult, String userFeedback) {
+        return !hasText(userFeedback)
+                && reviewResult != null
+                && reviewResult.getMissingItems() != null
+                && !reviewResult.getMissingItems().isEmpty()
+                && !hasSupplementalSections(reviewResult);
+    }
+
+    private boolean hasSupplementalSections(DocumentReviewResult reviewResult) {
+        return reviewResult != null
+                && reviewResult.getSupplementalSections() != null
+                && !reviewResult.getSupplementalSections().isEmpty();
+    }
+
     private List<String> appendMissingItem(List<String> items, String value) {
         List<String> result = new ArrayList<>(items == null ? List.of() : items);
         if (!result.contains(value)) {
@@ -1415,5 +1483,11 @@ public class DocumentWorkflowNodes {
             return normalized;
         }
         return normalized.substring(0, 200) + "...";
+    }
+
+    private record ReviewResolution(
+            DocumentReviewResult reviewResult,
+            List<DocumentSectionDraft> effectiveDrafts
+    ) {
     }
 }
