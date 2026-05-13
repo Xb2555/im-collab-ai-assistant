@@ -16,12 +16,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
-import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -113,15 +109,20 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         if (chatId == null || chatId.isBlank()) {
             return;
         }
-        boolean timeConstrained = hasTimeConstraint(source, workspaceContext, rawInstruction);
-        TimeRange range = timeConstrained
-                ? resolveTimeRange(source, workspaceContext, rawInstruction)
-                : null;
-        if (timeConstrained && range == null) {
-            throw new IllegalStateException("时间范围无法解析，请提供明确的开始和结束时间。");
-        }
+        TimeRange range = resolveStructuredTimeRange(source);
+        int maxMessages = normalizeLimit(source.getLimit(), configuredMaxImMessages());
         int pageSize = normalizeLimit(firstNonNull(source.getPageSize(), source.getLimit()), 50);
-        int pageLimit = firstNonNull(source.getPageLimit(), hasText(query) ? 5 : 1);
+        int defaultPageLimit = hasText(query) ? 5 : defaultChatWindowPageLimit(pageSize, maxMessages);
+        int pageLimit = firstNonNull(source.getPageLimit(), defaultPageLimit);
+        log.info("IM_CONTEXT_SEARCH_START mode={} chatId={} query='{}' timeRange='{}' start={} end={} pageSize={} pageLimit={}",
+                hasText(query) ? "keyword" : "chat-window",
+                chatId,
+                firstNonBlank(query),
+                firstNonBlank(source.getTimeRange()),
+                range == null ? "" : firstNonBlank(range.start()),
+                range == null ? "" : firstNonBlank(range.end()),
+                pageSize,
+                pageLimit);
         LarkMessageSearchResult result = messageSearchTool.searchMessages(
                 query,
                 chatId,
@@ -130,6 +131,12 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                 pageSize,
                 pageLimit
         );
+        int rawItemCount = result == null || result.items() == null ? 0 : result.items().size();
+        log.info("IM_CONTEXT_SEARCH_RESULT mode={} chatId={} query='{}' rawItemCount={}",
+                hasText(query) ? "keyword" : "chat-window",
+                chatId,
+                firstNonBlank(query),
+                rawItemCount);
         if (result == null || result.items() == null || result.items().isEmpty()) {
             return;
         }
@@ -139,6 +146,7 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                         && !item.deleted()
                         && item.content() != null
                         && !item.content().isBlank()
+                        && !"system".equalsIgnoreCase(item.msgType())
                         && !"app".equalsIgnoreCase(item.senderType())
                         && !"bot".equalsIgnoreCase(item.senderType())
                         && (workspaceContext == null
@@ -153,13 +161,26 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
                     .filter(item -> item.messageId() != null && explicitMessageIds.contains(item.messageId()))
                     .toList();
         }
-        int maxMessages = normalizeLimit(source.getLimit(), configuredMaxImMessages());
+        int selectedCount = Math.min(candidates.size(), maxMessages);
+        log.info("IM_CONTEXT_SEARCH_FILTERED chatId={} query='{}' candidateCount={} selectedCount={} explicitMessageIds={}",
+                chatId,
+                firstNonBlank(query),
+                candidates.size(),
+                selectedCount,
+                explicitMessageIds.size());
         for (LarkMessageSearchItem item : candidates.stream().limit(maxMessages).toList()) {
             selectedMessages.add(renderMessage(item));
             if (item.messageId() != null && !item.messageId().isBlank()) {
                 selectedMessageIds.add(item.messageId());
             }
         }
+    }
+
+    private int defaultChatWindowPageLimit(int pageSize, int maxMessages) {
+        int safePageSize = Math.max(1, pageSize);
+        int safeMaxMessages = Math.max(1, maxMessages);
+        int estimatedPages = (int) Math.ceil((double) safeMaxMessages / safePageSize);
+        return Math.max(3, Math.min(10, estimatedPages + 2));
     }
 
     private String buildImSearchSourceRef(String chatId, String query, TimeRange range) {
@@ -200,85 +221,32 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         }
     }
 
-    private TimeRange resolveTimeRange(ContextSourceRequest source, WorkspaceContext workspaceContext, String rawInstruction) {
-        String sourceRange = source == null ? "" : firstNonBlank(joinRange(source.getStartTime(), source.getEndTime()), source.getTimeRange());
-        String timeRange = firstNonBlank(sourceRange, workspaceContext == null ? null : workspaceContext.getTimeRange(), rawInstruction);
-        TimeRange relative = resolveRelativeTimeRange(timeRange);
-        if (relative != null) {
-            return relative;
-        }
-        if (timeRange != null && !timeRange.isBlank()) {
-            String[] parts = timeRange.split("[/,，~至到]+");
-            if (parts.length >= 2) {
-                String start = normalizeSearchTime(parts[0]);
-                String end = normalizeSearchTime(parts[1]);
-                if (!start.isBlank() && !end.isBlank()) {
-                    return new TimeRange(start, end);
-                }
-            }
-        }
-        return null;
-    }
-
-    private TimeRange resolveRelativeTimeRange(String text) {
-        if (text == null || text.isBlank()) {
+    private TimeRange resolveStructuredTimeRange(ContextSourceRequest source) {
+        if (source == null || !hasAnyTimeConstraint(source)) {
             return null;
         }
-        String normalized = normalize(text);
-        Matcher pointMatcher = Pattern.compile("(?:前\\s*(\\d{1,4})\\s*(分钟|分|小时|时|天|日)|(\\d{1,4})\\s*(分钟|分|小时|时|天|日)前)").matcher(text);
-        if (pointMatcher.find()) {
-            long amount = Long.parseLong(firstNonBlank(pointMatcher.group(1), pointMatcher.group(3)));
-            String unit = firstNonBlank(pointMatcher.group(2), pointMatcher.group(4));
-            long seconds = toSeconds(amount, unit);
-            Instant center = Instant.now().minusSeconds(seconds);
-            long radius = Math.min(Math.max(300L, seconds / 10), 1800L);
-            return new TimeRange(
-                    formatSearchTime(center.minusSeconds(radius)),
-                    formatSearchTime(center.plusSeconds(radius))
-            );
+        String normalizedStart = normalizeSearchTime(source.getStartTime());
+        String normalizedEnd = normalizeSearchTime(source.getEndTime());
+        if (!hasText(normalizedStart) || !hasText(normalizedEnd)) {
+            throw new IllegalStateException("时间范围缺少可执行的开始或结束时间，请补充具体开始和结束时间。");
         }
-        Matcher matcher = Pattern.compile("(最近|近)\\s*(\\d{1,4})\\s*(分钟|分|小时|时|天|日)").matcher(text);
-        if (!matcher.find()) {
-            if (normalized.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论).*")) {
-            Instant end = Instant.now();
-            Instant start = end.minusSeconds(Math.max(1, plannerProperties.getContextCollection().getDefaultLookbackMinutes()) * 60L);
-                return new TimeRange(formatSearchTime(start), formatSearchTime(end));
+        try {
+            OffsetDateTime start = OffsetDateTime.parse(normalizedStart);
+            OffsetDateTime end = OffsetDateTime.parse(normalizedEnd);
+            if (start.isAfter(end)) {
+                throw new IllegalStateException("时间范围的开始时间晚于结束时间，请检查后重试。");
             }
-            return null;
+        } catch (DateTimeParseException exception) {
+            throw new IllegalStateException("时间范围格式不合法，请补充具体开始和结束时间。", exception);
         }
-        long amount = Long.parseLong(matcher.group(2));
-        long seconds = toSeconds(amount, matcher.group(3));
-        Instant end = Instant.now();
-        Instant start = end.minusSeconds(Math.max(60L, seconds));
-        return new TimeRange(formatSearchTime(start), formatSearchTime(end));
+        return new TimeRange(normalizedStart, normalizedEnd);
     }
 
-    private long toSeconds(long amount, String unit) {
-        if ("分钟".equals(unit) || "分".equals(unit)) {
-            return amount * 60L;
-        }
-        if ("小时".equals(unit) || "时".equals(unit)) {
-            return amount * 3600L;
-        }
-        return amount * 86400L;
-    }
-
-    private boolean hasTimeConstraint(ContextSourceRequest source, WorkspaceContext workspaceContext, String rawInstruction) {
-        return hasText(source == null ? null : source.getTimeRange())
-                || hasText(source == null ? null : source.getStartTime())
-                || hasText(source == null ? null : source.getEndTime())
-                || hasText(workspaceContext == null ? null : workspaceContext.getTimeRange())
-                || hasRelativeTimeReference(rawInstruction);
-    }
-
-    private boolean hasRelativeTimeReference(String text) {
-        if (!hasText(text)) {
-            return false;
-        }
-        String normalized = normalize(text);
-        return normalized.matches(".*(刚才|刚刚|前面|上面|这段对话|当前讨论).*")
-                || Pattern.compile("(最近|近)\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)").matcher(text).find()
-                || Pattern.compile("(?:前\\s*\\d{1,4}\\s*(分钟|分|小时|时|天|日)|\\d{1,4}\\s*(分钟|分|小时|时|天|日)前)").matcher(text).find();
+    private boolean hasAnyTimeConstraint(ContextSourceRequest source) {
+        return source != null
+                && (hasText(source.getTimeRange())
+                || hasText(source.getStartTime())
+                || hasText(source.getEndTime()));
     }
 
     private String extractKeywordFromSelection(String value) {
@@ -318,40 +286,34 @@ public class DefaultPlannerContextAcquisitionFacade implements PlannerContextAcq
         return cleaned;
     }
 
-    private String joinRange(String start, String end) {
-        if (start == null || start.isBlank() || end == null || end.isBlank()) {
-            return "";
-        }
-        return start.trim() + "/" + end.trim();
-    }
-
     private String normalizeSearchTime(String value) {
         if (value == null || value.isBlank()) {
             return "";
         }
         String trimmed = value.trim();
         if (trimmed.matches("\\d{10}")) {
-            return formatSearchTime(Instant.ofEpochSecond(Long.parseLong(trimmed)));
+            return OffsetDateTime.ofInstant(java.time.Instant.ofEpochSecond(Long.parseLong(trimmed)), java.time.ZoneId.systemDefault())
+                    .truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+                    .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
         }
         if (trimmed.matches("\\d{13}")) {
-            return formatSearchTime(Instant.ofEpochMilli(Long.parseLong(trimmed)));
+            return OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(Long.parseLong(trimmed)), java.time.ZoneId.systemDefault())
+                    .truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+                    .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
         }
         try {
-            return formatSearchTime(Instant.parse(trimmed));
+            return OffsetDateTime.ofInstant(java.time.Instant.parse(trimmed), java.time.ZoneId.systemDefault())
+                    .truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+                    .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
         } catch (DateTimeParseException ignored) {
             try {
-                return formatSearchTime(OffsetDateTime.parse(trimmed).toInstant());
+                return OffsetDateTime.parse(trimmed)
+                        .truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+                        .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
             } catch (DateTimeParseException ignoredAgain) {
                 return "";
             }
         }
-    }
-
-    private String formatSearchTime(Instant instant) {
-        if (instant == null) {
-            return "";
-        }
-        return DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(instant.truncatedTo(ChronoUnit.SECONDS).atZone(ZoneId.systemDefault()));
     }
 
     private String buildSummary(List<String> messages, List<String> docs, Set<String> sourceRefs) {

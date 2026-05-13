@@ -3,6 +3,7 @@ package com.lark.imcollab.skills.lark.im;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.lark.imcollab.skills.lark.cli.LarkCliClient;
 import com.lark.imcollab.skills.lark.config.LarkCliProperties;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
 
@@ -10,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
+@Slf4j
 @Component
 public class LarkMessageSearchTool {
 
@@ -76,8 +78,21 @@ public class LarkMessageSearchTool {
         args.add("json");
 
         try {
+            log.info("LARK_IM_SEARCH_CLI_START mode=messages-search chatId={} query='{}' start={} end={} pageSize={} pageLimit={}",
+                    safe(chatId),
+                    safe(query),
+                    safe(startTime),
+                    safe(endTime),
+                    normalize(pageSize, DEFAULT_PAGE_SIZE, 1, 50),
+                    normalize(pageLimit, DEFAULT_PAGE_LIMIT, 1, 40));
             JsonNode root = cliClient.executeJson(args, null, commandTimeoutMillis());
-            return parse(root);
+            LarkMessageSearchResult parsed = parse(root);
+            log.info("LARK_IM_SEARCH_CLI_RESULT mode=messages-search chatId={} query='{}' itemCount={} hasMore={}",
+                    safe(chatId),
+                    safe(query),
+                    parsed.items() == null ? 0 : parsed.items().size(),
+                    parsed.hasMore());
+            return parsed;
         } catch (IllegalStateException exception) {
             throw new IllegalStateException(humanizeError(exception.getMessage()), exception);
         }
@@ -126,11 +141,24 @@ public class LarkMessageSearchTool {
 
             JsonNode root;
             try {
+                log.info("LARK_IM_SEARCH_CLI_START mode=chat-messages-list chatId={} query='' start={} end={} pageSize={} pageLimit={} page={}",
+                        safe(chatId),
+                        safe(startTime),
+                        safe(endTime),
+                        normalizedPageSize,
+                        normalizedPageLimit,
+                        page + 1);
                 root = cliClient.executeJson(args, null, commandTimeoutMillis());
             } catch (IllegalStateException exception) {
                 throw new IllegalStateException(humanizeError(exception.getMessage()), exception);
             }
             LarkMessageSearchResult pageResult = parse(root);
+            log.info("LARK_IM_SEARCH_CLI_RESULT mode=chat-messages-list chatId={} query='' itemCount={} hasMore={} pageTokenPresent={} page={}",
+                    safe(chatId),
+                    pageResult.items() == null ? 0 : pageResult.items().size(),
+                    pageResult.hasMore(),
+                    hasText(pageResult.pageToken()),
+                    page + 1);
             if (pageResult.items() != null) {
                 items.addAll(pageResult.items());
             }
@@ -259,6 +287,10 @@ public class LarkMessageSearchTool {
             return defaultValue;
         }
         return Math.max(min, Math.min(max, requested));
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
     }
 
     private long commandTimeoutMillis() {

@@ -22,12 +22,22 @@ public class ContextAcquisitionNodeService {
             WorkspaceContext workspaceContext,
             ContextAcquisitionPlan plan
     ) {
-        if (plan == null || !plan.isNeedCollection()) {
+        if (plan == null) {
             return new ContextCollectionOutcome(
                     ContextSufficiencyResult.insufficient(
                             List.of("source_context"),
                             "我还需要你提供要整理的聊天内容或文档链接。",
                             "missing context acquisition plan"
+                    ),
+                    workspaceContext
+            );
+        }
+        if (!plan.isNeedCollection()) {
+            return new ContextCollectionOutcome(
+                    ContextSufficiencyResult.insufficient(
+                            List.of("source_context"),
+                            firstNonBlank(plan.getClarificationQuestion(), "我还需要你提供要整理的聊天内容或文档链接。"),
+                            firstNonBlank(plan.getReason(), "missing context acquisition plan")
                     ),
                     workspaceContext
             );

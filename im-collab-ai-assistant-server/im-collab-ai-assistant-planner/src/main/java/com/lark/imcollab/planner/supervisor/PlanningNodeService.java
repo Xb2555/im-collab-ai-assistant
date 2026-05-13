@@ -51,6 +51,7 @@ public class PlanningNodeService {
     private final PlannerConversationMemoryService memoryService;
     private final PlannerQuestionTool questionTool;
     private final ContextAcquisitionNodeService contextAcquisitionNodeService;
+    private final ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver;
     private final ReactAgent clarificationSourceMaterialJudgeAgent;
     private final ObjectMapper objectMapper;
 
@@ -64,6 +65,7 @@ public class PlanningNodeService {
             PlannerConversationMemoryService memoryService,
             PlannerQuestionTool questionTool,
             ContextAcquisitionNodeService contextAcquisitionNodeService,
+            ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver,
             @Qualifier("clarificationSourceMaterialJudgeAgent") ReactAgent clarificationSourceMaterialJudgeAgent,
             ObjectMapper objectMapper
     ) {
@@ -75,6 +77,7 @@ public class PlanningNodeService {
         this.memoryService = memoryService;
         this.questionTool = questionTool;
         this.contextAcquisitionNodeService = contextAcquisitionNodeService;
+        this.acquisitionPlanTimeWindowResolver = acquisitionPlanTimeWindowResolver;
         this.clarificationSourceMaterialJudgeAgent = clarificationSourceMaterialJudgeAgent;
         this.objectMapper = objectMapper;
     }
@@ -90,7 +93,23 @@ public class PlanningNodeService {
             ObjectMapper objectMapper
     ) {
         this(intentAgent, planningAgent, sessionService, qualityService, projectionService, memoryService,
-                questionTool, null, null, objectMapper);
+                questionTool, null, null, null, objectMapper);
+    }
+
+    PlanningNodeService(
+            ReactAgent intentAgent,
+            ReactAgent planningAgent,
+            PlannerSessionService sessionService,
+            PlanQualityService qualityService,
+            TaskRuntimeProjectionService projectionService,
+            PlannerConversationMemoryService memoryService,
+            PlannerQuestionTool questionTool,
+            ContextAcquisitionNodeService contextAcquisitionNodeService,
+            ReactAgent clarificationSourceMaterialJudgeAgent,
+            ObjectMapper objectMapper
+    ) {
+        this(intentAgent, planningAgent, sessionService, qualityService, projectionService, memoryService,
+                questionTool, contextAcquisitionNodeService, null, clarificationSourceMaterialJudgeAgent, objectMapper);
     }
 
     public PlanTaskSession plan(String taskId, String rawInstruction, WorkspaceContext workspaceContext, String userFeedback) {
@@ -126,6 +145,7 @@ public class PlanningNodeService {
             log.info("Skip intent source collection because clarification feedback provides usable context: taskId={}", taskId);
         }
         if (intentCollection != null) {
+            session = refreshSession(taskId, session);
             if (intentCollection.contextResult() != null && !intentCollection.contextResult().sufficient()) {
                 questionTool.askUser(session, List.of(firstNonBlank(
                         intentCollection.contextResult().clarificationQuestion(),
@@ -173,6 +193,18 @@ public class PlanningNodeService {
         return session;
     }
 
+    private PlanTaskSession refreshSession(String taskId, PlanTaskSession fallback) {
+        if (!hasText(taskId) || sessionService == null) {
+            return fallback;
+        }
+        try {
+            PlanTaskSession latest = sessionService.get(taskId);
+            return latest == null ? fallback : latest;
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
     private ContextCollectionOutcome collectContextFromIntentSource(
             String taskId,
             String rawInstruction,
@@ -194,7 +226,7 @@ public class PlanningNodeService {
                     .sourceType(ContextSourceTypeEnum.IM_MESSAGE_SEARCH)
                     .chatId(workspaceContext == null ? "" : workspaceContext.getChatId())
                     .threadId(workspaceContext == null ? "" : workspaceContext.getThreadId())
-                    .timeRange(firstNonBlank(intentScope.getTimeRange(), intentSnapshot.getTimeRange(), workspaceContext == null ? null : workspaceContext.getTimeRange()))
+                    .timeRange(resolveIntentSourceTimeRange(rawInstruction, intentScope, intentSnapshot, workspaceContext))
                     .query(ContextNodeService.extractSearchQuery(rawInstruction))
                     .selectionInstruction(rawInstruction)
                     .pageSize(50)
@@ -217,7 +249,23 @@ public class PlanningNodeService {
                 .reason("intent source scope requires context acquisition")
                 .clarificationQuestion("")
                 .build();
+        if (acquisitionPlanTimeWindowResolver != null) {
+            plan = acquisitionPlanTimeWindowResolver.ensureExecutable(taskId, rawInstruction, workspaceContext, plan);
+        }
         return contextAcquisitionNodeService.collect(taskId, rawInstruction, workspaceContext, plan);
+    }
+
+    private String resolveIntentSourceTimeRange(
+            String rawInstruction,
+            WorkspaceContext intentScope,
+            IntentSnapshot intentSnapshot,
+            WorkspaceContext workspaceContext
+    ) {
+        return firstNonBlank(
+                intentScope == null ? null : intentScope.getTimeRange(),
+                intentSnapshot == null ? null : intentSnapshot.getTimeRange(),
+                workspaceContext == null ? null : workspaceContext.getTimeRange()
+        );
     }
 
     private boolean hasIntentSourceRequest(WorkspaceContext sourceScope) {

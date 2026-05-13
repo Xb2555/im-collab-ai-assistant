@@ -63,6 +63,51 @@ class DefaultPlannerContextAcquisitionFacadeTest {
     }
 
     @Test
+    void imMessageSearchFiltersSystemMessagesAndExpandsChatWindowPagination() {
+        LarkMessageSearchTool searchTool = mock(LarkMessageSearchTool.class);
+        LarkDocTool docTool = mock(LarkDocTool.class);
+        ContextMessageSelectionService selectionService = mock(ContextMessageSelectionService.class);
+        PlannerProperties properties = new PlannerProperties();
+        when(searchTool.searchMessages("", "oc_1", "2026-05-07T02:00:00+08:00", "2026-05-07T02:06:59+08:00", 30, 3))
+                .thenReturn(new LarkMessageSearchResult(List.of(
+                        itemWithType("om_sys", "system", "洪徐博 started the group chat.", "user"),
+                        itemWithType("om_1", "text", "智能工作流项目需要尽快同步营销方案。", "user"),
+                        itemWithType("om_2", "text", "重点突出 AI Agent 自动化多端协同能力。", "user")
+                ), false, null));
+        DefaultPlannerContextAcquisitionFacade facade = new DefaultPlannerContextAcquisitionFacade(
+                searchTool,
+                docTool,
+                properties,
+                selectionService
+        );
+
+        ContextAcquisitionResult result = facade.acquire(
+                ContextAcquisitionPlan.builder()
+                        .needCollection(true)
+                        .sources(List.of(ContextSourceRequest.builder()
+                                .sourceType(ContextSourceTypeEnum.IM_MESSAGE_SEARCH)
+                                .chatId("oc_1")
+                                .timeRange("5月7号凌晨2点到2点06分")
+                                .startTime("2026-05-07T02:00:00+08:00")
+                                .endTime("2026-05-07T02:06:59+08:00")
+                                .limit(30)
+                                .pageSize(30)
+                                .build()))
+                        .build(),
+                WorkspaceContext.builder().chatId("oc_1").build(),
+                "根据5月7号凌晨2点到2点06分的群消息来总结"
+        );
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getSelectedMessageIds()).containsExactly("om_1", "om_2");
+        assertThat(result.getSelectedMessages()).containsExactly(
+                "洪徐博：智能工作流项目需要尽快同步营销方案。",
+                "洪徐博：重点突出 AI Agent 自动化多端协同能力。"
+        );
+        verify(searchTool).searchMessages("", "oc_1", "2026-05-07T02:00:00+08:00", "2026-05-07T02:06:59+08:00", 30, 3);
+    }
+
+    @Test
     void imMessageSearchLimitsFilteredMessages() {
         LarkMessageSearchTool searchTool = mock(LarkMessageSearchTool.class);
         LarkDocTool docTool = mock(LarkDocTool.class);
@@ -186,7 +231,7 @@ class DefaultPlannerContextAcquisitionFacadeTest {
     }
 
     @Test
-    void imMessageSearchTimeOnlyDoesNotUseLlmSelection() {
+    void imMessageSearchTimeOnlyUsesStructuredStartAndEnd() {
         LarkMessageSearchTool searchTool = mock(LarkMessageSearchTool.class);
         LarkDocTool docTool = mock(LarkDocTool.class);
         ContextMessageSelectionService selectionService = mock(ContextMessageSelectionService.class);
@@ -209,6 +254,8 @@ class DefaultPlannerContextAcquisitionFacadeTest {
                                 .sourceType(ContextSourceTypeEnum.IM_MESSAGE_SEARCH)
                                 .chatId("oc_1")
                                 .timeRange("2026-05-04T13:00:00+08:00/2026-05-04T14:00:00+08:00")
+                                .startTime("2026-05-04T13:00:00+08:00")
+                                .endTime("2026-05-04T14:00:00+08:00")
                                 .selectionInstruction("整理本群最近60分钟的消息")
                                 .pageSize(50)
                                 .pageLimit(1)
@@ -225,54 +272,7 @@ class DefaultPlannerContextAcquisitionFacadeTest {
     }
 
     @Test
-    void relativePointTimeUsesSecondPrecisionIsoForCli() {
-        LarkMessageSearchTool searchTool = mock(LarkMessageSearchTool.class);
-        LarkDocTool docTool = mock(LarkDocTool.class);
-        ContextMessageSelectionService selectionService = mock(ContextMessageSelectionService.class);
-        PlannerProperties properties = new PlannerProperties();
-        when(searchTool.searchMessages(
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        )).thenReturn(new LarkMessageSearchResult(List.of(), false, null));
-        DefaultPlannerContextAcquisitionFacade facade = new DefaultPlannerContextAcquisitionFacade(
-                searchTool,
-                docTool,
-                properties,
-                selectionService
-        );
-
-        facade.acquire(
-                ContextAcquisitionPlan.builder()
-                        .needCollection(true)
-                        .sources(List.of(ContextSourceRequest.builder()
-                                .sourceType(ContextSourceTypeEnum.IM_MESSAGE_SEARCH)
-                                .chatId("oc_1")
-                                .query("采购评审")
-                                .timeRange("整理10分钟前关于采购评审的消息")
-                                .pageSize(50)
-                                .pageLimit(5)
-                                .build()))
-                        .build(),
-                WorkspaceContext.builder().chatId("oc_1").build(),
-                "整理10分钟前关于采购评审的消息"
-        );
-
-        verify(searchTool).searchMessages(
-                org.mockito.ArgumentMatchers.eq("采购评审"),
-                org.mockito.ArgumentMatchers.eq("oc_1"),
-                org.mockito.ArgumentMatchers.argThat(value -> value != null && value.matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}[+-]\\d{2}:\\d{2}")),
-                org.mockito.ArgumentMatchers.argThat(value -> value != null && value.matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}[+-]\\d{2}:\\d{2}")),
-                org.mockito.ArgumentMatchers.eq(50),
-                org.mockito.ArgumentMatchers.eq(5)
-        );
-    }
-
-    @Test
-    void explicitUnparseableTimeRangeDoesNotFallbackToDefaultLookback() {
+    void imMessageSearchWithoutStructuredTimeWindowFailsFast() {
         LarkMessageSearchTool searchTool = mock(LarkMessageSearchTool.class);
         LarkDocTool docTool = mock(LarkDocTool.class);
         ContextMessageSelectionService selectionService = mock(ContextMessageSelectionService.class);
@@ -290,14 +290,57 @@ class DefaultPlannerContextAcquisitionFacadeTest {
                         .sources(List.of(ContextSourceRequest.builder()
                                 .sourceType(ContextSourceTypeEnum.IM_MESSAGE_SEARCH)
                                 .chatId("oc_1")
-                                .timeRange("昨天下午")
+                                .timeRange("整理10分钟前关于采购评审的消息")
+                                .query("采购评审")
                                 .selectionInstruction("根据昨天下午的消息梳理一下消息内容总结成文档")
+                                .pageSize(50)
+                                .pageLimit(5)
+                                .build()))
+                        .build(),
+                WorkspaceContext.builder().chatId("oc_1").build(),
+                "整理10分钟前关于采购评审的消息"
+        );
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getClarificationQuestion()).contains("时间条件");
+        verify(searchTool, never()).searchMessages(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+    }
+
+    @Test
+    void invalidStructuredTimeWindowFailsFast() {
+        LarkMessageSearchTool searchTool = mock(LarkMessageSearchTool.class);
+        LarkDocTool docTool = mock(LarkDocTool.class);
+        ContextMessageSelectionService selectionService = mock(ContextMessageSelectionService.class);
+        PlannerProperties properties = new PlannerProperties();
+        DefaultPlannerContextAcquisitionFacade facade = new DefaultPlannerContextAcquisitionFacade(
+                searchTool,
+                docTool,
+                properties,
+                selectionService
+        );
+
+        ContextAcquisitionResult result = facade.acquire(
+                ContextAcquisitionPlan.builder()
+                        .needCollection(true)
+                        .sources(List.of(ContextSourceRequest.builder()
+                                .sourceType(ContextSourceTypeEnum.IM_MESSAGE_SEARCH)
+                                .chatId("oc_1")
+                                .timeRange("昨天 9 点到 10 点")
+                                .startTime("2026-05-04T11:00:00+08:00")
+                                .endTime("2026-05-04T10:00:00+08:00")
                                 .pageSize(50)
                                 .pageLimit(1)
                                 .build()))
                         .build(),
                 WorkspaceContext.builder().chatId("oc_1").build(),
-                "根据昨天下午的消息梳理一下消息内容总结成文档"
+                "昨天 9 点到 10 点的消息"
         );
 
         assertThat(result.isSuccess()).isFalse();
@@ -351,10 +394,14 @@ class DefaultPlannerContextAcquisitionFacadeTest {
     }
 
     private static LarkMessageSearchItem item(String messageId, String content, String senderType) {
+        return itemWithType(messageId, "text", content, senderType);
+    }
+
+    private static LarkMessageSearchItem itemWithType(String messageId, String msgType, String content, String senderType) {
         return new LarkMessageSearchItem(
                 messageId,
                 null,
-                "text",
+                msgType,
                 "2026-05-04T10:00:00+08:00",
                 false,
                 false,

@@ -30,7 +30,6 @@ public class PlannerContextTool {
             }
             if (workspaceContext.getDocRefs() != null && !workspaceContext.getDocRefs().isEmpty()) {
                 contextParts.add("docRefs=" + workspaceContext.getDocRefs().size());
-                hasCollectedContext = true;
             }
             if (workspaceContext.getSourceArtifacts() != null && !workspaceContext.getSourceArtifacts().isEmpty()) {
                 contextParts.add("sourceArtifacts=" + workspaceContext.getSourceArtifacts().size());

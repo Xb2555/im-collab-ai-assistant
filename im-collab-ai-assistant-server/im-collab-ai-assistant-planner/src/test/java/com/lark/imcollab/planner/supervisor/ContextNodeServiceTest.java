@@ -68,7 +68,8 @@ class ContextNodeServiceTest {
                 .contains("startTime and endTime MUST be non-empty")
                 .contains("昨天下午")
                 .contains("12:00:00 to 18:00:00")
-                .contains("never output only a vague timeRange");
+                .contains("never output only a vague timeRange")
+                .contains("5月7号凌晨2点到2点06分");
     }
 
     @Test
