@@ -63,6 +63,7 @@ export function AgentWorkspaceMobile({ onOpenHistory }: { onOpenHistory?: () => 
   const [isReplanningMode, setIsReplanningMode] = useState(false);
   const [replanFeedback, setReplanFeedback] = useState('');
   const [isActionLoading, setIsActionLoading] = useState(false);
+  const [operatingArtifactId, setOperatingArtifactId] = useState<string | null>(null); // 💡 新增
   const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
   const [isDelivering, setIsDelivering] = useState(false);
   // ✨ 新增：移动端历史任务的状态
@@ -149,9 +150,11 @@ export function AgentWorkspaceMobile({ onOpenHistory }: { onOpenHistory?: () => 
     }
   };
   // ✨ 更新 handleCommand 以支持 INTERRUPT_REPLAN
+  // ✨ 更新 handleCommand 以支持 INTERRUPT_REPLAN
   const handleCommand = async (action: 'CONFIRM_EXECUTE' | 'REPLAN' | 'CANCEL' | 'RETRY_FAILED' | 'RESUME' | 'INTERRUPT_REPLAN', customFeedback?: string, extraPayload?: any) => {
     if (!activeTaskId || isActionLoading) return;
     setIsActionLoading(true);
+    if (extraPayload?.targetArtifactId) setOperatingArtifactId(extraPayload.targetArtifactId); // 💡 新增
     if (action === 'CANCEL') setIsCancelling(true);
     
     let finalFeedback = customFeedback;
@@ -179,6 +182,7 @@ export function AgentWorkspaceMobile({ onOpenHistory }: { onOpenHistory?: () => 
     } finally {
       if (action === 'CANCEL') setIsCancelling(false);
       setIsActionLoading(false);
+      setOperatingArtifactId(null); // 💡 新增
     }
   };
 
@@ -685,10 +689,11 @@ export function AgentWorkspaceMobile({ onOpenHistory }: { onOpenHistory?: () => 
               <Button variant="ghost" size="icon" onClick={() => setPreviewArtifactId(null)} className="rounded-full h-9 w-9 bg-zinc-100"><X className="h-5 w-5" /></Button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 pb-20">
+              {/* 💡 新增：精准匹配当前弹窗卡片的 loading 状态 */}
               {activePreviewArtifact.type === 'DOC' ? (
-                <DocPreviewCard status="COMPLETED" docUrl={activePreviewArtifact.url} docTitle={activePreviewArtifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading} onReplan={(f, p) => handleCommand('REPLAN', f, { artifactPolicy: p, targetArtifactId: activePreviewArtifact.artifactId })} />
+                <DocPreviewCard status="COMPLETED" docUrl={activePreviewArtifact.url} docTitle={activePreviewArtifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading && operatingArtifactId === activePreviewArtifact.artifactId} onReplan={(f, p) => handleCommand('REPLAN', f, { artifactPolicy: p, targetArtifactId: activePreviewArtifact.artifactId })} />
               ) : (
-                <PptPreviewCard status="COMPLETED" pptUrl={activePreviewArtifact.url} pptTitle={activePreviewArtifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading} onReplan={(f, p) => handleCommand('REPLAN', f, { artifactPolicy: p, targetArtifactId: activePreviewArtifact.artifactId })} onInterrupt={() => handleCommand('CANCEL')} />
+                <PptPreviewCard status="COMPLETED" pptUrl={activePreviewArtifact.url} pptTitle={activePreviewArtifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading && operatingArtifactId === activePreviewArtifact.artifactId} onReplan={(f, p) => handleCommand('REPLAN', f, { artifactPolicy: p, targetArtifactId: activePreviewArtifact.artifactId })} onInterrupt={() => handleCommand('CANCEL')} />
               )}
             </div>
           </motion.div>

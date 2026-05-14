@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "IM Assistant",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "identifier": "com.myagent.app",
   "build": {
     "frontendDist": "../dist",

@@ -96,7 +96,10 @@ export const DocPreviewCard = React.memo(function DocPreviewCard({
       }
 
       // 🚨 强力拦截：如果后端根本没有生成新内容
-      if (res.editPlan && !res.editPlan.generatedContent?.trim()) {
+      // 💡 新增：如果是图片/富媒体插入动作，允许 generatedContent 为空
+      const isMediaInsert = res.editPlan?.semanticAction === 'INSERT_IMAGE_AFTER_ANCHOR' || (res.editPlan as any)?.toolCommandType === 'MEDIA_INSERT';
+      
+      if (res.editPlan && !res.editPlan.generatedContent?.trim() && !isMediaInsert) {
          toast.warning('修改计划生成失败', { 
            description: 'Agent 未能生成有效的替换/插入文本，请调整您的指令。' 
          });

@@ -101,10 +101,15 @@ export default function Login() {
 
   return (
     // 1. 底色改为极其干净的冷白灰
-    <div className="relative flex min-h-screen flex-col items-center justify-center bg-[#FAFAFC] overflow-hidden">
+    // 1. 底色改为极其干净的冷白灰
+    <div className="relative flex min-h-screen flex-col items-center justify-center bg-[#F8F9FC] overflow-hidden">
       
-      {/* 2. 祖传点阵配方：纯黑 + 6%透明度，1px大小，20px间距，超柔和渐隐边缘 */}
-      <div className="absolute inset-0 bg-[radial-gradient(rgba(0,0,0,0.06)_1px,transparent_1px)] [background-size:20px_20px] [mask-image:radial-gradient(ellipse_60%_60%_at_50%_50%,#000_60%,transparent_100%)]"></div>
+      {/* ✨ 新增：动态弥散光晕，增加科技感和呼吸感 */}
+      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-blue-400/20 blur-[120px] mix-blend-multiply animate-pulse" style={{ animationDuration: '8s' }}></div>
+      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-indigo-400/20 blur-[120px] mix-blend-multiply animate-pulse" style={{ animationDuration: '10s' }}></div>
+
+      {/* 2. 祖传点阵配方优化：降低透明度，放大点距，确保背景不杂乱 */}
+      <div className="absolute inset-0 bg-[radial-gradient(rgba(0,0,0,0.04)_1px,transparent_1px)] [background-size:24px_24px] [mask-image:radial-gradient(ellipse_80%_80%_at_50%_50%,#000_60%,transparent_100%)] z-0"></div>
 
       <div className="relative z-10 w-full max-w-5xl px-4 grid lg:grid-cols-2 gap-12 items-center">
         
@@ -115,8 +120,9 @@ export default function Login() {
             <span>Agent-Pilot 系统已就绪</span>
           </div>
           
-          <div className="space-y-4">
-            <h1 className="text-4xl font-extrabold tracking-tight text-zinc-900 sm:text-5xl">
+          <div className="space-y-4 relative z-10">
+            {/* ✨ 优化：使用 bg-clip-text 让文字拥有非常高级的深色渐变质感 */}
+            <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl bg-clip-text text-transparent bg-gradient-to-br from-zinc-900 via-zinc-700 to-zinc-500 pb-2">
               化繁为简的<br />协同控制中枢
             </h1>
             <p className="text-lg text-zinc-500 leading-relaxed max-w-md">
@@ -138,25 +144,26 @@ export default function Login() {
           </div>
         </div>
 
-        {/* 右侧：极简悬浮卡片 */}
+{/* 右侧：极简悬浮卡片 */}
         <div className="w-full max-w-md mx-auto">
-          {/* 3. 卡片阴影变得更通透柔和，配合纯白背景 */}
-          <div className="flex flex-col space-y-8 rounded-2xl border border-zinc-200/60 bg-white p-10 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+          {/* ✨ 优化：毛玻璃拟物态卡片，更厚实的微小立体感 */}
+          <div className="relative flex flex-col space-y-8 rounded-3xl border border-white/60 bg-white/70 p-10 shadow-[0_8px_40px_rgb(0,0,0,0.06)] backdrop-blur-xl ring-1 ring-zinc-200/50 z-10">
             <div className="text-center space-y-3">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-zinc-900 shadow-sm">
-                <Zap className="h-6 w-6 text-white" />
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-900 border border-zinc-800 shadow-[6px_6px_16px_rgba(0,0,0,0.06),-6px_-6px_16px_rgba(255,255,255,1)]">
+                <Zap className="h-6 w-6 text-white drop-shadow-sm" fill="currentColor" fillOpacity={0.15} />
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-zinc-900">
                 Agent Pilot
               </h2>
               <p className="text-sm text-zinc-500">
-                连接您的工作空间以启动仪表盘
+                连接您的工作空间以启动控制台
               </p>
             </div>
 
             <div className="space-y-4">
+              {/* ✨ 优化：增加渐变按钮底色与同色系弥散阴影，点击感更强 */}
               <Button
-                className="w-full h-12 text-base font-medium bg-[#3370ff] hover:bg-[#2b5fd9] text-white shadow-sm transition-all active:scale-[0.98]"
+                className="w-full h-12 text-base font-medium bg-gradient-to-r from-[#3370ff] to-[#2558d1] hover:from-[#2b5fd9] hover:to-[#1e4ab5] text-white shadow-md shadow-[#3370ff]/25 border border-[#3370ff]/50 transition-all active:scale-[0.98]"
                 onClick={handleLogin}
                 disabled={loading}
               >

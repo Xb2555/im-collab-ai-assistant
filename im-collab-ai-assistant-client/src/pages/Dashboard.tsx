@@ -119,18 +119,21 @@ export default function Dashboard() {
 
   return (
     <div className="flex h-screen w-full flex-col bg-zinc-50 overflow-hidden">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4 shadow-sm z-10">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-200/70 bg-white/80 backdrop-blur-md px-4 shadow-sm z-30">
         <div className="flex items-center space-x-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 shadow-inner">
             <Bot className="h-5 w-5 text-white" />
           </div>
           <span className="text-lg font-bold tracking-tight text-zinc-900">Agent Pilot</span>
-          <span className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-500 border border-zinc-200">Workspace</span>
+          <span className="rounded-full bg-gradient-to-r from-blue-50 to-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-600 border border-indigo-100 shadow-sm uppercase tracking-wider">Workspace</span>
         </div>
 
         <div className="flex items-center space-x-4">
           <div className="hidden sm:flex items-center space-x-2 text-sm text-zinc-600 pr-4 border-r border-zinc-200">
-            <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+            <div className="relative flex h-2 w-2">
+  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></span>
+</div>
             <span>系统已连接</span>
           </div>
           <div className="flex items-center space-x-3">

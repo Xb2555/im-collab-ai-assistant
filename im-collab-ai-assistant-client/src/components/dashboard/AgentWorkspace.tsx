@@ -79,6 +79,7 @@ export function AgentWorkspace({ onOpenHistory }: { onOpenHistory?: () => void }
   const [interruptFeedback, setInterruptFeedback] = useState('');
   
 const [isActionLoading, setIsActionLoading] = useState(false);
+  const [operatingArtifactId, setOperatingArtifactId] = useState<string | null>(null); // 💡 新增：记录当前正在操作的产物 ID
   const [isDelivering, setIsDelivering] = useState(false);
   
   // ✨ 新增：记录最后交付的时间戳
@@ -161,6 +162,7 @@ const [isActionLoading, setIsActionLoading] = useState(false);
   ) => {
     if (!activeTaskId || isActionLoading) return;
     setIsActionLoading(true);
+    if (extraPayload?.targetArtifactId) setOperatingArtifactId(extraPayload.targetArtifactId); // 💡 新增：记录正在修改的产物 ID
     if (action === 'CANCEL') setIsCancelling(true);
     
     // ✨ 匹配相应的反馈内容
@@ -202,6 +204,7 @@ const [isActionLoading, setIsActionLoading] = useState(false);
     } finally {
       if (action === 'CANCEL') setIsCancelling(false);
       setIsActionLoading(false);
+      setOperatingArtifactId(null); // 💡 新增：操作结束清空记录
     }
   };
 
@@ -575,8 +578,11 @@ const handleDeliver = async () => {
           {runtimeArtifacts.length > 0 && (
             <div className="flex flex-col gap-3">
               {runtimeArtifacts.map((artifact: RuntimeArtifactVO) => {
-                if (artifact.type === 'DOC') return <DocPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'GENERATING'} docUrl={artifact.url} docTitle={artifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading} onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })} />;
-                if (artifact.type === 'PPT') return <PptPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'EXECUTING'} pptUrl={artifact.url} pptTitle={artifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isActionLoading} onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })} onInterrupt={() => handleCommand('CANCEL')} />;
+                // 💡 新增：精准判断是否是当前卡片正在 loading
+                const isThisCardReplanning = isActionLoading && operatingArtifactId === artifact.artifactId;
+                
+                if (artifact.type === 'DOC') return <DocPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'GENERATING'} docUrl={artifact.url} docTitle={artifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isThisCardReplanning} onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })} />;
+                if (artifact.type === 'PPT') return <PptPreviewCard key={artifact.artifactId} status={artifact.status === 'CREATED' || artifact.status === 'UPDATED' ? 'COMPLETED' : 'EXECUTING'} pptUrl={artifact.url} pptTitle={artifact.title} canReplan={runtimeActions?.canReplan} isReplanning={isThisCardReplanning} onReplan={(feedback, policy) => handleCommand('REPLAN', feedback, { artifactPolicy: policy, targetArtifactId: artifact.artifactId })} onInterrupt={() => handleCommand('CANCEL')} />;
                 // ✨ 新增：展示摘要产物卡片
   // ✨ 优化：带展开/收起交互的摘要卡片
                 if (artifact.type === 'SUMMARY') {
