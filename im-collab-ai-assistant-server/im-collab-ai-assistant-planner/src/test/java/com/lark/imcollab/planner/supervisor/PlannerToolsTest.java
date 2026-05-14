@@ -310,6 +310,7 @@ class PlannerToolsTest {
     @Test
     void contextNodeRepairsImSearchTimeRangeWhenAgentOmitsStartAndEnd() throws Exception {
         ReactAgent acquisitionAgent = mock(ReactAgent.class);
+        ReactAgent timeWindowResolutionAgent = mock(ReactAgent.class);
         PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
         PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx").build();
         when(acquisitionAgent.invoke(anyString(), any(RunnableConfig.class)))
@@ -318,7 +319,8 @@ class PlannerToolsTest {
                         new AssistantMessage("""
                                 {"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"chat-group","threadId":"","timeRange":"昨天下午","docRefs":[],"selectionInstruction":"根据昨天下午的消息梳理一下消息内容总结成文档","limit":30}],"reason":"user asks for yesterday afternoon messages","clarificationQuestion":""}
                                 """)
-                ))))
+                ))));
+        when(timeWindowResolutionAgent.invoke(anyString(), any(RunnableConfig.class)))
                 .thenReturn(Optional.of(new OverAllState(Map.of(
                         "messages",
                         new AssistantMessage("""
@@ -328,6 +330,7 @@ class PlannerToolsTest {
         ContextNodeService service = new ContextNodeService(
                 mock(ReactAgent.class),
                 acquisitionAgent,
+                timeWindowResolutionAgent,
                 new PlannerContextTool(),
                 runtimeTool,
                 new PlannerConversationMemoryService(new PlannerProperties()),
@@ -354,7 +357,59 @@ class PlannerToolsTest {
                 .isEqualTo("2026-05-04T12:00:00+08:00");
         assertThat(result.acquisitionPlan().getSources().get(0).getEndTime())
                 .isEqualTo("2026-05-04T18:00:00+08:00");
-        verify(acquisitionAgent, times(2)).invoke(anyString(), any(RunnableConfig.class));
+        verify(acquisitionAgent, times(1)).invoke(anyString(), any(RunnableConfig.class));
+        verify(timeWindowResolutionAgent, times(1)).invoke(anyString(), any(RunnableConfig.class));
+    }
+
+    @Test
+    void contextNodeRepairsAbsoluteChineseTimeWindowViaResolutionAgent() throws Exception {
+        ReactAgent acquisitionAgent = mock(ReactAgent.class);
+        ReactAgent timeWindowResolutionAgent = mock(ReactAgent.class);
+        PlannerRuntimeTool runtimeTool = mock(PlannerRuntimeTool.class);
+        PlanTaskSession session = PlanTaskSession.builder().taskId("task-ctx-abs").build();
+        when(acquisitionAgent.invoke(anyString(), any(RunnableConfig.class)))
+                .thenReturn(Optional.of(new OverAllState(Map.of(
+                        "messages",
+                        new AssistantMessage("""
+                                {"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"chat-group","threadId":"","query":"智能工作流项目","timeRange":"5月7号凌晨2点到2点06分","selectionInstruction":"根据5月7号凌晨2点到2点06分关于智能工作流项目的消息，总结成给老板看的汇报","limit":30}],"reason":"user asks for a precise historical time window","clarificationQuestion":""}
+                                """)
+                ))));
+        when(timeWindowResolutionAgent.invoke(anyString(), any(RunnableConfig.class)))
+                .thenReturn(Optional.of(new OverAllState(Map.of(
+                        "messages",
+                        new AssistantMessage("""
+                                {"needCollection":true,"sources":[{"sourceType":"IM_MESSAGE_SEARCH","chatId":"chat-group","threadId":"","query":"智能工作流项目","timeRange":"5月7号凌晨2点到2点06分","start_time":"2026-05-07T02:00:00+08:00","end_time":"2026-05-07T02:06:00+08:00","selectionInstruction":"根据5月7号凌晨2点到2点06分关于智能工作流项目的消息，总结成给老板看的汇报","limit":30}],"reason":"resolved absolute chinese time window","clarificationQuestion":""}
+                                """)
+                ))));
+        ContextNodeService service = new ContextNodeService(
+                mock(ReactAgent.class),
+                acquisitionAgent,
+                timeWindowResolutionAgent,
+                new PlannerContextTool(),
+                runtimeTool,
+                new PlannerConversationMemoryService(new PlannerProperties()),
+                new PlannerProperties(),
+                new ObjectMapper()
+        );
+
+        ContextSufficiencyResult result = service.check(
+                session,
+                "task-ctx-abs",
+                "根据5月7号凌晨2点到2点06分关于智能工作流项目的消息，总结成给老板看的汇报",
+                WorkspaceContext.builder()
+                        .chatId("chat-group")
+                        .chatType("group")
+                        .inputSource("LARK_GROUP")
+                        .build()
+        );
+
+        assertThat(result.collectionRequired()).isTrue();
+        assertThat(result.acquisitionPlan()).isNotNull();
+        assertThat(result.acquisitionPlan().getSources()).hasSize(1);
+        assertThat(result.acquisitionPlan().getSources().get(0).getStartTime())
+                .isEqualTo("2026-05-07T02:00:00+08:00");
+        assertThat(result.acquisitionPlan().getSources().get(0).getEndTime())
+                .isEqualTo("2026-05-07T02:06:59+08:00");
     }
 
     @Test

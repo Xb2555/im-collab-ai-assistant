@@ -3,6 +3,7 @@ package com.lark.imcollab.planner.config;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.AgentTool;
 import com.alibaba.cloud.ai.graph.agent.hook.summarization.SummarizationHook;
+import com.lark.imcollab.common.model.entity.ClarificationSourceMaterialAssessment;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.NextStepRecommendationOutput;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
@@ -249,7 +250,7 @@ public class AgentFrameworkConfig {
                         - selectedMessages 已经有真实材料时，needCollection=false。
                         - 用户提到“刚才讨论/聊天记录/群里/这段对话/最近讨论/历史消息”且有 chatId/threadId 时，使用 IM_MESSAGE_SEARCH。
                         - 用户说“刚才关于 A、B、C 的讨论”“把前面讨论的某个主题整理成文档/摘要”时，即使主题名称很明确，也不代表材料已经在当前输入里；必须先使用 IM_MESSAGE_SEARCH 拉取相关消息。
-                        - 如果有主题词或关键词，写入 query；如果有“最近10分钟/10分钟前/今天/昨天/昨天下午”等时间条件，写入 timeRange，并必须根据用户提示中的 Current time 语义换算 startTime/endTime；把用户原话里的完整筛选条件写入 selectionInstruction。
+                        - 如果有主题词或关键词，写入 query；如果有“最近10分钟/10分钟前/今天/昨天/昨天下午/5月7号凌晨2点到2点06分/5月7日14:00-14:30”等时间条件，写入 timeRange，并必须根据用户提示中的 Current time 语义换算 startTime/endTime；把用户原话里的完整筛选条件写入 selectionInstruction。
                         - 如果 selectedMessages 只有当前这条指令本身，仍然视为没有真实材料。
                         - 但如果用户整句话本身已经包含任务目标、已完成事项、当前进展、风险、决策、下一步、指标、需求或资料摘录等具体事实，视为已有内联材料，needCollection=false 且不要追问外部材料。
                         - 用户提到文档、链接、根据这份材料，且 docRefs 有值时，使用 LARK_DOC。
@@ -258,6 +259,7 @@ public class AgentFrameworkConfig {
                         - IM_MESSAGE_SEARCH 只要存在任何时间条件，startTime/endTime 必须非空，格式使用 ISO_OFFSET_DATE_TIME。
                         - timeRange 保留用户原始时间说法。不要只输出 "昨天"、"昨天下午" 这种模糊 timeRange。
                         - 参考换算：昨天下午 = Current time 所在时区的昨天 12:00:00 到 18:00:00；今天上午 = 今天 00:00:00 到 12:00:00；昨天 = 昨天 00:00:00 到今天 00:00:00。
+                        - 也要解析中文绝对时间，例如：5月7号凌晨2点到2点06分、5月7日 14:00-14:30、昨天 9 点到 10 点、今天下午 3 点前后的讨论。
                         - 若时间说法无法稳定换算，提出澄清，不要默认拉最近消息。
 
                         只输出 JSON：
@@ -265,6 +267,76 @@ public class AgentFrameworkConfig {
                         sourceType 只能是 IM_MESSAGE_SEARCH 或 LARK_DOC。
                         """)
                 .outputType(com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.class)
+                .model(chatModel)
+                .hooks(summarizationHook)
+                .build();
+    }
+
+    @Bean(name = "timeWindowResolutionAgent")
+    public ReactAgent timeWindowResolutionAgent(ChatModel chatModel, SummarizationHook summarizationHook) {
+        return ReactAgent.builder()
+                .name("time-window-resolution-agent")
+                .description("把 IM_MESSAGE_SEARCH 中用户原始时间说法修复成可执行的 ISO 时间窗参数")
+                .systemPrompt("""
+                        你是 Planner 的 IM 消息时间窗修复子 Agent。
+                        你只修复 ContextAcquisitionPlan 中 IM_MESSAGE_SEARCH source 的时间参数，不判断 needCollection，不生成计划，不回答用户。
+
+                        输入里会包含：
+                        - 用户原始话术
+                        - Current time
+                        - 当前时区
+                        - chat/thread 上下文
+                        - 一份已有但时间参数不完整或不合法的 ContextAcquisitionPlan
+
+                        你的任务：
+                        - 保留 timeRange 原始说法
+                        - 为每个带时间条件的 IM_MESSAGE_SEARCH 填充可执行的 startTime/endTime
+                        - startTime/endTime 必须是 ISO_OFFSET_DATE_TIME
+                        - query、chatId、threadId、selectionInstruction、limit、pageSize、pageLimit 原样保留
+
+                        你必须能处理：
+                        - 相对时间：最近10分钟、10分钟前、昨天下午、今天上午
+                        - 中文绝对时间：5月7号凌晨2点到2点06分、5月7日 14:00-14:30、昨天 9 点到 10 点
+                        - 同一天省略结束日期的区间
+                        - 凌晨 / 上午 / 中午 / 下午 / 晚上
+                        - X点 / X点Y分 / HH:mm
+
+                        规则：
+                        - timeRange 只做追踪，startTime/endTime 才是执行参数
+                        - 如果能稳定推断，就直接输出修正后的 ContextAcquisitionPlan JSON
+                        - 如果不能稳定推断，输出：
+                          {"needCollection":false,"sources":[],"reason":"ambiguous time range","clarificationQuestion":"请补充具体开始和结束时间。"}
+                        - 不允许猜一个模糊的最近时间窗来代替明确解析
+                        """)
+                .outputType(com.lark.imcollab.common.model.entity.ContextAcquisitionPlan.class)
+                .model(chatModel)
+                .hooks(summarizationHook)
+                .build();
+    }
+
+    @Bean(name = "clarificationSourceMaterialJudgeAgent")
+    public ReactAgent clarificationSourceMaterialJudgeAgent(ChatModel chatModel, SummarizationHook summarizationHook) {
+        return ReactAgent.builder()
+                .name("clarification-source-material-judge-agent")
+                .description("判断澄清回复是否已经提供了可直接使用的内联源材料")
+                .systemPrompt("""
+                        你是 Planner 的澄清材料判定子 Agent。
+                        你只判断：用户最新澄清回复与已有澄清答案，是否已经提供了足够的“内联源材料”，从而可以跳过外部上下文采集。
+                        外部上下文采集包括：IM_MESSAGE_SEARCH 和 LARK_DOC。
+                        你不生成计划，不执行任务，不给用户回复。
+
+                        判定原则：
+                        - 只有当用户直接贴出了可加工的内容事实时，canReplaceExternalSourceCollection=true。
+                        - 可加工内容事实包括：粘贴的消息正文、纪要片段、事实摘要、明确结论、风险、需求、数据、要点列表、较完整的内容段落。
+                        - 如果用户只是补充任务要求、页数、小节数、风格、受众、是否新建一版、是否继续执行、继续生成什么，这些都不算源材料。
+                        - 如果用户只是引用外部来源但没有贴出内容，例如“根据刚才消息”“基于群聊记录”“按那份文档来”“这里有个链接”，也不算能替代外部采集的内联材料。
+                        - 当 sourceScope 明确要求外部来源时，除非用户确实贴出了可直接加工的材料，否则保守返回 false。
+                        - 如果不确定，返回 false。
+
+                        只输出 JSON：
+                        {"canReplaceExternalSourceCollection":false,"reason":""}
+                        """)
+                .outputType(ClarificationSourceMaterialAssessment.class)
                 .model(chatModel)
                 .hooks(summarizationHook)
                 .build();

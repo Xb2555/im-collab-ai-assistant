@@ -3,6 +3,8 @@ package com.lark.imcollab.planner.supervisor;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.imcollab.common.model.entity.ClarificationSourceMaterialAssessment;
+import com.lark.imcollab.common.model.entity.ContextAcquisitionPlan;
 import com.lark.imcollab.common.model.entity.IntentSnapshot;
 import com.lark.imcollab.common.model.entity.PlanBlueprint;
 import com.lark.imcollab.common.model.entity.PlanTaskSession;
@@ -31,10 +33,13 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import org.mockito.ArgumentCaptor;
@@ -233,6 +238,76 @@ class PlanningNodeServiceTest {
         assertThat((String) metadata.get(PromptContextKeys.CONTEXT))
                 .contains("客户反馈：移动端审批入口太深")
                 .contains("方案结论：先优化首页快捷入口");
+    }
+
+    @Test
+    void refreshesSessionAfterContextCollectionBeforeFinalSave() throws Exception {
+        ReactAgent intentAgent = mock(ReactAgent.class);
+        ReactAgent planningAgent = mock(ReactAgent.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
+        ContextAcquisitionNodeService contextAcquisitionNodeService = mock(ContextAcquisitionNodeService.class);
+        PlanTaskSession initialSession = PlanTaskSession.builder()
+                .taskId("task-refresh")
+                .rawInstruction("根据群消息生成汇报")
+                .stateRevision(10L)
+                .build();
+        PlanTaskSession refreshedSession = PlanTaskSession.builder()
+                .taskId("task-refresh")
+                .rawInstruction("根据群消息生成汇报")
+                .stateRevision(11L)
+                .build();
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("oc_1")
+                .chatType("group")
+                .build();
+        when(sessionService.getOrCreate("task-refresh")).thenReturn(initialSession);
+        when(sessionService.get("task-refresh")).thenReturn(refreshedSession);
+        when(memoryService.renderContext(initialSession)).thenReturn("");
+        when(memoryService.renderContext(refreshedSession)).thenReturn("");
+        when(intentAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"userGoal":"根据群消息生成汇报","deliverableTargets":["DOC"],"sourceScope":{"timeRange":"5月7号凌晨2点到2点06分"}}
+                        """)
+        ))));
+        when(planningAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"planCards":[{"cardId":"card-001","title":"生成汇报文档","type":"DOC"}]}
+                        """)
+        ))));
+        when(contextAcquisitionNodeService.collect(eq("task-refresh"), anyString(), any(), any()))
+                .thenReturn(new ContextCollectionOutcome(
+                        ContextSufficiencyResult.sufficient("已收集到相关群消息", "context collected"),
+                        WorkspaceContext.builder()
+                                .chatId("oc_1")
+                                .chatType("group")
+                                .selectedMessages(List.of("消息A", "消息B"))
+                                .build()
+                ));
+        PlanningNodeService planningService = new PlanningNodeService(
+                intentAgent,
+                planningAgent,
+                sessionService,
+                new PlanQualityService(new ObjectMapper(), List.of(), new ExecutionContractFactory()),
+                projectionService,
+                memoryService,
+                questionTool,
+                contextAcquisitionNodeService,
+                null,
+                new ObjectMapper()
+        );
+
+        PlanTaskSession result = planningService.plan("task-refresh", "根据群消息生成汇报", workspaceContext, "");
+
+        assertThat(result).isSameAs(refreshedSession);
+        ArgumentCaptor<PlanTaskSession> saveCaptor = forClass(PlanTaskSession.class);
+        verify(sessionService, times(2)).saveWithoutVersionChange(saveCaptor.capture());
+        assertThat(saveCaptor.getAllValues().get(0)).isSameAs(initialSession);
+        assertThat(saveCaptor.getAllValues().get(1)).isSameAs(refreshedSession);
     }
 
     @Test
@@ -468,6 +543,7 @@ class PlanningNodeServiceTest {
     void skipsIntentSourceCollectionWhenResumeFeedbackProvidesContext() throws Exception {
         ReactAgent intentAgent = mock(ReactAgent.class);
         ReactAgent planningAgent = mock(ReactAgent.class);
+        ReactAgent clarificationSourceMaterialJudgeAgent = mock(ReactAgent.class);
         PlannerSessionService sessionService = mock(PlannerSessionService.class);
         TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
         PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
@@ -492,6 +568,12 @@ class PlanningNodeServiceTest {
                         {"planCards":[{"cardId":"card-001","title":"生成采购评审文档","type":"DOC"}]}
                         """)
         ))));
+        when(clarificationSourceMaterialJudgeAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"canReplaceExternalSourceCollection":true,"reason":"clarification already includes concrete inline facts to draft from"}
+                        """)
+        ))));
         PlanningNodeService planningService = new PlanningNodeService(
                 intentAgent,
                 planningAgent,
@@ -501,6 +583,7 @@ class PlanningNodeServiceTest {
                 memoryService,
                 questionTool,
                 contextAcquisitionNodeService,
+                clarificationSourceMaterialJudgeAgent,
                 new ObjectMapper()
         );
 
@@ -515,6 +598,259 @@ class PlanningNodeServiceTest {
         verify(contextAcquisitionNodeService, never()).collect(anyString(), anyString(), any(), any());
         verify(questionTool, never()).askUser(any(PlanTaskSession.class), any());
         verify(planningAgent).invoke(contains("100块钱的QQ糖"), any());
+    }
+
+    @Test
+    void doesNotSkipIntentSourceCollectionWhenFeedbackOnlyAdjustsPlan() throws Exception {
+        ReactAgent intentAgent = mock(ReactAgent.class);
+        ReactAgent planningAgent = mock(ReactAgent.class);
+        ReactAgent clarificationSourceMaterialJudgeAgent = mock(ReactAgent.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
+        ContextAcquisitionNodeService contextAcquisitionNodeService = mock(ContextAcquisitionNodeService.class);
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-im-source")
+                .rawInstruction("根据5月7号凌晨2点到2点06分关于智能工作流项目的消息，总结成给老板看的汇报")
+                .clarificationAnswers(List.of("然后根据摘要还要生成一份汇报文档，要5小节"))
+                .build();
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("oc_group_1")
+                .chatType("group")
+                .messageId("om_current")
+                .build();
+        when(sessionService.getOrCreate("task-im-source")).thenReturn(session);
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(intentAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"userGoal":"生成给老板看的汇报","deliverableTargets":["SUMMARY"],"sourceScope":{"timeRange":"2025-05-07 02:00:00 - 02:06:00"}}
+                        """)
+        ))));
+        when(clarificationSourceMaterialJudgeAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"canReplaceExternalSourceCollection":false,"reason":"feedback only adjusts the downstream deliverable and does not contain source material"}
+                        """)
+        ))));
+        when(contextAcquisitionNodeService.collect(anyString(), anyString(), any(), any())).thenReturn(
+                new ContextCollectionOutcome(
+                        ContextSufficiencyResult.sufficient("已读取 2 条聊天记录", "collected from im"),
+                        WorkspaceContext.builder()
+                                .chatId("oc_group_1")
+                                .chatType("group")
+                                .selectedMessages(List.of("A：智能工作流项目昨晚完成了联调。", "B：剩余风险是权限收口。"))
+                                .selectedMessageIds(List.of("om_1", "om_2"))
+                                .build()
+                )
+        );
+        when(planningAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"planCards":[{"cardId":"card-001","title":"生成老板汇报摘要","type":"SUMMARY"}]}
+                        """)
+        ))));
+        PlanningNodeService planningService = new PlanningNodeService(
+                intentAgent,
+                planningAgent,
+                sessionService,
+                new PlanQualityService(new ObjectMapper(), List.of(), new ExecutionContractFactory()),
+                projectionService,
+                memoryService,
+                questionTool,
+                contextAcquisitionNodeService,
+                clarificationSourceMaterialJudgeAgent,
+                new ObjectMapper()
+        );
+
+        PlanTaskSession result = planningService.plan(
+                "task-im-source",
+                "根据5月7号凌晨2点到2点06分关于智能工作流项目的消息，总结成给老板看的汇报",
+                workspaceContext,
+                "然后根据摘要还要生成一份汇报文档，要5小节"
+        );
+
+        assertThat(result.getPlanCards()).hasSize(1);
+        verify(contextAcquisitionNodeService).collect(anyString(), anyString(), any(), any());
+        verify(questionTool, never()).askUser(any(PlanTaskSession.class), any());
+        verify(planningAgent).invoke(contains("Selected messages:"), any());
+    }
+
+    @Test
+    void repairsIntentSourceCollectionTimeWindowBeforeAcquisition() throws Exception {
+        ReactAgent intentAgent = mock(ReactAgent.class);
+        ReactAgent planningAgent = mock(ReactAgent.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
+        ContextAcquisitionNodeService contextAcquisitionNodeService = mock(ContextAcquisitionNodeService.class);
+        ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver = mock(ContextAcquisitionPlanTimeWindowResolver.class);
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-intent-source")
+                .rawInstruction("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档")
+                .build();
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("oc_group_1")
+                .chatType("group")
+                .build();
+        when(sessionService.getOrCreate("task-intent-source")).thenReturn(session);
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(intentAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"userGoal":"根据历史消息生成给老板看的汇报文档","deliverableTargets":["DOC"],"sourceScope":{"timeRange":"2025-05-07 02:00:00 至 2025-05-07 02:06:00","selectionType":"time_range"}}
+                        """)
+        ))));
+        ContextAcquisitionPlan repairedPlan = ContextAcquisitionPlan.builder()
+                .needCollection(true)
+                .sources(List.of(com.lark.imcollab.common.model.entity.ContextSourceRequest.builder()
+                        .sourceType(com.lark.imcollab.common.model.enums.ContextSourceTypeEnum.IM_MESSAGE_SEARCH)
+                        .chatId("oc_group_1")
+                        .timeRange("2025-05-07 02:00:00 至 2025-05-07 02:06:00")
+                        .startTime("2025-05-07T02:00:00+08:00")
+                        .endTime("2025-05-07T02:06:00+08:00")
+                        .query("智能工作流项目")
+                        .selectionInstruction("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档")
+                        .pageSize(50)
+                        .pageLimit(5)
+                        .build()))
+                .reason("intent source scope requires context acquisition")
+                .clarificationQuestion("")
+                .build();
+        when(acquisitionPlanTimeWindowResolver.ensureExecutable(
+                eq("task-intent-source"),
+                eq("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档"),
+                eq(workspaceContext),
+                any(ContextAcquisitionPlan.class)
+        )).thenReturn(repairedPlan);
+        when(contextAcquisitionNodeService.collect(
+                eq("task-intent-source"),
+                eq("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档"),
+                eq(workspaceContext),
+                eq(repairedPlan)
+        )).thenReturn(new ContextCollectionOutcome(
+                ContextSufficiencyResult.sufficient("已读取 2 条聊天记录", "context collected"),
+                WorkspaceContext.builder()
+                        .chatId("oc_group_1")
+                        .chatType("group")
+                        .selectedMessages(List.of("A：智能工作流项目昨晚完成了联调。", "B：剩余风险是权限收口。"))
+                        .selectedMessageIds(List.of("om_1", "om_2"))
+                        .build()
+        ));
+        when(planningAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"planCards":[{"cardId":"card-001","title":"生成老板汇报文档","type":"DOC"}]}
+                        """)
+        ))));
+        PlanningNodeService planningService = new PlanningNodeService(
+                intentAgent,
+                planningAgent,
+                sessionService,
+                new PlanQualityService(new ObjectMapper(), List.of(), new ExecutionContractFactory()),
+                projectionService,
+                memoryService,
+                questionTool,
+                contextAcquisitionNodeService,
+                acquisitionPlanTimeWindowResolver,
+                null,
+                new ObjectMapper()
+        );
+
+        PlanTaskSession result = planningService.plan(
+                "task-intent-source",
+                "帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档",
+                workspaceContext,
+                ""
+        );
+
+        assertThat(result.getPlanCards()).hasSize(1);
+        verify(acquisitionPlanTimeWindowResolver).ensureExecutable(
+                eq("task-intent-source"),
+                eq("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档"),
+                eq(workspaceContext),
+                any(ContextAcquisitionPlan.class)
+        );
+        verify(contextAcquisitionNodeService).collect(
+                eq("task-intent-source"),
+                eq("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档"),
+                eq(workspaceContext),
+                eq(repairedPlan)
+        );
+    }
+
+    @Test
+    void intentSourceCollectionPrefersLatestRawInstructionTimeRangeOverStaleSnapshotValue() throws Exception {
+        ReactAgent intentAgent = mock(ReactAgent.class);
+        ReactAgent planningAgent = mock(ReactAgent.class);
+        PlannerSessionService sessionService = mock(PlannerSessionService.class);
+        TaskRuntimeProjectionService projectionService = mock(TaskRuntimeProjectionService.class);
+        PlannerConversationMemoryService memoryService = mock(PlannerConversationMemoryService.class);
+        PlannerQuestionTool questionTool = mock(PlannerQuestionTool.class);
+        ContextAcquisitionNodeService contextAcquisitionNodeService = mock(ContextAcquisitionNodeService.class);
+        ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver = mock(ContextAcquisitionPlanTimeWindowResolver.class);
+        PlanTaskSession session = PlanTaskSession.builder()
+                .taskId("task-time-prefer-raw")
+                .rawInstruction("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档")
+                .build();
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .chatId("oc_group_1")
+                .chatType("group")
+                .build();
+        when(sessionService.getOrCreate("task-time-prefer-raw")).thenReturn(session);
+        when(memoryService.renderContext(session)).thenReturn("");
+        when(intentAgent.invoke(anyString(), any())).thenReturn(Optional.of(new OverAllState(Map.of(
+                "messages",
+                new AssistantMessage("""
+                        {"userGoal":"根据历史消息生成给老板看的汇报文档","deliverableTargets":["DOC"],"sourceScope":{"timeRange":"2025-05-07 02:00 - 02:06","selectionType":"time_range"}}
+                        """)
+        ))));
+        doAnswer(invocation -> invocation.getArgument(3, ContextAcquisitionPlan.class))
+                .when(acquisitionPlanTimeWindowResolver).ensureExecutable(
+                        eq("task-time-prefer-raw"),
+                        eq("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档"),
+                        eq(workspaceContext),
+                        any(ContextAcquisitionPlan.class)
+                );
+        when(contextAcquisitionNodeService.collect(anyString(), anyString(), any(), any())).thenReturn(
+                new ContextCollectionOutcome(
+                        ContextSufficiencyResult.insufficient(List.of("source_context"), "请补充具体开始和结束时间。", "context collection failed"),
+                        workspaceContext
+                )
+        );
+        PlanningNodeService planningService = new PlanningNodeService(
+                intentAgent,
+                planningAgent,
+                sessionService,
+                new PlanQualityService(new ObjectMapper(), List.of(), new ExecutionContractFactory()),
+                projectionService,
+                memoryService,
+                questionTool,
+                contextAcquisitionNodeService,
+                acquisitionPlanTimeWindowResolver,
+                null,
+                new ObjectMapper()
+        );
+
+        planningService.plan(
+                "task-time-prefer-raw",
+                "帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档",
+                workspaceContext,
+                ""
+        );
+
+        ArgumentCaptor<ContextAcquisitionPlan> planCaptor = ArgumentCaptor.forClass(ContextAcquisitionPlan.class);
+        verify(acquisitionPlanTimeWindowResolver).ensureExecutable(
+                eq("task-time-prefer-raw"),
+                eq("帮我根据5月7号凌晨2点到2点06分关于智能工作流项目来总结成给老板看的汇报文档"),
+                eq(workspaceContext),
+                planCaptor.capture()
+        );
+        assertThat(planCaptor.getValue().getSources()).hasSize(1);
+        assertThat(planCaptor.getValue().getSources().get(0).getTimeRange())
+                .contains("2025-05-07 02:00 - 02:06");
     }
 
     @Test

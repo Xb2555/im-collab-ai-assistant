@@ -24,17 +24,20 @@ public class UpdateWhiteboardStepHandler implements ExecutionStepHandler {
         if (!(step.getInput() instanceof RichContentExecutionPlanner.WhiteboardUpdateInput input)) {
             throw new IllegalStateException("UPDATE_WHITEBOARD: invalid step input");
         }
-        if (input.blockId() == null || input.blockId().isBlank()) {
-            throw new IllegalStateException("UPDATE_WHITEBOARD: blockId is required");
-        }
         if (input.dsl() == null || input.dsl().isBlank()) {
             throw new IllegalStateException("UPDATE_WHITEBOARD: dsl is required");
         }
-        LarkDocUpdateResult result = writeGateway.updateByCommand(
-                docRef, "whiteboard_update", input.dsl(), "whiteboard", input.blockId(), null, null);
+        String blockId = input.blockId();
+        if (blockId == null || blockId.isBlank()) {
+            blockId = ctx.getString("whiteboardToken");
+        }
+        if (blockId == null || blockId.isBlank()) {
+            throw new IllegalStateException("UPDATE_WHITEBOARD: blockId is required");
+        }
+        LarkDocUpdateResult result = writeGateway.updateWhiteboard(blockId, input.dsl(), "mermaid");
         if (result == null || !result.isSuccess()) {
             throw new IllegalStateException("UPDATE_WHITEBOARD: update failed");
         }
-        ctx.put("whiteboardBlockId", input.blockId());
+        ctx.put("whiteboardBlockId", blockId);
     }
 }

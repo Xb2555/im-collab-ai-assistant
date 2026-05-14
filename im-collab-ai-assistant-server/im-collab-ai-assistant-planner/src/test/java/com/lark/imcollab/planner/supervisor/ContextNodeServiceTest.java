@@ -17,6 +17,20 @@ import static org.mockito.Mockito.when;
 class ContextNodeServiceTest {
 
     @Test
+    void plannerContextToolAcceptsCompactInlineMaterialAfterColon() {
+        PlannerContextTool tool = new PlannerContextTool();
+
+        ContextSufficiencyResult result = tool.evaluateContext(
+                PlanTaskSession.builder().taskId("task-inline").build(),
+                "@飞书IM- test 基于这些内容总结：是个游戏主播，天天玩deadlock、三角洲行动、卡拉比丘的fps游戏，游戏风格很欢乐",
+                WorkspaceContext.builder().build()
+        );
+
+        assertThat(result.sufficient()).isTrue();
+        assertThat(result.reason()).contains("embedded instruction context");
+    }
+
+    @Test
     void extractsKeywordFromHistoricalDiscussionRequest() {
         assertThat(ContextNodeService.extractSearchQuery(
                 "@飞书IM- test 整理一下之前历史消息中有关采购评审的讨论，输出一份采购分析文档，并生成评审ppt"
@@ -68,7 +82,8 @@ class ContextNodeServiceTest {
                 .contains("startTime and endTime MUST be non-empty")
                 .contains("昨天下午")
                 .contains("12:00:00 to 18:00:00")
-                .contains("never output only a vague timeRange");
+                .contains("never output only a vague timeRange")
+                .contains("5月7号凌晨2点到2点06分");
     }
 
     @Test

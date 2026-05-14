@@ -47,6 +47,35 @@ class RichContentExecutionPlannerTest {
     }
 
     @Test
+    void imagePlanStillUsesUploadAndInsertWhenAssetIsDirectUrl() {
+        RichContentExecutionPlanner planner = new RichContentExecutionPlanner();
+
+        var executionPlan = planner.plan(
+                DocumentEditIntent.builder()
+                        .semanticAction(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR)
+                        .build(),
+                ResolvedDocumentAnchor.builder()
+                        .insertionBlockId("anchor-1")
+                        .build(),
+                DocumentEditStrategy.builder()
+                        .strategyType(DocumentStrategyType.MEDIA_INSERT_AFTER)
+                        .expectedState(ExpectedDocumentState.builder()
+                                .stateType(DocumentExpectedStateType.EXPECT_IMAGE_NODE_PRESENT)
+                                .build())
+                        .build(),
+                ResolvedAsset.builder()
+                        .assetType(MediaAssetType.IMAGE)
+                        .assetRef("https://example.com/image.png")
+                        .requiresUpload(false)
+                        .build()
+        );
+
+        assertThat(executionPlan.getSteps())
+                .extracting(step -> step.getStepType())
+                .containsExactly("UPLOAD_IMAGE", "INSERT_IMAGE_BLOCK");
+    }
+
+    @Test
     void whiteboardUpdateUsesUpdateStepInsteadOfCreate() {
         RichContentExecutionPlanner planner = new RichContentExecutionPlanner();
 
@@ -72,6 +101,36 @@ class RichContentExecutionPlannerTest {
         assertThat(executionPlan.getSteps())
                 .extracting(step -> step.getStepType())
                 .containsExactly("UPDATE_WHITEBOARD");
+    }
+
+    @Test
+    void whiteboardInsertCreatesUpdatesAndInsertsReference() {
+        RichContentExecutionPlanner planner = new RichContentExecutionPlanner();
+
+        var executionPlan = planner.plan(
+                DocumentEditIntent.builder()
+                        .semanticAction(DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR)
+                        .build(),
+                ResolvedDocumentAnchor.builder()
+                        .insertionBlockId("anchor-9")
+                        .build(),
+                DocumentEditStrategy.builder()
+                        .strategyType(DocumentStrategyType.WHITEBOARD_INSERT_AFTER)
+                        .expectedState(ExpectedDocumentState.builder()
+                                .stateType(DocumentExpectedStateType.EXPECT_WHITEBOARD_NODE_PRESENT)
+                                .build())
+                        .build(),
+                ResolvedAsset.builder()
+                        .assetType(MediaAssetType.WHITEBOARD)
+                        .assetRef("flowchart TD;A-->B")
+                        .build()
+        );
+
+        assertThat(executionPlan.getSteps())
+                .extracting(step -> step.getStepType())
+                .containsExactly("CREATE_WHITEBOARD", "UPDATE_WHITEBOARD");
+        assertThat(executionPlan.getSteps().get(0).getInput())
+                .isEqualTo(new RichContentExecutionPlanner.WhiteboardCreateInput("anchor-9"));
     }
 
     @Test

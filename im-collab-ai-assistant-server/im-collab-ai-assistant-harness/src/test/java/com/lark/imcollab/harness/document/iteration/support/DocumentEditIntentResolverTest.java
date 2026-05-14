@@ -2,9 +2,12 @@ package com.lark.imcollab.harness.document.iteration.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lark.imcollab.common.model.entity.DocumentEditIntent;
+import com.lark.imcollab.common.model.entity.WorkspaceContext;
 import com.lark.imcollab.common.model.enums.DocumentAnchorKind;
 import com.lark.imcollab.common.model.enums.DocumentAnchorMatchMode;
 import com.lark.imcollab.common.model.enums.DocumentSemanticActionType;
+import com.lark.imcollab.common.model.enums.MediaAssetSourceType;
+import com.lark.imcollab.common.model.enums.MediaAssetType;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
 
@@ -414,6 +417,61 @@ class DocumentEditIntentResolverTest {
         assertThat(intent.getAnchorSpec()).isNotNull();
         assertThat(intent.getAnchorSpec().getMatchMode()).isEqualTo(DocumentAnchorMatchMode.BY_HEADING_NUMBER);
         assertThat(intent.getAnchorSpec().getHeadingNumber()).isEqualTo("1.1");
+    }
+
+    @Test
+    void imageInsertWithAttachmentUsesImageAssetAndAttachmentSource() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT_MEDIA",
+                  "semanticAction": "INSERT_IMAGE_AFTER_ANCHOR",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_HEADING_NUMBER",
+                    "headingNumber": "1.1"
+                  },
+                  "assetSpec": {
+                    "assetType": "IMAGE"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+        WorkspaceContext workspaceContext = WorkspaceContext.builder()
+                .attachmentRefs(java.util.List.of("https://cos.example.com/a.png"))
+                .build();
+
+        DocumentEditIntent intent = resolver.resolve("在1.1后插入一张图片", workspaceContext);
+
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_IMAGE_AFTER_ANCHOR);
+        assertThat(intent.getAssetSpec().getAssetType()).isEqualTo(MediaAssetType.IMAGE);
+        assertThat(intent.getAssetSpec().getSourceType()).isEqualTo(MediaAssetSourceType.ATTACHMENT);
+        assertThat(intent.getAssetSpec().getSourceRef()).isEqualTo("https://cos.example.com/a.png");
+    }
+
+    @Test
+    void whiteboardInsertIsNormalizedToWhiteboardSemanticAction() {
+        ChatModel chatModel = mock(ChatModel.class);
+        when(chatModel.call(anyString())).thenReturn("""
+                {
+                  "intentType": "INSERT_MEDIA",
+                  "semanticAction": "INSERT_BLOCK_AFTER_ANCHOR",
+                  "clarificationNeeded": false,
+                  "anchorSpec": {
+                    "anchorKind": "SECTION",
+                    "matchMode": "BY_HEADING_NUMBER",
+                    "headingNumber": "1.2"
+                  }
+                }
+                """);
+        DocumentEditIntentResolver resolver = new DocumentEditIntentResolver(chatModel, new ObjectMapper());
+
+        DocumentEditIntent intent = resolver.resolve("在1.2后插入一张架构图");
+
+        assertThat(intent.getSemanticAction()).isEqualTo(DocumentSemanticActionType.INSERT_WHITEBOARD_AFTER_ANCHOR);
+        assertThat(intent.getAssetSpec()).isNotNull();
+        assertThat(intent.getAssetSpec().getAssetType()).isEqualTo(MediaAssetType.WHITEBOARD);
     }
 
     @Test

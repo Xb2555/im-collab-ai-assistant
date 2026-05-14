@@ -14,6 +14,7 @@ import com.lark.imcollab.planner.config.PlannerProperties;
 import com.lark.imcollab.planner.service.PlannerConversationMemoryService;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -35,8 +36,10 @@ public class ContextNodeService {
     private final PlannerRuntimeTool runtimeTool;
     private final PlannerConversationMemoryService memoryService;
     private final PlannerProperties plannerProperties;
+    private final ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public ContextNodeService(
             @Qualifier("contextCollectorAgent") ReactAgent contextCollectorAgent,
             @Qualifier("contextAcquisitionAgent") ReactAgent contextAcquisitionAgent,
@@ -44,6 +47,7 @@ public class ContextNodeService {
             PlannerRuntimeTool runtimeTool,
             PlannerConversationMemoryService memoryService,
             PlannerProperties plannerProperties,
+            ContextAcquisitionPlanTimeWindowResolver acquisitionPlanTimeWindowResolver,
             ObjectMapper objectMapper
     ) {
         this.contextCollectorAgent = contextCollectorAgent;
@@ -52,7 +56,34 @@ public class ContextNodeService {
         this.runtimeTool = runtimeTool;
         this.memoryService = memoryService;
         this.plannerProperties = plannerProperties;
+        this.acquisitionPlanTimeWindowResolver = acquisitionPlanTimeWindowResolver;
         this.objectMapper = objectMapper;
+    }
+
+    ContextNodeService(
+            ReactAgent contextCollectorAgent,
+            ReactAgent contextAcquisitionAgent,
+            PlannerContextTool contextTool,
+            PlannerRuntimeTool runtimeTool,
+            PlannerConversationMemoryService memoryService,
+            PlannerProperties plannerProperties,
+            ObjectMapper objectMapper
+    ) {
+        this(contextCollectorAgent, contextAcquisitionAgent, contextTool, runtimeTool, memoryService, plannerProperties, null, objectMapper);
+    }
+
+    ContextNodeService(
+            ReactAgent contextCollectorAgent,
+            ReactAgent contextAcquisitionAgent,
+            ReactAgent timeWindowResolutionAgent,
+            PlannerContextTool contextTool,
+            PlannerRuntimeTool runtimeTool,
+            PlannerConversationMemoryService memoryService,
+            PlannerProperties plannerProperties,
+            ObjectMapper objectMapper
+    ) {
+        this(contextCollectorAgent, contextAcquisitionAgent, contextTool, runtimeTool, memoryService, plannerProperties,
+                new ContextAcquisitionPlanTimeWindowResolver(timeWindowResolutionAgent, objectMapper), objectMapper);
     }
 
     public ContextSufficiencyResult check(
@@ -64,7 +95,13 @@ public class ContextNodeService {
         runtimeTool.projectStage(taskId, TaskEventTypeEnum.CONTEXT_CHECKING, "Checking task context");
         ContextSufficiencyResult guardedResult = contextTool.evaluateContext(session, rawInstruction, workspaceContext);
 
-        ContextAcquisitionPlan requiredPlan = requiredReferenceAcquisitionPlan(workspaceContext, rawInstruction);
+        ContextAcquisitionPlan requiredPlan = acquisitionPlanTimeWindowResolver == null ? requiredReferenceAcquisitionPlan(workspaceContext, rawInstruction)
+                : acquisitionPlanTimeWindowResolver.ensureExecutable(
+                taskId,
+                rawInstruction,
+                workspaceContext,
+                requiredReferenceAcquisitionPlan(workspaceContext, rawInstruction)
+        );
         if (requiredPlan != null && requiredPlan.isNeedCollection()) {
             return ContextSufficiencyResult.collect(requiredPlan, "workspace source refs require collection");
         }
@@ -89,7 +126,13 @@ public class ContextNodeService {
                     firstNonBlank(acquisitionPlan.get().getReason(), "context acquisition needs user input")
             );
         }
-        ContextAcquisitionPlan fallbackPlan = defaultAcquisitionPlan(workspaceContext);
+        ContextAcquisitionPlan fallbackPlan = acquisitionPlanTimeWindowResolver == null ? defaultAcquisitionPlan(workspaceContext)
+                : acquisitionPlanTimeWindowResolver.ensureExecutable(
+                taskId,
+                rawInstruction,
+                workspaceContext,
+                defaultAcquisitionPlan(workspaceContext)
+        );
         if (fallbackPlan != null && fallbackPlan.isNeedCollection()) {
             return ContextSufficiencyResult.collect(fallbackPlan, "available workspace source can be collected");
         }
@@ -152,16 +195,9 @@ public class ContextNodeService {
                     prompt,
                     RunnableConfig.builder().threadId(taskId + ":planner:context-acquisition").build()
             );
-            if (plan.isPresent() && hasInvalidImSearchTimeRange(plan.get())) {
-                Optional<ContextAcquisitionPlan> repaired = invokeAcquisitionAgentOnce(
-                        buildTimeRangeRepairPrompt(rawInstruction, workspaceContext, plan.get()),
-                        RunnableConfig.builder().threadId(taskId + ":planner:context-acquisition:repair").build()
-                );
-                if (repaired.isPresent()) {
-                    return repaired;
-                }
-            }
-            return plan;
+            return plan.map(value -> acquisitionPlanTimeWindowResolver == null
+                    ? value
+                    : acquisitionPlanTimeWindowResolver.ensureExecutable(taskId, rawInstruction, workspaceContext, value));
         } catch (Exception ignored) {
             return Optional.empty();
         }
@@ -175,69 +211,6 @@ public class ContextNodeService {
         Map<String, Object> data = state.get().data();
         Object structured = data.get("messages") == null ? data.get("message") : data.get("messages");
         return extractStructured(structured, ContextAcquisitionPlan.class);
-    }
-
-    private String buildTimeRangeRepairPrompt(
-            String rawInstruction,
-            WorkspaceContext workspaceContext,
-            ContextAcquisitionPlan invalidPlan
-    ) {
-        return """
-                You are a strict ContextAcquisitionPlan JSON repairer.
-                The previous plan is invalid because an IM_MESSAGE_SEARCH source has a timeRange but omitted startTime/endTime.
-
-                Return the corrected ContextAcquisitionPlan JSON only.
-                Preserve sourceType, chatId, threadId, query, selectionInstruction, limit, pageSize, and pageLimit.
-                Preserve the user's original time phrase in timeRange.
-                For every IM_MESSAGE_SEARCH source with any time condition, fill startTime and endTime as ISO_OFFSET_DATE_TIME strings.
-
-                Current time: %s
-                User instruction: %s
-                Workspace chatId: %s
-                Workspace threadId: %s
-                Workspace chatType: %s
-
-                Common relative time rules using Current time timezone:
-                - 昨天下午: yesterday 12:00:00 to yesterday 18:00:00.
-                - 昨天上午: yesterday 00:00:00 to yesterday 12:00:00.
-                - 昨天: yesterday 00:00:00 to today 00:00:00.
-                - 今天上午: today 00:00:00 to today 12:00:00.
-                - 今天下午: today 12:00:00 to today 18:00:00.
-                - 今天: today 00:00:00 to current time.
-                - 最近N分钟/小时: current time minus N minutes/hours to current time.
-                - N分钟前: a 10-minute window centered at N minutes before current time.
-
-                Do not return a clarification for these common relative time expressions. Resolve them.
-                If and only if the phrase is genuinely ambiguous, return {"needCollection":false,"sources":[],"reason":"ambiguous time range","clarificationQuestion":"请补充具体开始和结束时间。"}.
-
-                Previous invalid JSON:
-                %s
-                """.formatted(
-                currentTime(),
-                rawInstruction == null ? "" : rawInstruction,
-                workspaceContext == null ? "" : nullToEmpty(workspaceContext.getChatId()),
-                workspaceContext == null ? "" : nullToEmpty(workspaceContext.getThreadId()),
-                workspaceContext == null ? "" : nullToEmpty(workspaceContext.getChatType()),
-                safeJson(invalidPlan)
-        );
-    }
-
-    private boolean hasInvalidImSearchTimeRange(ContextAcquisitionPlan plan) {
-        if (plan == null || !plan.isNeedCollection() || plan.getSources() == null) {
-            return false;
-        }
-        return plan.getSources().stream().anyMatch(source -> source != null
-                && source.getSourceType() == ContextSourceTypeEnum.IM_MESSAGE_SEARCH
-                && hasText(source.getTimeRange())
-                && (!hasText(source.getStartTime()) || !hasText(source.getEndTime())));
-    }
-
-    private String safeJson(Object value) {
-        try {
-            return objectMapper.writeValueAsString(value);
-        } catch (Exception ignored) {
-            return String.valueOf(value);
-        }
     }
 
     private String buildPrompt(PlanTaskSession session, String rawInstruction, WorkspaceContext workspaceContext) {
@@ -332,6 +305,7 @@ public class ContextNodeService {
                 - User says "帮我整理一下刚才关于供应商评审的讨论" in a group with chatId: request IM_MESSAGE_SEARCH with query "供应商评审" and the full sentence as selectionInstruction.
                 - User says "本群最近 10 分钟带有 A 标记的风险消息整理成摘要" in a group with chatId: request IM_MESSAGE_SEARCH with query "风险", timeRange "最近10分钟", and that full filter.
                 - User says "10分钟前关于采购评审的消息" in a group with chatId: request IM_MESSAGE_SEARCH with query "采购评审" and timeRange "10分钟前".
+                - User says "根据5月7号凌晨2点到2点06分关于智能工作流项目的消息，总结成给老板看的汇报" in a group with chatId: request IM_MESSAGE_SEARCH with query "智能工作流项目", timeRange preserving the original phrase, and concrete startTime/endTime.
                 Do not create plan steps and do not answer the user.
                 For IM_MESSAGE_SEARCH, copy the user's exact message selection criteria into selectionInstruction.
                 Examples of selection criteria include time window, topics, required marker/text, excluded marker/text, sender constraints, and "if none found then ask me".
@@ -458,7 +432,8 @@ public class ContextNodeService {
                 || !plannerProperties.getContextCollection().isEnabled()
                 || !referencesCurrentConversation(rawInstruction)
                 || (!hasText(workspaceContext.getChatId()) && !hasText(workspaceContext.getThreadId()))
-                || hasRealSelectedMessages(workspaceContext)) {
+                || hasRealSelectedMessages(workspaceContext)
+                || (isPrivateConversationSource(workspaceContext) && mentionsGroupContext(rawInstruction))) {
             return plan;
         }
         String query = extractSearchQuery(rawInstruction);
@@ -551,6 +526,14 @@ public class ContextNodeService {
         boolean conversationMaterial = text.matches(".*(讨论|聊|消息|对话|记录).*");
         boolean asksForSynthesis = text.matches(".*(整理|总结|汇总|生成|写成|输出).*");
         return asksForSynthesis && (text.contains("本群") || text.contains("群里") || (temporalReference && conversationMaterial));
+    }
+
+    private boolean mentionsGroupContext(String rawInstruction) {
+        if (!hasText(rawInstruction)) {
+            return false;
+        }
+        String text = normalize(rawInstruction);
+        return text.contains("群里") || text.contains("本群") || text.contains("群聊");
     }
 
     static String extractSearchQuery(String rawInstruction) {
