@@ -1705,11 +1705,11 @@ public class PresentationWorkflowNodes {
         placeholders.put("{{DATE_LABEL}}", plainContent("汇报时间", "rgb(255,255,255)", 14, true, "center"));
         placeholders.put("{{DATE_VALUE}}", plainContent(coverMeta.reportDate(), titleValueColor(layout), 14, false, "center"));
         placeholders.put("{{SUBTITLE}}", resolveSubtitle(pageType, layout, points, profile, coverMeta));
-        placeholders.put("{{TOC_LIST}}", orderedList(normalizeTocPoints(points), profile.text(), 20));
+        placeholders.put("{{TOC_LIST}}", orderedList(normalizeTocPoints(points), resolveBodyTextColor(pageType, layout, profile), 20));
         placeholders.put("{{LEAD}}", escapeXml(points.isEmpty() ? "进入下一章节" : points.get(0)));
-        placeholders.put("{{BODY_LIST}}", bulletList(points, profile.text(), "data".equals(emphasis) ? 22 : 20));
-        placeholders.put("{{LEFT_LIST}}", bulletList(firstHalf(points), profile.text(), 19));
-        placeholders.put("{{RIGHT_LIST}}", bulletList(secondHalf(points), profile.text(), 19));
+        placeholders.put("{{BODY_LIST}}", bulletList(points, resolveBodyTextColor(pageType, layout, profile), "data".equals(emphasis) ? 22 : 20));
+        placeholders.put("{{LEFT_LIST}}", bulletList(firstHalf(points), resolveBodyTextColor(pageType, layout, profile), 19));
+        placeholders.put("{{RIGHT_LIST}}", bulletList(secondHalf(points), resolveBodyTextColor(pageType, layout, profile), 19));
         placeholders.put("{{RIGHT_IMAGE}}", "{{RIGHT_IMAGE}}");
         placeholders.put("{{CONTENT_IMAGE}}", "{{CONTENT_IMAGE}}");
         placeholders.put("{{RIGHT_IMAGE_SRC}}", "");
@@ -1817,7 +1817,14 @@ public class PresentationWorkflowNodes {
         if ("cover".equals(layout)) {
             return "rgb(15,23,42)";
         }
-        return profile.text();
+        return "rgb(15,23,42)";
+    }
+
+    private String resolveBodyTextColor(String pageType, String layout, StyleProfile profile) {
+        if ("cover".equals(layout)) {
+            return profile.text();
+        }
+        return "rgb(30,41,59)";
     }
 
     private int resolveTitleFontSize(String pageType, String layout, String emphasis) {
@@ -1835,12 +1842,12 @@ public class PresentationWorkflowNodes {
 
     private String resolveSubtitle(String pageType, String layout, List<String> points, StyleProfile profile, PresentationCoverMeta coverMeta) {
         if ("THANKS".equalsIgnoreCase(pageType)) {
-            return plainContent("Thank you for listening", profile.muted(), 16, false, "center");
+            return plainContent("Thank you for listening", "rgb(71,85,105)", 16, false, "center");
         }
         if ("cover".equals(layout)) {
             return plainContent(coverSubtitle(points), profile.muted(), 22, false, "left");
         }
-        return plainContent(coverSubtitle(points), profile.muted(), 22, false, "left");
+        return plainContent(coverSubtitle(points), "rgb(71,85,105)", 22, false, "left");
     }
 
     private String titleValueColor(String layout) {
